@@ -1455,6 +1455,12 @@ def normalize_skill_name(name: str) -> str:
 # closed).
 _SKILL_LOAD_OK_RE = re.compile(r"\[skill-load-ok:\s*(\S[^\]]*?)\s*\]")
 
+# Per-call escape for the plan-edit gate: ``[skip-plan-gate: <non-empty-reason>]``
+# in the current Edit/Write tool call's new_string/content/file_path unblocks that
+# single call. Mirrors ``_SKILL_LOAD_OK_RE`` / ``_SKIP_SKILL_GATE_RE`` in shape
+# and 512-char truncation scope — buried tokens do not silently escape.
+_SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
+
 
 def _skill_load_ok_token(data: dict) -> str | None:
     """Return the reason from a ``[skill-load-ok: <reason>]`` token, else None.
@@ -1474,6 +1480,30 @@ def _skill_load_ok_token(data: dict) -> str | None:
         if not isinstance(value, str) or not value:
             continue
         match = _SKILL_LOAD_OK_RE.search(value[:512])
+        if not match:
+            continue
+        reason = match.group(1).strip()
+        if reason:
+            return reason
+    return None
+
+
+def _skip_plan_gate_token(data: dict) -> str | None:
+    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
+
+    Scans the current Edit/Write tool call's ``new_string``, ``content``,
+    and ``file_path`` within the first 512 characters of each field —
+    mirroring :func:`_skill_load_ok_token` — so a buried token in a long
+    body does not silently authorise the call. An empty reason returns None.
+    """
+    tool_input = data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return None
+    for field in ("new_string", "content", "file_path"):
+        value = tool_input.get(field, "")
+        if not isinstance(value, str) or not value:
+            continue
+        match = _SKIP_PLAN_GATE_RE.search(value[:512])
         if not match:
             continue
         reason = match.group(1).strip()
@@ -1883,6 +1913,31 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
                 sys.path.remove(str(src_dir))
 
 
+def _plan_edit_gate_enabled() -> bool:
+    """Whether the plan-edit gate is enabled (default True).
+
+    Best-effort read of ``[teatree] plan_edit_gate_enabled`` from
+    ``~/.teatree.toml``, mirroring :func:`_skill_loading_gate_enabled`'s
+    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
+    gate keeps its protective default; an explicit ``false`` is the one-line
+    kill-switch (``t3 <overlay> gate plan disable``, never a code edit).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("plan_edit_gate_enabled") is not False
+
+
 def handle_block_edit_before_planned(data: dict) -> bool:
     """Deny Edit/Write when the worktree's ticket is still in STARTED state.
 
@@ -1891,9 +1946,22 @@ def handle_block_edit_before_planned(data: dict) -> bool:
     the ticket has not yet been planned are denied with an actionable message.
     Fail-open on every resolution failure so the gate never wedges an agent
     when the DB is unavailable or the cwd is not a managed worktree.
+
+    **Never-lockout escapes (mirror the skill-loading gate):**
+
+    1. Per-call token ``[skip-plan-gate: <non-empty-reason>]`` in ``new_string``
+        / ``content`` / ``file_path`` (first 512 chars) — the trivial escape.
+    2. Config kill-switch ``[teatree] plan_edit_gate_enabled = false`` in
+        ``~/.teatree.toml`` (flipped by ``t3 <overlay> gate plan disable``).
+
+    The existing ``_fail_open_or_deny`` safety chain (self-rescue allowlist +
+    master ``danger_gate_fail_open``) is unchanged — the escapes above are
+    ADDITIONS to it, not replacements.
     """
     tool_name = data.get("tool_name", "")
     if tool_name not in {"Edit", "Write"}:
+        return False
+    if not _plan_edit_gate_enabled():
         return False
     cwd = data.get("cwd", "") or str(Path.cwd())
     try:
@@ -1902,10 +1970,14 @@ def handle_block_edit_before_planned(data: dict) -> bool:
         return False
     if state != "started":
         return False
+    if reason_token := _skip_plan_gate_token(data):
+        sys.stderr.write(f"NOTE: plan-gate edit-block skipped via [skip-plan-gate: {reason_token}].\n")
+        return False
     reason = (
         f"{tool_name} denied: the worktree's ticket is still in STARTED state — "
         "a plan must be recorded before coding can begin. "
-        "Run the planning phase first so the ticket advances to PLANNED."
+        "Run the planning phase first so the ticket advances to PLANNED. "
+        "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
     )
     return _fail_open_or_deny(data, reason)
 
