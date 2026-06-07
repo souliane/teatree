@@ -201,19 +201,27 @@ class TestPipelinedWIPStandingCap(django.test.TestCase):
         stale.claimed_at = timezone.now() - timedelta(seconds=600)
         stale.lease_expires_at = timezone.now() - timedelta(seconds=300)
         stale.save(update_fields=["status", "claimed_by", "claimed_at", "lease_expires_at"])
-        _dispatchable_task()
+        _claim_task(_dispatchable_task())  # live lease — must be subtracted
+        pending = _dispatchable_task()
         backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
         with _with_speed(Speed.FULL):
             manifest = orchestrate_phase(backends=backends, claim=False)
-        assert manifest.cap == 2
+        # live-lease task reduces budget by 1; expired-lease task does not
+        assert manifest.cap == 1
+        assert len(manifest.entries) == 1
+        assert manifest.entries[0].task_id == pending.pk
 
     def test_non_dispatchable_claimed_tasks_are_not_counted(self) -> None:
         non_dispatchable = _claim_task(_dispatchable_task(role=Ticket.Role.REVIEWER, phase="coding"))
-        _dispatchable_task()
+        _claim_task(_dispatchable_task())  # dispatchable claimed — must be subtracted
+        pending = _dispatchable_task()
         backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
         with _with_speed(Speed.FULL):
             manifest = orchestrate_phase(backends=backends, claim=False)
-        assert manifest.cap == 2
+        # only the dispatchable claimed task reduces the budget
+        assert manifest.cap == 1
+        assert len(manifest.entries) == 1
+        assert manifest.entries[0].task_id == pending.pk
         non_dispatchable.refresh_from_db()
         assert non_dispatchable.status == Task.Status.CLAIMED
 
