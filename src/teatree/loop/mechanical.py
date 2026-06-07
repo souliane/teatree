@@ -266,6 +266,53 @@ def assign_gitlab_reviewer(payload: ActionPayload) -> None:
         logger.warning("assign_reviewer returned False for %s on %s", reviewer_username, pr_url)
 
 
+_DISPOSITION_AUDIT_REASONS: dict[str, str] = {
+    "already_shipped": "already shipped — a delivered ticket exists for this issue",
+    "exact_duplicate": "exact duplicate of another open issue with the same title",
+    "obsolete": "obsolete — every file path it references is gone from the repo",
+}
+
+
+def close_dead_issue(payload: ActionPayload) -> None:
+    """Close a high-confidence DEAD issue with an audit-trail comment (#2122).
+
+    The ``IssueDispositionScanner`` emits ``issue_disposition.close_candidate``
+    only for issues carrying machine-checkable dead evidence; this handler
+    resolves the code host for the issue URL and closes it. Idempotent: the
+    backend ``close_issue`` is a no-op on an already-closed issue, so a re-tick
+    on the same candidate does no harm. Best-effort — a missing URL, an
+    unresolvable host, or a backend error logs without raising so the tick
+    never wedges. The handler labels/closes only; it creates no Task or claim.
+    """
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    issue_url = str(payload.get("url") or payload.get("issue_url") or "")
+    if not issue_url:
+        return
+    reason = str(payload.get("reason", ""))
+    try:
+        overlay = get_overlay(str(payload.get("overlay") or "") or None)
+        host = get_code_host_for_url(overlay, issue_url)
+    except Exception:
+        logger.exception("close_dead_issue: could not resolve code host for %s", issue_url)
+        return
+    if host is None:
+        logger.info("close_dead_issue: no code host resolved for %s", issue_url)
+        return
+    audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
+    comment = f"Auto-closed by the issue-disposition scanner: {audit}."
+    try:
+        result = host.close_issue(issue_url=issue_url, comment=comment)
+    except Exception:
+        logger.exception("close_dead_issue: failed to close %s", issue_url)
+        return
+    if isinstance(result, dict) and "error" in result:
+        logger.warning("close_dead_issue: backend refused to close %s (%s)", issue_url, result["error"])
+        return
+    logger.info("Auto-closed DEAD issue %s (reason: %s)", issue_url, reason or "?")
+
+
 HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "ticket_disposition": ignore_disposed_ticket,
     "ticket_completion": complete_ticket,
@@ -275,4 +322,5 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
     "free_resources": free_resources,
     "todo_completion": todo_completion,
+    "close_dead_issue": close_dead_issue,
 }

@@ -39,9 +39,9 @@ from teatree.loop.global_scanner_factories import build_default_jobs, build_defa
 from teatree.loop.job_identity import Domain, _ScannerJob
 from teatree.loop.phases import act_phase, orchestrate_phase, scan_phase, sweep_phase
 from teatree.loop.rendering import zones_for
-from teatree.loop.scanner_factories import (
+from teatree.loop.scanner_factories import _jobs_for_backend_hosts
+from teatree.loop.scanner_factory_config import (
     _gitlab_approvals_enabled,
-    _jobs_for_backend_hosts,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
 )

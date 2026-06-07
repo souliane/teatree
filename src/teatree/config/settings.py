@@ -148,6 +148,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_label": str,
     "issue_implementer_max_concurrent": int,
     "issue_implementer_cadence_hours": int,
+    "auto_disposition_enabled": bool,
+    "auto_disposition_max_closes_per_tick": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -544,6 +546,16 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
+    # #2122 Opt-in, default-OFF gate for the issue-disposition triage scanner.
+    # When False (the default) no scanner is built, so the loop emits nothing
+    # and never auto-closes an issue. The scanner only CLOSES high-confidence
+    # dead noise (already-shipped / exact-duplicate / obsolete) — it is
+    # physically unable to enqueue work, so flipping it on cannot grow the
+    # backlog queue.
+    auto_disposition_enabled: bool = False
+    # Upper bound on close-candidate signals emitted per tick — keeps an
+    # auto-close pass bounded and reviewable.
+    auto_disposition_max_closes_per_tick: int = 5
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new
