@@ -1,7 +1,10 @@
 """Tests for the overlay-aware backend factory bridge."""
 
 import os
+import shutil
+import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -14,6 +17,7 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
+    code_host_for_repo_from_overlay,
     code_host_from_overlay,
     messaging_from_overlay,
     reset_backend_caches,
@@ -299,6 +303,62 @@ class TestCodeHostFromOverlayTomlFallback:
             patch("teatree.config.load_config", return_value=cfg),
         ):
             assert code_host_from_overlay(overlay_name="ghost") is None
+
+
+class _BothTokenConfig(OverlayConfig):
+    def get_github_token(self) -> str:
+        return "gh-test-token"
+
+    def get_gitlab_token(self) -> str:
+        return "gl-test-token"
+
+
+class _BothTokenOverlay(OverlayBase):
+    config = _BothTokenConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+_GIT = shutil.which("git") or "git"
+
+
+def _git_origin(path: Path, origin_url: str) -> str:
+    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run([_GIT, "-C", str(path), "remote", "add", "origin", origin_url], check=True, capture_output=True)
+    return str(path)
+
+
+class TestCodeHostForRepoFromOverlay:
+    """#2025: the factory resolves the forge from the repo's origin host."""
+
+    def test_resolves_gitlab_for_gitlab_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitLabCodeHost)
+
+    def test_resolves_github_for_github_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:souliane/teatree.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitHubCodeHost)
+
+    def test_falls_back_to_toml_when_overlay_class_missing(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch(
+                "teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if k == "github/private-x/pat" else ""
+            ),
+        ):
+            host = code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+        assert isinstance(host, GitHubCodeHost)
 
 
 class TestActiveOverlayName:

@@ -7,7 +7,7 @@ GitHub vs GitLab and Slack vs Noop is encoded on ``OverlayBase.config``.
 """
 
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
@@ -15,7 +15,8 @@ from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
+from teatree.utils import git
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
@@ -89,6 +90,31 @@ def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
     return hosts
 
 
+def _host_for_origin(text: str) -> Literal["github", "gitlab", ""]:
+    """Return the canonical forge token for a URL or git-remote *text*.
+
+    ``"github"`` for a github.com host, ``"gitlab"`` for gitlab.com or a
+    self-hosted GitLab host (host substring ``gitlab``), ``""`` for an
+    unrecognised host. Single source of truth for both the per-URL
+    (:func:`get_code_host_for_url`) and per-repo
+    (:func:`get_code_host_for_repo`) resolvers.
+    """
+    if "github.com" in text:
+        return "github"
+    if "gitlab" in text:
+        return "gitlab"
+    return ""
+
+
+def _host_backend(overlay: "OverlayBase", forge: Literal["github", "gitlab"]) -> CodeHostBackend | None:
+    """Build the backend for a resolved *forge* token, or ``None`` if no token."""
+    if forge == "github":
+        token = overlay.config.get_github_token()
+        return GitHubCodeHost(token=token) if token else None
+    token = overlay.config.get_gitlab_token()
+    return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
+
+
 def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBackend | None:
     """Return the code host matching *issue_url*'s domain, using *overlay*'s tokens.
 
@@ -96,13 +122,41 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     this resolves per-URL — essential when an overlay's tickets span both
     GitHub and GitLab.
     """
-    if "github.com" in issue_url:
-        token = overlay.config.get_github_token()
-        return GitHubCodeHost(token=token) if token else None
-    if "gitlab" in issue_url:
-        token = overlay.config.get_gitlab_token()
-        return GitLabCodeHost(token=token, base_url=overlay.config.gitlab_url) if token else None
-    return get_code_host(overlay)
+    forge = _host_for_origin(issue_url)
+    if not forge:
+        return get_code_host(overlay)
+    return _host_backend(overlay, forge)
+
+
+def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBackend | None:
+    """Return the code host matching *repo_path*'s actual origin remote host.
+
+    The forge is derived from where the repo physically lives — the
+    ``origin`` remote URL — not from token-presence precedence. An overlay
+    carrying both a GitHub and a GitLab PAT must still open the PR on the
+    repo's own forge; resolving by token order picked GitHub for a
+    GitLab-hosted repo and ran ``gh`` against a GitLab remote (#2025).
+
+    Raises :class:`BackendResolutionError` when the origin host is a
+    recognised forge but the overlay has no credentials for it — surfacing
+    the mismatch BEFORE the PR-creation attempt instead of letting a raw
+    ``gh``/``glab`` GraphQL error be the first signal. Falls back to
+    :func:`get_code_host` (the overlay default) only when the repo has no
+    origin remote / an unrecognised host.
+    """
+    remote = git.remote_url(repo=repo_path)
+    forge = _host_for_origin(git.web_base_from_remote(remote)) if remote else ""
+    if not forge:
+        return get_code_host(overlay)
+    backend = _host_backend(overlay, forge)
+    if backend is None:
+        msg = (
+            f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
+            f"overlay has no {forge} credentials configured — cannot open a PR. "
+            f"Configure a {forge} token for this overlay."
+        )
+        raise BackendResolutionError(msg)
+    return backend
 
 
 def get_messaging(overlay: "OverlayBase") -> MessagingBackend:

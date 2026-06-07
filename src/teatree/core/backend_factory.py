@@ -101,6 +101,26 @@ def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
     return get_backend_provider().get_code_host(overlay)
 
 
+def code_host_for_repo_from_overlay(repo_path: str, overlay_name: str | None = None) -> CodeHostBackend | None:
+    """Build the code-host backend for *repo_path*'s actual origin forge.
+
+    Unlike :func:`code_host_from_overlay` (which selects by token-presence
+    precedence), this derives the forge from where the repo physically
+    lives — its ``origin`` remote host — so an overlay carrying both a
+    GitHub and a GitLab PAT opens the PR on the repo's own forge (#2025).
+    Not cached: the result depends on *repo_path*, so two repos under one
+    overlay can resolve to different forges. Raises
+    :class:`teatree.core.backend_protocols.BackendResolutionError` when the
+    repo's forge has no configured credentials.
+    """
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return _code_host_from_toml_overlay(key)
+    return get_backend_provider().get_code_host_for_repo(overlay, repo_path)
+
+
 def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
     """Build a messaging backend using the active overlay's config (cached).
 
@@ -383,6 +403,7 @@ def reset_backend_caches() -> None:
 __all__ = [
     "OverlayBackends",
     "ci_service_from_overlay",
+    "code_host_for_repo_from_overlay",
     "code_host_from_overlay",
     "iter_overlay_backends",
     "messaging_from_overlay",

@@ -47,7 +47,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
@@ -69,7 +69,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=None),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=None),
             patch("teatree.core.runners.ship.git.push"),
         ):
             result = ShipExecutor(ticket).run()
@@ -102,7 +102,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
@@ -130,7 +130,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
         ):
@@ -156,7 +156,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
@@ -179,7 +179,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "")),
         ):
@@ -196,7 +196,7 @@ class TestShipExecutor(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "")),
             patch("teatree.core.runners.ship.git.config_value", return_value="dev"),
@@ -250,7 +250,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
@@ -276,7 +276,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
         ):
@@ -296,7 +296,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
@@ -321,7 +321,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat", "b")),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
@@ -343,7 +343,7 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=True),
         ):
@@ -405,7 +405,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
@@ -443,7 +443,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
         ):
             result = ShipExecutor(ticket).run()
@@ -464,7 +464,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
@@ -532,7 +532,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
@@ -557,7 +557,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
@@ -586,7 +586,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
@@ -606,7 +606,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
@@ -633,7 +633,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
 
         patches = (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
@@ -651,6 +651,84 @@ class TestShipReconcilesWorktreeBranch(TestCase):
         assert second.detail == "https://example.com/pr/1519"
         # No second PR — the recorded url for the reconciled branch is adopted.
         assert host.create_pr.call_count == 1
+
+
+class TestShipResolvesBackendFromRepoHost(TestCase):
+    """#2025: ship resolves the forge from the repo's origin host.
+
+    The ship path resolved the backend via token-presence precedence
+    (GitHub first when both PATs are set), so a GitLab-hosted repo on an
+    overlay carrying both PATs ran ``gh pr create`` against a GitLab
+    remote and failed with ``Could not resolve to a Repository``. The
+    backend must derive from where the repo actually lives.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gitlab_repo(self, tmp_path: Path) -> None:
+        self.repo = tmp_path / "gl-repo"
+        self.repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo)
+        _run_git("config", "user.email", "t@t", cwd=self.repo)
+        _run_git("config", "user.name", "t", cwd=self.repo)
+        _run_git("remote", "add", "origin", "git@gitlab.com:group/repo.git", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
+        _run_git("checkout", "-q", "-b", "547-fix-foo", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
+
+    def _ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/group/repo/-/issues/2025",
+            extra={"branch": "547-fix-foo"},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(self.repo),
+            branch="547-fix-foo",
+            extra={"worktree_path": str(self.repo)},
+        )
+        return ticket
+
+    def test_gitlab_repo_creates_pr_via_gitlab_backend(self) -> None:
+        ticket = self._ticket()
+        overlay = MagicMock()
+        overlay.config.get_github_token.return_value = "gh-tok"
+        overlay.config.get_gitlab_token.return_value = "gl-tok"
+        overlay.config.gitlab_url = "https://gitlab.com"
+        overlay.config.code_host = ""
+
+        calls: list[str] = []
+
+        def record(name: str, url: str):
+            def _create_pr(self: object, spec: object) -> dict[str, str]:
+                calls.append(name)
+                return {"web_url": url}
+
+            return _create_pr
+
+        with (
+            patch("teatree.core.backend_factory.get_overlay", return_value=overlay),
+            patch(
+                "teatree.backends.gitlab.client.GitLabCodeHost.create_pr",
+                autospec=True,
+                side_effect=record("gitlab", "https://gitlab.com/group/repo/-/merge_requests/1"),
+            ),
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.create_pr",
+                autospec=True,
+                side_effect=record("github", "https://github.com/group/repo/pull/1"),
+            ),
+            patch("teatree.backends.gitlab.client.GitLabCodeHost.current_user", autospec=True, return_value="souliane"),
+            patch("teatree.backends.github.client.GitHubCodeHost.current_user", autospec=True, return_value="souliane"),
+            patch("teatree.core.runners.ship.git.push"),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True, result.detail
+        # The PR is created via the GitLab backend — NOT GitHub (the bug:
+        # token precedence picked GitHub and ran gh against a GitLab remote).
+        assert calls == ["gitlab"]
 
 
 class TestSanitizeCloseKeywords:
@@ -771,7 +849,7 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
         # this auto-close test exercises sanitization, not title generation.
         cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
         with (
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
             patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),

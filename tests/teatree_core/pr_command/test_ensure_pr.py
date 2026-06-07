@@ -98,7 +98,7 @@ class TestEnsurePr(TestCase):
         # (GitHub backend was aligned to it; GitLab API native).
         host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/999"}
         host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -147,7 +147,7 @@ class TestEnsurePr(TestCase):
             stdout="",
             stderr="pull request create failed: GraphQL: No commits between main and feat-q (createPullRequest)",
         )
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -184,7 +184,7 @@ class TestEnsurePr(TestCase):
             stdout="",
             stderr="pull request create failed: GraphQL: API rate limit exceeded",
         )
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -253,7 +253,7 @@ class TestCreatePrTitleSourcing(TestCase):
         host = MagicMock()
         host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/1"}
         host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
         return host
 
     def test_title_derives_from_branch_commit_not_default_head(self) -> None:

@@ -15,6 +15,18 @@ from typing import Protocol, TypedDict, runtime_checkable
 from teatree.types import RawAPIDict
 
 
+class BackendResolutionError(Exception):
+    """No code-host backend resolves for a repo's actual origin host.
+
+    Raised by the per-repo host resolver when a repo lives on a forge
+    whose credentials the active overlay has not configured (e.g. a
+    GitLab-hosted repo with no GitLab token). Surfacing this BEFORE the
+    PR-creation attempt replaces the raw ``gh``/``glab`` GraphQL error
+    ("Could not resolve to a Repository") that previously was the first
+    signal of a mismatched forge selection (#2025).
+    """
+
+
 class ApprovalState(TypedDict):
     """Backend-resolved approval snapshot for a single PR/MR (#936).
 
