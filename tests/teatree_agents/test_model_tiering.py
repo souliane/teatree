@@ -61,9 +61,11 @@ def test_config_empty_string_inherits_user_default(tmp_path: Path) -> None:
 
 
 def test_default_mapping_constant_is_conservative() -> None:
-    """The shipped default only downgrades mechanical phases."""
+    """The shipped default pins planning to opus and downgrades mechanical phases."""
     assert DEFAULT_PHASE_MODELS == {
+        "planning": "opus",
         "reviewing": "sonnet",
+        "requesting_review": "sonnet",
         "testing": "sonnet",
         "shipping": "sonnet",
         "retrospecting": "haiku",
@@ -101,6 +103,35 @@ def test_non_table_phase_models_falls_back_to_defaults(tmp_path: Path) -> None:
     cfg = tmp_path / ".teatree.toml"
     _write_toml(cfg, '[agent]\nphase_models = "oops"\n')
     assert resolve_phase_model("retrospecting", config_path=cfg) == "haiku"
+
+
+def test_planning_resolves_to_opus_by_default() -> None:
+    """Planning is a genuine-design phase; the default tier pins it to opus."""
+    assert resolve_phase_model("planning", config_path=Path("/nonexistent.toml")) == "opus"
+
+
+def test_planning_overridable_to_inherit(tmp_path: Path) -> None:
+    """An empty override opts planning out of tiering (inherits user default)."""
+    cfg = tmp_path / ".teatree.toml"
+    _write_toml(cfg, '[agent]\nphase_models.planning = ""\n')
+    assert resolve_phase_model("planning", config_path=cfg) is None
+
+
+def test_planning_overridable_to_sonnet(tmp_path: Path) -> None:
+    """Config can downgrade planning to a cheaper tier if the user wants to."""
+    cfg = tmp_path / ".teatree.toml"
+    _write_toml(cfg, '[agent]\nphase_models.planning = "sonnet"\n')
+    assert resolve_phase_model("planning", config_path=cfg) == "sonnet"
+
+
+def test_requesting_review_resolves_to_sonnet_by_default() -> None:
+    """Requesting-review is a mechanical handoff phase; sonnet suffices."""
+    assert resolve_phase_model("requesting_review", config_path=Path("/nonexistent.toml")) == "sonnet"
+
+
+def test_coding_still_inherits_user_default() -> None:
+    """Coding stays unmapped (None) so the user's full-reasoning default applies."""
+    assert resolve_phase_model("coding", config_path=Path("/nonexistent.toml")) is None
 
 
 def test_default_config_path_used_when_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

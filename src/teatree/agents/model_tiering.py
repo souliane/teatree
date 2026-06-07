@@ -2,9 +2,11 @@
 
 Headless tasks otherwise inherit the user's default Claude model (typically
 Opus). Per the Effective-Tokens formula in #562, Opus costs ~5x Sonnet and
-~20x Haiku per token. Mechanical phases (review, test, ship, retro) do not
-need full reasoning, so this module resolves a cheaper model tier for them
-while leaving judgment phases (coding, debugging) on the user's default.
+~20x Haiku per token. This module pins and downgrades phase model tiers:
+planning is pinned UP to opus as a structural floor (it requires full
+reasoning); mechanical phases (review, test, ship, retro) are downgraded to
+sonnet or haiku; judgment phases (coding, debugging) are left absent so they
+inherit the user's default unchanged.
 
 The mapping is config-driven via ``~/.teatree.toml``::
 
@@ -13,10 +15,8 @@ The mapping is config-driven via ``~/.teatree.toml``::
     phase_models.coding = "sonnet"    # opt a reasoning phase into a cheap tier
     phase_models.testing = ""         # opt out — inherit the user's default
 
-The shipped default (:data:`DEFAULT_PHASE_MODELS`) is conservative: it only
-downgrades phases that are mechanical by nature. Phases absent from the map
-(and reasoning phases) return ``None`` so no ``--model`` flag is added and
-the user's configured default applies unchanged.
+Phases absent from :data:`DEFAULT_PHASE_MODELS` return ``None`` so no
+``--model`` flag is added and the user's configured default applies unchanged.
 """
 
 import tomllib
@@ -24,11 +24,13 @@ from pathlib import Path
 
 from teatree.config import CONFIG_PATH
 
-# Conservative default phase -> model-tier mapping. Only phases that are
-# mechanical by nature are downgraded; coding and debugging are deliberately
-# absent so they keep the user's full-reasoning default model.
+# Default phase -> model-tier mapping. planning is pinned UP to opus as a
+# structural floor; mechanical phases are downgraded to sonnet/haiku; coding
+# and debugging are absent so they keep the user's full-reasoning default.
 DEFAULT_PHASE_MODELS: dict[str, str] = {
+    "planning": "opus",
     "reviewing": "sonnet",
+    "requesting_review": "sonnet",
     "testing": "sonnet",
     "shipping": "sonnet",
     "retrospecting": "haiku",
