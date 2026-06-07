@@ -2,9 +2,12 @@ from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.dream_qa_probe import DreamQaProbe
+from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
@@ -62,11 +65,13 @@ __all__ = [
     "AssessFinding",
     "AssessSweepRun",
     "AutoReviewDispatch",
+    "BindingFeedbackError",
     "BotPing",
     "BroadcastObservation",
     "ClearIssuanceError",
     "ClearRequest",
     "CodexReviewMarker",
+    "ConsolidatedMemory",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",
@@ -77,6 +82,8 @@ __all__ = [
     "DeferredQuestionError",
     "DeliveryClaim",
     "DirtyWorktreeError",
+    "DreamQaProbe",
+    "DreamRunMarker",
     "E2EBypassApproval",
     "E2EBypassApprovalError",
     "E2EBypassAudit",

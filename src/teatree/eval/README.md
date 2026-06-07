@@ -338,6 +338,8 @@ class, where it is pinned, and the originating fix:
 | blocked sub-agent surfaces a structured block, never silently works around; orchestrator escalates, never swallows | `scenarios/blocked_subagent_escalation.yaml` | [#1915](https://github.com/souliane/teatree/issues/1915) |
 | near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `skills/code/evals.yaml` (`comment_density_writes_sparse_code`, co-located) | [#2024](https://github.com/souliane/teatree/issues/2024) |
 | skip the bot's OWN TTS audio attachment on Slack read (transcribe the user's voice note, never the bot's own speech.m4a) | `scenarios/skip_own_tts_audio.yaml` | [#2089](https://github.com/souliane/teatree/issues/2089) |
+| private-repo allowlist path-segment match (security — a public slug containing the org as a substring never downgrades) | `regression_corpus` (allowlist resolver) | [#2084](https://github.com/souliane/teatree/pull/2084) |
+| banned-terms scanner fail-closed on a crashing scanner (security — a dead/timed-out scanner blocks, never ALLOW) | `regression_corpus` (`scan_text` crash path) | [#2079](https://github.com/souliane/teatree/pull/2079) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
