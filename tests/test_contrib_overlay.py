@@ -532,12 +532,13 @@ class TestOverlayDefaults(TestCase):
         assert overlay.get_post_db_steps(worktree) == []
         assert overlay.get_symlinks(worktree) == []
         assert overlay.get_services_config(worktree) == {}
-        # #1540: the default gate is inherited by the teatree overlay — a
-        # conforming title + What/Why body passes with no errors.
-        assert overlay.metadata.validate_pr("feat(ship): add the gate (#1540)", "## What\nx\n\n## Why\ny") == {
-            "errors": [],
-            "warnings": [],
-        }
+        # #1540/#1367: the default gate is inherited by the teatree overlay —
+        # a conforming title, a conventional-commit description first line, and
+        # a What/Why body passes with no errors.
+        assert overlay.metadata.validate_pr(
+            "feat(ship): add the gate (#1540)",
+            "feat(ship): add the gate (#1540)\n\n## What\nx\n\n## Why\ny",
+        ) == {"errors": [], "warnings": []}
         assert overlay.metadata.get_ci_project_path() == ""
         assert overlay.metadata.get_e2e_config() == {}
         assert overlay.metadata.detect_variant() == ""
