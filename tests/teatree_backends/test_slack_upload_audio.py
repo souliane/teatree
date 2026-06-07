@@ -173,6 +173,63 @@ class TestPostAudioDm:
         _backend().post_audio_dm(channel=_SELF_DM, filepath=str(audio_file), text="hi")
         assert complete_payloads[0]["files"] == [{"id": "F1"}]
 
+    @pytest.mark.parametrize("visibility", ["private", "public"])
+    def test_resolves_shared_message_ts_from_file_shares(
+        self,
+        audio_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        visibility: str,
+    ) -> None:
+        complete_body = {
+            "ok": True,
+            "files": [
+                {
+                    "id": "F123",
+                    "shares": {visibility: {_SELF_DM: [{"ts": "1717689600.001900"}]}},
+                }
+            ],
+        }
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            body = {"ok": True, "upload_url": "https://files.slack/u", "file_id": "F123"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            if _API_HOST not in url:
+                return httpx.Response(200, request=httpx.Request("POST", url))
+            return httpx.Response(200, json=complete_body, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        monkeypatch.setattr(httpx, "post", fake_post)
+
+        result = _backend().post_audio_dm(channel=_SELF_DM, filepath=str(audio_file), text="hi")
+        assert result["ts"] == "1717689600.001900"
+
+    def test_no_ts_when_shares_missing_the_channel(
+        self,
+        audio_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        complete_body = {
+            "ok": True,
+            "files": [{"id": "F123", "shares": {"private": {"D_OTHER": [{"ts": "1.0"}]}}}],
+        }
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            body = {"ok": True, "upload_url": "https://files.slack/u", "file_id": "F123"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            if _API_HOST not in url:
+                return httpx.Response(200, request=httpx.Request("POST", url))
+            return httpx.Response(200, json=complete_body, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        monkeypatch.setattr(httpx, "post", fake_post)
+
+        result = _backend().post_audio_dm(channel=_SELF_DM, filepath=str(audio_file), text="hi")
+        assert result.get("ts", "") == ""
+
 
 class TestPostExternal:
     def test_posts_bytes_untokened_and_returns_status(self, monkeypatch: pytest.MonkeyPatch) -> None:

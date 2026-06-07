@@ -129,11 +129,12 @@ class TestOverlayBase(TestCase):
             assert overlay.get_symlinks(worktree) == []
             assert overlay.get_services_config(worktree) == {}
             assert overlay.uses_redis() is False
-            # #1540: the default gate accepts a conforming title + What/Why body.
-            assert overlay.metadata.validate_pr("feat(ship): add the gate (#1540)", "## What\nx\n\n## Why\ny") == {
-                "errors": [],
-                "warnings": [],
-            }
+            # #1540/#1367: default gate accepts a conforming title, a
+            # conventional-commit description first line, and a What/Why body.
+            assert overlay.metadata.validate_pr(
+                "feat(ship): add the gate (#1540)",
+                "feat(ship): add the gate (#1540)\n\n## What\nx\n\n## Why\ny",
+            ) == {"errors": [], "warnings": []}
             assert overlay.metadata.get_skill_metadata() == {}
 
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:

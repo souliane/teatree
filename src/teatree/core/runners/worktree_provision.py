@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 
+from teatree.core import prek_hook
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -43,7 +44,7 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     if not result.success:
         logger.warning("direnv allow failed: %s", result.error)
     if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
-        result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path, check=False)
+        result = prek_hook.install(wt_path)
         if not result.success:
             logger.error("prek install failed: %s", result.error)
             return f"prek install failed: {result.error}"

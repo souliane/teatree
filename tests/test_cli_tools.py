@@ -385,7 +385,7 @@ class TestValidateMrCommand:
             "import sys\n"
             "from teatree.cli import main\n"
             "sys.argv = ['t3', 'tool', 'validate-mr', '--title', 'feat: x (#1)', "
-            "'--description', '## What\\nx\\n\\n## Why\\ny']\n"
+            "'--description', 'feat: x (#1)\\n\\n## What\\nx\\n\\n## Why\\ny']\n"
             "main()\n"
         )
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}

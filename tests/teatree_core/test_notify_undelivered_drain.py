@@ -248,3 +248,38 @@ class TestDrainUndeliveredNotifies(TestCase):
 
         assert total == 2
         assert delivered == 1
+
+    def test_failed_delivery_preserves_prior_attempt_count(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="backend-up-send-fails",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="backend resolves but the send breaks",
+            attempts=3,
+        )
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "channel_not_found"}
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            delivered, total = drain_undelivered_notifies(user_id="U_ME")
+
+        assert (delivered, total) == (0, 1)
+        row = BotPing.objects.get(idempotency_key="backend-up-send-fails")
+        assert row.status == BotPing.Status.FAILED
+        assert row.attempts == 4
+
+    def test_failed_delivery_path_eventually_expires_at_the_cap(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="backend-up-always-fails",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="send keeps breaking",
+        )
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "channel_not_found"}
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            for _ in range(BotPing.MAX_REDELIVERY_ATTEMPTS + 1):
+                drain_undelivered_notifies(user_id="U_ME")
+
+        row = BotPing.objects.get(idempotency_key="backend-up-always-fails")
+        assert row.status == BotPing.Status.EXPIRED
+        assert list(BotPing.recoverable_info()) == []

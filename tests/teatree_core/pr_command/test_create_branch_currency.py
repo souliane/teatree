@@ -212,3 +212,66 @@ class TestPrCreateBranchCurrency(TestCase):
         assert _git(clone, "rev-parse", "HEAD") == pre_sha
         ticket.refresh_from_db()
         assert "branch_currency_post_merge_sha" not in (ticket.extra or {})
+
+
+class TestPrCreateGatesReconcileRenamedBranch(TestCase):
+    """#1587: gates evaluate against the branch that actually exists.
+
+    `workspace ticket <N>` mints `Worktree.branch` as `<N>-ticket`; the agent
+    renames the git branch to the `<N>-fix-...` convention. The pre-push gates
+    read the stale recorded ref, so each gate's `origin/main..<stale>` range
+    query failed and was caught fail-soft — silently skipping its check rather
+    than evaluating the real branch. `pr create` now reconciles the recorded
+    branch to the worktree's actual git branch BEFORE the gates run, so the
+    currency gate evaluates (and its auto-merge lands) instead of skipping.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def _ticket_with_renamed_branch(self) -> tuple[Ticket, Path, str]:
+        clone, _bare, real_branch = _make_stale_feature_worktree(self.tmp_path)
+        # The agent renamed the convention-compliant branch; the DB still
+        # records the `<N>-ticket` ref minted at `workspace ticket` time.
+        renamed = "4242-fix-foo"
+        _git(clone, "branch", "-m", real_branch, renamed)
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.REVIEWED,
+            issue_url="https://github.com/souliane/teatree/issues/4242",
+        )
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        session.visit_phase("retro")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(clone),
+            branch="4242-ticket",
+            extra={"worktree_path": str(clone)},
+        )
+        return ticket, clone, renamed
+
+    def test_currency_gate_evaluates_on_renamed_branch(self) -> None:
+        ticket, clone, renamed = self._ticket_with_renamed_branch()
+        pre_sha = _git(clone, "rev-parse", "HEAD")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
+            patch.object(pr_command, "validate_pr_metadata", return_value=None),
+        ):
+            call_command("pr", "create", str(ticket.id))
+
+        # The currency gate evaluated against the real branch: the auto-merge
+        # landed (HEAD advanced, c.txt reachable, post-merge SHA recorded) —
+        # it did not silently skip on the stale `4242-ticket` ref.
+        post_sha = _git(clone, "rev-parse", "HEAD")
+        assert post_sha != pre_sha
+        assert (clone / "c.txt").exists()
+        ticket.refresh_from_db()
+        assert ticket.extra.get("branch_currency_post_merge_sha") == post_sha
+        # The DB was reconciled to the branch that exists in the worktree.
+        assert ticket.worktrees.get().branch == renamed
