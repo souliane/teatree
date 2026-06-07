@@ -115,3 +115,20 @@ def extract_terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
         is_error = bool(is_error_field) if is_error_field is not None else not subtype.startswith("success")
         return subtype, is_error
     return "aborted", True
+
+
+def extract_cost_usd(events: list[StreamJsonEvent]) -> float:
+    """Return ``total_cost_usd`` from the final ``result`` event, or ``0.0``.
+
+    The ``claude -p --output-format stream-json`` CLI embeds ``total_cost_usd``
+    in the ``result`` event for metered (API-key) invocations. Subscription
+    and offline runs omit the field, so this safely returns ``0.0`` there.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        raw_cost = event.raw.get("total_cost_usd")
+        if isinstance(raw_cost, (int, float)):
+            return float(raw_cost)
+        return 0.0
+    return 0.0
