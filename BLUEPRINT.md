@@ -55,7 +55,7 @@ Package name: `teatree` (double-e). Repo/CLI: `teatree` / `t3`. Python: 3.13+. L
 Top-level layout under `src/teatree/`:
 
 ```
-cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive groups are subpackages (cli/eval/)
+cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive groups are subpackages (cli/eval/ cli/review/)
 core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols + merge/ + gates/ packages
 agents/      # Headless executor runtime (claude -p swap point)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
@@ -275,7 +275,7 @@ Verified-delivery notify wrapper ([#1181](https://github.com/souliane/teatree/is
 
 Review-shape audit (#1206): `t3 review run <MR_URL>` is the read-only entry point reviewer sub-agents call before scanning a diff. It fetches MR metadata, classifies complexity, counts existing-review state (open discussions + draft notes + approvals), and emits a structured JSON summary so every reviewer starts from the same shape rather than improvising. The command never publishes — it stays outside the on-behalf surface. GitHub PR URLs return `unsupported_forge` (exit 2) deterministically until a parallel GitHub backend lands.
 
-Structured-evidence gate (#1280): `t3 review post-comment` and `post-draft-note` refuse a finding whose body matches an "X is missing/wrong/broken/stale" pattern unless an accompanying `FindingEvidence` record (`--evidence-json '{...}'`) carries verified receipts — it passes only when `confidence='verified'` AND at least one verified-path field is non-empty (full schema in code). Implemented in `teatree.cli.review_evidence_gate`; runs alongside the on-behalf (#960), colleague-MR shape (#1114), and TODO-anchor (#1186) sibling gates inside `ReviewService._run_pre_publish_gates`.
+Structured-evidence gate (#1280): `t3 review post-comment` and `post-draft-note` refuse a finding whose body matches an "X is missing/wrong/broken/stale" pattern unless an accompanying `FindingEvidence` record (`--evidence-json '{...}'`) carries verified receipts — it passes only when `confidence='verified'` AND at least one verified-path field is non-empty (full schema in code). Implemented in `teatree.cli.review.evidence_gate`; runs alongside the on-behalf (#960), colleague-MR shape (#1114), and TODO-anchor (#1186) sibling gates inside `ReviewService._run_pre_publish_gates`.
 
 Close-trailer scanner (#1398): `[teatree.publish_gates] ban_close_trailers_on_namespaces` lists fnmatch patterns over `namespace/repo`. When the target PR/MR's repo matches and the body carries a `Closes|Fixes|Resolves` trailer (`part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR (`teatree.core.close_trailer_scanner`). Distinct from the overlay-scoped `forbid_close_keywords` gate (#1012), which refuses the publish; this scanner cleans the body and proceeds.
 

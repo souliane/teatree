@@ -1,4 +1,4 @@
-"""Unit tests for ``teatree.cli.review_approval`` helpers (#1019, #1029).
+"""Unit tests for ``teatree.cli.review.approval`` helpers (#1019, #1029).
 
 The functions are exercised end-to-end in ``test_review_approve_gate.py``
 and ``test_review_approve_already_approved.py``, but the branches around
@@ -10,7 +10,7 @@ to pin directly. Pure stub against the ``GitLabAPI.current_username`` /
 from typing import Any
 from unittest.mock import MagicMock
 
-from teatree.cli.review_approval import identity_has_reviewed, identity_in_approved_by
+from teatree.cli.review.approval import identity_has_reviewed, identity_in_approved_by
 
 
 def _api(*, username: str = "souliane", discussions: Any = None) -> MagicMock:

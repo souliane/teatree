@@ -3,7 +3,7 @@
 When a reviewer posts a finding that asserts something "is missing", "is wrong",
 "is broken", "does not exist", etc. via ``t3 review post-comment`` or
 ``post-draft-note``, the gate refuses the post unless a structured
-:class:`teatree.cli.review_evidence_gate.FindingEvidence` record accompanies the
+:class:`teatree.cli.review.evidence_gate.FindingEvidence` record accompanies the
 call. The evidence record carries the typed receipts a reviewer used to derive
 the claim — file:line on master, ticket dependency refs, helper indirections
 consulted, recent-merge sweep query, and a ``verified|speculative`` confidence
@@ -28,7 +28,7 @@ from typing import Any, cast
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.cli.review_evidence_gate import FindingEvidence, check_finding_evidence, looks_like_evidence_claim
+from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence, looks_like_evidence_claim
 from teatree.config import OnBehalfPostMode
 
 pytestmark = pytest.mark.django_db
@@ -46,7 +46,7 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _disable_other_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disable the colleague-MR shape and TODO-anchor gates so refusals come from the evidence gate only."""
-    from teatree.cli import review as review_mod  # noqa: PLC0415
+    from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
     monkeypatch.setattr(review_mod, "check_review_shape", lambda **_kw: "")
     monkeypatch.setattr(review_mod, "check_todo_anchor", lambda **_kw: "")
@@ -262,24 +262,24 @@ class TestFindingEvidenceSchema:
     def test_missing_function_evidence_shape(self) -> None:
         """Missing-function finding: master_check_paths names file:line of the search."""
         ev = FindingEvidence(
-            master_check_paths=["src/teatree/cli/review.py:42-100"],
+            master_check_paths=["src/teatree/cli/review/service.py:42-100"],
             ticket_dep_refs=[],
             helper_indirection_paths=[],
             recent_merge_sweep_query="",
             confidence="verified",
         )
-        assert "src/teatree/cli/review.py:42-100" in ev.master_check_paths
+        assert "src/teatree/cli/review/service.py:42-100" in ev.master_check_paths
 
     def test_wrong_api_signature_evidence_shape(self) -> None:
         """Wrong-API-signature finding: helper_indirection_paths shows where the canonical signature lives."""
         ev = FindingEvidence(
             master_check_paths=["src/teatree/backends/gitlab/api.py:200"],
             ticket_dep_refs=[],
-            helper_indirection_paths=["src/teatree/cli/review_diff.py"],
+            helper_indirection_paths=["src/teatree/cli/review/diff.py"],
             recent_merge_sweep_query="",
             confidence="verified",
         )
-        assert ev.helper_indirection_paths == ["src/teatree/cli/review_diff.py"]
+        assert ev.helper_indirection_paths == ["src/teatree/cli/review/diff.py"]
 
     def test_stale_doc_evidence_shape(self) -> None:
         """Stale-doc finding: ticket_dep_refs cites the ticket that landed the change."""

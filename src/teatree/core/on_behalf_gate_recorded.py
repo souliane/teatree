@@ -67,7 +67,7 @@ deliberately avoided).
 
 The ORM-model imports (``OnBehalfApproval`` / ``OnBehalfAudit``) live
 inside the functions rather than at module top because
-``teatree.cli.review_on_behalf`` imports this module lazily so the
+``teatree.cli.review.on_behalf`` imports this module lazily so the
 ``teatree.cli`` package can be loaded before ``django.setup()`` runs (typer
 command discovery, ``--help`` rendering, the privacy-scan subprocess). An
 eager ORM import here would defeat the lazy chain and crash the CLI with

@@ -16,7 +16,7 @@ These tests pin the contract of the canonical
     duplicate), so both DM-channel call sites agree on one channel id.
 """
 
-from teatree.cli import review_live_approval
+from teatree.cli.review import live_approval
 from teatree.core import notify
 from teatree.core.notify import resolve_user_channel
 
@@ -85,9 +85,9 @@ class TestLiveApprovalCliUsesCanonicalResolver:
     """The live-post-approval CLI resolves its DM channel through the canonical helper."""
 
     def test_no_private_duplicate_resolver(self) -> None:
-        # The duplicate ``_user_channel`` in review_live_approval is gone:
+        # The duplicate ``_user_channel`` in review.live_approval is gone:
         # callers point at the single notify.resolve_user_channel.
-        assert not hasattr(review_live_approval, "_user_channel")
+        assert not hasattr(live_approval, "_user_channel")
 
     def test_cli_channel_lookup_delegates_to_notify(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setenv("T3_OVERLAY_NAME", "acme")

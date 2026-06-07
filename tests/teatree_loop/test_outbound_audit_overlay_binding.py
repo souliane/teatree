@@ -230,7 +230,7 @@ class RecordClaimStampsOverlayTests(TestCase):
         assert row.extra["overlay"] == "explicit-overlay"
 
     def test_record_note_claim_stamps_overlay(self) -> None:
-        from teatree.cli.review_audit import record_note_claim  # noqa: PLC0415
+        from teatree.cli.review.audit import record_note_claim  # noqa: PLC0415
 
         with patch.dict(os.environ, {"T3_OVERLAY_NAME": "gitlab-overlay"}, clear=False):
             record_note_claim(

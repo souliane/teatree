@@ -1,7 +1,7 @@
 """``t3 review`` on-behalf-gated subcommands bootstrap Django before touching the ORM (#1003).
 
 Every `t3 review` subcommand that publishes under the user's identity goes through
-:func:`teatree.cli.review_on_behalf.check_on_behalf` to enforce the recorded-approval
+:func:`teatree.cli.review.on_behalf.check_on_behalf` to enforce the recorded-approval
 on-behalf pre-gate (#960). That helper imports
 :mod:`teatree.core.on_behalf_gate_recorded` lazily so the CLI package can be
 imported by typer (for help rendering, completion, or a privacy-scan subprocess)
@@ -48,7 +48,7 @@ def _clean_env() -> dict[str, str]:
 
 
 class TestOnBehalfGateRecordedIsImportSafePreBootstrap:
-    """The lazy-import contract documented in ``cli/review_on_behalf.py``.
+    """The lazy-import contract documented in ``cli/review/on_behalf.py``.
 
     A child interpreter imports :mod:`teatree.core.on_behalf_gate_recorded`
     with ``DJANGO_SETTINGS_MODULE`` unset and asserts the ORM modules were

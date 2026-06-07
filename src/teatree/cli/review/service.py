@@ -27,23 +27,23 @@ from http import HTTPStatus
 
 import typer
 
-from teatree.cli.review_approval import identity_has_reviewed
-from teatree.cli.review_diff import find_added_line, resolve_inline_position
-from teatree.cli.review_drafts import register as _register_drafts
-from teatree.cli.review_evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active, publish_on_behalf
-from teatree.cli.review_on_behalf import register as _register_on_behalf
-from teatree.cli.review_shape_gate import check_review_shape
-from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor
+from teatree.cli.review.approval import identity_has_reviewed
+from teatree.cli.review.diff import find_added_line, resolve_inline_position
+from teatree.cli.review.drafts import register as _register_drafts
+from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
+from teatree.cli.review.on_behalf import check_on_behalf, on_behalf_gate_active, publish_on_behalf
+from teatree.cli.review.on_behalf import register as _register_on_behalf
+from teatree.cli.review.shape_gate import check_review_shape
+from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
-# after extraction to :mod:`teatree.cli.review_diff` /
-# :mod:`teatree.cli.review_on_behalf` for module-health LOC reasons.
+# after extraction to :mod:`teatree.cli.review.diff` /
+# :mod:`teatree.cli.review.on_behalf` for module-health LOC reasons.
 # ``resolve_inline_position`` is re-exported here so the existing
 # ``monkeypatch.setattr(review_mod, "resolve_inline_position", …)`` test
 # pattern keeps working after the impl bodies moved to
-# :mod:`teatree.cli.review_post_impl` (#1280).
+# :mod:`teatree.cli.review.post_impl` (#1280).
 _find_added_line = find_added_line
 _on_behalf_gate_active = on_behalf_gate_active
 _resolve_inline_position = resolve_inline_position
@@ -120,7 +120,7 @@ class ReviewService:
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review_post_impl import post_draft_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_draft_note_impl  # noqa: PLC0415
 
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
@@ -217,7 +217,7 @@ class ReviewService:
 
     def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
-        from teatree.cli.review_post_impl import post_comment_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import post_comment_impl  # noqa: PLC0415
 
         return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
@@ -242,14 +242,14 @@ class ReviewService:
         Also gated by the structured-evidence pre-publish gate (#1280):
         when ``note`` matches an "X is missing/wrong/broken" pattern, the
         ``evidence`` kwarg must carry a verified
-        :class:`~teatree.cli.review_evidence_gate.FindingEvidence` record.
+        :class:`~teatree.cli.review.evidence_gate.FindingEvidence` record.
 
         ``allow_long_review`` / ``allow_todo_blocker`` are the #126
         documented per-call escapes for the colleague-MR shape and the
         TODO-anchor gates respectively.
         """
-        from teatree.cli.review_authorize import resolve_live_authorization  # noqa: PLC0415
-        from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
+        from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
+        from teatree.cli.review.default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
         if not live:
             msg, code = self.post_draft_note(
@@ -312,7 +312,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "publish_draft_notes")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import publish_draft_notes_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
         return self._publish_or_blocked(
@@ -329,7 +329,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "reply_to_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import reply_to_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import reply_to_discussion_impl  # noqa: PLC0415
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -355,7 +355,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "resolve_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import resolve_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
         return self._publish_or_blocked(
@@ -378,7 +378,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "update_note")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import update_note_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import update_note_impl  # noqa: PLC0415
 
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
@@ -408,7 +408,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "delete_discussion")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import delete_discussion_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
         return self._publish_or_blocked(
@@ -465,7 +465,7 @@ class ReviewService:
                 "`post-draft-note`) first, then approve."
             )
             return msg, 1
-        from teatree.cli.review_post_impl import approve_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415
 
         return self._publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
@@ -484,7 +484,7 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "unapprove")
         if blocked:
             return blocked, 1
-        from teatree.cli.review_post_impl import unapprove_impl  # noqa: PLC0415
+        from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
         return self._publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
@@ -492,13 +492,13 @@ class ReviewService:
 
 # Register sibling-module typer commands. Kept out of this file so the
 # OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
-# satisfied — see `teatree.cli.review_on_behalf`,
-# `teatree.cli.review_drafts`, `teatree.cli.review_live_approval`, and
-# `teatree.cli.review_commands`.
-from teatree.cli import review_commands as _review_commands  # noqa: E402 — registration side-effect
-from teatree.cli.review_authorize import register as _register_authorize  # noqa: E402 — late, after typer app
-from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
-from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
+# satisfied — see `teatree.cli.review.on_behalf`,
+# `teatree.cli.review.drafts`, `teatree.cli.review.live_approval`, and
+# `teatree.cli.review.commands`.
+from teatree.cli.review import commands as _review_commands  # noqa: E402 — registration side-effect
+from teatree.cli.review.authorize import register as _register_authorize  # noqa: E402 — late, after typer app
+from teatree.cli.review.commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
+from teatree.cli.review.live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
 from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402
 
 _register_on_behalf(review_app)

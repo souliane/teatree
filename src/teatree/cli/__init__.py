@@ -55,8 +55,7 @@ from teatree.cli.mutation import mutation_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.recover import recover_app
-from teatree.cli.review import review_app
-from teatree.cli.review_request import review_request_app
+from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_listen import slack_app
 from teatree.cli.task_alias import task_app
