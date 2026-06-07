@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 from teatree.config import load_config
+from teatree.core import prek_hook
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
@@ -437,6 +438,7 @@ def _remove_git_worktree(
         errors.append(f"git worktree remove failed for {wt_path}")
     if not git.branch_delete(str(repo_main), worktree.branch):
         errors.append(f"git branch -D failed for {worktree.branch}")
+    prek_hook.remove_stale_hooks(str(repo_main), wt_path)
     return errors
 
 
