@@ -343,6 +343,20 @@ test_lines = 117490
 source_lines = 64500
 tolerance = 0.05
 
+# Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path
+# as ``tests/teatree_<pkg>/...`` — read by ``t3 tool test-path-mirror`` (see
+# ``src/teatree/quality/test_path_mirror.py``). ``mode = "block"`` makes the CI
+# job a gate; the verdict is a ratchet over ``baseline`` (the committed count of
+# files that predate the convention): a run is RED only when the live mis-pathed
+# count EXCEEDS the baseline, so a new mis-pathed file fails CI while the
+# documented floor never does. The baseline ratchets toward 0 as the relocation
+# sweep proceeds — shrink it with ``t3 tool test-path-mirror --update-baseline``;
+# raising it needs ``--allow-regression`` so the floor cannot silently loosen.
+
+[tool.teatree.test_path_mirror]
+mode = "block"
+baseline = 226
+
 # Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
 # ``src/teatree/quality/mutation.py``). Mutation testing is expensive and
 # OpenClaw (a 1.4M-LOC AI-native codebase) uses none, so teatree applies it
