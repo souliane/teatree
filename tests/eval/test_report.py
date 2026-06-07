@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, evaluate, render_json, render_text
+from teatree.eval.report import (
+    JudgeOutcome,
+    MatcherResult,
+    ScenarioResult,
+    evaluate,
+    render_html,
+    render_json,
+    render_text,
+)
 
 _TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="pytest")
 _BG_BASH_BRANCH = Matcher(kind="positive", tool="Bash", arg_path="run_in_background", operator="~", value="(?i)true")
@@ -268,6 +276,116 @@ class TestRenderJson:
         assert len(matcher["alternatives"]) == 2
         assert matcher["alternatives"][1]["arg_path"] == "run_in_background"
         assert matcher["passed"] is False
+
+
+class TestRenderHtml:
+    def test_emits_self_contained_document_with_inline_style(self) -> None:
+        spec = _spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+        )
+        html = render_html([result])
+        assert html.lstrip().lower().startswith("<!doctype html>")
+        assert "<style>" in html
+        assert 'src="http' not in html
+        assert 'href="http' not in html
+        assert "scenario_one" in html
+
+    def test_renders_summary_counts(self) -> None:
+        spec = _spec()
+        passing = ScenarioResult(
+            spec=spec,
+            run=_run(tool_calls=(EvalToolCall(name="Bash", input={"command": "ls"}, turn=1),)),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+        )
+        failing = ScenarioResult(
+            spec=_spec(name="scenario_two"),
+            run=_run(spec_name="scenario_two"),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=False, message="missed"),),
+            skipped=False,
+        )
+        html = render_html([passing, failing])
+        assert "1 passed" in html
+        assert "1 failed" in html
+
+    def test_escapes_scenario_name_against_injection(self) -> None:
+        spec = _spec(name="<script>alert(1)</script>")
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(spec_name="<script>alert(1)</script>"),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+        )
+        html = render_html([result])
+        assert "<script>alert(1)</script>" not in html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+    def test_escapes_matcher_message_and_terminal_reason(self) -> None:
+        spec = _spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(terminal_reason="boom <b>&"),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=False, message="missed <tag> & more"),),
+            skipped=False,
+        )
+        html = render_html([result])
+        assert "missed <tag> & more" not in html
+        assert "missed &lt;tag&gt; &amp; more" in html
+        assert "boom &lt;b&gt;&amp;" in html
+
+    def test_renders_skip_row(self) -> None:
+        spec = _spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(terminal_reason="skipped: claude not on PATH"),
+            matcher_results=(),
+            skipped=True,
+        )
+        html = render_html([result])
+        assert "1 skipped" in html
+        assert "skipped: claude not on PATH" in html
+
+    def test_renders_run_error_and_escaped_stderr(self) -> None:
+        spec = _spec(matchers=())
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(terminal_reason="error_max_turns", is_error=True, raw_stderr="boom <fatal> & out"),
+            matcher_results=(),
+            skipped=False,
+        )
+        html = render_html([result])
+        assert "run errored:" in html
+        assert "error_max_turns" in html
+        assert "boom <fatal> & out" not in html
+        assert "boom &lt;fatal&gt; &amp; out" in html
+
+    def test_renders_run_error_without_stderr(self) -> None:
+        spec = _spec(matchers=())
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(terminal_reason="error_max_turns", is_error=True, raw_stderr=""),
+            matcher_results=(),
+            skipped=False,
+        )
+        html = render_html([result])
+        assert "run errored:" in html
+        assert "<pre>" not in html
+
+    def test_renders_judge_rationale_escaped(self) -> None:
+        spec = dataclasses.replace(_spec(), judge=JudgeSpec(rubric="faithful"))
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+            judge=JudgeOutcome(passed=False, skipped=False, rationale="omitted the <migration> & step"),
+        )
+        html = render_html([result])
+        assert "omitted the &lt;migration&gt; &amp; step" in html
 
 
 def _judged_spec() -> EvalSpec:
