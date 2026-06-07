@@ -1,9 +1,9 @@
-"""Trigger-QA: deterministic skill-activation eval.
+"""skill-triggers: deterministic skill-activation eval (``t3 eval skill-triggers``).
 
 A behavioral eval (``scenarios/*.yaml``) checks what an agent *does* once a
-skill is loaded. Trigger-QA checks the step before that: does the skill's
-declared ``triggers.keywords`` frontmatter actually *fire* on the prompts the
-skill claims to handle, and stay *quiet* on unrelated control prompts?
+skill is loaded. The skill-triggers lane checks the step before that: does the
+skill's declared ``triggers.keywords`` frontmatter actually *fire* on the prompts
+the skill claims to handle, and stay *quiet* on unrelated control prompts?
 
 This is a Layer-1 (code-enforceable) eval per ``README.md`` — it runs for free
 in CI, no ``claude -p`` invocation. Each skill's frontmatter is the source of
@@ -23,7 +23,7 @@ from teatree.trigger_parser import parse_triggers
 
 CORPUS_PATH = Path(__file__).parent / "trigger_qa_corpus.yaml"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
-# module's path so trigger-QA stays a leaf of the eval package (it must not
+# module's path so the skill-triggers lane stays a leaf of the eval package (it must not
 # reach up into ``teatree.skill_support.loading``, a higher-level module — the same
 # backwards-edge rule this eval's sibling scenario gates).
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"

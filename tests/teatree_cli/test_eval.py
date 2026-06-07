@@ -414,23 +414,23 @@ class TestEvalRequireExecuted:
         assert result.exit_code == 0, result.output
 
 
-class TestEvalTriggerQA:
+class TestEvalSkillTriggers:
     def test_shipped_corpus_passes(self) -> None:
-        result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+        result = CliRunner().invoke(app, ["eval", "skill-triggers"])
         assert result.exit_code == 0, result.output
         assert "0 failed" in result.output
 
     def test_reports_failure_and_exits_nonzero(self) -> None:
         bad = TriggerQAReport(checks=(TriggerCheck("debug", "no scope here", should_fire=True, fired=False),))
         with patch("teatree.cli.eval.app.run_trigger_qa", return_value=bad):
-            result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+            result = CliRunner().invoke(app, ["eval", "skill-triggers"])
         assert result.exit_code == 1
         assert "under-trigger" in result.output
 
     def test_json_format_emits_checks(self) -> None:
         good = TriggerQAReport(checks=(TriggerCheck("debug", "the build is broken", should_fire=True, fired=True),))
         with patch("teatree.cli.eval.app.run_trigger_qa", return_value=good):
-            result = CliRunner().invoke(app, ["eval", "trigger-qa", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "skill-triggers", "--format", "json"])
         assert result.exit_code == 0
         output = result.output
         payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
@@ -440,9 +440,13 @@ class TestEvalTriggerQA:
     def test_over_trigger_message_for_unexpected_fire(self) -> None:
         bad = TriggerQAReport(checks=(TriggerCheck("debug", "open a PR", should_fire=False, fired=True),))
         with patch("teatree.cli.eval.app.run_trigger_qa", return_value=bad):
-            result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+            result = CliRunner().invoke(app, ["eval", "skill-triggers"])
         assert result.exit_code == 1
         assert "over-trigger" in result.output
+
+    def test_old_trigger_qa_command_is_gone(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+        assert result.exit_code != 0, result.output
 
 
 class _PassRunner:
@@ -774,14 +778,22 @@ class TestEvalAll:
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
-        assert "trigger-qa" in result.output
-        assert "regression" in result.output
+        assert "skill-triggers" in result.output
+        assert "pinned-regressions" in result.output
 
     def test_table_lists_all_lanes_including_coverage(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
-        for lane in ("trigger-qa", "skill-coverage", "regression", "negative-control", "transcript-replay", "ai-eval"):
+        lanes = (
+            "skill-triggers",
+            "skill-coverage",
+            "pinned-regressions",
+            "negative-control",
+            "transcript-replay",
+            "ai-eval",
+        )
+        for lane in lanes:
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
 
     def test_coverage_gap_is_warn_first_exit_zero(self, tmp_path: Path) -> None:
@@ -794,7 +806,7 @@ class TestEvalAll:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
-        for lane in ("trigger-qa", "skill-coverage", "regression", "negative-control", "transcript-replay"):
+        for lane in ("skill-triggers", "skill-coverage", "pinned-regressions", "negative-control", "transcript-replay"):
             assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
         assert "ai-eval" not in result.output, result.output
 
@@ -903,7 +915,7 @@ class TestEvalAll:
         assert "unknown eval backend" in result.output
 
 
-class TestEvalRegression:
+class TestEvalPinnedRegressions:
     def test_passing_corpus_renders_pass_and_exits_zero(self) -> None:
         check = RegressionCheck(
             failure_class="synthetic",
@@ -913,7 +925,7 @@ class TestEvalRegression:
         )
         good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
         with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
-            result = CliRunner().invoke(app, ["eval", "regression"])
+            result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
         assert result.exit_code == 0, result.output
         assert "0 failed" in result.output
         assert "PASS synthetic" in result.output
@@ -928,7 +940,7 @@ class TestEvalRegression:
         result_row = CheckResult(check=check, ok=False, skipped=False, detail="invariant violated")
         bad = RegressionReport(results=(result_row,))
         with patch("teatree.cli.eval.app.run_regression_corpus", return_value=bad):
-            result = CliRunner().invoke(app, ["eval", "regression"])
+            result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
         assert result.exit_code == 1
         assert "FAIL synthetic" in result.output
 
@@ -941,13 +953,17 @@ class TestEvalRegression:
         )
         good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
         with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
-            result = CliRunner().invoke(app, ["eval", "regression", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "pinned-regressions", "--format", "json"])
         assert result.exit_code == 0
         output = result.output
         payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
         assert payload["ok"] is True
         assert payload["checks"][0]["failure_class"] == "synthetic"
         assert payload["checks"][0]["origin"].startswith("https://")
+
+    def test_old_regression_command_is_gone(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "regression"])
+        assert result.exit_code != 0, result.output
 
 
 class TestEvalNegativeControl:
