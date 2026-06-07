@@ -41,13 +41,13 @@
 #
 # JOB GROUPS (in order of appearance below)
 #   1. Lane routing          — preflight
-#   2. Fast static checks    — lint, blueprint-cross-pr, blueprint-size-cross-pr
+#   2. Fast static checks    — lint, blueprint-cross-pr, blueprint-size-budget
 #   3. Docs integrity        — doc-update-gate, comment-density-warning,
 #                              docs-drift
 #   4. Signal & ratchet      — semgrep-regressions (advisory), test-shape
 #                              (advisory), test-path-mirror (ratchet gate)
 #   5. Test suite            — test, test-shim
-#   6. Architecture / quality fitness gates — mutation-diff, mutation-weekly,
+#   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree
 #   7. Security & supply chain — uv-audit, sbom
 #   8. Metered / scheduled   — eval-weekly
@@ -188,7 +188,7 @@ jobs:
   # GATE (PR-only): fails when this PR alone grows BLUEPRINT.md past its
   # per-PR byte-delta allowance; concurrent growth on main cannot red an
   # innocent PR (race-free delta comparison vs the merge-base).
-  blueprint-size-cross-pr:
+  blueprint-size-budget:
     # Delta-based, race-free BLUEPRINT size gate (souliane/teatree#2040). The
     # gate fails only when the PR's OWN diff grows the corpus past the per-PR
     # allowance vs the merge-base — concurrent main growth between branch-point
@@ -517,7 +517,7 @@ jobs:
 
   # GATE (weekly cadence, PR-only): full-registry mutation run on the first PR
   # of each ISO week; a no-op (skipped) on every subsequent PR that week.
-  mutation-weekly:
+  mutation-full:
     # Weekly full-scope mutation run over the whole registry (not just the
     # diff). Like the eval suite, it is metered (slow), so it runs once a week
     # on the FIRST PR opened that ISO week — ``scripts/eval/first_pr_of_week.py``
