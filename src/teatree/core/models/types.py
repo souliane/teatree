@@ -97,6 +97,13 @@ class TicketExtra(TypedDict, total=False):
     # chokepoints skip the auto-planner / duplicate review-arm a directly-
     # implementing external owner never consumes (see ``ExternalDeliveryLease``).
     external_delivery: "ExternalDeliveryLease"
+    # Lightweight audited plan-gate carve-out: a per-ticket marker that this is a
+    # trivial mechanical edit whose planning phase is skipped. Stamped via
+    # ``trivial_plan_skip.mark_trivial_plan_skip`` with a MANDATORY reason; read
+    # by ``check_plan_artifact`` (lets STARTED→PLANNED advance with no
+    # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
+    # ``TrivialPlanSkip``.
+    trivial_plan_skip: "TrivialPlanSkip"
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -184,6 +191,28 @@ class ExternalDeliveryLease(TypedDict, total=False):
 
     at: str
     expires_at: str
+
+
+class TrivialPlanSkip(TypedDict, total=False):
+    """Audited marker that a trivial AUTHOR ticket's planning phase is skipped.
+
+    Stamped by ``trivial_plan_skip.mark_trivial_plan_skip`` — the lightweight
+    sibling of the heavyweight ``plan-bypass`` path — when the operator records
+    that a ticket is a trivial mechanical edit (a typo, a one-line constant bump)
+    not worth a full planning phase. ``reason`` is mandatory: an unreasoned skip
+    is refused before any row is written, so the carve-out is always auditable.
+
+    The marker is read at the two seams the external-delivery predicate also
+    uses: ``check_plan_artifact`` accepts it as a satisfying signal (the ticket
+    advances STARTED→PLANNED with no ``PlanArtifact`` and no ``--human-authorize``),
+    and ``execute_provision`` skips ``schedule_planning`` so the auto-planner is
+    never scheduled. ``by`` and ``at`` are the audit trail (who recorded the skip
+    and when, a UTC ISO timestamp).
+    """
+
+    reason: str
+    by: str
+    at: str
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):

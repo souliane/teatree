@@ -11,6 +11,14 @@ from django_typer.management import TyperCommand, command, group
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
+from teatree.core.management.commands._plan_gate_commands import (
+    PlanAdvanceError,
+    PlanReconcileResult,
+    PlanResult,
+    reconcile_inflight,
+    record_artifact_and_advance,
+    record_trivial_skip_and_advance,
+)
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
@@ -78,19 +86,6 @@ class E2EBypassResult(TypedDict, total=False):
     ticket_id: int
     head_sha: str
     approver: str
-
-
-class PlanResult(TypedDict, total=False):
-    ticket_id: int
-    artifact_id: int
-    state: str
-    error: str
-
-
-class PlanReconcileResult(TypedDict, total=False):
-    inspected: int
-    bypassed: int
-    skipped: int
 
 
 class ReattributeResult(TypedDict, total=False):
@@ -242,14 +237,12 @@ class Command(TyperCommand):
         """Record a PlanArtifact and advance the ticket STARTED → PLANNED.
 
         The operator-facing plan recorder named by the ``NoPlanArtifactError``
-        message: a planning task that finished its work out-of-band, or a
-        ticket the planner never ran on, can be advanced by recording the plan
-        here. A blank ``plan_text`` is refused — a vacuous artifact cannot
-        advance the FSM. For an *audited bypass* (no real plan, explicit human
-        sign-off) use ``plan-bypass`` instead.
+        message: a planning task that finished out-of-band, or a ticket the
+        planner never ran on, advances by recording the plan here. A blank
+        ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. For
+        an *audited bypass* (no real plan, explicit human sign-off) use
+        ``plan-bypass``; for a trivial mechanical edit use ``skip-planning``.
         """
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         cleaned_text = plan_text.strip()
         if not cleaned_text:
             self.stderr.write("  refused: plan_text is required (a vacuous plan cannot advance the FSM)")
@@ -257,16 +250,11 @@ class Command(TyperCommand):
 
         ticket = self._resolve_ticket(ticket_id)
         try:
-            with transaction.atomic():
-                artifact = PlanArtifact.record(
-                    ticket=ticket,
-                    plan_text=cleaned_text,
-                    recorded_by=recorded_by.strip() or "operator",
-                )
-                ticket.plan()
-                ticket.save()
-        except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=str(exc))
+            artifact = record_artifact_and_advance(
+                ticket=ticket, plan_text=cleaned_text, recorded_by=recorded_by.strip() or "operator"
+            )
+        except PlanAdvanceError as exc:
+            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
 
         self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
@@ -340,8 +328,6 @@ class Command(TyperCommand):
         not allowed. Records a PlanArtifact with bypass_reason set, then
         drives ticket.plan() → STARTED→PLANNED.
         """
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         cleaned_reason = reason.strip()
         cleaned_authorizer = human_authorize.strip()
         if not cleaned_authorizer:
@@ -353,22 +339,58 @@ class Command(TyperCommand):
 
         ticket = self._resolve_ticket(ticket_id)
         try:
-            with transaction.atomic():
-                artifact = PlanArtifact.record(
-                    ticket=ticket,
-                    plan_text=f"[audited bypass by {cleaned_authorizer}] {cleaned_reason}",
-                    recorded_by=cleaned_authorizer,
-                )
-                ticket.plan()
-                ticket.save()
-        except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=str(exc))
+            artifact = record_artifact_and_advance(
+                ticket=ticket,
+                plan_text=f"[audited bypass by {cleaned_authorizer}] {cleaned_reason}",
+                recorded_by=cleaned_authorizer,
+            )
+        except PlanAdvanceError as exc:
+            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
 
         self.stdout.write(
             f"  plan bypass recorded for ticket {ticket.pk} "
             f"(artifact {artifact.pk}, authorizer={cleaned_authorizer}); state → {ticket.state}"
         )
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="skip-planning")
+    def skip_planning(
+        self,
+        ticket_id: int,
+        *,
+        reason: Annotated[
+            str,
+            typer.Option(help="Why this ticket is a trivial mechanical edit that may skip planning (required)."),
+        ],
+        by: Annotated[
+            str,
+            typer.Option(help="Who recorded the skip (audit trail)."),
+        ] = "operator",
+    ) -> PlanResult:
+        """Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
+
+        The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
+        mechanical edit (a typo, a one-line bump): records a durable
+        ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
+        that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
+        skip the auto-planner. ``--reason`` is mandatory — an unreasoned skip is
+        refused and records nothing. See ``models.trivial_plan_skip``.
+        """
+        cleaned_reason = reason.strip()
+        if not cleaned_reason:
+            self.stderr.write("  refused: --reason is required (an unreasoned plan skip is not allowed)")
+            raise SystemExit(1)
+
+        ticket = self._resolve_ticket(ticket_id)
+        try:
+            record_trivial_skip_and_advance(ticket=ticket, reason=cleaned_reason, by=by.strip() or "operator")
+        except PlanAdvanceError as exc:
+            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
+
+        self.stdout.write(
+            f"  trivial plan skip recorded for ticket {ticket.pk} (reason={cleaned_reason!r}); state → {ticket.state}"
+        )
+        return PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
 
     @command(name="plan-reconcile-inflight")
     def plan_reconcile_inflight(
@@ -391,46 +413,19 @@ class Command(TyperCommand):
     ) -> PlanReconcileResult:
         """Retroactively advance STARTED tickets to PLANNED after the gate was added.
 
-        Enumerates every STARTED ticket and records an audited PlanArtifact
-        bypass for each, then drives plan(). Requires --human-authorize.
-        Intended as a one-time operator command; a data migration would fabricate
-        an authorizer it cannot legitimately name.
-
-        Use --dry-run to inspect which tickets would be affected.
+        One-time operator command (a data migration would fabricate an authorizer
+        it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires
+        --human-authorize; --dry-run inspects which tickets would be affected.
         """
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         cleaned_authorizer = human_authorize.strip()
         if not cleaned_authorizer:
             self.stderr.write("  refused: --human-authorize is required")
             raise SystemExit(1)
 
-        started_tickets = list(Ticket.objects.filter(state=Ticket.State.STARTED))
-        self.stdout.write(f"  found {len(started_tickets)} STARTED ticket(s)")
-        bypassed = 0
-        skipped = 0
-        for ticket in started_tickets:
-            bypass_reason = "retroactive — PLANNED state added mid-flight" + (f" ({issue_ref})" if issue_ref else "")
-            if dry_run:
-                self.stdout.write(f"  [dry-run] would bypass ticket {ticket.pk}: {bypass_reason}")
-                skipped += 1
-                continue
-            try:
-                with transaction.atomic():
-                    PlanArtifact.record(
-                        ticket=ticket,
-                        plan_text=f"[audited bypass by {cleaned_authorizer}] {bypass_reason}",
-                        recorded_by=cleaned_authorizer,
-                    )
-                    ticket.plan()
-                    ticket.save()
-                self.stdout.write(f"  ticket {ticket.pk}: STARTED → PLANNED (bypass recorded)")
-                bypassed += 1
-            except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
-                self.stderr.write(f"  ticket {ticket.pk}: skipped — {exc}")
-                skipped += 1
-
-        return PlanReconcileResult(inspected=len(started_tickets), bypassed=bypassed, skipped=skipped)
+        result, log = reconcile_inflight(authorizer=cleaned_authorizer, issue_ref=issue_ref, dry_run=dry_run)
+        for line in log:
+            self.stdout.write(line)
+        return result
 
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).
