@@ -341,6 +341,27 @@ jobs:
       - name: Test-shape report
         run: uv run t3 tool test-shape --root .
 
+  test-path-mirror:
+    # Forward-guard: every test file mirrors its src/teatree/<pkg>/... module
+    # path as tests/teatree_<pkg>/... ([tool.teatree.test_path_mirror]). The
+    # verdict is a baseline ratchet — RED only when the live mis-pathed count
+    # EXCEEDS the committed baseline, so a NEW mis-pathed file fails CI while the
+    # documented floor (files predating the convention) never does. The baseline
+    # ratchets toward 0 as the relocation sweep proceeds. Never a PreToolUse
+    # gate; it can never lock the agent's tools.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Test-path-mirror ratchet
+        run: uv run t3 tool test-path-mirror --root .
+
   banned-terms-tree:
     # Full-tree banned-brand backstop (souliane/teatree#1570). The
     # diff/payload banned-terms gate only ever sees a *change*; a brand
