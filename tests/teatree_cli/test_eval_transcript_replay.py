@@ -7,6 +7,7 @@ from teatree.claude_sessions import SessionInfo
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all, resolve_transcript
 
 _MODULE = "teatree.cli.eval.transcript_replay"
+_RESOLVER = "teatree.eval.transcript_resolver"
 
 
 def _session(session_id: str) -> SessionInfo:
@@ -31,7 +32,7 @@ class TestResolveTranscript:
         assert resolve_transcript(latest=True, session=None, file=tmp_path / "absent.jsonl") is None
 
     def test_no_latest_and_no_session_resolves_to_none(self) -> None:
-        with patch(f"{_MODULE}.list_sessions", return_value=[_session("s1")]):
+        with patch(f"{_RESOLVER}.list_sessions", return_value=[_session("s1")]):
             assert resolve_transcript(latest=False, session=None, file=None) is None
 
     def test_session_match_resolves_to_its_jsonl(self, tmp_path: Path) -> None:
@@ -40,7 +41,7 @@ class TestResolveTranscript:
         target = project / "s1.jsonl"
         target.write_text("{}", encoding="utf-8")
         with (
-            patch(f"{_MODULE}.list_sessions", return_value=[_session("s1")]),
+            patch(f"{_RESOLVER}.list_sessions", return_value=[_session("s1")]),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert resolve_transcript(latest=False, session="s1", file=None) == target
@@ -51,26 +52,26 @@ class TestResolveTranscript:
         target = project / "newest.jsonl"
         target.write_text("{}", encoding="utf-8")
         with (
-            patch(f"{_MODULE}.list_sessions", return_value=[_session("newest"), _session("older")]),
+            patch(f"{_RESOLVER}.list_sessions", return_value=[_session("newest"), _session("older")]),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert resolve_transcript(latest=True, session=None, file=None) == target
 
     def test_latest_with_no_sessions_resolves_to_none(self) -> None:
-        with patch(f"{_MODULE}.list_sessions", return_value=[]):
+        with patch(f"{_RESOLVER}.list_sessions", return_value=[]):
             assert resolve_transcript(latest=True, session=None, file=None) is None
 
     def test_session_match_but_no_jsonl_on_disk_resolves_to_none(self, tmp_path: Path) -> None:
         (tmp_path / ".claude" / "projects" / "proj").mkdir(parents=True)
         with (
-            patch(f"{_MODULE}.list_sessions", return_value=[_session("s1")]),
+            patch(f"{_RESOLVER}.list_sessions", return_value=[_session("s1")]),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert resolve_transcript(latest=False, session="s1", file=None) is None
 
     def test_missing_projects_dir_resolves_to_none(self, tmp_path: Path) -> None:
         with (
-            patch(f"{_MODULE}.list_sessions", return_value=[_session("s1")]),
+            patch(f"{_RESOLVER}.list_sessions", return_value=[_session("s1")]),
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert resolve_transcript(latest=False, session="s1", file=None) is None

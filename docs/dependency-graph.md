@@ -74,11 +74,13 @@ graph TD
     teatree.eval --> teatree.hooks
     teatree.eval --> teatree.utils
     teatree.eval --> teatree.trigger_parser
+    teatree.eval --> teatree.claude_sessions
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
     teatree.core.management --> teatree.config
     teatree.core.management --> teatree.docker
+    teatree.core.management --> teatree.eval
     teatree.core.management --> teatree.loop
     teatree.core.management --> teatree.loops
     teatree.core.management --> teatree.messaging
