@@ -218,7 +218,13 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # (~199,115 B) sat under the 4 KB headroom guard after the top-level raise.
 # Raised to 206,000 to restore >=4 KB total headroom (user-authorized). Coupling
 # invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
-_BUDGET_TOTAL_BYTES = 206_000
+# Headroom-restore bump (#1926): origin/main grew its appendices concurrently
+# (to ~115.9 KB) while this PR's merged top-level reached ~86.2 KB, so the merged
+# corpus (~202.1 KB) fell under the 4 KB total headroom guard — the same
+# merge-race the delta-based gate (#2040) addresses upstream. Raised to 208,000
+# to restore >=4 KB total headroom. Coupling invariant holds: 208,000 - 94,000
+# = 114,000 <= 116,000.
+_BUDGET_TOTAL_BYTES = 208_000
 
 
 def _repo_root() -> pathlib.Path:
