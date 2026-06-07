@@ -112,7 +112,7 @@ class RetroGateFailuresTest(TestCase):
         preventable = [g for g, v in verdicts.items() if v == "preventable"]
         environmental = [g for g, v in verdicts.items() if v == "environmental"]
         assert any("user-directed-question" in g for g in preventable)
-        assert any("failed-to-run" in g for g in environmental)
+        assert any("plugin-directory-does-not-exist" in g for g in environmental)
         assert not any("pretooluse" in g for g in verdicts)
 
     def test_serialized_output_never_carries_message_stderr_or_command(self) -> None:

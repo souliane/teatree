@@ -133,6 +133,17 @@ class TestInfraIdentityNeverEchoesStderr:
         assert all("non-blocking-error" in f.gate for f in failures)
         assert all(classify_gate_failure(f) is GateVerdict.ENVIRONMENTAL for f in failures)
 
+    def test_multi_fragment_stderr_maps_to_one_deterministic_specific_identity(self) -> None:
+        # "Failed to run: Plugin directory does not exist" matches BOTH the
+        # `failed-to-run` wrapper and the `plugin-directory-does-not-exist` reason.
+        # The specific reason must win, identically across processes — a frozenset
+        # made this hash-seed dependent (the same stderr fingerprinted two ways).
+        failures = self._failures("Failed to run: Plugin directory does not exist: /Users/x/.claude")
+        assert len(failures) == 1
+        gate = failures[0].gate
+        assert gate == "posttooluse:plugin-directory-does-not-exist"
+        assert "failed-to-run" not in gate
+
 
 class TestFingerprint:
     def test_same_gate_hashes_together(self) -> None:

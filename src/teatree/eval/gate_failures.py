@@ -94,14 +94,12 @@ class GateVerdict(StrEnum):
     ENVIRONMENTAL = "environmental"
 
 
-_ENVIRONMENTAL_SLUG_FRAGMENTS: frozenset[str] = frozenset(
-    {
-        "non-blocking-error",
-        "plugin-directory-does-not-exist",
-        "failed-with-non-blocking-status-code",
-        "hook-json-output-validation-failed",
-        "failed-to-run",
-    }
+_ENVIRONMENTAL_SLUG_FRAGMENTS: tuple[str, ...] = (
+    "plugin-directory-does-not-exist",
+    "hook-json-output-validation-failed",
+    "failed-with-non-blocking-status-code",
+    "failed-to-run",
+    "non-blocking-error",
 )
 """Gate-identity slug fragments whose failure is environmental, not agent-output-shaped.
 
@@ -111,6 +109,16 @@ to the generic ``non-blocking-error`` identity) reflects the tooling/dependency
 environment, not a piece of output the agent chose to write, so an eval cannot
 make it pass first-try. A failure whose slug contains none of these fragments is
 treated as preventable (fail toward an eval), including an unknown gate BLOCK.
+
+Ordered most-specific-first so :func:`_infra_identity` is deterministic when a
+single stderr matches more than one fragment: the concrete reason
+(``plugin-directory-does-not-exist``) is a more dedup-meaningful identity than the
+generic ``Failed to run:`` wrapper that prefixes it, and the bare
+``non-blocking-error`` catch-all is last. A ``frozenset`` here made the chosen
+identity depend on hash-seeded iteration order — the same stderr fingerprinted
+two ways across processes, breaking recurrence dedup and making the command test
+flaky. Order is the contract; ``classify_gate_failure`` is order-insensitive
+(boolean ``any``), only ``_infra_identity`` reads the priority.
 """
 
 
@@ -222,9 +230,11 @@ def _infra_identity(stderr: str) -> str:
 
     The stderr is untrusted free text (a traceback, a path, possibly sensitive),
     so it is never slugged verbatim. It is matched against the known environmental
-    failure phrases; the matched canonical fragment is the identity, or the
-    generic ``non-blocking-error`` when nothing matches. This keeps the stored
-    identity bounded and content-free.
+    failure phrases in :data:`_ENVIRONMENTAL_SLUG_FRAGMENTS` priority order (most
+    specific reason first), so a stderr matching more than one fragment maps to a
+    single deterministic identity; the matched canonical fragment is the identity,
+    or the generic ``non-blocking-error`` when nothing matches. This keeps the
+    stored identity bounded, content-free, and stable across processes.
     """
     lowered = _NON_SLUG_RE.sub("-", stderr.lower())
     for fragment in _ENVIRONMENTAL_SLUG_FRAGMENTS:
