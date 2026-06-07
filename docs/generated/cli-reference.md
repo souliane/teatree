@@ -3219,6 +3219,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ disable        Disable the gate (self-rescue from a Bash lockout).           │
 │ enable         Re-enable the gate.                                           │
 │ skill-loading  Skill-loading-on-task gate kill-switch (self-rescue).         │
+│ plan           Plan-before-code edit-block gate kill-switch (self-rescue).   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3303,6 +3304,59 @@ Usage: t3 teatree gate skill-loading disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate skill-loading enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate plan`
+
+```
+Usage: t3 teatree gate plan [OPTIONS] COMMAND [ARGS]...
+
+ Plan-before-code edit-block gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate plan status`
+
+```
+Usage: t3 teatree gate plan status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate plan disable`
+
+```
+Usage: t3 teatree gate plan disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate plan enable`
+
+```
+Usage: t3 teatree gate plan enable [OPTIONS]
 
  Re-enable the gate.
 
