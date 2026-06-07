@@ -1,4 +1,4 @@
-# Trigger-QA corpus: must-fire / must-not-fire prompts per skill.
+# skill-triggers corpus: must-fire / must-not-fire prompts per skill.
 # Each `should_fire` prompt must match at least one of the skill's
 # `triggers.keywords` regexes; each `should_not_fire` prompt must match none.
 # A skill's keywords firing on an unrelated control prompt is an

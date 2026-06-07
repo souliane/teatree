@@ -163,11 +163,12 @@ class EvalLocalScanner:
         run`` + ``subscription`` substrings are load-bearing — they tell
         the skill to run the same scoped, no-API-spend path the user runs
         by hand (``t3 eval run`` defaults to the subscription backend),
-        plus the deterministic ``trigger-qa`` / ``regression`` checks.
+        plus the deterministic ``skill-triggers`` / ``pinned-regressions`` checks.
         """
         return (
             f"Periodic local eval ({trigger}) via skill: {self.skill} | run the SCOPED suite locally with "
-            f"`t3 eval trigger-qa`, `t3 eval regression`, and `t3 eval run` (subscription backend, no API key)"
+            "`t3 eval skill-triggers`, `t3 eval pinned-regressions`, and `t3 eval run` "
+            "(subscription backend, no API key)"
         )
 
     def _placeholder_issue_url(self) -> str:

@@ -235,10 +235,17 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
-      - id: eval-agent-behavior
-        name: Deterministic eval lanes (trigger-qa, regression, negative-control, transcript-replay; token-free)
+      - id: eval-skill-triggers
+        name: Skill-triggers eval lane (declared trigger frontmatter fires on claimed prompts; sub-second, token-free)
         language: system
-        entry: uv run t3 eval all --free-only
+        entry: uv run t3 eval skill-triggers
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+      - id: eval-pinned-regressions
+        name: Pinned-regressions eval lane (every past process failure pinned as a deterministic git/FSM check; token-free)
+        language: system
+        entry: uv run t3 eval pinned-regressions
         pass_filenames: false
         always_run: true
         stages: [push]

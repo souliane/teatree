@@ -1196,11 +1196,11 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       eval run.                                              │
 │ history               Show recent eval runs and per-scenario pass-rate over  │
 │                       time.                                                  │
-│ trigger-qa            Validate every skill's trigger keywords against the    │
+│ skill-triggers        Validate every skill's trigger keywords against the    │
 │                       must-fire/must-not-fire corpus.                        │
 │ coverage              Report per-skill behavioral-eval coverage: every skill │
 │                       is covered or eval_exempt.                             │
-│ regression            Run the deterministic regression corpus over the real  │
+│ pinned-regressions    Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
 │                       summary table.                                         │
@@ -1438,10 +1438,10 @@ Usage: t3 eval history [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 eval trigger-qa`
+#### `t3 eval skill-triggers`
 
 ```
-Usage: t3 eval trigger-qa [OPTIONS]
+Usage: t3 eval skill-triggers [OPTIONS]
 
  Validate every skill's trigger keywords against the must-fire/must-not-fire
  corpus.
@@ -1479,10 +1479,10 @@ Usage: t3 eval coverage [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 eval regression`
+#### `t3 eval pinned-regressions`
 
 ```
-Usage: t3 eval regression [OPTIONS]
+Usage: t3 eval pinned-regressions [OPTIONS]
 
  Run the deterministic regression corpus over the real gate/checker code paths.
 
@@ -1505,7 +1505,8 @@ Usage: t3 eval all [OPTIONS]
 
  Run every eval lane in sequence and render one unified summary table.
 
- The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+ The five free deterministic lanes (skill-triggers, skill-coverage,
+ pinned-regressions,
  negative-control, transcript-replay) always run; skill-coverage is warn-first
  (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real
  session

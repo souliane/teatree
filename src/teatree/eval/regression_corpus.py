@@ -11,7 +11,8 @@ This is a Layer-1 eval per ``README.md`` — deterministic, free, no ``claude``
 run — sibling of :mod:`teatree.eval.trigger_qa`. It exists so the recurring
 safety-gate failure classes of the last development cycle each have one check
 that would go RED on the pre-fix behavior and stays GREEN on the fix, surfaced
-through ``t3 eval regression`` and the weekly CI eval gate.
+through ``t3 eval pinned-regressions`` and the ``eval-pinned-regressions`` prek
+pre-push hook.
 
 Each :class:`RegressionCheck` names its failure class, the originating fix, and
 a callable that returns ``True`` when the real code path still honors the
