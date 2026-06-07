@@ -117,7 +117,13 @@ def _merge_base(repo: pathlib.Path, base_ref: str) -> str | None:
 
 
 def _blueprint_touched(repo: pathlib.Path, base_ref: str) -> bool:
-    """True when BLUEPRINT.md or any docs/blueprint/*.md differs vs base."""
+    """True when BLUEPRINT.md or any docs/blueprint/*.md differs vs base.
+
+    FAIL-CLOSED: a git failure (returncode != 0) is NOT a clean "untouched"
+    result — it means the gate cannot tell. Treat that as touched (return True)
+    and emit a stderr diagnostic so the delta check still runs and the failure
+    is visible in CI, rather than silently exiting 0 with no check (#2040).
+    """
     result = subprocess.run(
         ["git", "-C", str(repo), "diff", "--name-only", f"{base_ref}...HEAD"],
         capture_output=True,
@@ -125,7 +131,13 @@ def _blueprint_touched(repo: pathlib.Path, base_ref: str) -> bool:
         check=False,
     )
     if result.returncode != 0:
-        return False
+        print(
+            f"WARNING: `git diff {base_ref}...HEAD` failed (rc={result.returncode}); "
+            "treating BLUEPRINT as touched for safety. stderr: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return True
     return any(f == _TOP_FILE or f.startswith(f"{_APPENDIX_DIR}/") for f in result.stdout.splitlines())
 
 
@@ -189,8 +201,16 @@ def _emit_delta_failure(top_delta: int, total_delta: int) -> None:
     print(file=sys.stderr)
 
 
-def _evaluate(repo: pathlib.Path, base_ref: str) -> int:
-    """Delta hard gate + absolute warn, against *base_ref*'s merge-base."""
+def _evaluate(repo: pathlib.Path, base_ref: str, *, ci: bool) -> int:
+    """Delta hard gate + absolute warn, against *base_ref*'s merge-base.
+
+    When *ci* is True the gate is FAIL-CLOSED on an unresolvable merge-base: a
+    BLUEPRINT-touching PR whose merge-base can't be computed exits 1 with a
+    diagnostic, rather than silently exiting 0 with the delta check never run
+    (#2040 fake-green). The pre-commit path (*ci* False) keeps the conservative
+    fail-open so a developer's transient git state never blocks a local commit;
+    the merge-result tree is re-checked by the CI gate anyway.
+    """
     if not _blueprint_touched(repo, base_ref):
         return 0
 
@@ -205,6 +225,19 @@ def _evaluate(repo: pathlib.Path, base_ref: str) -> int:
 
     merge_base_sha = _merge_base(repo, base_ref)
     if merge_base_sha is None:
+        print(
+            f"WARNING: cannot compute merge-base of {base_ref} and HEAD; the per-PR delta check could not run.",
+            file=sys.stderr,
+        )
+        if ci:
+            print(
+                "  FAIL-CLOSED (--ci): a BLUEPRINT-touching PR with an unresolvable "
+                "merge-base reds the gate rather than skipping the check. With "
+                "fetch-depth: 0 the merge-base resolves on the happy path, so this "
+                "only fires on a genuinely broken base ref / fetch.",
+                file=sys.stderr,
+            )
+            return 1
         return 0
 
     base_top, base_appendix = _corpus_size_at(repo, merge_base_sha)
@@ -220,11 +253,11 @@ def _evaluate(repo: pathlib.Path, base_ref: str) -> int:
 def main() -> int:
     if not _blueprint_in_commit():
         return 0
-    return _evaluate(_repo_root(), "origin/main")
+    return _evaluate(_repo_root(), "origin/main", ci=False)
 
 
 def ci_main(*, repo: pathlib.Path, base_ref: str) -> int:
-    return _evaluate(repo, base_ref)
+    return _evaluate(repo, base_ref, ci=True)
 
 
 def _cli_entry(argv: list[str] | None = None) -> int:

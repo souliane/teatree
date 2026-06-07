@@ -254,7 +254,9 @@ class TestRunScopedWiring:
 
         def fake(modules, **_kwargs):
             calls.append(tuple(modules))
-            return MutationResult(killed=(), survived=(), inconclusive=())
+            # A real run always classifies at least one mutant; return one killed
+            # so the zero-mutant fail-loud guard (#7) doesn't trip the wiring tests.
+            return MutationResult(killed=("teatree.b.f__mutmut_1",), survived=(), inconclusive=())
 
         monkeypatch.setattr(mutation_run, "_run_mutmut", fake)
         return calls
@@ -284,6 +286,56 @@ class TestRunScopedWiring:
         outcome = run_scoped(all_modules=True, settings=self._SETTINGS, registry=self._REGISTRY)
         assert outcome.scoped_modules == self._REGISTRY
         assert calls == [self._REGISTRY]
+
+
+class TestZeroMutantsFailsLoud:
+    """Fix #7: a scoped run that produces zero mutants is a FAILURE, not a pass.
+
+    When a safety module is touched (scoped non-empty) but mutmut classifies zero
+    mutants — a crash, an empty results DB, a silent invocation failure — the old
+    gate returned an all-empty outcome whose surviving count (0) was at-or-below
+    baseline, so it exited 0 having tested nothing (fake-green). run_scoped now
+    raises so the gate fails loud.
+    """
+
+    _REGISTRY = ("src/teatree/a.py",)
+    _SETTINGS = MutationSettings(
+        mode="warn",
+        timeout_seconds=10,
+        module_tests={"default": ("tests/",)},
+        baseline_total=0,
+    )
+
+    def test_scoped_run_with_zero_mutants_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            mutation_run,
+            "_run_mutmut",
+            lambda _modules, **_kwargs: MutationResult(killed=(), survived=(), inconclusive=()),
+        )
+        with pytest.raises(mutation_run.ZeroMutantsError, match="zero mutants"):
+            run_scoped(changed_files=("src/teatree/a.py",), settings=self._SETTINGS, registry=self._REGISTRY)
+
+    def test_scoped_run_with_only_inconclusive_mutants_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An inconclusive-only run DID execute mutmut (it produced mutants, they
+        # just timed out/segfaulted) — that is not the zero-mutant crash case.
+        monkeypatch.setattr(
+            mutation_run,
+            "_run_mutmut",
+            lambda _modules, **_kwargs: MutationResult(killed=(), survived=(), inconclusive=("a: timeout",)),
+        )
+        outcome = run_scoped(changed_files=("src/teatree/a.py",), settings=self._SETTINGS, registry=self._REGISTRY)
+        assert outcome.total_mutants == 1
+
+    def test_no_op_run_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No safety module in scope → no_op, run_scoped returns before _run_mutmut,
+        # so the zero-mutant guard never fires (a no-op is a legitimate pass).
+        monkeypatch.setattr(
+            mutation_run,
+            "_run_mutmut",
+            lambda _modules, **_kwargs: MutationResult(killed=(), survived=(), inconclusive=()),
+        )
+        outcome = run_scoped(changed_files=("README.md",), settings=self._SETTINGS, registry=self._REGISTRY)
+        assert outcome.is_no_op
 
 
 class TestLoadSettings:

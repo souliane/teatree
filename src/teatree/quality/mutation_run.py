@@ -65,6 +65,16 @@ class MutationResult:
     inconclusive: tuple[str, ...]
 
 
+class ZeroMutantsError(RuntimeError):
+    """mutmut produced no mutants for modules that WERE in scope.
+
+    A scoped run that classifies zero mutants did not actually mutate anything —
+    a crash, an empty results DB, or a mutmut invocation that silently failed.
+    Treating that as a pass is fake-green: the gate exits 0 having tested
+    nothing. This is raised so the gate fails LOUD instead.
+    """
+
+
 @dataclasses.dataclass(frozen=True)
 class MutationOutcome:
     scoped_modules: tuple[str, ...]
@@ -75,6 +85,10 @@ class MutationOutcome:
     @property
     def is_no_op(self) -> bool:
         return not self.scoped_modules
+
+    @property
+    def total_mutants(self) -> int:
+        return len(self.killed) + len(self.survived) + len(self.inconclusive)
 
 
 def load_settings(pyproject_path: Path | None = None) -> MutationSettings:
@@ -300,12 +314,23 @@ def run_scoped(
                 tests_dir.append(path)
 
     result = _run_mutmut(scoped, tests_dir=tuple(tests_dir), repo=".", timeout=settings.timeout_seconds)
-    return MutationOutcome(
+    outcome = MutationOutcome(
         scoped_modules=scoped,
         survived=result.survived,
         killed=result.killed,
         inconclusive=result.inconclusive,
     )
+    # FAIL-LOUD: scoped modules were touched but mutmut classified zero mutants.
+    # That means the run did not actually happen (crash / empty results DB /
+    # silent mutmut failure), so a "0 survivors" pass would be fake-green.
+    if outcome.total_mutants == 0:
+        detail = (
+            f"mutmut generated zero mutants for scoped modules {list(scoped)!r} — the run did "
+            "not actually execute (crash, empty results, or no mutable code in scope). "
+            "Refusing to pass a mutation gate that tested nothing."
+        )
+        raise ZeroMutantsError(detail)
+    return outcome
 
 
 _MUTMUT_CMD = ("uv", "run", "--group", "mutation", "mutmut")

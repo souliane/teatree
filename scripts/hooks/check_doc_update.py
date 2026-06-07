@@ -47,22 +47,34 @@ class Finding:
         )
 
 
-def _staged_diff() -> str:
-    cmd = ["git", "diff", "--cached", "--diff-filter=ACMR", "-U0"]
+def _run_git(cmd: list[str]) -> str:
+    """Run a git query, FAIL-LOUD on a non-zero exit.
+
+    ``check=False`` would let a git failure (corrupt index, runner misconfig)
+    return an empty string, which ``main()`` reads as "no staged changes" and
+    silently exits 0 — every doc-update trigger skipped, the gate fake-green.
+    A ``CalledProcessError`` instead crashes the hook with a visible diagnostic.
+    """
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
     return result.stdout
 
 
+def _staged_diff() -> str:
+    return _run_git(["git", "diff", "--cached", "--diff-filter=ACMR", "-U0"])
+
+
 def _staged_files() -> list[str]:
-    cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return [line for line in result.stdout.splitlines() if line]
+    return [
+        line for line in _run_git(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"]).splitlines() if line
+    ]
 
 
 def _added_files() -> list[str]:
-    cmd = ["git", "diff", "--cached", "--name-only", "--diff-filter=A"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return [line for line in result.stdout.splitlines() if line]
+    return [
+        line for line in _run_git(["git", "diff", "--cached", "--name-only", "--diff-filter=A"]).splitlines() if line
+    ]
 
 
 def _added_lines_for_path(diff: str, target_path: str) -> list[str]:

@@ -325,3 +325,58 @@ class TestSubprocessWrappers:
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         assert mod._added_files() == ["new.py"]
+
+
+class TestGitFailureFailsLoud:
+    """Fix #9: a non-zero `git diff --cached` must crash the gate, not pass silently.
+
+    The old wrappers used check=False, so a git failure returned '' and main()
+    early-exited 0 — every doc-update trigger silently skipped (fake-green). The
+    wrappers now raise CalledProcessError on a non-zero git exit.
+    """
+
+    def _fail_run(self, returncode: int = 128, stderr: str = "fatal: corrupt index"):
+        import subprocess  # noqa: PLC0415
+
+        def _run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args=cmd, returncode=returncode, stdout="", stderr=stderr)
+
+        return _run
+
+    def test_staged_diff_raises_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess  # noqa: PLC0415
+
+        import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(subprocess, "run", self._fail_run())
+        with pytest.raises(subprocess.CalledProcessError):
+            mod._staged_diff()
+
+    def test_staged_files_raises_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess  # noqa: PLC0415
+
+        import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(subprocess, "run", self._fail_run())
+        with pytest.raises(subprocess.CalledProcessError):
+            mod._staged_files()
+
+    def test_added_files_raises_on_git_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess  # noqa: PLC0415
+
+        import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(subprocess, "run", self._fail_run())
+        with pytest.raises(subprocess.CalledProcessError):
+            mod._added_files()
+
+    def test_main_propagates_git_failure_instead_of_exiting_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The end-to-end fail-loud proof: a failing `git diff --cached` must NOT
+        # let main() return 0 (which would silently skip every trigger).
+        import subprocess  # noqa: PLC0415
+
+        import scripts.hooks.check_doc_update as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(subprocess, "run", self._fail_run())
+        with pytest.raises(subprocess.CalledProcessError):
+            mod.main()

@@ -262,6 +262,55 @@ def _report_tree_local(blueprint_text: str) -> int:
     return 1
 
 
+def _head_blueprint_in_scope(repo: Path, base_ref: str) -> str | None:
+    """HEAD's BLUEPRINT.md text when the PR changes it, else None (no-op).
+
+    None means the gate has nothing to check: BLUEPRINT.md is unchanged between
+    *base_ref* and HEAD, or the PR deleted it (out of scope for this gate).
+    """
+    if not _blueprint_in_pr(repo, base_ref):
+        return None
+    try:
+        return (repo / "BLUEPRINT.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _resolve_merge_base_numbers(repo: Path, base_ref: str) -> list[int] | None:
+    """The §17.1 sequence at the merge-base, or None when it cannot be read.
+
+    FAIL-CLOSED contract: a None return means the cross-PR check CANNOT run —
+    either ``git merge-base`` returned nothing or BLUEPRINT.md did not exist at
+    the merge-base (file introduced since the branch-point). The old code
+    delegated that to the approximate common-prefix fallback in
+    ``check_numbering_against_base``, which returns ok=True for the canonical
+    cross-PR collision ([1..N] on both sides) — a silent pass of the exact case
+    this gate exists to catch. The caller treats None as a hard failure. With
+    fetch-depth: 0 the merge-base resolves on the happy path, so this only fires
+    on a genuinely broken base ref / fetch or a brand-new BLUEPRINT.
+    """
+    merge_base_sha = _merge_base(repo, base_ref)
+    if merge_base_sha is not None:
+        mb_text = _git_show(repo, merge_base_sha, "BLUEPRINT.md")
+        if mb_text is not None:
+            return extract_invariant_numbers(mb_text)
+
+    print()
+    print("  BLUEPRINT.md §17.1 cross-PR check FAILED: cannot read the merge-base snapshot.")
+    print()
+    if merge_base_sha is None:
+        print(f"    `git merge-base {base_ref} HEAD` returned no commit while BLUEPRINT.md")
+        print("    is in the PR diff.")
+    else:
+        print("    BLUEPRINT.md is not present at the merge-base commit while it IS in the")
+        print("    PR diff (the file was introduced since the branch-point).")
+    print("    The cross-PR numbering check cannot run without it, so the gate fails")
+    print("    CLOSED rather than approximate-pass. Ensure the base ref is fetched (CI")
+    print("    uses fetch-depth: 0) and re-run.")
+    print()
+    return None
+
+
 def ci_main(*, repo: Path, base_ref: str) -> int:
     """Cross-PR invariant-numbering check, evaluated against *base_ref*.
 
@@ -278,14 +327,9 @@ def ci_main(*, repo: Path, base_ref: str) -> int:
     Returns ``0`` on pass, ``1`` on fail. Prints actionable diagnostics
     to stdout for the CI log.
     """
-    if not _blueprint_in_pr(repo, base_ref):
-        return 0
-
-    head_path = repo / "BLUEPRINT.md"
-    try:
-        head_text = head_path.read_text(encoding="utf-8")
-    except OSError:
-        # PR deleted BLUEPRINT.md — out of scope for this gate.
+    head_text = _head_blueprint_in_scope(repo, base_ref)
+    if head_text is None:
+        # BLUEPRINT.md unchanged in the PR, or deleted by it — out of scope.
         return 0
 
     base_text = _git_show(repo, base_ref, "BLUEPRINT.md")
@@ -297,13 +341,8 @@ def ci_main(*, repo: Path, base_ref: str) -> int:
     head_numbers = extract_invariant_numbers(head_text)
     base_numbers = extract_invariant_numbers(base_text)
 
-    merge_base_sha = _merge_base(repo, base_ref)
-    merge_base_numbers: list[int] | None = None
-    if merge_base_sha is not None:
-        mb_text = _git_show(repo, merge_base_sha, "BLUEPRINT.md")
-        if mb_text is not None:
-            merge_base_numbers = extract_invariant_numbers(mb_text)
-
+    # The PR-tree gap/duplicate check is unconditional — a local 1..N defect is
+    # a real fail regardless of the merge-base.
     tree_local = check_numbering(head_numbers)
     if not tree_local.ok:
         print()
@@ -311,6 +350,12 @@ def ci_main(*, repo: Path, base_ref: str) -> int:
         print()
         print(f"    {tree_local.reason}")
         print()
+        return 1
+
+    merge_base_numbers = _resolve_merge_base_numbers(repo, base_ref)
+    if merge_base_numbers is None:
+        # FAIL-CLOSED: see _resolve_merge_base_numbers for why a missing snapshot
+        # reds the gate rather than delegating to the approximate fallback.
         return 1
 
     cross_pr = check_numbering_against_base(
