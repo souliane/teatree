@@ -59,6 +59,7 @@ from teatree.backends.slack.token_validation import (
     assert_user_token,
     resolve_user_token_or_degrade,
 )
+from teatree.backends.slack.upload_response import shared_message_ts
 from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.types import RawAPIDict, ScannerError
@@ -743,12 +744,10 @@ class SlackBotBackend:
         payload: RawAPIDict = {"files": [file_entry], "channel_id": channel, "initial_comment": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post(
-            "files.completeUploadExternal",
-            payload,
-            token=token,
-            idempotent=False,
-        )
+        body = self._post("files.completeUploadExternal", payload, token=token, idempotent=False)
+        if shared_ts := shared_message_ts(body, channel=channel):
+            body["ts"] = shared_ts
+        return body
 
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""
