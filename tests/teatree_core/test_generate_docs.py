@@ -13,7 +13,7 @@ from teatree.core.doc_render import (
     render_skill_markdown,
     write_generated_doc,
 )
-from teatree.skill_map import load_skill_delegation, parse_skill_delegation_map, render_skill_delegation_map
+from teatree.skill_support.map import load_skill_delegation, parse_skill_delegation_map, render_skill_delegation_map
 
 
 class TestOverlayDocs:
@@ -74,7 +74,7 @@ class TestSkillDocPayload:
 
         payload = build_skill_doc_payload(Path("references/skill-delegation.md"))
 
-        assert payload["skill_map_path"] == "teatree.skill_map.DEFAULT_SKILL_DELEGATION"
+        assert payload["skill_map_path"] == "teatree.skill_support.map.DEFAULT_SKILL_DELEGATION"
         assert payload["delegation"]["shipping"] == [
             "finishing-a-development-branch",
             "verification-before-completion",
@@ -138,7 +138,7 @@ class TestGenerateDocCommands:
 
         payload = json.loads((output_dir / "skill-delegation-matrix.json").read_text(encoding="utf-8"))
 
-        assert payload["skill_map_path"] == "teatree.skill_map.DEFAULT_SKILL_DELEGATION"
+        assert payload["skill_map_path"] == "teatree.skill_support.map.DEFAULT_SKILL_DELEGATION"
 
 
 class TestSkillCatalogue:

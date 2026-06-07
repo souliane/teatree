@@ -1,6 +1,6 @@
 # Skill Delegation Matrix
 
-Source: `teatree.skill_map.DEFAULT_SKILL_DELEGATION`
+Source: `teatree.skill_support.map.DEFAULT_SKILL_DELEGATION`
 
 ## Delegation
 

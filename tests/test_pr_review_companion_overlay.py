@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 
 from teatree.agents import skill_bundle
 from teatree.core.overlay import OverlayConfig
-from teatree.skill_loading import SkillLoadingPolicy
+from teatree.skill_support.loading import SkillLoadingPolicy
 
 
 def _config_with_companion(value: str | None) -> OverlayConfig:

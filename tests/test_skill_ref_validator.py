@@ -1,4 +1,4 @@
-"""Tests for teatree.skill_ref_validator — dangling skill-reference detection.
+"""Tests for teatree.skill_support.ref_validator — dangling skill-reference detection.
 
 Mirrors the real ``ac-reviewing-skills`` → ``ac-reviewing-codebase`` incident:
 a ``~/.teatree-skills.yml`` keyword→skill routing entry named a skill that
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.skill_ref_validator import (
+from teatree.skill_support.ref_validator import (
     DanglingReference,
     canonical_skill_names,
     default_search_dirs,
@@ -241,7 +241,7 @@ class TestValidateSkillRefs:
         config = tmp_path / "empty.yml"
         config.write_text("ac-django: '.'\n", encoding="utf-8")
         monkeypatch.setattr(
-            "teatree.skill_ref_validator.default_search_dirs",
+            "teatree.skill_support.ref_validator.default_search_dirs",
             lambda: [canonical_root],
         )
         assert validate_skill_refs(supplementary_config=config, agents_dir=tmp_path / "no-agents") == []
@@ -285,7 +285,7 @@ class TestMain:
         agents.mkdir()
         (agents / "coder.md").write_text("---\nname: coder\nskills:\n  - missing\n---\n# C", encoding="utf-8")
         monkeypatch.setattr(
-            "teatree.skill_ref_validator.validate_repo_refs",
+            "teatree.skill_support.ref_validator.validate_repo_refs",
             lambda _root: validate_agent_frontmatter(agents / "coder.md", {"rules"}),
         )
         with pytest.raises(SystemExit) as exc:
@@ -293,7 +293,7 @@ class TestMain:
         assert exc.value.code == 1
 
     def test_clean_repo_exits_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.skill_ref_validator.validate_repo_refs", lambda _root: [])
+        monkeypatch.setattr("teatree.skill_support.ref_validator.validate_repo_refs", lambda _root: [])
         main()
 
     def test_real_repo_path_passes(self) -> None:

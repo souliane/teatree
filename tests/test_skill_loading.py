@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-import teatree.skill_loading as skill_loading_mod
-from teatree.skill_loading import (
+import teatree.skill_support.loading as skill_loading_mod
+from teatree.skill_support.loading import (
     SkillLoadingPolicy,
     SkillSelectionResult,
     _dedupe,
@@ -345,7 +345,7 @@ def test_overlay_remote_patterns_with_non_string_entries(tmp_path: Path):
 
 def test_overlay_remote_match(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teatree.skill_loading._matches_any_remote",
+        "teatree.skill_support.loading._matches_any_remote",
         lambda _cwd, _patterns: True,
     )
     result = SkillLoadingPolicy._overlay_skill_for_context(
@@ -359,7 +359,7 @@ def test_overlay_remote_match(tmp_path: Path, monkeypatch):
 
 def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teatree.skill_loading._matches_any_remote",
+        "teatree.skill_support.loading._matches_any_remote",
         lambda _cwd, _patterns: False,
     )
     result = SkillLoadingPolicy._overlay_skill_for_context(
@@ -454,7 +454,7 @@ def test_dedupe_empty():
 
 def test_matches_any_remote_true(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_urls",
+        "teatree.skill_support.loading._git_remote_urls",
         lambda _cwd: ["git@github.com:acme/repo.git"],
     )
     assert _matches_any_remote(tmp_path, ["*acme*"]) is True
@@ -462,7 +462,7 @@ def test_matches_any_remote_true(tmp_path: Path, monkeypatch):
 
 def test_matches_any_remote_false(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_urls",
+        "teatree.skill_support.loading._git_remote_urls",
         lambda _cwd: ["git@github.com:other/repo.git"],
     )
     assert _matches_any_remote(tmp_path, ["*acme*"]) is False
@@ -470,7 +470,7 @@ def test_matches_any_remote_false(tmp_path: Path, monkeypatch):
 
 def test_matches_any_remote_no_urls(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
-        "teatree.skill_loading._git_remote_urls",
+        "teatree.skill_support.loading._git_remote_urls",
         lambda _cwd: [],
     )
     assert _matches_any_remote(tmp_path, ["*acme*"]) is False

@@ -1681,8 +1681,8 @@ def _companions_for_task_text(task_text: str) -> list[str]:
     try:
         from lib.skill_loader import build_trigger_index  # noqa: PLC0415
 
-        from teatree.skill_deps import resolve_companions  # noqa: PLC0415
-        from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+        from teatree.skill_support.deps import resolve_companions  # noqa: PLC0415
+        from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
 
         index = build_trigger_index(_skill_search_dirs())
         lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(task_text, trigger_index=index)
@@ -3930,7 +3930,7 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
     """Expand *skills* to their ``requires:`` dependency closure.
 
     Uses the real trigger index (parsed from real SKILL.md frontmatter) and
-    the real :func:`teatree.skill_deps.resolve_requires` resolver — a loaded
+    the real :func:`teatree.skill_support.deps.resolve_requires` resolver — a loaded
     skill's transitive dependencies are genuinely active and must be tracked.
     Unknown skills (framework skills with no trigger entry) pass through
     unchanged. On any resolution failure, fall back to the input skills so
@@ -3949,7 +3949,7 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
     try:
         from lib.skill_loader import build_trigger_index  # noqa: PLC0415
 
-        from teatree.skill_deps import resolve_requires  # noqa: PLC0415
+        from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415
 
         index = build_trigger_index(_skill_search_dirs())
         return resolve_requires(skills, index)
@@ -4822,7 +4822,7 @@ def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
     rather than re-implementing pid liveness — the locked design calls
     for preferring the existing singleton/pid mechanism. Imported lazily
     to keep this Django-free hook fast on the common path (mirrors the
-    lazy ``teatree.skill_deps`` import elsewhere in this module).
+    lazy ``teatree.skill_support.deps`` import elsewhere in this module).
 
     Fail-safe (#810): hooks run under whatever interpreter the agent
     harness invokes; ``teatree`` importability is NOT guaranteed there.

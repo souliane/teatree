@@ -3,9 +3,9 @@ from unittest.mock import patch
 
 import pytest
 
-import teatree.skill_loading as skill_loading_mod
+import teatree.skill_support.loading as skill_loading_mod
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.skill_loading import SkillLoadingPolicy, _git_remote_urls
+from teatree.skill_support.loading import SkillLoadingPolicy, _git_remote_urls
 
 
 def test_resolve_skill_bundle_basic(tmp_path: Path) -> None:

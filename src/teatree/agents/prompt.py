@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 
 from teatree.core.models import Task, Ticket
-from teatree.skill_loading import DEFAULT_SKILLS_DIR
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 # The #1135 default ``pr_review_companion``. A headless reviewer must always

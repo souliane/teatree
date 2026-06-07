@@ -83,19 +83,9 @@ layer = "platform"
 depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 
 [[modules]]
-path = "teatree.skill_loading"
+path = "teatree.skill_support"
 layer = "platform"
-depends_on = ["teatree.types", "teatree.utils", "teatree.skill_deps"]
-
-[[modules]]
-path = "teatree.skill_schema"
-layer = "foundation"
-depends_on = []
-
-[[modules]]
-path = "teatree.skill_ref_validator"
-layer = "foundation"
-depends_on = []
+depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
 path = "teatree.core"
@@ -106,9 +96,7 @@ depends_on = [
   "teatree.config",
   "teatree.utils",
   "teatree.timeouts",
-  "teatree.skill_schema",
-  "teatree.skill_deps",
-  "teatree.skill_map",
+  "teatree.skill_support",
   "teatree.trigger_parser",
   "teatree.hooks",
   "teatree.on_behalf_gate",
@@ -121,7 +109,7 @@ layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.core",
-  "teatree.skill_loading",
+  "teatree.skill_support",
   "teatree.utils",
   "teatree.config"
 ]
@@ -151,9 +139,7 @@ depends_on = [
   "teatree.agents",
   "teatree.backends",
   "teatree.eval",
-  "teatree.skill_loading",
-  "teatree.skill_schema",
-  "teatree.skill_ref_validator",
+  "teatree.skill_support",
   "teatree.claude_sessions",
   "teatree.overlay_init",
   "teatree.loop",
@@ -161,7 +147,6 @@ depends_on = [
   "teatree.self_update",
   "teatree.repo_mode",
   "teatree.triage",
-  "teatree.skill_deps",
   "teatree.memory_audit",
   "teatree.on_behalf_gate",
   "teatree.outbound_claim",
@@ -307,16 +292,6 @@ depends_on = ["teatree.utils"]
 path = "teatree.url_classify"
 layer = "platform"
 depends_on = ["teatree.utils"]
-
-[[modules]]
-path = "teatree.skill_deps"
-layer = "foundation"
-depends_on = []
-
-[[modules]]
-path = "teatree.skill_map"
-layer = "foundation"
-depends_on = []
 
 [[modules]]
 path = "teatree.memory_audit"
