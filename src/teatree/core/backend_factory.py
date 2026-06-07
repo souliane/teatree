@@ -11,11 +11,13 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.paths import find_overlay_db
+from teatree.utils import git
+from teatree.utils.forge import forge_from_remote
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +103,26 @@ def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
     return get_backend_provider().get_code_host(overlay)
 
 
+def code_host_for_repo_from_overlay(repo_path: str, overlay_name: str | None = None) -> CodeHostBackend | None:
+    """Build the code-host backend for *repo_path*'s actual origin forge.
+
+    Unlike :func:`code_host_from_overlay` (which selects by token-presence
+    precedence), this derives the forge from where the repo physically
+    lives — its ``origin`` remote host — so an overlay carrying both a
+    GitHub and a GitLab PAT opens the PR on the repo's own forge (#2025).
+    Not cached: the result depends on *repo_path*, so two repos under one
+    overlay can resolve to different forges. Raises
+    :class:`teatree.core.backend_protocols.BackendResolutionError` when the
+    repo's forge has no configured credentials.
+    """
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return _code_host_from_toml_overlay_for_repo(key, repo_path)
+    return get_backend_provider().get_code_host_for_repo(overlay, repo_path)
+
+
 def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
     """Build a messaging backend using the active overlay's config (cached).
 
@@ -175,6 +197,24 @@ def _code_host_from_toml_overlay(overlay_name: str) -> CodeHostBackend | None:
     if not isinstance(cfg, dict):
         return None
     return _host_from_toml(cfg)
+
+
+def _code_host_from_toml_overlay_for_repo(overlay_name: str, repo_path: str) -> CodeHostBackend | None:
+    """Per-repo code host from a path-only TOML overlay entry (#2025).
+
+    The path-only fallback must derive the forge from *repo_path*'s origin
+    host too — otherwise the original #2025 token-precedence bug survives
+    for TOML-only overlays (``_host_from_toml`` is GitHub-first).
+    """
+    if not overlay_name:
+        return None
+    from teatree.config import load_config  # noqa: PLC0415
+
+    overlays = load_config().raw.get("overlays") or {}
+    cfg = overlays.get(overlay_name)
+    if not isinstance(cfg, dict):
+        return None
+    return _host_from_toml_for_repo(cfg, repo_path)
 
 
 def iter_overlay_backends() -> list[OverlayBackends]:
@@ -315,6 +355,43 @@ def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
     return hosts[0] if hosts else None
 
 
+def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | None:
+    """Build the TOML overlay's host for *repo_path*'s origin forge (#2025).
+
+    Mirrors :func:`teatree.backends.loader.get_code_host_for_repo` for the
+    path-only TOML overlay: the forge is the repo's origin host, not
+    token-presence order. Raises :class:`BackendResolutionError` when the
+    repo's forge has no token ref configured on the overlay; falls back to
+    the overlay default only when the repo has no origin / an unrecognised
+    host.
+    """
+    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+
+    remote = git.remote_url(repo=repo_path)
+    forge = forge_from_remote(remote) if remote else ""
+    if not forge:
+        return _host_from_toml(cfg)
+
+    provider = get_backend_provider()
+    if forge == "github":
+        github_token_ref = cfg.get("github_token_ref", "")
+        token = read_pass(github_token_ref) if github_token_ref else ""
+        if token:
+            return provider.build_github_host(token=token)
+    else:
+        gitlab_token_ref = cfg.get("gitlab_token_ref", "")
+        token = read_pass(gitlab_token_ref) if gitlab_token_ref else ""
+        if token:
+            return provider.build_gitlab_host(token=token, base_url=cfg.get("gitlab_url", "https://gitlab.com"))
+
+    msg = (
+        f"repo origin resolves to the {forge} forge ({remote!r}) but the TOML overlay "
+        f"has no {forge} token configured — cannot open a PR. "
+        f"Configure {forge}_token_ref for this overlay."
+    )
+    raise BackendResolutionError(msg)
+
+
 def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     if cfg.get("messaging_backend") != "slack":
         return None
@@ -383,6 +460,7 @@ def reset_backend_caches() -> None:
 __all__ = [
     "OverlayBackends",
     "ci_service_from_overlay",
+    "code_host_for_repo_from_overlay",
     "code_host_from_overlay",
     "iter_overlay_backends",
     "messaging_from_overlay",
