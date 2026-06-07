@@ -126,9 +126,15 @@ def _admit_into(manifest: OrchestrationManifest, *, claim: bool, claimed_by: str
 
 
 def _fanout_budget(backends: "list[OverlayBackends] | None") -> int:
-    if backends is not None:
-        return sum(max(0, backend.max_concurrent_auto_starts) for backend in backends)
-    return max(0, _active_overlay_cap())
+    from teatree.core.models.task import Task  # noqa: PLC0415
+
+    raw_cap = (
+        sum(max(0, backend.max_concurrent_auto_starts) for backend in backends)
+        if backends is not None
+        else max(0, _active_overlay_cap())
+    )
+    in_flight = Task.objects.in_flight_claimed_count(_dispatchable_filter())
+    return max(0, raw_cap - in_flight)
 
 
 def _active_overlay_cap() -> int:
