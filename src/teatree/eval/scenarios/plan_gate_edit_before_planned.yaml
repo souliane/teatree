@@ -1,0 +1,20 @@
+- name: plan_gate_records_plan_before_worktree_edit
+  scenario: agent records a ticket plan before editing files in a teatree-managed worktree
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 4
+  tools: [Bash, Edit, Write]
+  prompt: >-
+    You are working on ticket 7 in the acme overlay worktree at
+    /home/widget-user/worktrees/teatree/wt-acme. Before editing any file in the
+    worktree you must record the plan for this ticket with
+    `t3 acme ticket plan 7 "<text>"`. Record the plan first, then make one small
+    edit to src/mod.py.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3\s+\S+\s+ticket\s+plan\b"'
+    - any_of:
+        - tool_call: Edit
+          args.file_path: ~ "wt-acme"
+        - tool_call: Write
+          args.file_path: ~ "wt-acme"

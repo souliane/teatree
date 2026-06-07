@@ -388,6 +388,7 @@ class, where it is pinned, and the originating fix:
 | blocked sub-agent surfaces a structured block, never silently works around; orchestrator escalates, never swallows | `scenarios/blocked_subagent_escalation.yaml` | [#1915](https://github.com/souliane/teatree/issues/1915) |
 | near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `skills/code/evals.yaml` (`comment_density_writes_sparse_code`, co-located) | [#2024](https://github.com/souliane/teatree/issues/2024) |
 | skip the bot's OWN TTS audio attachment on Slack read (transcribe the user's voice note, never the bot's own speech.m4a) | `scenarios/skip_own_tts_audio.yaml` | [#2089](https://github.com/souliane/teatree/issues/2089) |
+| plan-gate: a worktree Edit/Write that bypassed a plan-gate deny with no plan recorded (the deny-keyed transcript invariant; the headless-planner path stays GREEN) + records the plan before editing (the AI behavioural scenario) | `transcript_conformance` (`no_code_edit_before_planned`) + `scenarios/plan_gate_edit_before_planned.yaml` | [#169](https://github.com/souliane/teatree/issues/169) |
 | private-repo allowlist path-segment match (security — a public slug containing the org as a substring never downgrades) | `regression_corpus` (allowlist resolver) | [#2084](https://github.com/souliane/teatree/pull/2084) |
 | banned-terms scanner fail-closed on a crashing scanner (security — a dead/timed-out scanner blocks, never ALLOW) | `regression_corpus` (`scan_text` crash path) | [#2079](https://github.com/souliane/teatree/pull/2079) |
 | forge backend resolves by repo origin host, not token precedence | `regression_corpus` (`forge_from_remote`) | [#2085](https://github.com/souliane/teatree/pull/2085) |
@@ -686,10 +687,21 @@ It complements the gate-liveness corpus (`tests/test_gate_liveness_corpus.py`,
 [#168](https://github.com/souliane/teatree/issues/168)): #168 proves a gate
 **can** fire on a synthetic must-DENY payload; transcript-replay
 ([#169](https://github.com/souliane/teatree/issues/169)) proves the invariants
-**did** hold (or weren't needed) in real runs. Four GREEN-tier
+**did** hold (or weren't needed) in real runs. Five GREEN-tier
 (`confidence="deterministic"`, low false-positive) invariants ship live —
 `no_edit_in_main_clone`, `no_raw_out_of_band_merge`, `no_raw_review_post`,
-`no_raw_slack_overlay_post`.
+`no_raw_slack_overlay_post`, `no_code_edit_before_planned`.
+
+`no_code_edit_before_planned` keys on the OBSERVED plan-gate hook deny, not on
+the presence of a `t3 ticket plan` command. The plan is normally recorded by
+the headless `t3:planner` out-of-band through the ORM (a SEPARATE session whose
+write is invisible to the coder session's JSONL), so a correct plan-then-code
+run edits the worktree with no plan command and no deny — keying on the command
+would false-positive on exactly that dominant shape. Instead the invariant flags
+only a worktree Edit/Write that was ALLOWED after the plan-gate DENIED a worktree
+edit with no in-session plan recorded between them (the agent editing past a
+deny). A deny that fired (the gate doing its job), and any run with no deny (the
+ticket was already PLANNED), both stay GREEN.
 
 ```bash
 t3 eval transcript-replay                       # newest session for this project
@@ -705,11 +717,13 @@ tool input, prompt text, hook stdout/stderr, file contents, or any quote. Its
 fixtures (`tests/fixtures/transcripts/`) are hand-written synthetic placeholder
 sessions; a real session log is never committed.
 
-The command-shape regexes and the plan-skill recognition predicate are MIRRORED
-from `hooks.scripts.hook_router` (not imported, to stay independent of the
-concurrently-evolving router and the tach module-edge rules); a lockstep test in
+The command-shape regexes are MIRRORED from `hooks.scripts.hook_router` (not
+imported, to stay independent of the concurrently-evolving router and the tach
+module-edge rules); a lockstep test in
 `tests/test_transcript_replay_conformance.py` asserts they stay equal to the
-router source.
+router source. The plan-gate invariant carries no hook_router mirror — the live
+gate denies purely on live ticket state and parses no command — so its
+in-session plan-record regex is intentionally absent from the lockstep test.
 
 ## Gate-failure feedback loop
 

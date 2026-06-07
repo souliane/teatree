@@ -160,6 +160,74 @@ def test_fixtures_contain_no_redact_anchor() -> None:
         assert not anchors.search(body), f"{fixture.name} contains a privacy redact-anchor pattern"
 
 
+# ── plan-gate invariant — false-positive regression ──────────────────────────
+
+
+def _plan_gate_invariant() -> Invariant:
+    return next(inv for inv in INVARIANT_REGISTRY if inv.id == "no_code_edit_before_planned")
+
+
+def test_headless_planner_edit_is_green() -> None:
+    """The dominant correct shape must NOT be flagged.
+
+    Regression for the cold-review false positive: the headless ``t3:planner``
+    records the PlanArtifact out-of-band through the ORM in a SEPARATE session,
+    so the coder session edits the worktree with NO ``t3 ticket plan`` Bash
+    command and NO plan-gate deny (the ticket is already PLANNED). Keying on the
+    absence of a plan command flagged exactly this correct work; keying on the
+    observed deny does not.
+    """
+    fixture = _FIXTURES / "no_code_edit_before_planned_headless_planner.session.jsonl"
+    assert fixture.is_file(), f"missing headless-planner fixture: {fixture}"
+    result = _result_for(_plan_gate_invariant(), fixture)
+    assert result.ok, f"headless-planner edit was flagged at event #{result.offending_index} (false positive)"
+
+
+def test_plan_gate_deny_honored_is_green() -> None:
+    """A worktree edit DENIED by the plan-gate (the gate firing) is not a violation.
+
+    The deny itself is the gate doing its job; only editing PAST a deny with no
+    plan recorded is a bypass. A transcript whose only worktree edit was denied
+    has nothing that bypassed the gate, so the invariant is GREEN.
+    """
+    denied_only = (
+        '{"type":"assistant","uuid":"a1","parentUuid":null,"isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","message":{"role":"assistant",'
+        '"content":[{"type":"tool_use","id":"t1","name":"Write","input":'
+        '{"file_path":"/x/worktrees/teatree/wt-acme/m.py","content":"z"}}]}}\n'
+        '{"type":"attachment","uuid":"h1","parentUuid":"a1","isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","attachment":{"type":'
+        '"hook_blocking_error","hookEvent":"PreToolUse","hookName":"router",'
+        '"exitCode":2,"toolUseID":"t1"}}\n'
+    )
+    result = _plan_gate_invariant().predicate(parse_session_jsonl(denied_only))
+    assert result.ok, f"a denied (gate-fired) worktree edit was wrongly flagged at #{result.offending_index}"
+
+
+def test_plan_gate_deny_then_recorded_plan_then_edit_is_green() -> None:
+    """A deny CLEARED by an in-session ``t3 ticket plan`` then an edit is GREEN."""
+    cleared = (
+        '{"type":"assistant","uuid":"a1","parentUuid":null,"isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","message":{"role":"assistant",'
+        '"content":[{"type":"tool_use","id":"t1","name":"Write","input":'
+        '{"file_path":"/x/worktrees/teatree/wt-acme/m.py","content":"z"}}]}}\n'
+        '{"type":"attachment","uuid":"h1","parentUuid":"a1","isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","attachment":{"type":'
+        '"hook_blocking_error","hookEvent":"PreToolUse","hookName":"router",'
+        '"exitCode":2,"toolUseID":"t1"}}\n'
+        '{"type":"assistant","uuid":"a2","parentUuid":"a1","isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","message":{"role":"assistant",'
+        '"content":[{"type":"tool_use","id":"t2","name":"Bash","input":'
+        '{"command":"t3 acme ticket plan 7 done"}}]}}\n'
+        '{"type":"assistant","uuid":"a3","parentUuid":"a2","isSidechain":false,'
+        '"sessionId":"s","cwd":"/private/tmp/wt-acme","message":{"role":"assistant",'
+        '"content":[{"type":"tool_use","id":"t3","name":"Write","input":'
+        '{"file_path":"/x/worktrees/teatree/wt-acme/m.py","content":"z2"}}]}}\n'
+    )
+    result = _plan_gate_invariant().predicate(parse_session_jsonl(cleared))
+    assert result.ok, f"a deny cleared by a recorded plan was wrongly flagged at #{result.offending_index}"
+
+
 # ── mirrored-constants lockstep ──────────────────────────────────────────────
 
 

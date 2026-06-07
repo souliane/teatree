@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-plan_gate-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "/home/widget-user/worktrees/teatree/wt-acme/src/mod.py", "old_string": "x = 1", "new_string": "x = 2"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

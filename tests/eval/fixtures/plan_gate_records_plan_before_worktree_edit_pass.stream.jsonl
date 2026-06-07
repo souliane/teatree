@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-plan_gate-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme ticket plan 7 \"add mod entrypoint\""}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Edit", "input": {"file_path": "/home/widget-user/worktrees/teatree/wt-acme/src/mod.py", "old_string": "x = 1", "new_string": "x = 2"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
