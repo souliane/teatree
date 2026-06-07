@@ -28,7 +28,9 @@ from teatree.config import CONFIG_PATH
 # mechanical by nature are downgraded; coding and debugging are deliberately
 # absent so they keep the user's full-reasoning default model.
 DEFAULT_PHASE_MODELS: dict[str, str] = {
+    "planning": "opus",
     "reviewing": "sonnet",
+    "requesting_review": "sonnet",
     "testing": "sonnet",
     "shipping": "sonnet",
     "retrospecting": "haiku",
