@@ -93,7 +93,7 @@ class TestColleagueMRShapeGate:
 
     Every test pins the on-behalf gate to IMMEDIATE so any blocking is
     attributable to the shape gate. The shape gate's MR-author lookup
-    is patched at the source module (``teatree.cli.review_shape_gate``)
+    is patched at the source module (``teatree.cli.review.shape_gate``)
     via ``fetch_mr_author``.
     """
 
@@ -104,7 +104,7 @@ class TestColleagueMRShapeGate:
 
     def _patch_mr_author(self, author: str) -> None:
         """Pin the shape gate's MR-author resolution to ``author``."""
-        from teatree.cli import review_shape_gate as gate_mod  # noqa: PLC0415
+        from teatree.cli.review import shape_gate as gate_mod  # noqa: PLC0415
 
         self.monkeypatch.setattr(
             gate_mod,
@@ -208,7 +208,7 @@ class TestColleagueMRShapeGate:
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
         # Bypass the inline-position resolver (it needs real diff refs).
-        from teatree.cli import review as review_mod  # noqa: PLC0415
+        from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
         self.monkeypatch.setattr(
             review_mod,
@@ -252,7 +252,7 @@ class TestColleagueMRShapeGate:
         # Pretend the agent has already reviewed (satisfies the
         # review-before-approve precondition) — the focus here is the
         # shape gate, not the review-first gate.
-        from teatree.cli import review as review_mod  # noqa: PLC0415
+        from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
         self.monkeypatch.setattr(
             review_mod,
@@ -274,7 +274,7 @@ class TestColleagueMRShapeGate:
         """
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
-        from teatree.cli import review as review_mod  # noqa: PLC0415
+        from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
         self.monkeypatch.setattr(
             review_mod,
@@ -307,7 +307,7 @@ class TestAllowLongReviewOverride:
         self.monkeypatch = monkeypatch
 
     def _patch_mr_author(self, author: str) -> None:
-        from teatree.cli import review_shape_gate as gate_mod  # noqa: PLC0415
+        from teatree.cli.review import shape_gate as gate_mod  # noqa: PLC0415
 
         self.monkeypatch.setattr(gate_mod, "fetch_mr_author", lambda api, encoded_repo, mr: author)
 
@@ -341,8 +341,8 @@ class TestAllowLongReviewOverride:
 
     def test_gate_function_returns_empty_with_override(self) -> None:
         """Direct unit: the override short-circuits to ``""`` (proceed) on a colleague MR."""
-        from teatree.cli import review_shape_gate as gate_mod  # noqa: PLC0415
-        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+        from teatree.cli.review import shape_gate as gate_mod  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
         self.monkeypatch.setattr(gate_mod, "fetch_mr_author", lambda api, encoded_repo, mr: _AUTHOR_CAROL)
 
@@ -391,7 +391,7 @@ class TestShapeGateCachesMRAuthor:
     def test_fetch_mr_author_uses_api_cache(self) -> None:
         """Two posts on the same MR — only one GET to ``merge_requests/<iid>``."""
         from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
-        from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
         gets: list[str] = []
@@ -431,7 +431,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_empty_body_returns_proceed_without_api_call(self) -> None:
         """Empty body short-circuits before the MR-author GET fires."""
-        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
         class _NoAPI:
             def get_json(self, _endpoint: str) -> object:
@@ -452,7 +452,7 @@ class TestShapeGateFailOpenAndCarveOuts:
     def test_fetch_returns_empty_when_author_missing(self) -> None:
         """A GET that returns no ``author`` key yields empty author → not a colleague MR."""
         from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
-        from teatree.cli.review_shape_gate import fetch_mr_author, is_colleague_mr  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import fetch_mr_author, is_colleague_mr  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
         with patch.object(api, "get_json", lambda _e: {"id": 1}):  # no `author` key
@@ -464,7 +464,7 @@ class TestShapeGateFailOpenAndCarveOuts:
     def test_fetch_returns_empty_on_network_exception(self) -> None:
         """``api.get_json`` raising (401, network) yields empty author → fail-open."""
         from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
-        from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
 
@@ -477,7 +477,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_is_colleague_mr_returns_false_when_current_username_missing(self) -> None:
         """An API stub without ``current_username`` is treated as can't-tell → fail-open."""
-        from teatree.cli.review_shape_gate import is_colleague_mr  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import is_colleague_mr  # noqa: PLC0415
 
         class _NoUsernameAPI:
             def get_json(self, _endpoint: str) -> dict[str, object]:
@@ -487,7 +487,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_is_colleague_mr_returns_false_when_current_username_empty(self) -> None:
         """An empty ``current_username()`` return (no GitLab token) is can't-tell → fail-open."""
-        from teatree.cli.review_shape_gate import is_colleague_mr  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import is_colleague_mr  # noqa: PLC0415
 
         class _EmptyMeAPI:
             def get_json(self, _endpoint: str) -> dict[str, object]:
@@ -506,7 +506,7 @@ class TestShapeGateFailOpenAndCarveOuts:
         gets refused with the ``inline note`` wording so the agent
         knows to tighten it.
         """
-        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
         class _ColleagueAPI:
             def get_json(self, _endpoint: str) -> dict[str, object]:
@@ -533,7 +533,7 @@ class TestShapeGateFailOpenAndCarveOuts:
         A single-paragraph body that exceeds 200 words is still too
         much surface for an MR-level on-behalf post on a colleague MR.
         """
-        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
         class _ColleagueAPI:
             def get_json(self, _endpoint: str) -> dict[str, object]:
@@ -557,7 +557,7 @@ class TestShapeGateFailOpenAndCarveOuts:
     def test_fetch_returns_empty_on_non_dict_response(self) -> None:
         """``api.get_json`` returning ``None`` or a list (not a dict) → empty author."""
         from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
-        from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
         with patch.object(api, "get_json", lambda _e: None):
@@ -569,7 +569,7 @@ class TestShapeGateFailOpenAndCarveOuts:
         This is the "happy path" for general notes — the gate must not
         get in the way of legitimately terse summary lines.
         """
-        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
 
         class _ColleagueAPI:
             def get_json(self, _endpoint: str) -> dict[str, object]:
@@ -593,7 +593,7 @@ class TestShapeGateFailOpenAndCarveOuts:
         Empty input is zero; single-line non-empty is 1; blank-line
         separators split into multiple paragraphs.
         """
-        from teatree.cli.review_shape_gate import _count_paragraphs  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import _count_paragraphs  # noqa: PLC0415
 
         assert _count_paragraphs("") == 0
         assert _count_paragraphs("   ") == 0
@@ -607,7 +607,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_count_words_splits_on_whitespace(self) -> None:
         """Word count uses whitespace splitting (``str.split()``)."""
-        from teatree.cli.review_shape_gate import _count_words  # noqa: PLC0415
+        from teatree.cli.review.shape_gate import _count_words  # noqa: PLC0415
 
         assert _count_words("") == 0
         assert _count_words("   ") == 0

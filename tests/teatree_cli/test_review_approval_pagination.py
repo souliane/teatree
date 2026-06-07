@@ -10,7 +10,7 @@ pages where the reviewer's note is only on page 2, then assert the
 function returns ``(True, "")``.
 
 Severity analysis (single caller): ``ReviewService.approve``
-(``teatree/cli/review.py`` ~line 516). The wrong ``(False, "")`` hits
+(``teatree/cli/review/service.py`` ~line 516). The wrong ``(False, "")`` hits
 the ``if not reviewed`` branch and returns ``rc=1`` with "Refusing to
 approve" — the approve is BLOCKED, not silently granted. Fail-CLOSED
 (over-blocks); no maker≠checker hole. The fix lets a legitimate
@@ -19,7 +19,7 @@ reviewer approve.
 
 from unittest.mock import MagicMock
 
-from teatree.cli.review_approval import identity_has_reviewed
+from teatree.cli.review.approval import identity_has_reviewed
 
 
 def _api_with_paginated(*, username: str, page1: list, page2: list) -> MagicMock:

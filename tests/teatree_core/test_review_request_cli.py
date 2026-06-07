@@ -26,7 +26,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from teatree.cli.review_request import _active_project, _overlay_name_for_mr, review_request_app
+from teatree.cli.review.request import _active_project, _overlay_name_for_mr, review_request_app
 from teatree.config import OverlayEntry
 
 _TEATREE_PATH = Path("/workspace/teatree")
@@ -55,9 +55,9 @@ class TestActiveProjectOverlayRouting:
         monkeypatch.setenv("T3_OVERLAY_NAME", _OTHER_NAME)
         with (
             patch("teatree.config.discover_overlays", return_value=_two_overlays()),
-            patch("teatree.cli.review_request.managepy_core") as managepy_core,
+            patch("teatree.cli.review.request.managepy_core") as managepy_core,
         ):
-            from teatree.cli.review_request import post  # noqa: PLC0415
+            from teatree.cli.review.request import post  # noqa: PLC0415
 
             post(mr_url="https://gitlab.com/org/repo/-/merge_requests/385", approver="souliane", title="")
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
@@ -78,7 +78,7 @@ class TestOverlayInferenceFromMrUrl:
 
     def test_blank_active_project_falls_back_to_url_inference(self) -> None:
         with (
-            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME) as infer,
         ):
@@ -89,7 +89,7 @@ class TestOverlayInferenceFromMrUrl:
     def test_resolved_active_project_wins_over_url_inference(self) -> None:
         """A cwd/env-resolved overlay name short-circuits — URL inference is never consulted."""
         with (
-            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, _OTHER_NAME)),
+            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, _OTHER_NAME)),
             patch("django.setup") as setup,
             patch("teatree.core.overlay_loader.infer_overlay_for_url") as infer,
         ):
@@ -100,24 +100,24 @@ class TestOverlayInferenceFromMrUrl:
 
     def test_check_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
         with (
-            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
-            patch("teatree.cli.review_request.managepy_core") as managepy_core,
+            patch("teatree.cli.review.request.managepy_core") as managepy_core,
         ):
-            from teatree.cli.review_request import check  # noqa: PLC0415
+            from teatree.cli.review.request import check  # noqa: PLC0415
 
             check(mr_url=_MR_URL)
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
 
     def test_post_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
         with (
-            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
-            patch("teatree.cli.review_request.managepy_core") as managepy_core,
+            patch("teatree.cli.review.request.managepy_core") as managepy_core,
         ):
-            from teatree.cli.review_request import post  # noqa: PLC0415
+            from teatree.cli.review.request import post  # noqa: PLC0415
 
             post(mr_url=_MR_URL, approver="souliane", title="")
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
@@ -135,22 +135,22 @@ class TestCoreDispatch:
     """
 
     def test_discover_uses_managepy_core(self) -> None:
-        with patch("teatree.cli.review_request.managepy_core") as managepy_core:
-            from teatree.cli.review_request import discover  # noqa: PLC0415
+        with patch("teatree.cli.review.request.managepy_core") as managepy_core:
+            from teatree.cli.review.request import discover  # noqa: PLC0415
 
             discover()
         assert managepy_core.call_args.args == ("followup", "discover-mrs")
 
     def test_check_uses_managepy_core(self) -> None:
-        with patch("teatree.cli.review_request.managepy_core") as managepy_core:
-            from teatree.cli.review_request import check  # noqa: PLC0415
+        with patch("teatree.cli.review.request.managepy_core") as managepy_core:
+            from teatree.cli.review.request import check  # noqa: PLC0415
 
             check(mr_url="https://gitlab.com/org/repo/-/merge_requests/385")
         assert managepy_core.call_args.args[0] == "review_request_check"
 
     def test_post_uses_managepy_core(self) -> None:
-        with patch("teatree.cli.review_request.managepy_core") as managepy_core:
-            from teatree.cli.review_request import post  # noqa: PLC0415
+        with patch("teatree.cli.review.request.managepy_core") as managepy_core:
+            from teatree.cli.review.request import post  # noqa: PLC0415
 
             post(mr_url="https://gitlab.com/org/repo/-/merge_requests/385", approver="souliane", title="")
         assert managepy_core.call_args.args[0] == "review_request_post"

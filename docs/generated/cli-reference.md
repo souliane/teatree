@@ -572,7 +572,7 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
  draft. Pre-#72 the default silently degraded a missing flag pair into
  a general note — observed in !6220 where 4 of 5 cold-review drafts
  intended as inline became general. The validator
- :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
+ :func:`teatree.cli.review.drafts.validate_inline_or_general` refuses
  both half-specified-inline and contradictory invocations before any
  GitLab API call is attempted.
 
@@ -608,7 +608,7 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │                                      recent_merge_sweep_query (str),         │
 │                                      confidence ('verified'|'speculative').  │
 │                                      Schema:                                 │
-│                                      teatree.cli.review_evidence_gate.Findi… │
+│                                      teatree.cli.review.evidence_gate.Findi… │
 │ --allow-long-review                  Escape the colleague-MR review-shape    │
 │                                      cap (souliane/teatree#1114) for ONE     │
 │                                      post — the documented over-deny escape  │
@@ -679,7 +679,7 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │                                      recent_merge_sweep_query (str),         │
 │                                      confidence ('verified'|'speculative').  │
 │                                      Schema:                                 │
-│                                      teatree.cli.review_evidence_gate.Findi… │
+│                                      teatree.cli.review.evidence_gate.Findi… │
 │ --allow-long-review                  Escape the colleague-MR review-shape    │
 │                                      cap (souliane/teatree#1114) for ONE     │
 │                                      post — the documented over-deny escape  │

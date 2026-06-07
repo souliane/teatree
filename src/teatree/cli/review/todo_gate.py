@@ -9,9 +9,9 @@ reviewer look unable to read code (see #1186).
 
 Sibling gates on the same publishing flow:
 
-* :mod:`teatree.cli.review_on_behalf` — recorded-approval gate (the
+* :mod:`teatree.cli.review.on_behalf` — recorded-approval gate (the
     reviewer's identity is the user's; outbound posts need an approval row).
-* :mod:`teatree.cli.review_shape_gate` — colleague-MR shape gate (single
+* :mod:`teatree.cli.review.shape_gate` — colleague-MR shape gate (single
     terse inline ``Nit:`` form).
 
 This module is independent of both. It runs against every publishing call
@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabHTTPClient
 
-# Mirrors :data:`teatree.cli.review_diff.ChangeEntry`: a GitLab change-entry
+# Mirrors :data:`teatree.cli.review.diff.ChangeEntry`: a GitLab change-entry
 # dict in an MR /changes response. Object-typed values rather than narrow
 # types because the API surface mixes strings (paths, diffs) and bools
 # (renamed/new_file flags).
@@ -100,7 +100,7 @@ def looks_like_blocker(body: str) -> bool:
 def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
     """Return ``{new_line_number: line_text}`` for every ``+``-added line.
 
-    Mirrors :func:`teatree.cli.review_diff.find_added_line` but keeps the
+    Mirrors :func:`teatree.cli.review.diff.find_added_line` but keeps the
     line text so we can scan for TODO markers without re-fetching.
     """
     added: dict[int, str] = {}
@@ -124,7 +124,7 @@ def _collect_added_lines_with_text(diff_text: str) -> dict[int, str]:
 def _fetch_file_diff(api: "GitLabHTTPClient", encoded_repo: str, mr: int, file: str) -> str:
     """Return the unified diff for ``file`` in the MR, or ``""`` on any failure.
 
-    Independent of :func:`teatree.cli.review_diff.fetch_file_diff` to keep
+    Independent of :func:`teatree.cli.review.diff.fetch_file_diff` to keep
     the failure mode purely fail-open — any error path returns ``""`` and
     the gate proceeds to allow the post.
     """
