@@ -249,8 +249,9 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(self, *, max_turns_override: int | None = None) -> None:
+            def __init__(self, *, max_turns_override: int | None = None, require_executed: bool = False) -> None:
                 captured["max_turns_override"] = max_turns_override
+                captured["require_executed"] = require_executed
 
             def run(self, spec: EvalSpec) -> EvalRun:
                 return _run(spec.name, tool_calls=_PASSING_CALL)

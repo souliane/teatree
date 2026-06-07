@@ -7,8 +7,17 @@ environment (``--bare`` plus :func:`~teatree.eval.isolation.isolated_claude_env`
 so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
 ``CLAUDE.md`` never bias a result. When ``claude`` is not on PATH the runner
 returns a skip-shaped :class:`EvalRun` so the harness can print a clear ``SKIP``
-banner and exit 0 — that path is exercised in CI and on contributors who have
-not installed the CLI locally.
+banner and exit 0 — that path is exercised on contributors who have not
+installed the CLI locally.
+
+The one exception is ``require_executed``: when the caller has armed the
+all-skipped enforcement gate (the metered CI eval job), a missing ``claude``
+binary is a provisioning failure, NOT a clean skip. In that mode the runner
+raises :class:`ClaudeCliMissingError` on the FIRST scenario instead of emitting
+a skip-shaped run — "sdk + require-executed" must never decoratively skip, and
+failing at the runner is the earliest possible point (before any scenario is
+graded), so a job with the gate armed but no CLI provisioned fails loud rather
+than reporting an all-skipped green.
 """
 
 import dataclasses
@@ -41,19 +50,40 @@ class _RunnerOutcome:
 
 
 class ClaudeCliMissingError(RuntimeError):
-    """Raised when ``claude`` is not on PATH and the caller did not opt in to skip."""
+    """Raised when ``claude`` is not on PATH while the all-skipped gate is armed.
+
+    ``require_executed`` callers (the metered CI eval job) cannot tolerate a
+    decorative skip: a missing binary means the metered backend can execute
+    nothing, so the suite would report an all-skipped green. Raising here fails
+    the job at the earliest point — before any scenario is graded.
+    """
 
 
 class ClaudePRunner:
     """Run an :class:`EvalSpec` against ``claude -p`` and capture tool calls."""
 
-    def __init__(self, *, workspace: Path | None = None, max_turns_override: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        workspace: Path | None = None,
+        max_turns_override: int | None = None,
+        require_executed: bool = False,
+    ) -> None:
         self._workspace = workspace or Path.cwd()
         self._max_turns_override = max_turns_override
+        self._require_executed = require_executed
 
     def run(self, spec: EvalSpec) -> EvalRun:
         binary = shutil.which("claude")
         if binary is None:
+            if self._require_executed:
+                msg = (
+                    "claude binary not on PATH but --require-executed is armed: the metered "
+                    "sdk backend can execute no scenario, so the suite would report an "
+                    "all-skipped green. Provision the Claude CLI (and ANTHROPIC_API_KEY) on "
+                    "the runner — sdk + require-executed must never decoratively skip."
+                )
+                raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
 
         system_prompt = self._load_agent_definition(spec.agent_path)

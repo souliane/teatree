@@ -1,17 +1,28 @@
-# Weekly behavioral-eval gate (souliane/teatree).
+# Metered behavioral-eval gate (souliane/teatree) — GitLab mirror.
 #
 # The eval suite shells out to `claude -p` (cost, network, model variance), so
-# it must NOT run on every push or every MR. The user-specified cadence is:
-# run once a week, on the FIRST merge request opened that ISO week.
+# it must NOT run on every push or every MR. It runs on a weekly schedule
+# (a GitLab pipeline schedule) and via a manual `when: manual` play button —
+# never on a merge-request pipeline. This mirrors the standalone GitHub
+# `.github/workflows/eval.yml` workflow.
 #
-# `rules:` cannot express "first of the week", so the job is split in two
-# stages: a cheap `eval-gate` decides whether this MR is the first of the week
-# (scripts/eval/first_pr_of_week.py — order-independent, re-run safe) and writes
-# a `run_eval` dotenv flag; `eval-weekly` runs the suite only when the flag is
-# set. Both jobs only attach to merge-request pipelines.
+# The scheduled run is GUARDED: a cheap `eval-gate` job runs first and skips the
+# scheduled eval cleanly (the `eval-weekly` rule reads its `RUN_EVAL` flag) when
+# NO MR merged in the lookback window since the last run — nothing new to test,
+# no API spend. The manual `eval-manual` job ALWAYS runs (force; no guard). The
+# "nothing new" skip is a PRE-CHECK that decides whether to invoke the eval at
+# all — once invoked, `--require-executed` still makes it FAIL LOUD.
 #
-# On-demand runs: either the `eval-manual` job below (a `when: manual` play
-# button on the MR pipeline) or `t3 eval run` / `t3 eval skill-triggers` locally.
+# NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up):
+#   * The Claude CLI is installed and asserted (`claude --version`) BEFORE the
+#     eval step — a missing binary FAILS the job, it does not skip.
+#   * `--require-executed` is passed UNCONDITIONALLY (never key-gated), so a
+#     collected-but-all-skipped run exits non-zero. Until ANTHROPIC_API_KEY is
+#     wired the job correctly fails RED — that loud failure is intended.
+#
+# The free deterministic lanes (skill-triggers, pinned-regressions) gate every
+# push via prek and the regression corpus is asserted every MR via pytest, so
+# this job owns only the metered AI suite (one source of truth).
 
 stages:
   - gate
@@ -20,13 +31,20 @@ stages:
 variables:
   GIT_DEPTH: "0"
 
-# Shared body of the weekly and manual eval-suite jobs — one definition so the
-# two never drift (image, setup, retry, and the suite script live here only).
+# Shared body of the scheduled and manual eval-suite jobs — one definition so
+# the two never drift (image, setup, retry, and the suite script live here only).
 .eval-suite:
   image: python:3.13-slim
   before_script:
     - pip install --no-cache-dir uv
     - uv sync
+    # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+    # it. A missing binary must FAIL the job (the runner would otherwise skip
+    # every scenario and report a decorative green). `claude --version` is the
+    # post-install assertion that turns an install failure into a red job.
+    - apt-get update && apt-get install -y --no-install-recommends nodejs npm
+    - npm install -g @anthropic-ai/claude-code
+    - claude --version
   # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
   retry:
     max: 2
@@ -36,40 +54,33 @@ variables:
       - api_failure
       - script_failure
   script:
-    # The deterministic lanes (skill-triggers, pinned-regressions) gate every
-    # push via prek and the regression corpus is asserted every MR via pytest, so
-    # this job owns only the metered AI suite (one source of truth). The scenario
-    # suite SKIPs cleanly when `claude` is not on PATH (the runner emits SKIP and
-    # exits 0), so the job runs the suite if a CLI is provisioned, no-op otherwise.
     # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
     # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
     # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
-    # spend). Mirrors the GitHub `eval-weekly` job.
-    # `--require-executed` (armed only when ANTHROPIC_API_KEY is set) fails the job
-    # if the suite collected scenarios but executed none, so a fully-skipped run
-    # cannot pass green with zero behavioral coverage (souliane/teatree#1811).
-    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
-    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
+    # spend). Mirrors the GitHub eval workflow.
+    # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a
+    # collected-but-all-skipped run exits non-zero, so the suite can never pass
+    # green with zero behavioral coverage (souliane/teatree#1811).
+    - uv run t3 eval run --trials 3 --require any --backend sdk --require-executed
 
+# Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
+# the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.
+# Only runs on a schedule pipeline (the manual job is unguarded).
 eval-gate:
   stage: gate
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
   image: alpine:3.20
   before_script:
-    - apk add --no-cache python3 glab curl jq
+    - apk add --no-cache python3 glab jq
   script:
-    # Pull the project's MRs (iid + created_at) for the ISO-week decision,
-    # most-recent-first so the current ISO week is on the first page even for a
-    # project with thousands of MRs. first_pr_of_week.py also keeps the newest
-    # window as a second line of defence regardless of platform ordering.
+    # Merged MRs, most-recent-first; the script answers "any merged in the window".
     - >-
-      glab api "projects/$CI_PROJECT_ID/merge_requests?state=all&order_by=created_at&sort=desc&per_page=100"
-      > mrs.json || echo "[]" > mrs.json
+      glab api "projects/$CI_PROJECT_ID/merge_requests?state=merged&order_by=updated_at&sort=desc&per_page=100"
+      --paginate=false | jq '[.[] | {number: .iid, merged_at: .merged_at}]' > prs.json || echo "[]" > prs.json
     - >-
-      if python3 scripts/eval/first_pr_of_week.py
-      --mrs-file mrs.json --current-iid "$CI_MERGE_REQUEST_IID" --skip-code 1; then
+      if python3 scripts/eval/merged_prs_since.py --prs-file prs.json --days 7 --skip-code 1; then
         echo "RUN_EVAL=true" >> eval.env;
       else
         echo "RUN_EVAL=false" >> eval.env;
@@ -78,23 +89,25 @@ eval-gate:
     reports:
       dotenv: eval.env
 
+# Weekly scheduled run. Configure a GitLab pipeline schedule (Settings → CI/CD →
+# Schedules) so `$CI_PIPELINE_SOURCE == "schedule"` fires this once a week. Runs
+# only when the eval-gate pre-check found something new merged (`RUN_EVAL`).
 eval-weekly:
   extends: .eval-suite
   stage: eval
   needs: ["eval-gate"]
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $RUN_EVAL == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $RUN_EVAL == "true"'
   allow_failure: false
 
 # On-demand manual run, the GitLab mirror of the GitHub `workflow_dispatch`
-# trigger. `when: manual` adds a play button on merge-request pipelines so a
-# maintainer can run the full suite at an arbitrary time without waiting for the
-# first-of-week gate. It is allow_failure so a manual run never blocks the MR.
-# Shares `.eval-suite` (image, setup, retry, script) with `eval-weekly`.
+# trigger. `when: manual` adds a play button so a maintainer can run the full
+# suite at an arbitrary time. It is allow_failure so a manual run never blocks a
+# pipeline. Shares `.eval-suite` (image, setup, retry, script) with eval-weekly.
 eval-manual:
   extends: .eval-suite
   stage: eval
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE != "merge_request_event"'
       when: manual
       allow_failure: true

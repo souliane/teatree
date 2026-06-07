@@ -60,14 +60,20 @@ def make_runner(
     *,
     max_turns_override: int | None = None,
     transcript_dir: Path | None = None,
+    require_executed: bool = False,
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
     ``"sdk"`` → the metered ``claude -p`` runner (CI, ``ANTHROPIC_API_KEY``).
     ``"subscription"`` → the transcript-ingest runner (local, subscription).
+
+    ``require_executed`` only affects the sdk runner: it arms the hard-error on a
+    missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
+    by an unprovisioned CLI. The subscription runner ignores it — its legitimate
+    pre-transcript all-skip is caught downstream by :func:`guard_executed`.
     """
     if backend == SDK_BACKEND:
-        return ClaudePRunner(max_turns_override=max_turns_override)
+        return ClaudePRunner(max_turns_override=max_turns_override, require_executed=require_executed)
     if backend == SUBSCRIPTION_BACKEND:
         return SubscriptionTranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
     msg = f"unknown eval backend {backend!r}; expected one of {', '.join(KNOWN_BACKENDS)}"
