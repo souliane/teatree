@@ -153,6 +153,13 @@ def deliver_user_dm(
     its delivery row exactly as a plain ``post_message`` would. Never lets a
     speak-side failure (config read, synthesis, attach, local play) drop the
     text DM: any such error degrades to a plain text-only post.
+
+    Pure delivery: it does NOT interpret ``thread_ts`` as an answer. Retiring
+    a queued question is owned by the deliberate threaded-answer egress (the
+    self-DM branch of
+    :meth:`teatree.core.on_behalf_egress.OnBehalfSlackEgress.post`), so an
+    unrelated INFO/status DM that ``notify_user`` happens to thread under a
+    still-open question can never retire it.
     """
     config = _resolve_speak_safe()
     audio_body = _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
@@ -160,31 +167,8 @@ def deliver_user_dm(
         response = audio_body
     else:
         response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
-    _maybe_retire_answered_question(thread_ts)
     _maybe_speak_local(config, text)
     return response
-
-
-def _maybe_retire_answered_question(thread_ts: str) -> None:
-    """Retire the queued question a threaded bot→user reply answers (#2053).
-
-    The single bot→user DM chokepoint is the one place an out-of-band
-    answer (``notify post --thread-ts``) and the ``notify_user`` reply path
-    both pass through, so retiring the answered :class:`PendingChatInjection`
-    row here closes the answer-stamp gap for every DM egress at once: a
-    threaded reply marks the question loop-replied (the reactive cycle stops
-    re-delegating a ``t3:answerer`` Task) and answered (the Stop-hook gate
-    stops nagging). Best-effort: a top-level DM (no ``thread_ts``) is a
-    no-op and any DB failure is logged and swallowed so the DM is never lost.
-    """
-    if not thread_ts:
-        return
-    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
-
-    try:
-        PendingChatInjection.retire_answered_in_thread(thread_ts)
-    except Exception as exc:  # noqa: BLE001 — retiring is a side path; never drop the DM
-        logger.debug("retire-answered-question stamp failed for thread_ts=%s: %s", thread_ts, exc)
 
 
 def _resolve_speak_safe() -> SpeakConfig:

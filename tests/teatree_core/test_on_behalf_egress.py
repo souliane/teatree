@@ -15,11 +15,12 @@ Symmetric coverage of the gate→route→emit→audit contract:
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import BotPing, OnBehalfApproval
+from teatree.core.models import BotPing, OnBehalfApproval, PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 
@@ -28,6 +29,7 @@ _USER_ID = "U_OPERATOR"
 _COLLEAGUE = "C_REVIEW"
 _TARGET = "https://github.com/o/r/pull/1"
 _APPROVER = "U-OPERATOR"
+_QUESTION_TS = "1780757338.674389"
 
 
 @dataclass
@@ -257,3 +259,100 @@ class TestAuditOnlyOnRealSuccess(TestCase):
         assert BotPing.objects.filter(
             idempotency_key=f"on_behalf_post:{_TARGET}:merge_reaction",
         ).exists()
+
+
+class TestThreadedAnswerRetiresQuestion(TestCase):
+    """The deliberate threaded self-DM answer retires its question (#2053).
+
+    The ``notify post --thread-ts`` answer route is the only egress that
+    deliberately threads a self-DM under a queued question, so the retire
+    fires iff the DM is genuinely an answer — never for an unrelated INFO
+    DM (see ``test_speak_chokepoint_does_not_retire``). Both gates are
+    stamped: ``loop_replied_at`` (the cycle stops re-delegating an answerer
+    Task) and ``answered_at`` (the Stop-hook gate stops nagging).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_mode(tmp_path, monkeypatch, "ask")
+        monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
+
+    def _record_question(self) -> None:
+        PendingChatInjection.record(channel=_DM_CHANNEL, slack_ts=_QUESTION_TS, text="why was it cancelled?")
+
+    def test_threaded_self_dm_answer_stamps_both_gates(self) -> None:
+        self._record_question()
+
+        OnBehalfSlackEgress(_RouteAwareFake()).post(
+            channel=_DM_CHANNEL,
+            text="it raced the migration",
+            target=_DM_CHANNEL,
+            action="cli_notify_post",
+            thread_ts=_QUESTION_TS,
+        )
+
+        row = PendingChatInjection.objects.get()
+        assert row.loop_replied_at is not None
+        assert row.answered_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
+    def test_retired_question_drops_out_of_loop_unreplied(self) -> None:
+        self._record_question()
+
+        OnBehalfSlackEgress(_RouteAwareFake()).post(
+            channel=_DM_CHANNEL,
+            text="answer",
+            target=_DM_CHANNEL,
+            action="cli_notify_post",
+            thread_ts=_QUESTION_TS,
+        )
+
+        assert list(PendingChatInjection.loop_unreplied()) == []
+
+    def test_top_level_self_dm_does_not_retire(self) -> None:
+        self._record_question()
+
+        OnBehalfSlackEgress(_RouteAwareFake()).post(
+            channel=_DM_CHANNEL,
+            text="unrelated status",
+            target=_DM_CHANNEL,
+            action="cli_notify_post",
+            thread_ts="",
+        )
+
+        row = PendingChatInjection.objects.get()
+        assert row.loop_replied_at is None
+        assert row.answered_at is None
+
+    def test_threaded_self_dm_with_unrelated_thread_leaves_question_open(self) -> None:
+        self._record_question()
+
+        OnBehalfSlackEgress(_RouteAwareFake()).post(
+            channel=_DM_CHANNEL,
+            text="answer to a different thread",
+            target=_DM_CHANNEL,
+            action="cli_notify_post",
+            thread_ts="2222222222.000000",
+        )
+
+        row = PendingChatInjection.objects.get()
+        assert row.loop_replied_at is None
+        assert row.answered_at is None
+
+    def test_retire_failure_is_swallowed_and_dm_still_delivered(self) -> None:
+        self._record_question()
+        with patch.object(
+            PendingChatInjection,
+            "retire_answered_in_thread",
+            side_effect=RuntimeError("db locked"),
+        ):
+            response = OnBehalfSlackEgress(_RouteAwareFake()).post(
+                channel=_DM_CHANNEL,
+                text="answer",
+                target=_DM_CHANNEL,
+                action="cli_notify_post",
+                thread_ts=_QUESTION_TS,
+            )
+
+        assert response.get("ok") is True
+        assert PendingChatInjection.objects.get().loop_replied_at is None
