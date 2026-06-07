@@ -1,0 +1,11 @@
+from unittest.mock import patch
+
+
+def test_patch_object_on_runtime_object():
+    obj = make_thing()
+    with patch.object(obj, "attr_set_in_fixture", return_value=1):
+        pass
+
+    router = build_router()
+    with patch.object(router.subprocess, "run"):
+        pass

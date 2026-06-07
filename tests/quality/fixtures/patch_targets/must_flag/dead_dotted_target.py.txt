@@ -1,0 +1,6 @@
+from unittest.mock import patch
+
+
+def test_dead_dotted():
+    with patch("teatree.config.this_attr_was_removed_by_a_refactor", return_value=1):
+        pass
