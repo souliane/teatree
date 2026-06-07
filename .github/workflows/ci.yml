@@ -44,7 +44,8 @@
 #   2. Fast static checks    — lint, blueprint-cross-pr, blueprint-size-cross-pr
 #   3. Docs integrity        — doc-update-gate, comment-density-warning,
 #                              docs-drift
-#   4. Advisory signals      — semgrep-regressions, test-shape, test-path-mirror
+#   4. Signal & ratchet      — semgrep-regressions (advisory), test-shape
+#                              (advisory), test-path-mirror (ratchet gate)
 #   5. Test suite            — test, test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-weekly,
 #                              banned-terms-tree
@@ -296,7 +297,7 @@ jobs:
       # missing nav target fails CI instead of shipping a broken site.
       - run: uv run mkdocs build --strict
 
-  # ── 4. Advisory signals ────────────────────────────────────────────────────
+  # ── 4. Signal & ratchet checks (mix of advisory + ratchet gate) ────────────
 
   # ADVISORY (PR-only): runs the warn-set semgrep rules and always exits 0;
   # a finding is visible in CI output but does not block the PR.
@@ -344,9 +345,9 @@ jobs:
       - name: Test-shape report
         run: uv run t3 tool test-shape --root .
 
-  # ADVISORY: ratchet that fails only when a NEW mis-pathed test file appears
-  # (live count exceeds the committed baseline); never blocks on pre-existing
-  # violations; baseline trends toward 0 as the relocation sweep proceeds.
+  # GATE: ratchet that fails (exits non-zero) only when a NEW mis-pathed test
+  # file appears — live count exceeds the committed baseline; never blocks on
+  # pre-existing violations; baseline trends toward 0 as the sweep proceeds.
   test-path-mirror:
     # Forward-guard: every test file mirrors its src/teatree/<pkg>/... module
     # path as tests/teatree_<pkg>/... ([tool.teatree.test_path_mirror]). The
