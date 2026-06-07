@@ -57,16 +57,17 @@ installed editable from a clone; the eval harness ships inside it.
   commit/push on a real violation.
 - **CI manual.** The weekly eval gate can be triggered on demand
   ([#1992](https://github.com/souliane/teatree/pull/1992)).
-- **CI weekly.** The metered `claude -p` scenario run plus the free lanes run
-  once per ISO week (first PR of the week, or a Sunday cron backstop for a
-  PR-less week). See "Triggering" below.
+- **CI weekly.** The metered `claude -p` scenario run runs once per ISO week
+  (first PR of the week, or a Sunday cron backstop for a PR-less week); the
+  deterministic lanes are gated by prek per push + pytest per PR, not re-run
+  here. See "Triggering" below.
 
 ## Invocation
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
 t3 eval all                                  # all lanes (skill-triggers + skill-coverage + pinned-regressions + negative-control + transcript-replay + AI) in one summary table
-t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — the pre-push gate
+t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — on-demand; the pre-push gate is eval-pinned-regressions
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
