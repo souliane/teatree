@@ -194,9 +194,8 @@ def _evaluate(repo: pathlib.Path, base_ref: str) -> int:
     if not _blueprint_touched(repo, base_ref):
         return 0
 
-    root = _repo_root() if repo == _repo_root() else repo
-    head_top = _size(root / _TOP_FILE)
-    head_appendix = _appendix_total(root)
+    head_top = _size(repo / _TOP_FILE)
+    head_appendix = _appendix_total(repo)
     head_total = head_top + head_appendix
 
     _emit_warning(head_top, head_appendix, head_total)

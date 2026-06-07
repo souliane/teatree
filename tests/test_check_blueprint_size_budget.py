@@ -98,14 +98,20 @@ class TestDeltaHardGate:
 class TestRaceFreedom:
     """The defining #2040 regression: concurrent main growth must not red."""
 
-    def test_concurrent_main_growth_does_not_red_innocent_pr(self, git_repo: Path) -> None:
+    def test_merging_grown_main_into_feature_does_not_red_innocent_pr(self, git_repo: Path) -> None:
+        # The real #2040 race: a PR keeps itself current by MERGING main, which
+        # pulls main's concurrent growth into the PR's OWN working tree. The old
+        # absolute gate read that merged working tree and red-blocked the
+        # innocent PR even though its own diff was fine. The delta gate measures
+        # only the own-diff vs the post-merge merge-base, so it stays GREEN.
+        #
         # The fixture leaves us on ``feature``, branched from the small base.
-        # This PR's OWN diff is tiny.
-        _write(git_repo, "BLUEPRINT.md", "x" * (1000 + 50))
+        # This PR's OWN diff is a tiny new appendix (50 B), on a file main does
+        # not touch, so the later merge is clean.
+        _write(git_repo, "docs/blueprint/loop-topology.md", "z" * 50)
         _commit_all(git_repo, "tiny own edit")
-        # Meanwhile main grows enormously via concurrently merged PRs — far
-        # past every absolute cap. The innocent PR's merge-base is still the
-        # small base, so its OWN delta is 50 B.
+        # Meanwhile main grows enormously via concurrently merged PRs — far past
+        # every absolute cap, on files this PR does not touch.
         _run_git(git_repo, "checkout", "-q", "main")
         _write(git_repo, "BLUEPRINT.md", "x" * (gate._SOFT_TOP_LEVEL_BYTES + 50_000))
         _write(
@@ -114,7 +120,14 @@ class TestRaceFreedom:
             "w" * (gate._SOFT_APPENDICES_BYTES + 50_000),
         )
         _commit_all(git_repo, "concurrent main growth")
+        # The PR stays current by merging main: feature's working tree now
+        # carries all of main's growth (the merged tree is huge).
         _run_git(git_repo, "checkout", "-q", "feature")
+        _run_git(git_repo, "merge", "-q", "--no-edit", "main")
+        merged_top = (git_repo / "BLUEPRINT.md").stat().st_size
+        assert merged_top > gate._SOFT_TOP_LEVEL_BYTES
+        # Own-delta vs the post-merge merge-base (main's tip) is still ~50 B, so
+        # the delta gate passes despite the huge merged working tree.
         assert gate.ci_main(repo=git_repo, base_ref="main") == 0
 
 
