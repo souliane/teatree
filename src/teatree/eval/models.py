@@ -90,3 +90,4 @@ class EvalRun:
     is_error: bool
     raw_stdout: str
     raw_stderr: str
+    cost_usd: float = 0.0

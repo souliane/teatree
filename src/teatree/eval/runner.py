@@ -17,7 +17,13 @@ from pathlib import Path
 
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
+from teatree.eval.transcript import (
+    extract_cost_usd,
+    extract_terminal_reason,
+    extract_text_blocks,
+    extract_tool_calls,
+    parse_stream_json,
+)
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 WATCHDOG_SECONDS = 120
@@ -74,6 +80,7 @@ class ClaudePRunner:
         tool_calls = extract_tool_calls(events)
         text_blocks = extract_text_blocks(events)
         terminal_reason, is_error = extract_terminal_reason(events)
+        cost_usd = extract_cost_usd(events)
         if outcome.returncode != 0 and terminal_reason == "aborted":
             is_error = True
         return EvalRun(
@@ -84,6 +91,7 @@ class ClaudePRunner:
             is_error=is_error,
             raw_stdout=outcome.stdout,
             raw_stderr=outcome.stderr,
+            cost_usd=cost_usd,
         )
 
     def _build_command(
