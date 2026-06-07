@@ -31,7 +31,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 | Deterministic lanes | `src/teatree/eval/trigger_qa.py`, `regression_corpus.py`, `negative_control.py`, `transcript_conformance.py` |
 | Run-store | `src/teatree/core/models/eval_run.py` (`EvalRunRecord` + `EvalScenarioResult`) |
 | Generated corpus | `scripts/eval/corpus_gen/` + `generate_corpus.py` |
-| Pre-push hook | `.pre-commit-config.yaml` `eval-agent-behavior` (push stage → `t3 eval all --free-only`) |
+| Prek hooks | `.pre-commit-config.yaml`: `eval-skill-triggers` (commit stage → `t3 eval skill-triggers`) + `eval-pinned-regressions` (push stage → `t3 eval pinned-regressions`) |
 | CI triggers | `.github/workflows/ci.yml` + `.gitlab-ci.yml` (`eval-weekly`), `scripts/eval/first_pr_of_week.py` |
 
 ### Tech stack
@@ -49,21 +49,25 @@ installed editable from a clone; the eval harness ships inside it.
   same gate inside `dev/Dockerfile.test` — the exact image the CI test job
   builds — for environment parity when debugging a CI-only failure. Host-run
   stays the default; `--docker` is the explicit opt-in.
-- **Pre-push (deterministic gate).** The `eval-agent-behavior` prek hook runs
-  the four free deterministic lanes (`t3 eval all --free-only`) at the push
-  stage — token-free, ~2–3 s — and fails the push on a real violation.
+- **Prek (deterministic gates).** The two deterministic lanes are wired into
+  prek under their explicit names: the sub-second `eval-skill-triggers` hook
+  (`t3 eval skill-triggers`, pure frontmatter parsing) runs at the **commit**
+  stage, and `eval-pinned-regressions` (`t3 eval pinned-regressions`, real
+  git/FSM work) runs at the **push** stage — both token-free, failing the
+  commit/push on a real violation.
 - **CI manual.** The weekly eval gate can be triggered on demand
   ([#1992](https://github.com/souliane/teatree/pull/1992)).
-- **CI weekly.** The metered `claude -p` scenario run plus the free lanes run
-  once per ISO week (first PR of the week, or a Sunday cron backstop for a
-  PR-less week). See "Triggering" below.
+- **CI weekly.** The metered `claude -p` scenario run runs once per ISO week
+  (first PR of the week, or a Sunday cron backstop for a PR-less week); the
+  deterministic lanes are gated by prek per push + pytest per PR, not re-run
+  here. See "Triggering" below.
 
 ## Invocation
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
-t3 eval all                                  # all lanes (trigger-qa + skill-coverage + regression + negative-control + transcript-replay + AI) in one summary table
-t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — the pre-push gate
+t3 eval all                                  # all lanes (skill-triggers + skill-coverage + pinned-regressions + negative-control + transcript-replay + AI) in one summary table
+t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — on-demand; the pre-push gate is eval-pinned-regressions
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
@@ -85,24 +89,27 @@ t3 eval run --backend subscription            # explicit subscription (the defau
 t3 eval run --backend sdk                       # metered claude -p path (CI; ANTHROPIC_API_KEY)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
-t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
+t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
 t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
 t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
-t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
-t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
+t3 eval pinned-regressions                    # deterministic real-code-path regression corpus (no claude run)
+t3 eval pinned-regressions --format json      # JSON: per-class ok/skipped/origin/detail
 t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
 t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
 ```
 
-The `eval-agent-behavior` prek hook runs the five free deterministic lanes
-(`t3 eval all --free-only`) at the **pre-push** stage — token-free, no model,
-no spec discovery, ~2–3 s. It fails the push on any real deterministic
-violation; the skill-coverage lane is warn-first (reports a gap, never FAILs in
-Phase A) and the transcript-replay lane SKIPs (never FAILs) when no in-scope
-session transcript exists. Run it on demand with:
+The two deterministic lanes are wired into prek under their explicit names: the
+sub-second `eval-skill-triggers` hook runs at the **pre-commit** stage (pure
+frontmatter parsing) and `eval-pinned-regressions` runs at the **pre-push** stage
+(real git/FSM work) — both token-free, no model, no spec discovery. Each fails
+the commit/push on a real deterministic violation. The full free-lane summary
+(`t3 eval all --free-only`) — which also folds in the warn-first skill-coverage
+lane, negative-control, and the SKIP-when-out-of-scope transcript-replay lane —
+stays runnable on demand. Run a single prek lane on demand with:
 
 ```bash
-prek run --hook-stage push eval-agent-behavior
+prek run --hook-stage commit eval-skill-triggers
+prek run --hook-stage push eval-pinned-regressions
 ```
 
 ### Execution backends and the cost split (default = subscription)
@@ -116,13 +123,13 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
 | `sdk` | metered `claude -p` (`ANTHROPIC_API_KEY`) | CI (`eval-weekly`, explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live |
 
-The free, no-model commands — `trigger-qa`, `regression`, and
+The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
 ### `t3 eval all` — the combined multi-lane surface (#1781)
 
 `t3 eval all` runs every lane in one summary table: the five free deterministic
-lanes (`trigger-qa`, `skill-coverage`, `regression`, `negative-control`,
+lanes (`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`) plus the metered AI lane. The `skill-coverage` lane is
 warn-first (reports a gap, exit 0). The AI lane never meters silently — `--backend sdk` opts in.
 A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
@@ -240,20 +247,20 @@ cheap default model tier, a per-call `--max-budget-usd` cap, and a per-run
 skips (it never fails a scenario by absence). A scenario may carry `judge:` with
 no `expect:` (judge-only) or alongside matchers (both must pass).
 
-### Trigger-QA (skill activation)
+### Skill-triggers (skill activation)
 
-`t3 eval trigger-qa` is a Layer-1 (deterministic, free, no `claude` run) eval.
+`t3 eval skill-triggers` is a Layer-1 (deterministic, free, no `claude` run) eval.
 It loads each skill's `triggers.keywords` frontmatter and checks the
 must-fire / must-not-fire prompt corpus in `trigger_qa_corpus.yaml`: an
 under-trigger (in-scope prompt that does not fire) or over-trigger (control
 prompt that fires) exits non-zero. A skill author registers expectations by
 editing the corpus.
 
-### Regression corpus (real gate/checker code paths)
+### Pinned-regressions corpus (real gate/checker code paths)
 
-`t3 eval regression` is a Layer-1 (deterministic, free, no `claude` run) eval —
-sibling of trigger-QA. Where a scenario grades what an agent *says* it would
-do, the regression corpus (`regression_corpus.py`) grades what the gate/checker
+`t3 eval pinned-regressions` is a Layer-1 (deterministic, free, no `claude` run)
+eval — sibling of skill-triggers. Where a scenario grades what an agent *says* it
+would do, the pinned-regressions corpus (`regression_corpus.py`) grades what the gate/checker
 code *does*: each `RegressionCheck` calls the **real** function for a recurring
 failure class on a constructed must-block input and a must-allow input, and
 reports a violation when either direction is wrong. Checks that need git build
@@ -273,16 +280,20 @@ code path still honors the invariant — then add the matching anti-vacuous test
 ## Triggering
 
 - **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
-  `t3 eval trigger-qa` / `t3 eval regression` locally whenever you want.
-- **Every PR (deterministic layers).** The regression corpus is exercised by
+  `t3 eval skill-triggers` / `t3 eval pinned-regressions` locally whenever you want.
+- **Every commit / push (deterministic lanes via prek).** The
+  `eval-skill-triggers` hook gates every commit and `eval-pinned-regressions`
+  gates every push (token-free).
+- **Every PR (deterministic layers).** The pinned-regressions corpus is exercised by
   `tests/eval/test_regression_corpus.py` in the normal pytest gate on every
-  PR, and trigger-QA + the scenario anti-vacuous matchers are pinned by
+  PR, and skill-triggers + the scenario anti-vacuous matchers are pinned by
   `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
   test_eval.py`. The deterministic, free layers therefore guard every PR
   through pytest — only the paid `claude -p` scenario *run* is weekly.
-- **Weekly, on the first PR of the ISO week.** CI runs the full suite (the
-  paid scenario run plus the free `trigger-qa` and `regression` commands) once
-  a week — not on every push, not on every PR. `scripts/eval/
+- **Weekly, on the first PR of the ISO week.** CI runs the paid scenario suite
+  once a week — not on every push, not on every PR. The deterministic lanes are
+  NOT re-run standalone in the weekly job (prek per push + pytest per PR is the
+  single source of truth). `scripts/eval/
   first_pr_of_week.py` decides whether the current MR is the earliest-created
   MR of the current ISO week (order-independent, re-run safe). The rule is
   wired in `.gitlab-ci.yml` (`eval-gate` → `eval-weekly`) and mirrored in
@@ -290,7 +301,7 @@ code path still honors the invariant — then add the matching anti-vacuous test
 
 ## Failure-class coverage
 
-The regression corpus (`t3 eval regression`, real code-path checks) and the
+The pinned-regressions corpus (`t3 eval pinned-regressions`, real code-path checks) and the
 behavioral scenarios (`t3 eval run`, agent-trajectory checks) together pin the
 recurring failure classes of the last development cycle. Each row names the
 class, where it is pinned, and the originating fix:
@@ -651,7 +662,7 @@ agent editing the canonical clone without `git worktree add` first), drives it
 through the *public* report path, and exits 0 only when the harness reports the
 violation — naming the violated rule and the offending tool call. It is
 token-free and deterministic (it never shells `claude -p`), so it runs as one of
-the free lanes the `eval-agent-behavior` prek pre-push hook gates on. A non-zero
+the free lanes `t3 eval all --free-only` gates on. A non-zero
 exit means the harness went green on a genuine violation, i.e. the harness
 itself is broken.
 

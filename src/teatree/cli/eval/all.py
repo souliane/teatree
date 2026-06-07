@@ -1,6 +1,6 @@
 """``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
 
-The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+The five free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
 negative-control, transcript-replay) always run; skill-coverage is warn-first
 (reports a gap, never FAILs in Phase A) and transcript-replay surfaces as a SKIP
 when no real session transcript is in scope (never a FAIL). The AI/trajectory lane grades
@@ -71,7 +71,7 @@ class LaneResult:
 
 def trigger_lane(report: TriggerQAReport) -> LaneResult:
     return LaneResult(
-        name="trigger-qa",
+        name="skill-triggers",
         cost="free",
         passed=report.ok,
         skipped=False,
@@ -81,7 +81,7 @@ def trigger_lane(report: TriggerQAReport) -> LaneResult:
 
 def regression_lane(report: RegressionReport) -> LaneResult:
     return LaneResult(
-        name="regression",
+        name="pinned-regressions",
         cost="free",
         passed=report.ok,
         skipped=False,

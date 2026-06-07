@@ -292,8 +292,8 @@ def history(
     typer.echo(renderer(runs))
 
 
-@eval_app.command("trigger-qa")
-def trigger_qa(
+@eval_app.command("skill-triggers")
+def skill_triggers(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
 ) -> None:
     """Validate every skill's trigger keywords against the must-fire/must-not-fire corpus.
@@ -334,8 +334,8 @@ def coverage(
         sys.exit(1)
 
 
-@eval_app.command("regression")
-def regression(
+@eval_app.command("pinned-regressions")
+def pinned_regressions(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
 ) -> None:
     """Run the deterministic regression corpus over the real gate/checker code paths.
@@ -382,7 +382,7 @@ def all_lanes(
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
-    The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+    The five free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
     negative-control, transcript-replay) always run; skill-coverage is warn-first
     (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real session
     transcript is in scope (a missing run is not a violation). The AI lane grades
