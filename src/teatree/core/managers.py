@@ -403,6 +403,20 @@ class TaskQuerySet(models.QuerySet):
                 heartbeat_at=None,
             )
 
+    def in_flight_claimed_count(self, dispatchable_filter: "Q") -> int:
+        """Count CLAIMED tasks that match the dispatchable phase/role filter.
+
+        The pipelined WIP cap subtracts this from the raw overlay budget so
+        the standing total of CLAIMED dispatchable tasks can never exceed the
+        cap, regardless of which tick admitted them. A CLAIMED task whose
+        lease has expired is excluded — the reaper will reclaim it and it is
+        not truly in flight.
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        return self.filter(status=Task.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
+
     def active_claim_exists(self) -> bool:
         """True iff some task is CLAIMED with a still-live lease.
 
