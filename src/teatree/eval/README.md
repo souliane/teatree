@@ -659,16 +659,29 @@ router source.
 
 `t3 <overlay> retro gate-failures` ([#2024](https://github.com/souliane/teatree/issues/2024))
 closes the loop from "a quality gate fired on agent output" to "an eval that
-stops the gate firing first-try". A non-zero hook exit in a session transcript
-IS a gate failure (a prek hook block, comment-density, banned-terms, the
-doc-update gate). The command reads the SINGLE transcript chokepoint
-(`extract_hook_events` — no per-gate instrumentation), keeps the non-zero exits,
-classifies each `preventable` / `environmental` via one declarative table
-(`gate_failures._ENVIRONMENTAL_GATES`: dependency audit/lock/sync, secret scan,
-upstream type / module-graph checkers are environmental; everything
-agent-output-shaped, and any unknown gate, is preventable — fail toward an eval),
-records each to the durable per-key store (so recurrence across sessions is
-observable), and emits JSON + a human summary.
+stops the gate firing first-try".
+
+**The real on-disk schema (verified against `~/.claude/projects/*/*.jsonl`).** A
+teatree gate BLOCK is a `hook_blocking_error` attachment carrying NO `exitCode`;
+the gate identity lives in `attachment.blockingError.blockingError`, whose text
+leads with a `TEATREE GATE — <phrase>` marker. `attachment.hookName` is the
+EVENT:TOOL bucket (`Stop`, `PreToolUse:Bash`) — never a gate name — and
+`attachment.command` is the same `hook_router.py` runner invocation across every
+gate, so neither identifies the gate. (`TEATREE LOOP SELF-PUMP` is the same
+attachment type but a continue-the-loop signal, not a failure.) A
+`hook_non_blocking_error` carries `exitCode:1` and is an infra/dependency
+breakage (a missing plugin dir, a hook-runner traceback).
+
+The command reads the SINGLE transcript chokepoint (`extract_hook_events` — no
+per-gate instrumentation), keys on the attachment TYPE plus the marker (NEVER on
+`exitCode`, which a blocking gate lacks), excludes the self-pump signal, and
+reduces the gate identity to a bounded slug (`gate_identity_slug`). It classifies
+each `preventable` / `environmental` via one declarative table
+(`gate_failures._ENVIRONMENTAL_SLUG_FRAGMENTS`: any `hook_non_blocking_error`
+infra breakage is environmental; everything agent-output-shaped, and any unknown
+gate BLOCK, is preventable — fail toward an eval), records each to the durable
+per-key store (so recurrence across sessions is observable), and emits JSON + a
+human summary.
 
 `--escalate` files one scoped, deduped enforcement issue per *recurring*
 *preventable* failure, reusing `core.review_findings.file_class_c_issue` so it is
@@ -684,13 +697,15 @@ t3 <overlay> retro gate-failures --session <id>        # a specific session in s
 t3 <overlay> retro gate-failures --escalate --repo <slug> --pr-url <url>
 ```
 
-**Privacy by construction.** `GateFailure` carries ONLY the gate name + a
-path-neutralized command shape + the session id — NEVER the hook's
-`stdout`/`stderr`, which hold the diff/banned content the gate was reacting to.
-The fingerprint hashes (gate, normalized command shape) so two comment-density
-fails on different files hash together (one recurring class) while a different
-gate hashes apart. The extractor and classifier live in `eval/gate_failures.py`
-(layer `integration`), not `core` (layer `domain`) — a `core -> eval` import is a
+**Privacy by construction.** `GateFailure` carries ONLY the gate-identity slug +
+the session id — NEVER the blockingError message, the `stderr`, the `command`, or
+`stdout` (the diff/banned content the gate was reacting to). The slug for a
+blocking gate is a bounded first-sentence token from the gate's OWN fixed marker
+text; a non-blocking `stderr` is arbitrary so it is matched to a canonical infra
+slug and never echoed verbatim. The fingerprint hashes the slug, so two firings
+of the same gate (any session, any tool) hash together while a different gate
+hashes apart. The extractor and classifier live in `eval/gate_failures.py` (layer
+`integration`), not `core` (layer `domain`) — a `core -> eval` import is a
 backwards tach edge; the `retro` command (layer `interface`) calls into `eval` on
 a forward edge.
 

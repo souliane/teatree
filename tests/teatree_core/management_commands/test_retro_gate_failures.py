@@ -1,10 +1,11 @@
 """``t3 <overlay> retro gate-failures`` — extract, classify, record, escalate (#2024).
 
-The session transcript is supplied via ``--file`` (a local on-disk session
-JSONL). The list pass extracts the non-zero hook exits, classifies each
-preventable / environmental, records to the durable store, and emits JSON +
-a human summary. The ``--escalate`` pass files one deduped enforcement issue
-per recurring preventable failure via the resolved code host.
+Session lines are built in the REAL on-disk schema: a gate BLOCK is a
+``hook_blocking_error`` whose ``blockingError.blockingError`` carries a
+``TEATREE GATE`` marker (no ``exitCode``); an infra failure is a
+``hook_non_blocking_error`` with ``exitCode:1`` and a ``stderr``. The list pass
+extracts, classifies, records, and emits JSON + a human summary; ``--escalate``
+files one deduped enforcement issue per recurring preventable failure.
 """
 
 import json
@@ -25,23 +26,63 @@ _PR_URL = "https://github.com/souliane/teatree/pull/2024"
 _REPO = "souliane/teatree"
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
+_RUNNER = "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop"
 
-def _hook_line(*, gate: str, exit_code: int, command: str) -> str:
+
+def _gate_block_line(*, message: str) -> str:
     return json.dumps(
         {
             "type": "attachment",
             "attachment": {
-                "type": "hook_blocking_error" if exit_code else "hook_success",
-                "hookEvent": "PreToolUse",
-                "hookName": gate,
-                "exitCode": exit_code,
-                "command": command,
-                "stdout": "diff body with acmecorp secret",
-                "stderr": "leaked-token-xyz",
+                "type": "hook_blocking_error",
+                "hookEvent": "Stop",
+                "hookName": "Stop",
                 "toolUseID": "t1",
+                "blockingError": {"blockingError": message, "command": _RUNNER},
             },
         }
     )
+
+
+def _infra_error_line(*, stderr: str) -> str:
+    return json.dumps(
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_non_blocking_error",
+                "hookEvent": "PostToolUse",
+                "hookName": "PostToolUse:Bash",
+                "exitCode": 1,
+                "toolUseID": "t2",
+                "stderr": stderr,
+                "stdout": "",
+                "command": 'node "${CLAUDE_PLUGIN_ROOT}/hooks/posttooluse.mjs"',
+            },
+        }
+    )
+
+
+def _passing_line() -> str:
+    return json.dumps(
+        {
+            "type": "attachment",
+            "attachment": {
+                "type": "hook_success",
+                "hookEvent": "PreToolUse",
+                "hookName": "PreToolUse:Bash",
+                "exitCode": 0,
+                "toolUseID": "t3",
+                "command": _RUNNER,
+            },
+        }
+    )
+
+
+_QUESTION_GATE = (
+    "TEATREE GATE — a user-directed question was asked inline in prose with no "
+    "AskUserQuestion tool call in this turn. Re-ask through the structured tool."
+)
+_PLUGIN_INFRA = "Failed to run: Plugin directory does not exist: /Users/x/.claude/plugins/cache"
 
 
 def _session_file(tmp: Path, *lines: str, session_id: str = "session") -> Path:
@@ -61,26 +102,32 @@ class RetroGateFailuresTest(TestCase):
         store_dir = Path(self._tmp())
         session = _session_file(
             store_dir,
-            _hook_line(gate="check-comment-density", exit_code=1, command="Write src/x.py"),
-            _hook_line(gate="uv-audit", exit_code=1, command="uv pip audit"),
-            _hook_line(gate="router", exit_code=0, command="t3"),
+            _gate_block_line(message=_QUESTION_GATE),
+            _infra_error_line(stderr=_PLUGIN_INFRA),
+            _passing_line(),
         )
         result = self._run(file=str(session), store_dir=store_dir)
         failures = cast("list[dict[str, object]]", result["failures"])
-        assert len(failures) == 2
-        verdicts = {f["gate"]: f["verdict"] for f in failures}
-        assert verdicts == {"check-comment-density": "preventable", "uv-audit": "environmental"}
+        verdicts = {str(f["gate"]): f["verdict"] for f in failures}
+        preventable = [g for g, v in verdicts.items() if v == "preventable"]
+        environmental = [g for g, v in verdicts.items() if v == "environmental"]
+        assert any("user-directed-question" in g for g in preventable)
+        assert any("failed-to-run" in g for g in environmental)
+        assert not any("pretooluse" in g for g in verdicts)
 
-    def test_serialized_output_never_carries_stdout_or_stderr(self) -> None:
+    def test_serialized_output_never_carries_message_stderr_or_command(self) -> None:
         store_dir = Path(self._tmp())
         session = _session_file(
             store_dir,
-            _hook_line(gate="check-comment-density", exit_code=1, command="Write src/x.py"),
+            _gate_block_line(message=_QUESTION_GATE + " acmecorp-secret"),
+            _infra_error_line(stderr="leaked-token-xyz " + _PLUGIN_INFRA),
         )
         result = self._run(file=str(session), store_dir=store_dir)
         payload = json.dumps(result)
-        assert "acmecorp" not in payload
+        assert "acmecorp-secret" not in payload
         assert "leaked-token-xyz" not in payload
+        assert "AskUserQuestion tool call in this turn" not in payload
+        assert "hook_router.py" not in payload
 
     def test_no_transcript_reports_skip(self) -> None:
         store_dir = Path(self._tmp())
@@ -89,20 +136,10 @@ class RetroGateFailuresTest(TestCase):
 
     def test_escalate_files_recurring_preventable(self) -> None:
         store_dir = Path(self._tmp())
-        # First run records the failure once (session A).
-        session_a = _session_file(
-            store_dir,
-            _hook_line(gate="check-comment-density", exit_code=1, command="Write src/a.py"),
-            session_id="sess-a",
-        )
+        session_a = _session_file(store_dir, _gate_block_line(message=_QUESTION_GATE), session_id="sess-a")
         self._run(file=str(session_a), store_dir=store_dir)
-        # Second run (session B, different file) makes it recurring, then escalates.
         tmp_b = Path(self._tmp())
-        session_b = _session_file(
-            tmp_b,
-            _hook_line(gate="check-comment-density", exit_code=1, command="Write src/b.py"),
-            session_id="sess-b",
-        )
+        session_b = _session_file(tmp_b, _gate_block_line(message=_QUESTION_GATE), session_id="sess-b")
         host = MagicMock()
         host.search_open_issues.return_value = []
         host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/3000"}
@@ -126,14 +163,10 @@ class RetroGateFailuresTest(TestCase):
 
     def test_escalate_environmental_files_nothing(self) -> None:
         store_dir = Path(self._tmp())
-        session_a = _session_file(
-            store_dir, _hook_line(gate="uv-audit", exit_code=1, command="uv pip audit"), session_id="env-a"
-        )
+        session_a = _session_file(store_dir, _infra_error_line(stderr=_PLUGIN_INFRA), session_id="env-a")
         self._run(file=str(session_a), store_dir=store_dir)
         tmp_b = Path(self._tmp())
-        session_b = _session_file(
-            tmp_b, _hook_line(gate="uv-audit", exit_code=1, command="uv pip audit run 2"), session_id="env-b"
-        )
+        session_b = _session_file(tmp_b, _infra_error_line(stderr=_PLUGIN_INFRA), session_id="env-b")
         host = MagicMock()
         host.search_open_issues.return_value = []
         with (

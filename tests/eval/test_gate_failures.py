@@ -1,11 +1,15 @@
 """Tests for the gate-failure feedback loop (#2024).
 
-The extractor reads the single transcript chokepoint
-(``extract_hook_events``), keeps only non-zero hook exits (a gate failure),
-and never serializes the privacy-sensitive ``stdout``/``stderr``. The
-classifier is one declarative table (environmental vs preventable). The
-escalation filer reuses the review-findings file/dedup stack to file one
-deduped enforcement issue per recurring preventable failure.
+Built against the REAL Claude Code on-disk session schema (verified against
+``~/.claude/projects/*/*.jsonl``): a gate BLOCK is a ``hook_blocking_error`` with
+NO ``exitCode``, identity in ``attachment.blockingError.blockingError`` (text
+leading with a ``TEATREE GATE — <phrase>`` marker); ``TEATREE LOOP SELF-PUMP`` is
+the same attachment type but a continue-the-loop signal, not a failure; a
+``hook_non_blocking_error`` carries ``exitCode:1`` and is an infra/dependency
+failure (environmental); ``hookName`` is the EVENT:TOOL label ("Stop",
+"PreToolUse:Bash"), never a gate name, and ``command`` is the same runner across
+every gate. The fixture ``gate_failures_session.jsonl`` is derived from an actual
+on-disk block (the gate's own message text — no PII).
 """
 
 import json
@@ -20,85 +24,125 @@ from teatree.eval.gate_failures import (
     classify_gate_failure,
     escalate_gate_failures,
     extract_gate_failures,
+    gate_identity_slug,
     record_gate_failures,
 )
-from teatree.eval.session_transcript import parse_session_jsonl
-from teatree.hooks import banned_terms_scanner
+from teatree.eval.session_transcript import SessionEvent, parse_session_jsonl
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "gate_failures_session.jsonl"
+
+_STRUCTURED_QUESTION_MARKER = (
+    "TEATREE GATE — a user-directed question was asked inline in prose with no AskUserQuestion tool call in this turn."
+)
 
 
-def _session(*lines: str) -> str:
-    header = '{"type":"user","message":{"role":"user","content":"work"}}'
-    return "\n".join([header, *lines])
-
-
-def _hook(
-    *,
-    gate: str = "check-comment-density",
-    exit_code: int = 1,
-    command: str = "Write src/teatree/util/money.py",
-    sensitive: str = "diff with banned content acmecorp / secret token leaked here",
-) -> str:
-    return json.dumps(
-        {
-            "type": "attachment",
-            "attachment": {
-                "type": "hook_blocking_error" if exit_code else "hook_success",
-                "hookEvent": "PreToolUse",
-                "hookName": gate,
-                "exitCode": exit_code,
-                "command": command,
-                "stdout": sensitive,
-                "stderr": sensitive,
-                "toolUseID": "t1",
-            },
-        }
-    )
+def _events_from_fixture() -> list[SessionEvent]:
+    return parse_session_jsonl(_FIXTURE.read_text(encoding="utf-8"))
 
 
 class TestExtractGateFailures:
-    def test_one_failure_from_a_nonzero_exit(self) -> None:
-        events = parse_session_jsonl(_session(_hook(exit_code=1), _hook(gate="router", exit_code=0)))
-        failures = extract_gate_failures(events, session_id="s1")
-        assert len(failures) == 1
-        assert failures[0].gate == "check-comment-density"
+    def test_real_block_yields_a_preventable_failure(self) -> None:
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        slugs = {f.gate for f in failures}
+        assert any("user-directed-question" in s for s in slugs)
 
-    def test_zero_exit_yields_no_failure(self) -> None:
-        events = parse_session_jsonl(_session(_hook(exit_code=0)))
-        assert extract_gate_failures(events, session_id="s1") == []
+    def test_self_pump_block_is_not_a_failure(self) -> None:
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        assert not any("self-pump" in f.gate for f in failures)
+        assert not any("continue" in f.gate for f in failures)
 
-    def test_flipping_the_only_failure_to_zero_drives_count_to_zero(self) -> None:
-        passing = parse_session_jsonl(_session(_hook(exit_code=0)))
-        failing = parse_session_jsonl(_session(_hook(exit_code=1)))
-        assert len(extract_gate_failures(failing, session_id="s1")) == 1
-        assert extract_gate_failures(passing, session_id="s1") == []
+    def test_passing_hook_is_not_a_failure(self) -> None:
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        assert not any("pretooluse" in f.gate for f in failures)
 
-    def test_none_exit_is_not_a_failure(self) -> None:
-        line = (
-            '{"type":"attachment","attachment":{"type":"hook_success",'
-            '"hookEvent":"PreToolUse","hookName":"router","command":"t3","toolUseID":"t1"}}'
-        )
-        events = parse_session_jsonl(_session(line))
-        assert extract_gate_failures(events, session_id="s1") == []
+    def test_blocking_error_with_no_exit_code_is_still_detected(self) -> None:
+        # The canonical reader reports hook_exit_code=None for a blocking error,
+        # so the extractor must NOT rely on exitCode; detection at all proves it.
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        assert any("user-directed-question" in f.gate for f in failures)
 
-    def test_serialization_never_carries_stdout_or_stderr(self) -> None:
-        events = parse_session_jsonl(_session(_hook(sensitive="acmecorp diff body leaked-secret-xyz")))
-        failure = extract_gate_failures(events, session_id="s1")[0]
-        payload = json.dumps(failure.as_dict())
-        assert "acmecorp" not in payload
-        assert "leaked-secret-xyz" not in payload
-        assert "stdout" not in payload
+    def test_non_blocking_infra_error_is_extracted_and_environmental(self) -> None:
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        infra = [f for f in failures if classify_gate_failure(f) is GateVerdict.ENVIRONMENTAL]
+        assert infra
+
+    def test_serialization_never_carries_raw_message_or_command(self) -> None:
+        failures = extract_gate_failures(_events_from_fixture(), session_id="s1")
+        payload = json.dumps([f.as_dict() for f in failures])
+        assert "AskUserQuestion tool call in this turn" not in payload
+        assert "hook_router.py" not in payload
+        assert "Plugin directory does not exist" not in payload
+        assert "blockingError" not in payload
+        assert "command" not in payload
         assert "stderr" not in payload
 
 
+class TestGateIdentitySlug:
+    def test_extracts_minimal_slug_from_teatree_gate_marker(self) -> None:
+        slug = gate_identity_slug(_STRUCTURED_QUESTION_MARKER)
+        assert "user-directed-question" in slug
+        assert len(slug) <= 80
+
+    def test_self_pump_marker_slug_is_recognizable(self) -> None:
+        slug = gate_identity_slug("TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop.")
+        assert "self-pump" in slug
+
+    def test_same_gate_text_same_slug(self) -> None:
+        a = gate_identity_slug(_STRUCTURED_QUESTION_MARKER + " Re-ask now.")
+        b = gate_identity_slug(_STRUCTURED_QUESTION_MARKER + " Different trailing sentence.")
+        assert a == b
+
+    def test_non_marker_text_still_yields_a_bounded_slug(self) -> None:
+        slug = gate_identity_slug("Failed to run: Plugin directory does not exist: /Users/x/.claude")
+        assert slug
+        assert len(slug) <= 80
+
+
+class TestInfraIdentityNeverEchoesStderr:
+    """A non-blocking error's arbitrary stderr must never enter the stored slug."""
+
+    @staticmethod
+    def _failures(stderr: str, *, hook_name: str = "PostToolUse:Bash") -> list[GateFailure]:
+        line = json.dumps(
+            {
+                "type": "attachment",
+                "attachment": {
+                    "type": "hook_non_blocking_error",
+                    "hookEvent": "PostToolUse",
+                    "hookName": hook_name,
+                    "exitCode": 1,
+                    "toolUseID": "t1",
+                    "stderr": stderr,
+                    "command": 'node "x.mjs"',
+                },
+            }
+        )
+        header = '{"type":"user","message":{"role":"user","content":"work"}}'
+        return extract_gate_failures(parse_session_jsonl(f"{header}\n{line}"), session_id="s1")
+
+    def test_sensitive_leading_stderr_is_not_echoed(self) -> None:
+        failures = self._failures("leaked-token-abc Failed to run: Plugin directory does not exist")
+        assert failures
+        assert all("leaked-token-abc" not in f.gate for f in failures)
+        assert all(classify_gate_failure(f) is GateVerdict.ENVIRONMENTAL for f in failures)
+
+    def test_unrecognized_stderr_falls_back_to_generic_environmental(self) -> None:
+        failures = self._failures("some-private-path /Users/secret/thing blew up unexpectedly")
+        assert failures
+        assert all("secret" not in f.gate and "private" not in f.gate for f in failures)
+        assert all("non-blocking-error" in f.gate for f in failures)
+        assert all(classify_gate_failure(f) is GateVerdict.ENVIRONMENTAL for f in failures)
+
+
 class TestFingerprint:
-    def test_same_gate_different_file_hashes_together(self) -> None:
-        a = GateFailure(gate="check-comment-density", hook_event="PreToolUse", command="Write a/x.py", session_id="s1")
-        b = GateFailure(gate="check-comment-density", hook_event="PreToolUse", command="Write b/y.py", session_id="s2")
+    def test_same_gate_hashes_together(self) -> None:
+        a = GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id="s1")
+        b = GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id="s2")
         assert a.fingerprint == b.fingerprint
 
     def test_different_gate_hashes_apart(self) -> None:
-        a = GateFailure(gate="check-comment-density", hook_event="PreToolUse", command="Write a/x.py", session_id="s1")
-        b = GateFailure(gate="check-banned-terms", hook_event="PreToolUse", command="Write a/x.py", session_id="s1")
+        a = GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id="s1")
+        b = GateFailure(gate="stop:comment-density", hook_event="Stop", session_id="s1")
         assert a.fingerprint != b.fingerprint
 
 
@@ -106,39 +150,31 @@ class TestClassify:
     @pytest.mark.parametrize(
         ("gate", "expected"),
         [
-            ("check-comment-density", GateVerdict.PREVENTABLE),
-            ("check-banned-terms", GateVerdict.PREVENTABLE),
-            ("doc-update-gate", GateVerdict.PREVENTABLE),
-            ("uv-audit", GateVerdict.ENVIRONMENTAL),
-            ("uv-lock", GateVerdict.ENVIRONMENTAL),
-            ("uv-sync", GateVerdict.ENVIRONMENTAL),
-            ("gitleaks", GateVerdict.ENVIRONMENTAL),
-            ("ty", GateVerdict.ENVIRONMENTAL),
-            ("tach", GateVerdict.ENVIRONMENTAL),
-            ("import-linter", GateVerdict.ENVIRONMENTAL),
+            ("stop:user-directed-question", GateVerdict.PREVENTABLE),
+            ("stop:comment-density", GateVerdict.PREVENTABLE),
+            ("stop:banned-terms", GateVerdict.PREVENTABLE),
+            ("posttooluse:plugin-directory-does-not-exist", GateVerdict.ENVIRONMENTAL),
+            ("posttooluse:failed-with-non-blocking-status-code", GateVerdict.ENVIRONMENTAL),
+            ("posttooluse:hook-json-output-validation-failed", GateVerdict.ENVIRONMENTAL),
         ],
     )
     def test_table_classification(self, gate: str, expected: GateVerdict) -> None:
-        failure = GateFailure(gate=gate, hook_event="PreToolUse", command="x", session_id="s1")
+        failure = GateFailure(gate=gate, hook_event="Stop", session_id="s1")
         assert classify_gate_failure(failure) is expected
 
-    def test_unknown_gate_is_preventable_and_flagged(self) -> None:
-        failure = GateFailure(gate="never-seen-gate", hook_event="PreToolUse", command="x", session_id="s1")
+    def test_unknown_gate_is_preventable(self) -> None:
+        failure = GateFailure(gate="stop:never-seen-gate", hook_event="Stop", session_id="s1")
         assert classify_gate_failure(failure) is GateVerdict.PREVENTABLE
 
 
 class TestRecord:
     def test_records_and_recurring_across_sessions(self, tmp_path: Path) -> None:
         store = FindingsStore(data_dir=tmp_path)
-        failure = GateFailure(
-            gate="check-comment-density", hook_event="PreToolUse", command="Write a/x.py", session_id="s1"
-        )
-        record_gate_failures(store, [failure])
-        again = GateFailure(
-            gate="check-comment-density", hook_event="PreToolUse", command="Write b/y.py", session_id="s2"
-        )
-        record_gate_failures(store, [again])
-        assert failure.fingerprint in store.recurring_fingerprints(min_occurrences=2)
+        a = GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id="s1")
+        b = GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id="s2")
+        record_gate_failures(store, [a])
+        record_gate_failures(store, [b])
+        assert a.fingerprint in store.recurring_fingerprints(min_occurrences=2)
 
 
 class _FakeHost:
@@ -165,15 +201,13 @@ class _FakeHost:
 _CONTEXT = FilingContext(repo="o/r", pr_url="https://github.com/o/r/pull/1")
 
 
-def _preventable(command: str = "Write a/x.py", session_id: str = "s1") -> GateFailure:
-    return GateFailure(gate="check-comment-density", hook_event="PreToolUse", command=command, session_id=session_id)
+def _preventable(session_id: str = "s1") -> GateFailure:
+    return GateFailure(gate="stop:user-directed-question", hook_event="Stop", session_id=session_id)
 
 
 def _record_recurring(store: FindingsStore, failure: GateFailure) -> None:
     record_gate_failures(store, [failure])
-    record_gate_failures(
-        store, [GateFailure(gate=failure.gate, hook_event=failure.hook_event, command="Write c/z.py", session_id="s9")]
-    )
+    record_gate_failures(store, [GateFailure(gate=failure.gate, hook_event=failure.hook_event, session_id="s9")])
 
 
 class TestEscalate:
@@ -201,7 +235,9 @@ class TestEscalate:
 
     def test_environmental_files_nothing(self, tmp_path: Path) -> None:
         store = FindingsStore(data_dir=tmp_path)
-        failure = GateFailure(gate="uv-audit", hook_event="PreToolUse", command="uv pip audit", session_id="s1")
+        failure = GateFailure(
+            gate="posttooluse:plugin-directory-does-not-exist", hook_event="PostToolUse", session_id="s1"
+        )
         _record_recurring(store, failure)
         host = _FakeHost()
         filed = escalate_gate_failures(host, failures=[failure], store=store, context=_CONTEXT)
@@ -220,9 +256,7 @@ class TestEscalate:
     @pytest.mark.usefixtures("banned_config")
     def test_banned_term_body_is_withheld(self, tmp_path: Path) -> None:
         store = FindingsStore(data_dir=tmp_path)
-        failure = GateFailure(
-            gate="acmecorp-gate", hook_event="PreToolUse", command="Write acmecorp/x.py", session_id="s1"
-        )
+        failure = GateFailure(gate="stop:acmecorp-tenant-flow", hook_event="Stop", session_id="s1")
         _record_recurring(store, failure)
         host = _FakeHost()
         filed = escalate_gate_failures(host, failures=[failure], store=store, context=_CONTEXT)
@@ -237,7 +271,3 @@ def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
     monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
     return cfg
-
-
-def test_banned_terms_scanner_importable() -> None:
-    assert banned_terms_scanner.scan_text("plain prose") is None
