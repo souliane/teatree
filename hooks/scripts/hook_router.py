@@ -3235,8 +3235,9 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
-    if term == banned_terms_scanner.UNRESOLVABLE_BODY_MARKER:
-        return emit_pretooluse_deny(banned_terms_scanner.format_unresolvable_body_message())
+    marker_message = banned_terms_scanner.marker_deny_message(term)
+    if marker_message is not None:
+        return emit_pretooluse_deny(marker_message)
     return _emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
 
 
