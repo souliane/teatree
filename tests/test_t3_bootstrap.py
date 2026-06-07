@@ -23,53 +23,154 @@ def _make_teatree_tree(root: Path) -> Path:
     return root / "src"
 
 
-class TestFindTeatreeSource:
-    def test_returns_src_when_cwd_is_worktree_root(self, tmp_path: Path) -> None:
+class TestResolvePinnedSource:
+    def test_returns_t3_repo_src_when_env_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         expected = _make_teatree_tree(tmp_path)
-        assert t3_bootstrap._find_teatree_source(tmp_path) == expected
+        monkeypatch.setenv("T3_REPO", str(tmp_path))
+        assert t3_bootstrap._resolve_pinned_source() == expected
 
-    def test_walks_up_to_find_worktree_root(self, tmp_path: Path) -> None:
+    def test_expands_user_in_t3_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         expected = _make_teatree_tree(tmp_path)
-        nested = tmp_path / "src" / "teatree" / "cli"
-        nested.mkdir(parents=True, exist_ok=True)
-        assert t3_bootstrap._find_teatree_source(nested) == expected
+        monkeypatch.setenv("HOME", str(tmp_path.parent))
+        monkeypatch.setenv("T3_REPO", str(Path("~") / tmp_path.name))
+        assert t3_bootstrap._resolve_pinned_source() == expected
 
-    def test_returns_none_when_no_teatree_pyproject(self, tmp_path: Path) -> None:
+    def test_returns_none_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_REPO", raising=False)
+        assert t3_bootstrap._resolve_pinned_source() is None
+
+    def test_returns_none_when_t3_repo_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_REPO", "")
+        assert t3_bootstrap._resolve_pinned_source() is None
+
+    def test_returns_none_when_t3_repo_not_a_teatree_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "other"\n')
-        assert t3_bootstrap._find_teatree_source(tmp_path) is None
+        monkeypatch.setenv("T3_REPO", str(tmp_path))
+        assert t3_bootstrap._resolve_pinned_source() is None
 
-    def test_returns_none_when_pyproject_matches_but_src_layout_missing(self, tmp_path: Path) -> None:
+    def test_returns_none_when_t3_repo_missing_src_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "teatree"\n')
-        assert t3_bootstrap._find_teatree_source(tmp_path) is None
+        monkeypatch.setenv("T3_REPO", str(tmp_path))
+        assert t3_bootstrap._resolve_pinned_source() is None
 
-    def test_returns_none_when_no_pyproject_in_ancestors(self, tmp_path: Path) -> None:
-        nested = tmp_path / "a" / "b"
-        nested.mkdir(parents=True)
-        assert t3_bootstrap._find_teatree_source(nested) is None
+    def test_returns_none_when_t3_repo_points_at_missing_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_REPO", str(tmp_path / "does-not-exist"))
+        assert t3_bootstrap._resolve_pinned_source() is None
 
 
 class TestMain:
-    def test_inserts_worktree_source_on_sys_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        worktree_src = _make_teatree_tree(tmp_path)
-        monkeypatch.chdir(tmp_path)
+    def test_pins_to_t3_repo_when_env_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo_src = _make_teatree_tree(tmp_path)
+        monkeypatch.setenv("T3_REPO", str(tmp_path))
 
-        with patch.object(sys, "path", list(sys.path)) as _, patch("teatree.cli.main") as mock_main:
+        with patch.object(sys, "path", list(sys.path)), patch("teatree.cli.main") as mock_main:
             t3_bootstrap.main()
-            assert sys.path[0] == str(worktree_src)
+            assert sys.path[0] == str(repo_src)
             mock_main.assert_called_once_with()
 
-    def test_leaves_sys_path_untouched_outside_worktree(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
+    def test_ignores_cwd_worktree_when_env_unset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#2055: a stray cwd inside a sibling teatree worktree must not inject its ``src``."""
+        sibling_worktree = tmp_path / "ac" / "some-branch" / "teatree"
+        sibling_worktree.mkdir(parents=True)
+        worktree_src = _make_teatree_tree(sibling_worktree)
+        monkeypatch.delenv("T3_REPO", raising=False)
+        monkeypatch.chdir(sibling_worktree)
         before = list(sys.path)
 
         with patch("teatree.cli.main") as mock_main:
             t3_bootstrap.main()
+            assert str(worktree_src) not in sys.path
             assert sys.path == before
             mock_main.assert_called_once_with()
+
+    def test_pins_to_t3_repo_even_when_cwd_is_a_different_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#2055: with ``T3_REPO`` set, a cwd inside an unrelated worktree never wins."""
+        configured = tmp_path / "main-clone"
+        configured.mkdir()
+        configured_src = _make_teatree_tree(configured)
+
+        sibling_worktree = tmp_path / "ac" / "branch" / "teatree"
+        sibling_worktree.mkdir(parents=True)
+        worktree_src = _make_teatree_tree(sibling_worktree)
+
+        monkeypatch.setenv("T3_REPO", str(configured))
+        monkeypatch.chdir(sibling_worktree)
+
+        with patch.object(sys, "path", list(sys.path)), patch("teatree.cli.main") as mock_main:
+            t3_bootstrap.main()
+            assert sys.path[0] == str(configured_src)
+            assert str(worktree_src) not in sys.path
+            mock_main.assert_called_once_with()
+
+
+class TestEndToEndExecTreePin:
+    """#2055 end-to-end: run the real bootstrap from a sibling teatree worktree.
+
+    The bug was that ``t3`` invoked with cwd inside a *different* teatree checkout
+    imported teatree from THAT checkout's ``src/`` (nearest pyproject wins), then
+    crashed on a module the branch had relocated.  This drives the actual
+    ``t3_bootstrap.main`` resolution in a subprocess whose cwd is a sibling
+    checkout carrying a sentinel ``teatree`` package, and asserts the resolved
+    ``teatree.__file__`` is the install/configured tree — never the cwd checkout.
+    """
+
+    def _spawn(self, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        prog = (
+            "import t3_bootstrap, sys;"
+            "src = t3_bootstrap._resolve_pinned_source();"
+            "sys.path.insert(0, str(src)) if src is not None else None;"
+            "import teatree;"
+            "print(teatree.__file__)"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", prog],
+            cwd=cwd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_cwd_sibling_checkout_does_not_win_when_env_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sibling = tmp_path / "ac" / "moves-a-module" / "teatree"
+        sibling.mkdir(parents=True)
+        _make_teatree_tree(sibling)
+        sentinel = sibling / "src" / "teatree" / "__init__.py"
+        sentinel.write_text("SENTINEL = 'cwd-checkout'\n")
+
+        env = {k: v for k, v in __import__("os").environ.items() if k != "T3_REPO"}
+        env["PYTHONPATH"] = str(_REPO_ROOT / "src")
+
+        result = self._spawn(sibling, env)
+        resolved = Path(result.stdout.strip()).resolve()
+        assert resolved != sentinel.resolve()
+        assert sibling not in resolved.parents
+
+    def test_env_pins_install_tree_over_cwd_checkout(self, tmp_path: Path) -> None:
+        sibling = tmp_path / "ac" / "moves-a-module" / "teatree"
+        sibling.mkdir(parents=True)
+        _make_teatree_tree(sibling)
+        sentinel = sibling / "src" / "teatree" / "__init__.py"
+        sentinel.write_text("SENTINEL = 'cwd-checkout'\n")
+
+        env = dict(__import__("os").environ)
+        env["T3_REPO"] = str(_REPO_ROOT)
+        env["PYTHONPATH"] = str(_REPO_ROOT / "src")
+
+        result = self._spawn(sibling, env)
+        resolved = Path(result.stdout.strip()).resolve()
+        assert resolved == (_REPO_ROOT / "src" / "teatree" / "__init__.py").resolve()
+        assert resolved != sentinel.resolve()
 
 
 class TestWheelShipsBootstrap:
