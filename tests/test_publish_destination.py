@@ -190,6 +190,24 @@ class TestIsPublicDestination:
         dest = publish_destination.Destination(slug="gitlab.example/internalcorp/private-svc", via="cwd")
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
+    def test_internal_namespace_match_is_host_qualification_symmetric(self, tmp_path: Path) -> None:
+        # Unifying onto the host-stripping slug_namespace_matches (#1953) makes the
+        # internal_publish_namespaces gate host-symmetric too: a bare entry now
+        # matches a host-qualified slug, and a host-qualified entry matches a bare
+        # slug. Both treat the destination as INTERNAL (leak-relaxing direction),
+        # so pin them. The host segment never participates in the match.
+        bare_dir = tmp_path / "bare"
+        bare_dir.mkdir()
+        bare_entry = _config(bare_dir, ["internalcorp"])
+        host_qualified_slug = publish_destination.Destination(slug="github.com/internalcorp/svc", via="cwd")
+        assert publish_destination.is_public_destination(host_qualified_slug, config_path=bare_entry) is False
+
+        host_dir = tmp_path / "host"
+        host_dir.mkdir()
+        host_entry = _config(host_dir, ["gitlab.example/internalcorp"])
+        bare_slug = publish_destination.Destination(slug="internalcorp/svc", via="flag")
+        assert publish_destination.is_public_destination(bare_slug, config_path=host_entry) is False
+
     def test_genuinely_public_slug_stays_public(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
         dest = publish_destination.Destination(slug="souliane/teatree", via="flag")
