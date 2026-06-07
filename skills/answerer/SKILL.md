@@ -93,6 +93,14 @@ recipes (Slack thread fetch, GitLab/GitHub MR/issue comment thread).
 
 - Pull the full thread, not just `event.body`.
 - Note any prior answer already posted in the thread — do not duplicate it.
+- **Never download or transcribe the bot's OWN audio attachment.** The
+  Slack-TTS feature attaches a synthesised `speech.m4a` to the bot's own DM
+  messages — a spoken copy of text already present in the same message.
+  Re-transcribing it is pure token waste for zero new information. The Slack
+  read surface strips it for you (`strip_self_audio_attachments`); if you
+  ever see a `speech.m4a` on a bot-authored message, skip it. Audio on a
+  message authored by the **user** (a voice note) is genuine new content —
+  transcribe that.
 - If the question needs information you cannot find (a decision only the
   user can make, missing context, ambiguous ask), do **not** guess. Draft
   a clarifying-question reply instead, or escalate to the user via DM.
