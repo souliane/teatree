@@ -1,8 +1,10 @@
 import contextlib
 import json
 import shlex
+import tempfile
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -661,6 +663,58 @@ class TestRunWithHeartbeatWatchdog(TestCase):
             )
         assert returncode == 0
         assert stdout == "done"
+
+
+class TestWatchdogGracefulTermination(TestCase):
+    """Watchdog SIGTERMs first, grants a grace window, SIGKILLs only if needed (#997)."""
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+        self.task.renew_lease = lambda **_kw: None
+
+    def test_subprocess_handles_sigterm_and_is_not_sigkilled(self) -> None:
+        marker = Path(tempfile.mkdtemp()) / "term-handled"
+        # Traps SIGTERM, writes the marker (its "flush final status" stand-in),
+        # then exits during the grace window. A correct watchdog never escalates
+        # to SIGKILL here; an immediate SIGKILL would skip the trap entirely.
+        script = f"trap 'printf done > {shlex.quote(str(marker))}; exit 0' TERM; while :; do sleep 0.05; done"
+        watchdog = LoopWatchdog(max_runtime_seconds=0.2, max_turns=0, max_cost_usd=0.0)
+        with (
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(headless_mod, "_WATCHDOG_TERM_GRACE_SECONDS", 5.0),
+        ):
+            _stdout, stderr, returncode = _run_with_heartbeat(
+                self.task,
+                ["sh", "-c", script],
+                watchdog=watchdog,
+            )
+
+        assert marker.exists(), "SIGTERM handler never ran — process was hard-killed without a grace window"
+        assert returncode != 0
+        assert "stuck_loop" in stderr
+
+    def test_subprocess_ignoring_sigterm_is_sigkilled_after_grace(self) -> None:
+        # Ignores SIGTERM and keeps running; the watchdog must escalate to
+        # SIGKILL once the grace window elapses, bounded in time.
+        script = "trap '' TERM; while :; do sleep 0.05; done"
+        watchdog = LoopWatchdog(max_runtime_seconds=0.2, max_turns=0, max_cost_usd=0.0)
+        start = time.monotonic()
+        with (
+            patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.05),
+            patch.object(headless_mod, "_WATCHDOG_TERM_GRACE_SECONDS", 0.5),
+        ):
+            _stdout, stderr, returncode = _run_with_heartbeat(
+                self.task,
+                ["sh", "-c", script],
+                watchdog=watchdog,
+            )
+        elapsed = time.monotonic() - start
+
+        assert returncode != 0
+        assert elapsed < 10  # escalation is bounded, not a hang
+        assert "stuck_loop" in stderr
 
 
 class TestRunHeadlessRecordsStuckLoop(TestCase):
