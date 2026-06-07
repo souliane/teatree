@@ -124,7 +124,7 @@ class TestNeedsWork:
         [
             "https://example.com/ok",
             "https://example.com/done",
-            "https://deploy.internal/pipeline/ok",
+            "https://ci.internal/pipeline/result/ok",
             "https://ci.example.com/builds/done",
         ],
     )
