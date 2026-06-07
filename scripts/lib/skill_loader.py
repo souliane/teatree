@@ -394,14 +394,18 @@ def read_supplementary_skills(config_path: str, prompt: str) -> list[str]:
 
 
 def suggest_skills(data: dict) -> dict:
-    """Suggest skills based on user prompt and project context.
+    r"""Suggest skills based on user prompt and project context.
 
     Args:
         data: Hook input with keys: prompt, cwd, active_repos,
             loaded_skills, skill_search_dirs, supplementary_config.
 
     Returns:
-        Dict with keys: suggestions, intent.
+        Dict with keys: suggestions, advisory, intent. ``advisory`` is the
+        subset of ``suggestions`` sourced ONLY from the supplementary keyword
+        config (``~/.teatree-skills.yml``). Those loose user-authored keyword
+        regexes (e.g. ``\bruff\b``) over-fire on incidental mentions, so the
+        caller suggests them but never adds them to the hard-block demand set.
 
     """
     prompt = data.get("prompt", "")
@@ -432,7 +436,7 @@ def suggest_skills(data: dict) -> dict:
     # against the file's directory so framework-skill detection and overlay
     # companions still surface even without an intent keyword.
     if not intent and not file_path:
-        return {"suggestions": [], "intent": ""}
+        return {"suggestions": [], "advisory": [], "intent": ""}
 
     detect_cwd = _detect_cwd(file_path, cwd)
     policy = SkillLoadingPolicy()
@@ -445,7 +449,11 @@ def suggest_skills(data: dict) -> dict:
         trigger_index=trigger_index,
         companion_skills=read_overlay_companion_skills(),
     )
-    return {"suggestions": selection.skills, "intent": intent}
+    return {
+        "suggestions": selection.skills,
+        "advisory": list(selection.advisory_skills),
+        "intent": intent,
+    }
 
 
 def _detect_cwd(file_path: str, fallback_cwd: str) -> Path:
