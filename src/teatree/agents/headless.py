@@ -195,7 +195,7 @@ def run_headless(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
         return _record_failure(task, error=budget_breach)
 
-    prompt = build_task_prompt(task)
+    prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     resume_session_id = _get_resume_session_id(task)
