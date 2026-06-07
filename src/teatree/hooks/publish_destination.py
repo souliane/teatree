@@ -40,7 +40,13 @@ from typing import Final
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
 from teatree.hooks._publish_detection import segment_is_api_call as _segment_is_api_call
-from teatree.hooks._repo_visibility import _config_path, slug_for_cwd, slug_is_allowlisted_private, slug_is_private
+from teatree.hooks._repo_visibility import (
+    _config_path,
+    slug_for_cwd,
+    slug_is_allowlisted_private,
+    slug_is_private,
+    slug_namespace_matches,
+)
 from teatree.hooks.publish_surface import (
     _GH_ELIGIBLE_VERBS,
     _GLAB_ELIGIBLE_VERBS,
@@ -300,22 +306,6 @@ def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
     return env_entries + toml_entries
 
 
-def _namespace_matches(entry: str, slug: str) -> bool:
-    """Return True iff allowlist ``entry`` matches ``slug`` on segment boundaries.
-
-    The match is a path-segment prefix: ``entry`` must equal ``slug`` or be
-    a leading run of its ``/``-separated segments (``a/b`` matches ``a/b`` and
-    ``a/b/c`` but not ``a/bc``). This keeps ``internalcorp`` from matching an
-    unrelated ``internalcorp-public/repo`` while still covering every repo
-    under a configured namespace.
-    """
-    if entry == slug:
-        return True
-    entry_parts = entry.split("/")
-    slug_parts = slug.split("/")
-    return len(entry_parts) < len(slug_parts) and slug_parts[: len(entry_parts)] == entry_parts
-
-
 def is_public_destination(dest: Destination | None, *, config_path: Path | None = None) -> bool:
     """Return True iff ``dest`` should be treated as a PUBLIC publish target.
 
@@ -330,7 +320,7 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     - the existing ``[teatree] private_repos`` allowlist that the
         commit / pure-post carve-out already consults
         (:func:`_repo_visibility.slug_is_allowlisted_private`, a
-        case-insensitive SUBSTRING match), so a user's CURRENT
+        case-insensitive path-SEGMENT-prefix match), so a user's CURRENT
         ``private_repos`` config makes their private namespaces skip the
         public-leak scan without maintaining a second allowlist;
     - the day-cached ``gh``/``glab`` live-visibility probe
@@ -353,7 +343,7 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     slug = dest.slug.strip().lower()
     if not slug:
         return True
-    if any(_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
+    if any(slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
         return False
     if slug_is_allowlisted_private(slug, config_path):
         return False
