@@ -243,7 +243,11 @@ class TestRenderJson:
             skipped=False,
         )
         payload = json.loads(render_json([result]))
-        assert payload["summary"] == {"total": 1, "passed": 1, "failed": 0, "skipped": 0}
+        summary = payload["summary"]
+        assert summary["total"] == 1
+        assert summary["passed"] == 1
+        assert summary["failed"] == 0
+        assert summary["skipped"] == 0
         [scenario] = payload["scenarios"]
         assert scenario["name"] == "scenario_one"
         assert scenario["passed"] is True

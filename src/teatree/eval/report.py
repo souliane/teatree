@@ -143,7 +143,8 @@ def render_text(results: list[ScenarioResult]) -> str:
                 if result.run.raw_stderr.strip():
                     lines.append(f"    stderr: {result.run.raw_stderr.strip()[:500]}")
     summary = _summary(results)
-    lines.extend(("", summary))
+    cost = _cost_summary(results)
+    lines.extend(("", summary, cost))
     return "\n".join(lines)
 
 
@@ -318,9 +319,26 @@ def _summary(results: list[ScenarioResult]) -> str:
     )
 
 
-def _summary_dict(results: list[ScenarioResult]) -> dict[str, int]:
+def _cost_summary(results: list[ScenarioResult]) -> str:
+    total_usd = sum(r.run.cost_usd for r in results)
+    metered_calls = sum(1 for r in results if r.run.cost_usd > 0)
+    if metered_calls == 0:
+        return "API cost: $0.00 (no metered calls)"
+    return f"API cost: ${total_usd:.4f} over {metered_calls} metered call(s)"
+
+
+def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
     total = len(results)
     skipped = sum(1 for r in results if r.skipped)
     passed = sum(1 for r in results if r.passed and not r.skipped)
     failed = total - passed - skipped
-    return {"total": total, "passed": passed, "failed": failed, "skipped": skipped}
+    total_cost_usd = sum(r.run.cost_usd for r in results)
+    metered_calls = sum(1 for r in results if r.run.cost_usd > 0)
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "skipped": skipped,
+        "total_cost_usd": total_cost_usd,
+        "metered_calls": metered_calls,
+    }
