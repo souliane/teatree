@@ -415,15 +415,6 @@ repos:
         args: [scan, --config=.semgrep/blocking, --error, --quiet]
         pass_filenames: false
         always_run: true
-      - id: semgrep
-        alias: semgrep-regressions-warn
-        name: Named regression-detector rules (advisory; never blocks)
-        additional_dependencies: [semgrep]
-        entry: bash -c 'semgrep scan --config .semgrep/warn --quiet || true'
-        pass_filenames: false
-        always_run: true
-        stages: [manual]
-
   # Phase 10 - Commit-msg
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: 37b5f04f364960e8e7b361d0dbaaf8f28ec06392  # v4.2.0

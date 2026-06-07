@@ -76,6 +76,22 @@ class TestSemgrepRegressionsJobIsGone:
             args = " ".join(str(a) for a in hook.get("args", []))
             assert "--error" in args, "The blocking semgrep hook must pass --error so a finding fails CI."
 
+    def test_no_prek_hook_scans_absent_warn_dir(self) -> None:
+        # The semgrep-regressions-warn hook scanned .semgrep/warn (deleted in #2128).
+        # semgrep exits 0 on a missing config; the || true swallowed any non-zero —
+        # a fake-green scan. Restoring a hook targeting .semgrep/warn would silently
+        # pass on every run. This test is RED if that hook reappears.
+        warn_hooks = [
+            hook
+            for hook in _precommit_hooks()
+            if ".semgrep/warn" in str(hook.get("entry", ""))
+            or ".semgrep/warn" in " ".join(str(a) for a in hook.get("args", []))
+        ]
+        assert not warn_hooks, (
+            "No prek hook may scan .semgrep/warn — the directory does not exist. "
+            f"Offending hooks: {[h.get('alias') or h.get('id') for h in warn_hooks]}"
+        )
+
 
 class TestMutationFullGateRunsWhenUncertain:
     """Fix #2: the mutation-full weekly gate fails SAFE, not silent-skip.
