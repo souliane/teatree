@@ -151,16 +151,16 @@ def test_validate_pr_passes_conforming_title_and_what_why_description():
     overlay = _MinimalOverlay()
     result = overlay.metadata.validate_pr(
         "feat(ship): add the gate (#1540)",
-        "## What\nAdds the gate.\n\n## Why\nThe convention is missed.",
+        "feat(ship): add the gate (#1540)\n\n## What\nAdds the gate.\n\n## Why\nThe convention is missed.",
     )
     assert result == {"errors": [], "warnings": []}
 
 
-def test_validate_pr_rejects_non_conforming_title_and_missing_what_why():
+def test_validate_pr_rejects_non_conforming_title_first_line_and_missing_what_why():
     overlay = _MinimalOverlay()
     result = overlay.metadata.validate_pr("Add the gate", "no headers here")
     assert result["warnings"] == []
-    assert len(result["errors"]) == 2
+    assert len(result["errors"]) == 3
 
 
 def test_get_followup_repos_returns_empty_list():
