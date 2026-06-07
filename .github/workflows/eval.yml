@@ -20,6 +20,15 @@
 # invoked, `--require-executed` still makes it FAIL LOUD if it can't execute
 # (missing key/binary).
 #
+# AUTH — CLAUDE_CODE_OAUTH_TOKEN (the everywhere-portable path)
+#   The metered backend authenticates from `CLAUDE_CODE_OAUTH_TOKEN`, the
+#   OAuth token from `claude setup-token`. This is the auth that works in every
+#   environment — a clean Linux runner with the token as a pure env var (no
+#   `~/.claude.json`, no keychain, no `/login`) authenticates `claude -p`. It is
+#   the June-15-safe path: it does NOT depend on an `sk-ant-api03` API key, which
+#   we do not have. The token is wired from the repo secret of the same name;
+#   `ANTHROPIC_API_KEY` is intentionally NOT used here.
+#
 # NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up)
 #   The runner SKIPs every scenario when `claude` is not on PATH, and a fully-
 #   skipped suite reports green with ZERO behavioral coverage. This workflow
@@ -28,8 +37,8 @@
 #        eval step — a missing binary FAILS the job, it does not skip.
 #     2. It passes `--require-executed` unconditionally, so a collected-but-
 #        all-skipped run exits non-zero.
-#   `ANTHROPIC_API_KEY` is wired from the repo secret. Until that secret is set
-#   the job correctly fails RED (the metered backend can authenticate nothing) —
+#   The OAuth token is wired from the repo secret. Until that secret is set the
+#   job correctly fails RED (the metered backend can authenticate nothing) —
 #   that loud failure is intended, not a regression.
 #
 # The FREE deterministic eval lanes (eval-skill-triggers commit-stage,
@@ -112,8 +121,9 @@ jobs:
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--backend` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path explicitly
-      # (sdk default; a workflow_dispatch run may override it via the backend input).
+      # `--backend` keeps CI on the metered claude -p path explicitly (sdk default;
+      # a workflow_dispatch run may override it via the backend input). Auth is the
+      # OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) — the June-15-safe everywhere path.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
@@ -121,7 +131,7 @@ jobs:
         if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@v4
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
         with:
           timeout_minutes: 30
