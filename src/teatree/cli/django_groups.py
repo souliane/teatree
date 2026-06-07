@@ -200,6 +200,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("transition", "Transition a ticket to a new state."),
             ("plan", 'Record a PlanArtifact and advance STARTED → PLANNED (`plan <id> "<text>"`).'),
             ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLANNED (--human-authorize)."),
+            ("skip-planning", "Mark a trivial ticket to skip planning and advance to PLANNED (--reason, no artifact)."),
             ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
             ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
