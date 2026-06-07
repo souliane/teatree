@@ -24,6 +24,7 @@ green), and ``--update-baseline`` refuses to record a HIGHER count without
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import typer
@@ -308,13 +309,15 @@ class TestCli:
         assert result.exit_code == 1
         assert "REGRESSION" in result.output
 
-    def test_json_output_is_machine_readable(self, tmp_path: Path) -> None:
+    def test_json_stdout_is_pure_json_even_with_update_banner(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path, baseline=0, loose_files=2)
-        result = runner.invoke(app, ["tool", "test-path-mirror", "--root", str(repo), "--json"])
-        payload = json.loads(result.output)
+        with patch("teatree.config.check_for_updates", return_value="teatree 9.9.9 available (you have 0.0.1)"):
+            result = runner.invoke(app, ["tool", "test-path-mirror", "--root", str(repo), "--json"])
+        payload = json.loads(result.stdout)
         assert payload["baseline"] == 0
         assert payload["live_count"] == 2
         assert payload["exceeds_baseline"] is True
+        assert "[update]" not in result.stdout
 
     def test_update_baseline_rewrites_pyproject(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path, baseline=5, loose_files=2)
