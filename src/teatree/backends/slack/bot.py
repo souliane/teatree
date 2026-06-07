@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import cast
 
 from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
-from teatree.backends.slack.dm_history import read_user_dms
+from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
 from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
@@ -151,7 +151,7 @@ class _SlackInbound:
         return self._reactions.snapshot()
 
 
-class SlackBotBackend:
+class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingBackend Protocol surface, not poor encapsulation.
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
     ``bot_token`` (``xoxb-…``) authorises Web API calls for DMs, posts, and
@@ -424,28 +424,25 @@ class SlackBotBackend:
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         """Fetch a single message by ``(channel, ts)``.
 
-        Returns the message dict on success, ``{}`` on any failure or
-        when no message matches. Used by the review-intent scanner to
-        resolve the underlying message text behind a ``reaction_added``
-        event (the event itself only carries ``item.channel`` /
-        ``item.ts`` — no text).
+        ``{}`` on any failure or no match. Read body in
+        :mod:`~teatree.backends.slack.dm_history`; own TTS audio stripped
+        at the backend read chokepoint.
         """
-        if not channel or not ts:
+        message = read_single_message(get=self._get, channel=channel, ts=ts)
+        if not message:
             return {}
-        data = self._get(
-            "conversations.history",
-            {"channel": channel, "latest": ts, "inclusive": "true", "limit": 1},
-        )
-        if not data.get("ok"):
-            return {}
-        messages = data.get("messages")
-        if not isinstance(messages, list) or not messages:
-            return {}
-        first = messages[0]
-        if not isinstance(first, dict):
-            return {}
-        [stripped] = self._strip_own_tts_audio([cast("RawAPIDict", first)])
+        [stripped] = self._strip_own_tts_audio([message])
         return stripped
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        """Return every message in the thread rooted at ``thread_ts`` (#2061).
+
+        Keyed on the thread ROOT — a reply re-parents to the root, so the
+        answer pipeline's dedup/verification read-back must query the root,
+        not a non-root user-message ts. Read body in
+        :mod:`~teatree.backends.slack.dm_history`; own TTS audio stripped here.
+        """
+        return self._strip_own_tts_audio(read_thread_replies(get=self._get, channel=channel, thread_ts=thread_ts))
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
         """Return the most recent *limit* messages in *channel* (#1255).
@@ -621,10 +618,11 @@ class SlackBotBackend:
         """Public accessor over the #1750 destination router (self-DM→bot, else→xoxp).
 
         The deterministic classifier ``post_routed`` / ``react_routed`` and
-        ``t3 <overlay> notify post`` / ``react`` consult to choose the
-        outbound token by destination. Distinct from
-        :meth:`resolve_channel_token`, which is the Connect-membership policy
-        that cannot tell the user's own DM from a colleague's.
+        :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` consult to
+        choose the outbound token by destination (and as the self-DM carve-out
+        presence probe). Distinct from :meth:`resolve_channel_token`, the
+        Connect-membership policy that cannot tell the user's own DM from a
+        colleague's.
         """
         return self._route_token(channel)
 

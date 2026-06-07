@@ -28,6 +28,42 @@ def _messages(data: RawAPIDict) -> list[RawAPIDict]:
     return [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
 
 
+def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
+    """Fetch one message by ``(channel, ts)`` via ``conversations.history``.
+
+    Returns the message dict (with ``channel`` stamped on) or ``{}`` on any
+    non-ok response / no match. The caller applies its own self-message
+    transforms; this is the raw read.
+    """
+    if not channel or not ts:
+        return {}
+    params: dict[str, str | int] = {"channel": channel, "latest": ts, "inclusive": "true", "limit": 1}
+    messages = _messages(get("conversations.history", params))
+    if not messages:
+        return {}
+    first = messages[0]
+    first.setdefault("channel", channel)
+    return first
+
+
+def read_thread_replies(*, get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
+    """Return every message in the thread rooted at ``thread_ts`` (#2061).
+
+    The canonical thread-root read used by the answer pipeline's pre-post
+    dedup and post-delivery verification: a reply re-parents to the root, so
+    a read-back keyed on a non-root user-message ts misses it. ``channel`` is
+    stamped on each message; ``[]`` on any non-ok response so a transient
+    read failure is handled by the conservative-retry caller.
+    """
+    if not channel or not thread_ts:
+        return []
+    replies: list[RawAPIDict] = []
+    for reply in _messages(get("conversations.replies", {"channel": channel, "ts": thread_ts, "limit": 50})):
+        reply.setdefault("channel", channel)
+        replies.append(reply)
+    return replies
+
+
 def read_user_dms(
     *,
     get: Getter,
@@ -65,4 +101,4 @@ def _thread_replies(
     return replies
 
 
-__all__ = ["read_user_dms"]
+__all__ = ["read_single_message", "read_thread_replies", "read_user_dms"]

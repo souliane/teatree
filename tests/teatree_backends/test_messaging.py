@@ -22,6 +22,7 @@ def test_noop_returns_empty_for_inbound() -> None:
     backend = NoopMessagingBackend()
     assert backend.fetch_mentions(since="x") == []
     assert backend.fetch_dms(since="x") == []
+    assert backend.fetch_thread_replies(channel="D1", thread_ts="root.ts") == []
 
 
 def test_noop_returns_empty_dict_for_outbound() -> None:
@@ -781,6 +782,35 @@ def test_slack_fetch_channel_history_returns_empty_on_non_ok(monkeypatch: pytest
 def test_slack_fetch_channel_history_returns_empty_without_channel() -> None:
     backend = SlackBotBackend(bot_token="xoxb-test")
     assert backend.fetch_channel_history(channel="") == []
+
+
+def test_slack_fetch_thread_replies_returns_thread_with_channel_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        _ = kwargs
+        assert url.endswith("/conversations.replies")
+        return httpx.Response(
+            200,
+            json={"ok": True, "messages": [{"ts": "root.ts", "text": "q"}, {"ts": "r1", "text": "a"}]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    replies = backend.fetch_thread_replies(channel="D1", thread_ts="root.ts")
+
+    assert [r["ts"] for r in replies] == ["root.ts", "r1"]
+    assert all(r["channel"] == "D1" for r in replies)
+
+
+def test_slack_fetch_thread_replies_returns_empty_on_non_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False, "error": "thread_not_found"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.fetch_thread_replies(channel="D1", thread_ts="root.ts") == []
 
 
 def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.MonkeyPatch) -> None:

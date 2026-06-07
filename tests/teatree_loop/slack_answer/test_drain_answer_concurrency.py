@@ -21,10 +21,14 @@ from teatree.types import RawAPIDict
 pytestmark = pytest.mark.django_db
 
 
+_BOT_UID = "UBOT"
+
+
 @dataclass
 class RecordingBackend:
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
+    thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -34,12 +38,24 @@ class RecordingBackend:
         _ = since
         return []
 
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        _ = (channel, ts)
+        return {}
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = channel
+        return list(self.thread_replies.get(thread_ts, []))
+
+    def auth_test(self) -> RawAPIDict:
+        return {"ok": True, "user_id": _BOT_UID}
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = (channel, text, thread_ts)
         return {}
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))
+        self.thread_replies.setdefault(ts, []).append({"ts": f"{ts}-bot", "user": _BOT_UID, "text": text})
         return {"ok": True}
 
     def open_dm(self, user_id: str) -> str:
