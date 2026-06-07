@@ -14,8 +14,13 @@ don't race the daemon thread.
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from teatree.core import availability
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
+
+
+def _resolution(mode: str) -> availability.Resolution:
+    return availability.Resolution(mode=mode, source="override")
 
 
 class TestBinaryGate:
@@ -45,6 +50,108 @@ class TestBinaryGate:
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
         ):
             assert speak_mod.resolve_speak() == configured
+
+
+class TestAwayGateResolveSpeak:
+    """Away suppresses LOCAL playback while preserving ``slack`` — without touching config."""
+
+    def test_away_forces_local_off_but_preserves_slack(self) -> None:
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+        ):
+            resolved = speak_mod.resolve_speak()
+        assert resolved.local is LocalPlayback.OFF
+        assert resolved.slack is True
+
+    def test_present_preserves_local(self) -> None:
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+        ):
+            resolved = speak_mod.resolve_speak()
+        assert resolved.local is LocalPlayback.ALL
+        assert resolved.slack is True
+
+    def test_availability_raising_is_treated_as_present(self) -> None:
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+        ):
+            resolved = speak_mod.resolve_speak()
+        assert resolved.local is LocalPlayback.ALL
+        assert resolved.slack is True
+
+
+class TestAwayGateConsumers:
+    """The away-gate silences BOTH local consumers while Slack audio still attaches."""
+
+    def test_away_speak_does_not_play_locally(self) -> None:
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+            patch.object(speak_mod, "_speak_local") as local,
+        ):
+            speak_mod.speak("tests are green", block=True)
+        local.assert_not_called()
+
+    def test_away_dm_still_attaches_slack_audio_but_no_local_play(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_AWAY)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        backend.post_audio_dm.assert_called_once()
+        thread_cls.assert_not_called()
+
+    def test_availability_raising_lets_local_play_slack_unaffected(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "binary_available", return_value=True),
+            patch.object(
+                speak_mod,
+                "get_effective_settings",
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            ),
+            patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        backend.post_audio_dm.assert_called_once()
+        thread_cls.assert_called_once()
 
 
 class TestCleanForSpeech:
