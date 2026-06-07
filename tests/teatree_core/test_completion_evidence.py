@@ -102,6 +102,23 @@ class TestAssertsOutcome:
         # prose with no context cue — that is ordinary internal-progress text.
         assert asserts_outcome(note) is False
 
+    @pytest.mark.parametrize("note", ["merged,", "merged;", "merged?", "deployed?", "  shipped;"])
+    def test_note_initial_bare_verb_with_comma_semicolon_question_asserts(self, note: str) -> None:
+        # #1584 NIT 1: a bare outcome verb closed by any sentence-final
+        # punctuation is still the canonical phantom shape — the trailer class
+        # is symmetric across `.`/`!`/`,`/`;`/`?`, not just `.`/`!`.
+        assert asserts_outcome(note) is True
+
+    @pytest.mark.parametrize(
+        "note",
+        ["merged the changes into one", "shipped the feature, finally", "posted, then edited it"],
+    )
+    def test_note_initial_trailer_does_not_widen_into_verb_plus_object(self, note: str) -> None:
+        # The widened trailer class stays bare-verb-only: a verb followed by an
+        # object (no context cue) is ordinary internal-progress prose, never the
+        # note-initial phantom shape (#1571 over-trigger guard).
+        assert asserts_outcome(note) is False
+
 
 class TestHasResolvablePointer:
     @pytest.mark.parametrize(
@@ -223,6 +240,13 @@ class TestCheckCompletionEvidence:
     def test_note_initial_phantom_claim_without_pointer_is_refused(self, note: str) -> None:
         # Hole C: a terse note that is just an outcome verb (no pointer) is the
         # canonical phantom completion and must now be gated.
+        with pytest.raises(CompletionEvidenceError, match="no resolvable artifact pointer"):
+            check_completion_evidence(note)
+
+    @pytest.mark.parametrize("note", ["merged,", "merged;", "merged?", "shipped?"])
+    def test_note_initial_phantom_with_comma_semicolon_question_is_refused(self, note: str) -> None:
+        # #1584 NIT 1: the terse phantom closed by `,`/`;`/`?` is just as
+        # unbacked as the `.`-closed one and must be gated identically.
         with pytest.raises(CompletionEvidenceError, match="no resolvable artifact pointer"):
             check_completion_evidence(note)
 
