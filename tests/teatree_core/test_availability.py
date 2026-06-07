@@ -14,6 +14,7 @@ import pytest
 
 from teatree.core import availability
 from teatree.core.availability import (
+    LIVE_TURN_FRESHNESS,
     MODE_AWAY,
     MODE_PRESENT,
     PRESENCE_FRESHNESS,
@@ -313,6 +314,116 @@ class TestPresenceHeartbeat:
         presence.record(now=naive)
         loaded = presence.last_seen()
         assert loaded == naive.replace(tzinfo=UTC)
+
+
+class TestIsLiveUserTurnKillProof:
+    """Mutation kill-proof for ``PresenceHeartbeat.is_live_user_turn`` (#2058).
+
+    ``availability.py`` is a high-value mutation module whose diff-scoped
+    mutmut run executes ONLY this file. Each assertion pins one mutable point
+    so a mutant (guard-negation flip, comparison-operator swap, return-value
+    flip, ``or``→``and``) is caught here rather than surviving.
+    """
+
+    AT = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+
+    def test_empty_session_id_returns_false(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``if not session_id`` negation flip: a stamped same-session
+        # turn exists, so only the empty-id guard can produce False here.
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.is_live_user_turn(session_id="", now=self.AT + timedelta(seconds=1)) is False
+
+    def test_fresh_same_session_returns_true(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``return False`` → ``return True`` flips on the guard arms
+        # and the final ``<=`` → ``<``/``>``/``>=`` swaps within the window.
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.is_live_user_turn(session_id="s-a", now=self.AT + timedelta(seconds=1)) is True
+
+    def test_no_recorded_turn_returns_false(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``turn is None`` arm: nothing stamped.
+        assert presence.is_live_user_turn(session_id="s-a", now=self.AT) is False
+
+    def test_foreign_session_returns_false(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``turn.session_id != session_id`` comparison flip and the
+        # ``or`` → ``and`` swap (a fresh turn exists, only the session differs).
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.is_live_user_turn(session_id="s-b", now=self.AT + timedelta(seconds=1)) is False
+
+    def test_at_exact_window_boundary_is_live(self, presence: PresenceHeartbeat) -> None:
+        # Kills ``<=`` → ``<``: exactly at the boundary must still be live.
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.is_live_user_turn(session_id="s-a", now=self.AT + LIVE_TURN_FRESHNESS) is True
+
+    def test_one_microsecond_past_window_is_not_live(self, presence: PresenceHeartbeat) -> None:
+        # Kills ``<=`` → ``>=``/``>``: just past the boundary must defer.
+        presence.record(session_id="s-a", now=self.AT)
+        past = self.AT + LIVE_TURN_FRESHNESS + timedelta(microseconds=1)
+        assert presence.is_live_user_turn(session_id="s-a", now=past) is False
+
+    def test_explicit_now_is_honored_over_wall_clock(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``now or datetime.now(tz=UTC)`` default mutation: with an
+        # ancient stamp, a same-instant explicit ``now`` is live; the wall clock
+        # (years later) would make it stale.
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.is_live_user_turn(session_id="s-a", now=self.AT) is True
+
+
+class TestRefreshLiveTurnKillProof:
+    """Mutation kill-proof for ``PresenceHeartbeat.refresh_live_turn`` (#2058).
+
+    The slide must re-stamp ONLY an already-live same-session turn and return
+    whether it did. Each assertion pins a mutable point: the guard negation,
+    the ``record`` call, the two return-value flips, and the ``now`` default.
+    """
+
+    AT = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+
+    def test_live_turn_is_restamped_to_now_and_returns_true(self, presence: PresenceHeartbeat) -> None:
+        # Kills the dropped ``self.record(...)`` (the stamp must move to ``now``)
+        # and the ``return True`` → ``return False`` flip.
+        presence.record(session_id="s-a", now=self.AT)
+        slid_to = self.AT + timedelta(seconds=30)
+        assert presence.refresh_live_turn(session_id="s-a", now=slid_to) is True
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.at == slid_to
+        assert turn.session_id == "s-a"
+
+    def test_not_live_turn_is_a_noop_and_returns_false(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``if not self.is_live_user_turn`` negation flip and the
+        # ``return False`` → ``return True`` flip: nothing stamped → no-op.
+        assert presence.refresh_live_turn(session_id="s-loop", now=self.AT) is False
+        assert presence.last_user_turn() is None
+
+    def test_stale_turn_is_not_revived(self, presence: PresenceHeartbeat) -> None:
+        # Kills the guard flip on the stale path: a turn aged past the window
+        # must NOT be re-stamped (the original stamp is unchanged).
+        presence.record(session_id="s-a", now=self.AT)
+        stale = self.AT + LIVE_TURN_FRESHNESS + timedelta(seconds=1)
+        assert presence.refresh_live_turn(session_id="s-a", now=stale) is False
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.at == self.AT
+
+    def test_foreign_session_is_not_restamped(self, presence: PresenceHeartbeat) -> None:
+        # Kills the guard's session arm reaching the slide: a foreign session
+        # must not move the recorded stamp or change its session.
+        presence.record(session_id="s-a", now=self.AT)
+        assert presence.refresh_live_turn(session_id="s-b", now=self.AT + timedelta(seconds=5)) is False
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.session_id == "s-a"
+        assert turn.at == self.AT
+
+    def test_explicit_now_drives_the_restamp_value(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``now or datetime.now(tz=UTC)`` default mutation: the stamp
+        # lands at the explicit ``now``, not the wall clock.
+        presence.record(session_id="s-a", now=self.AT)
+        explicit = self.AT + timedelta(seconds=10)
+        presence.refresh_live_turn(session_id="s-a", now=explicit)
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.at == explicit
 
 
 class TestLivePresenceOverridesScheduleAway:
