@@ -408,8 +408,16 @@ class PrSweepScanner:
         Best-effort: a missing dispatcher, the flag being off, or any enqueue
         error all degrade to ``False`` (the flag-level signal still fires) so a
         DB hiccup never aborts the sweep.
+
+        #2104: skips the review-arm when the PR's ticket is under active
+        EXTERNAL delivery — a hand-dispatched reviewer is already on it, so a
+        loop-armed review would collide. The same unit-level delivery-ownership
+        predicate ``schedule_planning`` consults; the loop's own FSM never
+        stamps the lease, so a genuinely unowned green PR still gets armed.
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
+            return False
+        if _pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
         try:
             return self.review_dispatcher.enqueue(
@@ -550,6 +558,25 @@ def _has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> boo
 
     candidates = ReviewVerdict.objects.for_pr(slug, pr_id).filter(verdict=ReviewVerdict.Verdict.MERGE_SAFE)
     return any(not verdict.is_stale_at(head_sha) for verdict in candidates)
+
+
+def _pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:
+    """True iff the PR's AUTHOR ticket carries a live external-delivery lease (#2104).
+
+    The lease is stamped by ``workspace ticket <ISSUE_URL>`` on the author /
+    delivery ticket keyed by the ISSUE-tracker URL — never on the PR URL. So the
+    review-arm must ask whether the AUTHOR ticket that OWNS this PR holds the
+    lease, resolved through the existing PR→author-ticket linkage
+    (:func:`resolve_author_ticket`: ``PullRequest`` FK then
+    ``Ticket.extra["prs"]``). A PR with no resolvable author ticket (the loop
+    has not seen this delivery) is treated as unowned, so the loop arms the
+    review as before.
+    """
+    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
+    from teatree.loop.pr_ticket_index import resolve_author_ticket  # noqa: PLC0415
+
+    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
+    return ticket is not None and under_external_delivery(ticket)
 
 
 def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
