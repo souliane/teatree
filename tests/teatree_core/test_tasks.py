@@ -434,7 +434,7 @@ class TestExecuteShipOrphanPrWindow(TestCase):
     def _ship_collaborators(self, host: object) -> Iterator[None]:
         with ExitStack() as stack:
             stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
-            stack.enter_context(patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host))
+            stack.enter_context(patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host))
             stack.enter_context(patch("teatree.core.runners.ship.git.push"))
             stack.enter_context(patch("teatree.core.runners.ship.git.branch_merged", return_value=False))
             stack.enter_context(patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None))

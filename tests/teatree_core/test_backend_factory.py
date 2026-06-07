@@ -1,7 +1,10 @@
 """Tests for the overlay-aware backend factory bridge."""
 
 import os
+import shutil
+import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -14,10 +17,12 @@ from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
+    code_host_for_repo_from_overlay,
     code_host_from_overlay,
     messaging_from_overlay,
     reset_backend_caches,
 )
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
@@ -299,6 +304,150 @@ class TestCodeHostFromOverlayTomlFallback:
             patch("teatree.config.load_config", return_value=cfg),
         ):
             assert code_host_from_overlay(overlay_name="ghost") is None
+
+
+class _BothTokenConfig(OverlayConfig):
+    def get_github_token(self) -> str:
+        return "gh-test-token"
+
+    def get_gitlab_token(self) -> str:
+        return "gl-test-token"
+
+
+class _BothTokenOverlay(OverlayBase):
+    config = _BothTokenConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+_GIT = shutil.which("git") or "git"
+
+
+def _git_origin(path: Path, origin_url: str) -> str:
+    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run([_GIT, "-C", str(path), "remote", "add", "origin", origin_url], check=True, capture_output=True)
+    return str(path)
+
+
+class TestCodeHostForRepoFromOverlay:
+    """#2025: the factory resolves the forge from the repo's origin host."""
+
+    def test_resolves_gitlab_for_gitlab_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitLabCodeHost)
+
+    def test_resolves_github_for_github_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:souliane/teatree.git")
+        with _patch_overlay(_BothTokenOverlay):
+            assert isinstance(code_host_for_repo_from_overlay(repo), GitHubCodeHost)
+
+    def test_falls_back_to_toml_when_overlay_class_missing(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch(
+                "teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if k == "github/private-x/pat" else ""
+            ),
+        ):
+            host = code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_toml_only_overlay_resolves_gitlab_for_gitlab_repo_with_both_tokens(self, tmp_path: Path) -> None:
+        """#2025: the TOML-only path must NOT regress to token precedence.
+
+        A path-only TOML overlay carrying both PATs ships a GitLab repo —
+        the host must be the GitLab backend, not the GitHub-first
+        ``_host_from_toml`` default.
+        """
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "github_token_ref": "github/private-x/pat",
+                    "gitlab_token_ref": "gitlab/private-x/pat",
+                },
+            },
+        )
+        tokens = {"github/private-x/pat": "ghp", "gitlab/private-x/pat": "glp"}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: tokens.get(k, "")),
+        ):
+            host = code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+        assert isinstance(host, GitLabCodeHost)
+
+    def test_toml_only_overlay_raises_when_repo_forge_has_no_token(self, tmp_path: Path) -> None:
+        """A GitLab repo on a TOML overlay with only a GitHub token surfaces the structured error."""
+        repo = _git_origin(tmp_path, "git@gitlab.com:group/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if "github" in k else ""),
+            pytest.raises(BackendResolutionError, match="gitlab"),
+        ):
+            code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+
+    def test_toml_only_github_repo_raises_when_token_ref_resolves_empty(self, tmp_path: Path) -> None:
+        """A GitHub repo whose configured token ref resolves to nothing surfaces the error."""
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda _k: ""),
+            pytest.raises(BackendResolutionError, match="github"),
+        ):
+            code_host_for_repo_from_overlay(repo, overlay_name="private-x")
+
+    def test_toml_only_no_origin_repo_falls_back_to_overlay_default(self, tmp_path: Path) -> None:
+        """A TOML overlay + a repo with no origin remote → the GitHub-first default."""
+        path = tmp_path / "no-origin"
+        path.mkdir()
+        subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+        cfg = _toml_only_config(
+            {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
+        )
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: "ghp" if "github" in k else ""),
+        ):
+            host = code_host_for_repo_from_overlay(str(path), overlay_name="private-x")
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_toml_only_returns_none_when_overlay_name_absent(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert code_host_for_repo_from_overlay(repo, overlay_name="ghost") is None
+
+    def test_toml_only_returns_none_when_no_overlay_name(self, tmp_path: Path) -> None:
+        repo = _git_origin(tmp_path, "git@github.com:org/repo.git")
+        env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch.dict(os.environ, env, clear=True),
+        ):
+            assert code_host_for_repo_from_overlay(repo, overlay_name="") is None
 
 
 class TestActiveOverlayName:

@@ -1,6 +1,9 @@
 """Tests for the backend loader."""
 
 import logging
+import shutil
+import subprocess
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -12,6 +15,7 @@ from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.loader import (
     get_ci_service,
     get_code_host,
+    get_code_host_for_repo,
     get_code_host_for_url,
     get_code_hosts,
     get_messaging,
@@ -19,7 +23,21 @@ from teatree.backends.loader import (
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.overlay import OverlayBase, OverlayConfig
+
+_GIT = shutil.which("git") or "git"
+
+
+def _git_repo_with_origin(path: Path, origin_url: str) -> str:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(
+        [_GIT, "-C", str(path), "remote", "add", "origin", origin_url],
+        check=True,
+        capture_output=True,
+    )
+    return str(path)
 
 
 def setup_function() -> None:
@@ -257,3 +275,53 @@ def test_get_code_host_for_url_returns_none_when_no_matching_token() -> None:
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_host_for_url(overlay, "https://github.com/org/repo/issues/1") is None
+
+
+class TestGetCodeHostForRepo:
+    """#2025: resolve the forge from the repo's actual origin remote host.
+
+    The ship path picked the backend by token-presence precedence
+    (GitHub first when both PATs are set), so a GitLab-hosted repo on an
+    overlay carrying both PATs ran ``gh pr create`` against a GitLab
+    remote and failed with ``Could not resolve to a Repository``. The
+    forge must derive from where the repo actually lives.
+    """
+
+    def test_gitlab_hosted_repo_resolves_gitlab_even_when_github_token_set(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+        repo = _git_repo_with_origin(tmp_path / "gl", "git@gitlab.com:group/repo.git")
+        assert isinstance(get_code_host_for_repo(overlay, repo), GitLabCodeHost)
+
+    def test_github_hosted_repo_resolves_github_even_when_gitlab_token_set(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+        repo = _git_repo_with_origin(tmp_path / "gh", "git@github.com:souliane/teatree.git")
+        assert isinstance(get_code_host_for_repo(overlay, repo), GitHubCodeHost)
+
+    def test_https_gitlab_remote_resolves_gitlab(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+        repo = _git_repo_with_origin(tmp_path / "gl2", "https://gitlab.com/group/repo.git")
+        assert isinstance(get_code_host_for_repo(overlay, repo), GitLabCodeHost)
+
+    def test_self_hosted_gitlab_remote_resolves_gitlab(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
+        repo = _git_repo_with_origin(tmp_path / "gl3", "git@gitlab.example.com:group/repo.git")
+        assert isinstance(get_code_host_for_repo(overlay, repo), GitLabCodeHost)
+
+    def test_raises_structured_error_when_host_backend_has_no_token(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok")  # no GitLab token
+        repo = _git_repo_with_origin(tmp_path / "gl4", "git@gitlab.com:group/repo.git")
+        with pytest.raises(BackendResolutionError, match="gitlab"):
+            get_code_host_for_repo(overlay, repo)
+
+    def test_no_origin_remote_falls_back_to_default_resolution(self, tmp_path: Path) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, gitlab="gl-tok")
+        path = tmp_path / "no-origin"
+        path.mkdir()
+        subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+        assert isinstance(get_code_host_for_repo(overlay, str(path)), GitLabCodeHost)
