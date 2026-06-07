@@ -494,26 +494,96 @@ class TestOverride:
         assert banned_terms_scanner.has_override("Write", {}) is False
 
 
-class TestScanTextFailOpen:
-    def test_missing_script_fails_open(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestScanTextNoOpWhenNothingToScan:
+    """A genuine no-op (no config, no script) returns None — there is nothing to scan.
+
+    These are NOT scanner failures: the missing-config / missing-script paths
+    mirror ``check-banned-terms.sh``'s own no-op contract (no config ⇒ exit 0).
+    A scanner *crash* is the opposite case and must fail CLOSED — see
+    ``TestScanTextScannerCrashFailsClosed``.
+    """
+
+    def test_missing_script_is_a_noop(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(banned_terms_scanner, "_scanner_script", lambda: Path("/nonexistent/check.sh"))
         assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
 
-    def test_subprocess_error_fails_open(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_config_is_a_noop(self, tmp_path: Path) -> None:
+        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+
+
+class TestScanTextScannerCrashFailsClosed:
+    """A scanner that could not run must BLOCK, never ALLOW (#1954).
+
+    A security gate that fails OPEN on a crash is the bug class: on a machine
+    where the shell fallback resolves to an old system ``python3`` (the repo
+    requires >= 3.13), importing the matcher crashes and the gate silently
+    stopped scanning — a leak-on-misconfig. Every degraded scanner outcome
+    now returns the ``SCANNER_UNAVAILABLE_MARKER`` (the gate blocks), instead
+    of ``None`` (the gate allowed).
+    """
+
+    def test_subprocess_oserror_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_args: object, **_kwargs: object) -> None:
             raise OSError
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _boom)
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
 
-    def test_scanner_crash_fails_open(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An unexpected exit code (script itself failed) raises CommandFailedError
-        # inside run_allowed_to_fail — the gate fails open rather than crash.
+    def test_unexpected_exit_code_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An exit code outside {0, 1} (the script itself failed) raises
+        # CommandFailedError inside run_allowed_to_fail — the gate must block.
         def _crash(*_args: object, **_kwargs: object) -> None:
             raise banned_terms_scanner.CommandFailedError(["check"], 2, "", "boom")
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _crash)
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+    def test_timeout_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _hang(*_args: object, **_kwargs: object) -> None:
+            raise banned_terms_scanner.TimeoutExpired(cmd=["check"], timeout=10)
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _hang)
+        assert (
+            banned_terms_scanner.scan_text("acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+    def test_exit_one_with_empty_stdout_fails_closed(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # THE precise #1954 import-crash shape: the scanner exits 1 (a Python
+        # traceback's exit code, which collides with "banned term found") but
+        # prints NOTHING on stdout (the traceback went to stderr). Treating
+        # exit 1 + empty report as a clean scan is the fail-open: there is no
+        # parseable BANNED TERM report, so the scanner did not actually run.
+        class _CrashResult:
+            returncode = 1
+            stdout = ""
+            stderr = "Traceback (most recent call last):\nImportError: PEP 604 union\n"
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: _CrashResult())
+        assert (
+            banned_terms_scanner.scan_text("we ship to acmecorp", config_path=config)
+            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+        )
+
+    def test_exit_one_with_real_report_still_returns_the_term(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The must-FLAG counterpart: a genuine banned-term hit (exit 1 WITH a
+        # parseable report) must still return the matched term, not the crash
+        # marker. The crash detection keys on an EMPTY report, not on exit 1.
+        class _HitResult:
+            returncode = 1
+            stdout = "BANNED TERM in /tmp/x.txt:\n  1:ship to acmecorp\n\nBanned terms: acmecorp\n"
+            stderr = ""
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: _HitResult())
+        assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
 
 
 class TestMatchedTerm:
@@ -675,6 +745,26 @@ class TestHookHandlerEndToEnd:
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is False
         assert capsys.readouterr().out == ""
+
+    def test_scanner_crash_fails_closed_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1954: when the shell scanner cannot run (old interpreter / import
+        # crash), the gate must BLOCK the publish, not let the body through.
+        # The handler swallows exceptions to None (fail-open), so the fix is a
+        # NORMAL return value (the crash marker) that survives that swallow.
+        def _crash(*_args: object, **_kwargs: object) -> None:
+            raise banned_terms_scanner.CommandFailedError(["check"], 1, "", "ImportError")
+
+        monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _crash)
+        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship next week"'))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        reason = decision["permissionDecisionReason"]
+        assert "scanner" in reason.lower()
+        # The crash deny must NOT misreport the internal marker as a banned term.
+        assert banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER not in reason
 
 
 @pytest.mark.integration
@@ -981,6 +1071,33 @@ class TestFormatBlockMessage:
         message = banned_terms_scanner.format_unresolvable_body_message()
         assert "body" in message.lower()
         assert "--allow-banned-term" not in message
+
+
+class TestFormatScannerUnavailableMessage:
+    def test_message_names_the_scanner_and_is_not_a_banned_term(self) -> None:
+        message = banned_terms_scanner.format_scanner_unavailable_message()
+        assert "scanner" in message.lower()
+        assert banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER not in message
+        assert "banned term" not in message
+
+    def test_message_points_at_the_interpreter_requirement(self) -> None:
+        # The actionable fix for the #1954 misconfig is installing uv or a
+        # Python >= 3.13; the deny reason must point the operator at it.
+        message = banned_terms_scanner.format_scanner_unavailable_message()
+        assert "uv" in message.lower() or "python" in message.lower()
+
+
+class TestMarkerDenyMessage:
+    def test_scanner_unavailable_marker_maps_to_its_message(self) -> None:
+        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER)
+        assert message == banned_terms_scanner.format_scanner_unavailable_message()
+
+    def test_unresolvable_body_marker_maps_to_its_message(self) -> None:
+        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.UNRESOLVABLE_BODY_MARKER)
+        assert message == banned_terms_scanner.format_unresolvable_body_message()
+
+    def test_real_term_is_not_a_marker(self) -> None:
+        assert banned_terms_scanner.marker_deny_message("acmecorp") is None
 
 
 @pytest.mark.integration

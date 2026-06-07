@@ -56,7 +56,15 @@ _OVERRIDE_ENV = "ALLOW_BANNED_TERM"
 # ``format_unresolvable_body_message`` — it is NOT a configured banned term.
 UNRESOLVABLE_BODY_MARKER: str = "<unresolvable-publish-body>"
 
-# How long to wait for the shell scanner before failing open. A hook that
+# Marker returned by ``scan_text`` when the shell scanner could NOT run — a
+# crashing interpreter (an old system ``python3`` below the repo's >= 3.13
+# floor crashes importing the matcher), a timeout, or any unexpected exit. The
+# gate BLOCKS on this marker: a scanner that cannot run must never resolve to
+# ALLOW (#1954). It is NOT a configured banned term; callers emit
+# ``format_scanner_unavailable_message`` for it.
+SCANNER_UNAVAILABLE_MARKER: str = "<banned-terms-scanner-unavailable>"
+
+# How long to wait for the shell scanner before failing closed. A hook that
 # hangs blocks the user, so the budget is deliberately tight.
 _SCAN_TIMEOUT_S = 10
 
@@ -218,8 +226,12 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     ``quote_scanner`` already blocks on this same sentinel; this closes the
     banned-terms parity gap.
 
-    Fails open (returns ``None``) on a missing config, a missing script,
-    or any subprocess error — a crashing gate is worse than no scan.
+    Returns ``None`` only on a genuine no-op (no config, no script — there is
+    nothing to scan, matching the shell hook's own no-op contract). A scanner
+    that was supposed to run but could NOT (a crashing interpreter, a timeout,
+    an unexpected exit, or an exit-1 with no parseable report) returns
+    :data:`SCANNER_UNAVAILABLE_MARKER` so the gate FAILS CLOSED — a security
+    gate that fails open on a crash is the bug class (#1954).
     """
     if not text:
         return None
@@ -232,8 +244,9 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
     Writes ``text`` to a temp file and invokes the shell scanner exactly as the
-    pre-commit hook does. Fails open (``None``) on a missing config / script or
-    any subprocess error.
+    pre-commit hook does. Returns ``None`` on a genuine no-op (no config /
+    script). Returns :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED)
+    when the scanner could not run.
     """
     cfg = config_path if config_path is not None else resolve_config()
     if cfg is None or not cfg.is_file():
@@ -246,21 +259,30 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
         fh.write(text)
         scan_file = Path(fh.name)
     try:
-        # check-banned-terms.sh: exit 0 = clean, exit 1 = banned term found.
-        # Any other code means the script itself failed — fail open.
+        # check-banned-terms.sh contract: exit 0 = clean, exit 1 = banned term
+        # found (with a BANNED TERM report on stdout), exit 2 = the scanner
+        # could not run (an old interpreter / import crash). Any other code is
+        # also a scanner failure. A failed scanner fails CLOSED, never ALLOW.
         result = run_allowed_to_fail(
             [str(script), "--config", str(cfg), str(scan_file)],
             expected_codes=(0, 1),
             timeout=_SCAN_TIMEOUT_S,
         )
     except (TimeoutExpired, CommandFailedError, OSError):
-        return None
+        return SCANNER_UNAVAILABLE_MARKER
     finally:
         scan_file.unlink(missing_ok=True)
 
     if result.returncode == 0:
         return None
-    return _matched_term(result.stdout)
+    term = _matched_term(result.stdout)
+    # Exit 1 with NO parseable BANNED TERM report is the import-crash shape: a
+    # Python traceback exits 1 (colliding with "banned term found") but prints
+    # nothing on stdout. There is no real match — the scanner crashed — so fail
+    # CLOSED rather than read the empty report as a clean scan.
+    if term is None:
+        return SCANNER_UNAVAILABLE_MARKER
+    return term
 
 
 def _matched_term(report: str) -> str | None:
@@ -313,3 +335,36 @@ def format_unresolvable_body_message() -> str:
         "(the body file is missing or unresolvable at scan time). Use an inline body "
         "(-m/--body/--message) or write the file content in the same command before posting."
     )
+
+
+def format_scanner_unavailable_message() -> str:
+    """Render the PreToolUse deny reason when the banned-terms scanner could not run.
+
+    The shell scanner crashed or its interpreter cannot import the matcher
+    (an old system ``python3`` below the repo's >= 3.13 floor). The gate fails
+    CLOSED rather than let an unscanned body through — a security gate that
+    fails open on a crash is the bug class (#1954). The fix the operator needs
+    is a working ``uv`` or a Python >= 3.13 on PATH so the scanner runs.
+    """
+    return (
+        "BLOCKED: banned-terms posting gate (#1415/#1954). The scanner could not run "
+        "(its interpreter cannot import the matcher — install uv, or a Python >= 3.13, "
+        "so the scanner runs). Failing closed: an unscanned body is not allowed onto a "
+        "public surface."
+    )
+
+
+def marker_deny_message(term: str) -> str | None:
+    """Return the deny reason for a fail-closed marker, or ``None`` for a real term.
+
+    ``scan_text`` returns either a configured banned term or one of the
+    fail-closed markers (an unresolvable body, an unavailable scanner). The
+    markers are NOT configured terms, so the caller must render a dedicated
+    message instead of ``format_block_message``. A real term returns ``None``
+    here so the caller takes its destination-aware banned-term path.
+    """
+    if term == UNRESOLVABLE_BODY_MARKER:
+        return format_unresolvable_body_message()
+    if term == SCANNER_UNAVAILABLE_MARKER:
+        return format_scanner_unavailable_message()
+    return None
