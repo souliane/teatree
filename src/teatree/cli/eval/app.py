@@ -1,5 +1,6 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -54,6 +55,62 @@ eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
+
+
+@dataclasses.dataclass(frozen=True)
+class RunDockerArgs:
+    """The ``t3 eval run`` flags forwarded into the CI image by ``--docker``.
+
+    The metered ``sdk`` lane runs in-container, never on the host; the container
+    is ephemeral (``--rm``), so the durable-history flags (``--baseline`` /
+    ``--gate-regressions``) are unsupported and the run is forced ``--no-persist``.
+    """
+
+    name: str | None
+    output_format: str
+    max_turns: int | None
+    trials: int
+    require: str
+    models: str | None
+    backend: str
+    require_executed: bool
+
+    def passthrough(self) -> list[str]:
+        args = ["run"]
+        if self.name is not None:
+            args.append(self.name)
+        if self.output_format != "text":
+            args += ["--format", self.output_format]
+        if self.max_turns is not None:
+            args += ["--max-turns", str(self.max_turns)]
+        if self.trials != 1:
+            args += ["--trials", str(self.trials), "--require", self.require]
+        if self.models is not None:
+            args += ["--models", self.models]
+        if self.backend != SUBSCRIPTION_BACKEND:
+            args += ["--backend", self.backend]
+        if self.require_executed:
+            args.append("--require-executed")
+        args.append("--no-persist")
+        return args
+
+    def dispatch(self) -> None:
+        try:
+            raise typer.Exit(code=run_eval_in_docker(self.passthrough()))
+        except DockerUnavailableError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+
+
+def _run_in_docker_or_exit(args: RunDockerArgs, *, baseline: bool, gate_regressions: bool) -> None:
+    if baseline or gate_regressions:
+        typer.echo(
+            "--docker runs in an ephemeral container, so it cannot update or compare the "
+            "durable baseline; drop --baseline/--gate-regressions or run on the host.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    args.dispatch()
 
 
 @eval_app.command("list")
@@ -134,7 +191,15 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--require-executed",
         help=(
             "Fail when the suite collected scenarios but executed none (all skipped) — "
-            "the CI gate so a decorative run with no claude/ANTHROPIC_API_KEY can't pass green."
+            "the CI gate so a decorative run with no claude/credential can't pass green."
+        ),
+    ),
+    docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--docker",
+        help=(
+            "Run inside the CI image (dev/Dockerfile.test); the metered sdk lane runs in-container, "
+            "authenticated by the host's CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY (env pass-through)."
         ),
     ),
 ) -> None:
@@ -159,10 +224,31 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
-    no ``ANTHROPIC_API_KEY``), so a decorative all-skipped run cannot pass green.
-    CI arms it only when a key is configured; local runs leave it off so the
-    subscription backend's legitimate pre-transcript all-skip stays green.
+    not authenticated), so a decorative all-skipped run cannot pass green. CI
+    arms it always; local runs leave it off so the subscription backend's
+    legitimate pre-transcript all-skip stays green.
+
+    ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
+    meant to run in-container, never on the host — the runner forwards the host's
+    ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
+    ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
+    clean container and never lands on the command line.
     """
+    if docker:
+        _run_in_docker_or_exit(
+            RunDockerArgs(
+                name=name,
+                output_format=output_format,
+                max_turns=max_turns,
+                trials=trials,
+                require=require,
+                models=models,
+                backend=backend,
+                require_executed=require_executed,
+            ),
+            baseline=baseline,
+            gate_regressions=gate_regressions,
+        )
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     if output_format == "html" and (trials > 1 or models is not None):

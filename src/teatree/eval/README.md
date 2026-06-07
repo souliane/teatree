@@ -45,10 +45,23 @@ installed editable from a clone; the eval harness ships inside it.
 - **Local, on the host (the default).** `t3 eval all` / `t3 eval all
   --free-only` run directly on the host — no container, no setup. This is the
   default for every local invocation.
-- **Local, in the CI image (opt-in parity).** `t3 eval all --docker` runs the
-  same gate inside `dev/Dockerfile.test` — the exact image the CI test job
-  builds — for environment parity when debugging a CI-only failure. Host-run
-  stays the default; `--docker` is the explicit opt-in.
+- **Local, in the CI image (opt-in parity, and the only place the metered lane
+  runs).** `t3 eval all --docker` / `t3 eval run --docker` run the gate inside
+  `dev/Dockerfile.test` — the exact image the CI test job builds, which now ships
+  the `claude` CLI — for environment parity when debugging a CI-only failure. The
+  metered AI lane (`--backend sdk`, which shells `claude -p`) is meant to run
+  **in the container, never on the host**: the docker runner forwards the host's
+  `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) into the container with
+  docker's `-e VARNAME` pass-through, so the metered run authenticates inside a
+  clean container without touching the host's login state. The token value
+  travels through the container env, never the command line. Host-run stays the
+  default for the free lanes; `--docker` is the explicit opt-in. Run the metered
+  lane locally with:
+
+  ```bash
+  CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --require-executed --docker
+  ```
+
 - **Prek (deterministic gates).** The two deterministic lanes are wired into
   prek under their explicit names: the sub-second `eval-skill-triggers` hook
   (`t3 eval skill-triggers`, pure frontmatter parsing) runs at the **commit**
@@ -74,6 +87,7 @@ t3 eval list                                # show available scenarios as a rich
 t3 eval all                                  # all lanes (skill-triggers + skill-coverage + pinned-regressions + negative-control + transcript-replay + AI) in one summary table
 t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — on-demand; the pre-push gate is eval-pinned-regressions
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
+t3 eval run --backend sdk --docker            # run the metered claude -p lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -91,7 +105,7 @@ t3 eval history --baseline                    # show the current baseline run(s)
 t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
 t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend subscription            # explicit subscription (the default)
-t3 eval run --backend sdk                       # metered claude -p path (CI; ANTHROPIC_API_KEY)
+t3 eval run --backend sdk                       # metered claude -p path (CLAUDE_CODE_OAUTH_TOKEN; runs in-container via --docker / CI)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
@@ -126,7 +140,7 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
-| `sdk` | metered `claude -p` (`ANTHROPIC_API_KEY`) | CI (standalone `eval.yml`, explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live |
+| `sdk` | metered `claude -p` (`CLAUDE_CODE_OAUTH_TOKEN`) | CI (standalone `eval.yml`) + local `--docker` (explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live, in a container |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -189,6 +203,16 @@ Each scenario invocation shells out to `claude -p` in `--output-format
 stream-json` mode with a 120-second wall-clock watchdog and a
 `--max-budget-usd 0.10` circuit breaker. When `claude` is not on `PATH` the
 runner emits `SKIP <scenario>: claude binary not on PATH` and exits 0.
+
+`claude -p` authenticates from `CLAUDE_CODE_OAUTH_TOKEN` — the OAuth token from
+`claude setup-token` — which works in every environment without seeded login
+state: a clean container or CI runner with the token as a pure env var (no
+`~/.claude.json`, no keychain, no `/login`) authenticates. This is the
+June-15-safe path; it does not require an `sk-ant-api03` API key.
+`ANTHROPIC_API_KEY` is also honored if set. The metered lane runs **in a
+container** (`--docker` locally, the CI image in `eval.yml`), never on the host;
+`isolated_claude_env` copies these credential env vars through untouched while
+redirecting only the personal-context discovery roots.
 
 ### pass@k (multi-trial)
 
