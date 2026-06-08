@@ -375,7 +375,19 @@ class Command(TyperCommand):
     @staticmethod
     def _execute_sdk(task: Task) -> dict[str, str]:
         from teatree.agents.headless import run_headless  # noqa: PLC0415
+        from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        # Fail-closed billing guard, shared with ``execute_headless_task`` via
+        # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
+        # a loop-dispatched phase task must run INTERACTIVE in the ``/loop`` slot,
+        # never as a metered ``claude -p`` here. The task is already CLAIMED by
+        # ``_claim_next_task``; record a FAILED refusal attempt so it is not left
+        # stuck CLAIMED under the loop slot.
+        refusal = loop_dispatch_refusal(task)
+        if refusal is not None:
+            task.complete_with_attempt(exit_code=1, error=refusal, result={"routing_error": refusal})
+            return {"exit_code": "1", "routing_error": refusal}
 
         attempt = run_headless(
             task,
