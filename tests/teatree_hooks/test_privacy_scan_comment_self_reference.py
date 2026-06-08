@@ -26,7 +26,7 @@ from pathlib import Path
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.hooks import privacy_diff_comments
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "privacy_scan.py"
 
 _CATEGORY = "code_comment_self_reference"
 
