@@ -35,7 +35,7 @@ from teatree.hooks.term_match import matched_term
 # Anchor the script under test to THIS repo (the one carrying the test), not
 # ``find_project_root`` — that helper resolves a worktree back to its primary
 # clone, which would invoke the OTHER clone's (possibly older) shell hook.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Synthetic term list shared by every entry point under test.
 #   - ``acme``          single-token term.
