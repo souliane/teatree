@@ -1,4 +1,25 @@
-"""Tests for ``teatree.loop.dispatch`` — signal → action routing."""
+"""Tests for ``teatree.loop.dispatch`` — signal → action routing.
+
+#1927/#1961: the review-request routing tests below assert which ZONE a
+``slack.review_intent``/``slack.mention`` signal routes to. That routing sits
+behind two ambient gates inside ``dispatch`` — ``review_loop_enabled()`` (#79)
+and ``_review_target_is_dead()`` (#2081, a live ``get_pr_open_state`` lookup
+through the per-URL code host). Both are read from process-global state (the
+real ``~/.teatree.toml`` loop config and the cached/credentialed code-host
+backend), so a sibling test that leaves a code host resolving the test URL to
+MERGED/CLOSED — or that disables the review loop — would make this module's
+routing tests silently drop the reviewer dispatch and raise ``StopIteration``
+at ``next(a for a in actions if a.kind == "agent")``. That is the exact
+order-dependent flake in #1927 (``test_slack_review_intent_payload_propagates``
+StopIteration) and the same ambient-state class behind #1961.
+
+The fix is to pin those two gates to their no-suppression verdict for the whole
+module (``_pin_review_intent_gate``), so a routing test measures *only* routing,
+independent of ambient loop/code-host state. The gates' own live-state
+behaviour (skip MERGED/CLOSED, fail open on UNKNOWN) is exercised separately in
+``test_dispatch_review_target_live_state.py``, which overrides this pin per
+test.
+"""
 
 import logging
 
@@ -6,9 +27,25 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
+from teatree.core.backend_protocols import PrOpenState
 from teatree.loop import dispatch as dispatch_module
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners.base import ScanSignal
+
+
+@pytest.fixture(autouse=True)
+def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the two ambient review-request gates so routing tests are deterministic.
+
+    ``review_loop_enabled`` → ``True`` (the loop is on) and
+    ``_review_target_is_dead`` → ``False`` (the target is live) are the
+    no-suppression verdicts. Without this, ambient process state another test
+    leaves behind (a code host resolving the test MR URL to MERGED/CLOSED, or a
+    disabled review loop) makes the reviewer dispatch vanish and the routing
+    assertions ``StopIteration`` — the #1927/#1961 order-dependence.
+    """
+    monkeypatch.setattr("teatree.loop.review_claim.review_loop_enabled", lambda: True)
+    monkeypatch.setattr(dispatch_module, "_review_target_is_dead", lambda _pr_url: False)
 
 
 class MyPrFailedDispatchTests(TestCase):
@@ -171,6 +208,45 @@ def test_slack_review_intent_payload_propagates() -> None:
     actions = dispatch([ScanSignal(kind="slack.review_intent", summary="intent", payload=payload)])
     agent_action = next(a for a in actions if a.kind == "agent")
     assert agent_action.payload == payload
+
+
+class _MergedHost:
+    """A code host that reports every PR MERGED — the ambient-leak condition."""
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        _ = pr_url
+        return PrOpenState.MERGED
+
+
+def test_review_intent_routing_is_immune_to_ambient_merged_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Routing must not vanish when ambient state resolves the target to MERGED (#1927/#1961).
+
+    The order-dependent flake: a sibling test leaves the per-URL code host
+    resolving the review-intent MR to MERGED. ``_review_target_is_dead`` then
+    returns ``True``, ``_gate_review_intent`` suppresses the reviewer dispatch,
+    ``dispatch`` returns no agent action, and the routing test's
+    ``next(a for a in actions if a.kind == "agent")`` raises ``StopIteration``.
+
+    This test installs exactly that leak (a MERGED host bound into the live
+    resolver) and asserts the reviewer dispatch still happens — which holds only
+    because ``_pin_review_intent_gate`` pins ``_review_target_is_dead`` to the
+    no-suppression verdict for this routing module. Reverting that pin makes
+    this test raise ``StopIteration`` (anti-vacuous: it guards the fix).
+    """
+    monkeypatch.setattr(
+        "teatree.backends.loader.get_code_host_for_url",
+        lambda *_args, **_kwargs: _MergedHost(),
+    )
+    monkeypatch.setattr("teatree.core.overlay_loader.get_overlay", lambda *_args, **_kwargs: object())
+
+    payload: dict[str, object] = {
+        "url": "https://gitlab.com/group/proj/-/merge_requests/42",
+        "mr_url": "https://gitlab.com/group/proj/-/merge_requests/42",
+        "trigger": "mention",
+    }
+    actions = dispatch([ScanSignal(kind="slack.review_intent", summary="intent", payload=payload)])
+    agent_action = next(a for a in actions if a.kind == "agent")
+    assert agent_action.zone == "t3:reviewer"
 
 
 def test_reviewer_pr_task_orphaned_routes_to_mechanical_handler() -> None:
