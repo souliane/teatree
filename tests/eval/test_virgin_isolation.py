@@ -6,10 +6,16 @@ the developer's personal context: ``~/.claude/CLAUDE.md``, auto-memory, and the
 project ``CLAUDE.md`` discovered from the parent cwd. A leak biases every real
 eval result (the agent passes by remembering a rule, not because a gate fires).
 
-The isolation has two pinned dimensions, asserted here so a future edit cannot
-silently drop either: ``--bare`` on the command (disables auto-memory + CLAUDE.md
-auto-discovery), and a non-inherited ``env`` whose ``HOME`` points at a
-``.claude``-free directory plus a neutral ``cwd`` that is not the parent's cwd.
+The isolation is provided by a non-inherited ``env`` whose ``HOME`` points at a
+``.claude``-free directory plus a neutral ``cwd`` that is not the parent's cwd
+(belt), reinforced by the explicit ``--settings``, ``--strict-mcp-config``,
+``--system-prompt`` and ``--add-dir`` flags the command already carries
+(suspenders). The command must NOT carry ``--bare``: in claude-code 2.x
+``--bare`` forces "Anthropic auth is strictly ANTHROPIC_API_KEY … OAuth and
+keychain are never read", so it disables ``CLAUDE_CODE_OAUTH_TOKEN`` auth — the
+exact auth the metered sdk lane uses (we have no ``sk-ant-api03`` API key). The
+absence is asserted here so a future edit cannot reintroduce the flag and
+silently break metered execution back to ``$0 / no tool calls``.
 """
 
 import os
@@ -129,7 +135,10 @@ class TestIsolatedClaudeEnv:
 
 
 class TestRunnerIsolation:
-    def test_command_carries_bare_flag(self, tmp_path: Path) -> None:
+    def test_command_omits_bare_flag_so_oauth_token_auth_works(self, tmp_path: Path) -> None:
+        # --bare forces ANTHROPIC_API_KEY-only auth (OAuth + keychain never read),
+        # which kills CLAUDE_CODE_OAUTH_TOKEN auth — the metered lane's only auth.
+        # Isolation is provided by isolated_claude_env + the explicit flags below.
         spec = _runner_spec(tmp_path)
         captured: dict[str, object] = {}
 
@@ -144,7 +153,11 @@ class TestRunnerIsolation:
         ):
             ClaudePRunner(workspace=tmp_path).run(spec)
 
-        assert "--bare" in captured["cmd"]
+        assert "--bare" not in captured["cmd"]
+        # The isolation --bare used to provide is still carried explicitly:
+        assert "--strict-mcp-config" in captured["cmd"]
+        assert "--settings" in captured["cmd"]
+        assert "--system-prompt" in captured["cmd"]
 
     def test_invoke_passes_sanitized_env_and_neutral_cwd(self, tmp_path: Path) -> None:
         spec = _runner_spec(tmp_path)
@@ -182,7 +195,9 @@ class TestRunnerIsolation:
 
 
 class TestJudgeIsolation:
-    def test_command_carries_bare_flag(self) -> None:
+    def test_command_omits_bare_flag_so_oauth_token_auth_works(self) -> None:
+        # Same auth constraint as the runner: the judge also authenticates via
+        # CLAUDE_CODE_OAUTH_TOKEN, which --bare would disable.
         captured: dict[str, object] = {}
 
         def _fake_run(cmd, **kwargs):
@@ -196,7 +211,9 @@ class TestJudgeIsolation:
         ):
             ClaudeJudge().grade(_judge_spec(), _judge_run())
 
-        assert "--bare" in captured["cmd"]
+        assert "--bare" not in captured["cmd"]
+        assert "--strict-mcp-config" in captured["cmd"]
+        assert "--settings" in captured["cmd"]
 
     def test_grade_passes_sanitized_env_and_neutral_cwd(self) -> None:
         seen = _Seen()
