@@ -175,6 +175,62 @@ class TestCleanForSpeech:
         assert speak_mod.clean_for_speech("```only code```") == ""
 
 
+class TestFiltersStatusLogNoise:
+    """Status/log noise is filtered out of spoken text; real prose passes (#277).
+
+    The TTS chokepoint :func:`clean_for_speech` is the ONE place every spoken
+    string flows through (the Stop-hook in-client read and the DM local leg).
+    A bot->user INFO DM is prefixed with a ``:information_source: *info*`` kind
+    marker line (:func:`teatree.core.notify._format`), and assistant turns /
+    DM bodies routinely carry log-status lines (``INFO:`` / ``DEBUG`` levels,
+    bare emoji-shortcode status markers). Read verbatim these voice as gibberish
+    -- ``:information_source:`` reads as "information source", the kind marker as
+    "info" -- so ``say`` drones "Info source", "Info test green" before the real
+    message. The filter drops those lines and the emoji shortcodes while leaving
+    user-facing prose intact.
+    """
+
+    def test_drops_emoji_shortcode_status_markers(self) -> None:
+        # The literal noise from the bug report: a notify INFO prefix line.
+        out = speak_mod.clean_for_speech(":information_source: *info*\ntests are green")
+        assert "information" not in out.lower()
+        assert "source" not in out.lower()
+        assert "tests are green" in out
+
+    def test_drops_kind_marker_prefix_line_keeps_real_message(self) -> None:
+        out = speak_mod.clean_for_speech(":information_source: *info*\nsource fetched and applied")
+        # The standalone "info" kind marker line is gone, but the real message
+        # -- which legitimately contains the word "source" -- is preserved.
+        assert "info" not in out.lower().split()
+        assert "source fetched and applied" in out
+
+    def test_drops_log_level_lines(self) -> None:
+        text = "INFO: source\nDEBUG: cache warm\nThe migration finished cleanly."
+        out = speak_mod.clean_for_speech(text)
+        assert "source" not in out.lower()
+        assert "cache warm" not in out.lower()
+        assert "The migration finished cleanly." in out
+
+    def test_drops_bracketed_log_level_lines(self) -> None:
+        out = speak_mod.clean_for_speech("[INFO] test green\nDeploy is live for everyone.")
+        assert "test green" not in out.lower()
+        assert "Deploy is live for everyone." in out
+
+    def test_drops_bare_emoji_status_line(self) -> None:
+        out = speak_mod.clean_for_speech(":white_check_mark: test green\nYour review is requested.")
+        assert "test green" not in out.lower()
+        assert "Your review is requested." in out
+
+    def test_real_message_with_status_words_inline_is_kept(self) -> None:
+        # "info"/"source"/"green" appearing INSIDE a prose sentence are NOT noise.
+        sentence = "The info you asked for: the source is green and ready."
+        out = speak_mod.clean_for_speech(sentence)
+        assert out == sentence
+
+    def test_all_noise_collapses_to_empty(self) -> None:
+        assert speak_mod.clean_for_speech(":information_source: *info*\nINFO: done") == ""
+
+
 class TestSpeakLocalDispatch:
     """The in-client Stop-hook read: ``speak()`` fires only when ``local == all``."""
 
