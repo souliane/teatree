@@ -118,3 +118,33 @@ class TestNeedsWork:
         # not the user asking for a status. Must fail-safe to NEEDS_WORK so
         # the real handler picks it up — never the default statusline reply.
         assert classify(text) is AnswerRoute.NEEDS_WORK
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "https://example.com/ok",
+            "https://example.com/done",
+            "https://ci.internal/pipeline/result/ok",
+            "https://ci.example.com/builds/done",
+        ],
+    )
+    def test_link_only_message_whose_path_ends_in_ack_token_is_not_ack(self, text: str) -> None:
+        # A bare URL whose path happens to end in an ack token ("ok", "done")
+        # must NOT be classified ACK_ONLY — it is a link share that needs
+        # delegation, not a short acknowledgement. Fixes #2018.
+        assert classify(text) is AnswerRoute.NEEDS_WORK
+
+
+class TestAckUrlStripping:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "ok",
+            "done",
+            "  ok  ",
+            "ok!",
+        ],
+    )
+    def test_genuine_bare_ack_still_classifies_ack_only(self, text: str) -> None:
+        # The fix must not over-correct: a real bare "ok" or "done" stays ACK_ONLY.
+        assert classify(text) is AnswerRoute.ACK_ONLY
