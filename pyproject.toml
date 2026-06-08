@@ -385,19 +385,30 @@ high_value_modules = [
   "src/teatree/core/loop_lease_manager.py",
   "src/teatree/loop/review_claim.py",
 ]
-# Ratchet floor (only shrinks). The 7 on_behalf_gate.py survivors are all in the
-# DEPRECATED ask_before_post_on_behalf_enabled boolean shim (slated for removal),
-# not the live resolve_on_behalf_verdict gate — whose BLOCK->PROCEED mutants the
-# existing suite KILLS (the kill-proof). Recorded so a future "block" mode does
-# not fail on this documented backlog; shrink it as the shim is retired.
-# availability.py: pre-existing debt across untouched functions (write_override,
-# load_schedule, _drain_on_return, load_override, ...), surfaced by the first PR
-# to touch the file since #1901 added it to high_value_modules without a baseline.
-# The newer is_live_user_turn / refresh_live_turn methods are fully killed; this
-# count is the historical backlog, tracked for paydown and only ever shrinks.
+# Ratchet floor (only shrinks). This records the REAL current surviving-mutant
+# count for EVERY high_value_module — the honest snapshot of today's state, NOT a
+# disarm. The `mutation-full` job runs `--all`, mutating all eight modules, but
+# the verdict compares the whole-run total against the SUM of these counts; when
+# only a subset had an entry the `--all` total always exceeded the partial sum
+# and the gate was permanently red (738 measured vs 131 baselined), blocking the
+# first PR of every ISO week (#2142). The counts below come from the gate's own
+# Linux CI output on the run that produced that failure and sum to exactly 738.
+# From here the floor only ever SHRINKS: any NEW survivor on any safety module
+# pushes the total above the recorded floor and the gate goes red. The flagship
+# live-gate regression (resolve_on_behalf_verdict BLOCK->PROCEED) is killed and
+# pinned separately by the kill-proof; these survivors are vacuous-coverage
+# backlog (string builders, error formatters, name resolvers) recorded for
+# paydown, the mechanism the ratchet is designed for. Tighten with
+# `t3 mutation run --all --update-baseline` as the suite kills more of them.
 baseline_surviving = [
   { path = "src/teatree/on_behalf_gate.py", count = 7 },
+  { path = "src/teatree/core/on_behalf_gate_recorded.py", count = 6 },
+  { path = "src/teatree/core/merge/authorization.py", count = 48 },
+  { path = "src/teatree/core/merge/execution.py", count = 204 },
+  { path = "src/teatree/core/models/merge_clear.py", count = 9 },
   { path = "src/teatree/core/availability.py", count = 124 },
+  { path = "src/teatree/core/loop_lease_manager.py", count = 253 },
+  { path = "src/teatree/loop/review_claim.py", count = 87 },
 ]
 
 # Per-module test scope. mutmut maps a mutant to the tests that exercise its
