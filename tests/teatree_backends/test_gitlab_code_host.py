@@ -1068,3 +1068,83 @@ def test_create_sub_issue_errors_when_child_gid_unresolved() -> None:
     host = GitLabCodeHost(client=client)
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
     assert "Could not resolve created child work item" in result["error"]
+
+
+# --- verify_upload: the post-upload self-verification gate (#2156) ----------
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"rest"
+_WEBM_MAGIC = b"\x1a\x45\xdf\xa3" + b"webm-rest"
+_HTML_404 = b"<!DOCTYPE html><html>404</html>"
+_UPLOAD = {
+    "url": "/uploads/deadbeefcafe/shot.png",
+    "full_path": "/-/project/42/uploads/deadbeefcafe/shot.png",
+    "markdown": "![shot](/uploads/deadbeefcafe/shot.png)",
+}
+
+
+def _verify_host(*, status: int, content: bytes) -> GitLabCodeHost:
+    client = MagicMock(spec=GitLabAPI)
+    client.base_url = "https://gitlab.com/api/v4"
+    client.resolve_project.return_value = _project()
+    client.resolve_project_from_remote.return_value = _project()
+    client.fetch_upload.return_value = (status, content)
+    return GitLabCodeHost(client=client)
+
+
+def test_verify_upload_returns_absolute_embed_and_ok_on_200_image() -> None:
+    host = _verify_host(status=200, content=_PNG_MAGIC)
+    result = host.verify_upload(repo="org/repo", upload=_UPLOAD)
+    assert result.ok is True
+    # The ABSOLUTE full_path form GitLab renders context-independently — NOT
+    # the relative /uploads/... path that breaks in the work-items UI.
+    assert result.embed_url == "https://gitlab.com/-/project/42/uploads/deadbeefcafe/shot.png"
+    assert "/uploads/deadbeefcafe" in result.embed_url
+    assert not result.embed_url.startswith("/uploads/")
+
+
+def test_verify_upload_fails_on_non_200() -> None:
+    host = _verify_host(status=404, content=_HTML_404)
+    result = host.verify_upload(repo="org/repo", upload=_UPLOAD)
+    assert result.ok is False
+    assert "404" in result.detail
+
+
+def test_verify_upload_fails_when_bytes_are_not_the_expected_medium() -> None:
+    # 200 but the route served an HTML error page, not the image.
+    host = _verify_host(status=200, content=_HTML_404)
+    result = host.verify_upload(repo="org/repo", upload=_UPLOAD)
+    assert result.ok is False
+    assert "not a renderable image" in result.detail
+
+
+def test_verify_upload_accepts_webm_video_bytes() -> None:
+    upload = {
+        "url": "/uploads/abc/clip.webm",
+        "full_path": "/-/project/42/uploads/abc/clip.webm",
+        "markdown": "![clip](/uploads/abc/clip.webm)",
+    }
+    host = _verify_host(status=200, content=_WEBM_MAGIC)
+    result = host.verify_upload(repo="org/repo", upload=upload)
+    assert result.ok is True
+    assert result.embed_url == "https://gitlab.com/-/project/42/uploads/abc/clip.webm"
+
+
+def test_verify_upload_fails_on_unparseable_response() -> None:
+    host = _verify_host(status=200, content=_PNG_MAGIC)
+    result = host.verify_upload(repo="org/repo", upload={"error": "Could not resolve project: org/repo"})
+    assert result.ok is False
+    assert "unparsable" in result.detail
+
+
+def test_verify_upload_fails_on_cross_project_upload() -> None:
+    # full_path says project 99 but the repo resolves to project 42 — a
+    # relative /uploads upload that silently landed on the wrong project.
+    host = _verify_host(status=200, content=_PNG_MAGIC)
+    cross = {
+        "url": "/uploads/deadbeefcafe/shot.png",
+        "full_path": "/-/project/99/uploads/deadbeefcafe/shot.png",
+        "markdown": "![shot](/uploads/deadbeefcafe/shot.png)",
+    }
+    result = host.verify_upload(repo="org/repo", upload=cross)
+    assert result.ok is False
+    assert "expected 42" in result.detail

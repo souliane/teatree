@@ -21,6 +21,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.backend_protocols import UploadVerification
 from teatree.core.management.commands import _e2e_evidence as _evidence
 from teatree.core.management.commands import e2e as e2e_command
 from teatree.core.management.commands._e2e_evidence import EvidenceEnv
@@ -207,7 +208,12 @@ class TestIdempotency(_EvidenceTestBase):
     def _run(self, host: MagicMock, **kwargs: str) -> dict[str, object]:
         self._clean_repo()
         self._patch_host(host)
-        host.upload_file.return_value = {"markdown": "![x](u)"}
+        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
+        # The self-verification gate passes: each upload resolves + renders, and
+        # the embed is the verified ABSOLUTE url (never the relative /uploads path).
+        host.verify_upload.return_value = UploadVerification(
+            ok=True, embed_url="https://gitlab.com/-/project/9/uploads/deadbeef/x.png"
+        )
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             return cast("dict[str, object]", call_command("e2e", "post-evidence", **kwargs))
 
@@ -240,6 +246,11 @@ class TestIdempotency(_EvidenceTestBase):
         assert "t3-e2e-evidence env=dev -->" in body
         assert "Commit tested: `" + "a" * 40 + "`" in body
         assert "The thing works" in body
+        # The body embeds the verified ABSOLUTE upload URL, never the relative
+        # /uploads path that fails to render in the work-items UI (#2156).
+        assert "https://gitlab.com/-/project/9/uploads/deadbeef/x.png" in body
+        assert "](/uploads/" not in body
+        host.verify_upload.assert_called()
 
     def test_updates_when_marker_env_matches(self) -> None:
         self._ticket()
@@ -332,6 +343,97 @@ class TestIdempotency(_EvidenceTestBase):
         assert result["action"] == "created"
         host.post_issue_comment.assert_called_once()
         host.update_issue_comment.assert_not_called()
+
+
+class TestMediaRenderGate(_EvidenceTestBase):
+    """The post-upload self-verification gate refuses to post broken media (#2156).
+
+    "Posted" must mean "the media is verified renderable", not "the upload
+    POST returned 201". If any embedded artifact does not resolve + render,
+    the command aborts non-zero, posts no comment, and burns no approval.
+    """
+
+    def _ticket(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+
+    def _run_expecting_exit(self, host: MagicMock, **kwargs: str) -> None:
+        self._clean_repo()
+        self._patch_host(host)
+        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
+        self._ticket()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "post-evidence", **kwargs)
+        # The defining assertion (anti-vacuity): a non-rendering artifact means
+        # NO comment is ever posted. Remove the gate in post_evidence_comment
+        # and these go RED — the broken-media comment would be created.
+        host.post_issue_comment.assert_not_called()
+        host.update_issue_comment.assert_not_called()
+
+    def test_refuses_to_post_when_upload_does_not_render(self) -> None:
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        # The upload returned 201 but the artifact does not resolve / render.
+        host.verify_upload.return_value = UploadVerification(
+            ok=False,
+            embed_url="https://gitlab.com/-/project/9/uploads/deadbeef/x.png",
+            detail="upload fetch returned HTTP 404",
+        )
+        before, after = self._before_after()
+        self._run_expecting_exit(
+            host,
+            ticket=_ISSUE_URL,
+            env="dev",
+            before=before,
+            after=after,
+            assertion="works",
+        )
+
+    def test_refuses_to_post_when_only_the_video_does_not_render(self) -> None:
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        before, after = self._before_after()
+        video = self._tmp / "clip.webm"
+        video.write_bytes(b"\x1a\x45\xdf\xa3fakewebm")
+
+        # The stills verify fine; only the video fails the render check.
+        ok_then_video_fails = [
+            UploadVerification(ok=True, embed_url="https://gitlab.com/-/project/9/uploads/s/before.png"),
+            UploadVerification(ok=True, embed_url="https://gitlab.com/-/project/9/uploads/s/after.png"),
+            UploadVerification(ok=False, embed_url="", detail="fetched bytes are not a renderable video"),
+        ]
+        host.verify_upload.side_effect = ok_then_video_fails
+        self._run_expecting_exit(
+            host,
+            ticket=_ISSUE_URL,
+            env="dev",
+            before=before,
+            after=after,
+            video=str(video),
+            assertion="works",
+        )
+
+    def test_non_video_passed_as_video_is_rejected(self) -> None:
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="https://x/img.png")
+        before, after = self._before_after()
+        # A .txt handed to --video must never be embedded as a <video>.
+        not_a_video = self._tmp / "notes.txt"
+        not_a_video.write_text("not a video", encoding="utf-8")
+        self._run_expecting_exit(
+            host,
+            ticket=_ISSUE_URL,
+            env="dev",
+            before=before,
+            after=after,
+            video=str(not_a_video),
+            assertion="works",
+        )
 
 
 class TestOnBehalfGateConsulted(TestCase):
@@ -479,7 +581,7 @@ class TestPureValidators:
         resolved = _evidence.resolve_and_validate_commit(commit="bbbbbbb", repo=".")
         assert resolved == full
 
-    def test_build_body_includes_video_row_only_when_given(self) -> None:
+    def test_build_body_includes_video_only_when_given(self) -> None:
         without = _evidence.build_evidence_body(
             _evidence.EvidenceComment(
                 env=EvidenceEnv.LOCAL,
@@ -498,7 +600,24 @@ class TestPureValidators:
                 before_md="![b](b)",
                 after_md="![a](a)",
                 assertion="claim",
-                video_md="[vid](v)",
+                video_md="![video](v)",
             ),
         )
-        assert "| Video | [vid](v) |" in with_video
+        # The video is embedded inline (full-width <video>), never in a one-cell row.
+        assert "### Video" in with_video
+        assert "![video](v)" in with_video
+        assert "| Video |" not in with_video
+
+    def test_build_body_places_video_above_before_after_table(self) -> None:
+        """The user's standard: the clip sits ABOVE the Before/After stills."""
+        body = _evidence.build_evidence_body(
+            _evidence.EvidenceComment(
+                env=EvidenceEnv.LOCAL,
+                commit="d" * 40,
+                before_md="![b](b)",
+                after_md="![a](a)",
+                assertion="claim",
+                video_md="![video](v)",
+            ),
+        )
+        assert body.index("### Video") < body.index("| Before | After |")

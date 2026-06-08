@@ -9,6 +9,7 @@ from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import subissues as _subissues
+from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.core.backend_protocols import (
     ApprovalState,
@@ -17,6 +18,7 @@ from teatree.core.backend_protocols import (
     PrOpenState,
     PullRequestSpec,
     ReviewState,
+    UploadVerification,
 )
 from teatree.types import RawAPIDict
 
@@ -269,10 +271,17 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         )
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
-        project = self._resolve_project(repo)
-        if project is None:
-            return {"error": f"Could not resolve project: {repo}"}
-        return self._client.upload_file(project.project_id, filepath) or {}
+        return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification:
+        """Confirm an uploaded artifact resolves + renders, and return its embed URL.
+
+        Delegates to :func:`teatree.backends.gitlab.uploads.verify_upload` with
+        the resolved project so the upload's own project id can be cross-checked
+        — the render-verification machinery lives there as the post-evidence
+        media concern, keeping this host class on the cross-host Protocol surface.
+        """
+        return _uploads.verify_upload(self._client, project=self._resolve_project(repo), upload=upload)
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         """Return *reviewer*'s current review state on the MR at *pr_url*.
