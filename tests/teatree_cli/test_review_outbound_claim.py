@@ -28,11 +28,11 @@ class _StubAPI:
 
     def __init__(self, *, approvers: list[str] | None = None) -> None:
         self.calls: list[tuple[str, str, Any]] = []
-        self.approvers = approvers or ["souliane"]
+        self.approvers = ["souliane"] if approvers is None else approvers
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
-        return {"id": 42, "notes": [{"type": "DiffNote"}], "line_code": "abc123"}
+        return {"id": 42, "notes": [{"type": "DiffNote", "id": 42}], "line_code": "abc123"}
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
@@ -44,6 +44,22 @@ class _StubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        # Verify-after-post (#2081) reads the artifact back: confirm it landed
+        # so the happy path stays green. A bare note/draft-note by id → present;
+        # /approvals → this identity approved; the bulk-publish lists →
+        # draft_notes flushed to empty, at least one authored note present; a
+        # discussion → its resolvable notes carry the requested flag.
+        last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+        if last.isdigit():
+            return {"id": int(last), "resolvable": True, "resolved": True}
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": u}} for u in self.approvers]}
+        if last == "draft_notes":
+            return []  # all drafts published
+        if last == "notes":
+            return [{"id": 99, "author": {"username": "souliane"}}]
+        if "discussions/" in endpoint:
+            return {"notes": [{"resolvable": True, "resolved": True}]}
         return []
 
     def get_json_paginated(self, endpoint: str) -> list:
@@ -60,9 +76,9 @@ class _StubAPI:
         return 204
 
 
-def _service() -> tuple[ReviewService, _StubAPI]:
+def _service(*, approvers: list[str] | None = None) -> tuple[ReviewService, _StubAPI]:
     s = ReviewService(token="t")
-    stub = _StubAPI()
+    stub = _StubAPI(approvers=approvers)
     s._get_api = lambda: stub  # type: ignore[method-assign]
     s._resolve_base_url = lambda: "https://gitlab.example.com/api/v4"  # type: ignore[method-assign]
     return s, stub
@@ -133,7 +149,9 @@ class TestReviewServiceRecordsOutboundClaims:
         assert claim.extra["endpoint"] == "approve"
 
     def test_unapprove_records_gitlab_approve_claim_with_unapprove_endpoint(self) -> None:
-        service, _ = _service()
+        # After unapprove the read-back must show this identity ABSENT from
+        # approved_by (verify_unapproval_landed, #2081).
+        service, _ = _service(approvers=[])
         msg, code = service.unapprove("org/repo", 16)
         assert code == 0, msg
         claim = OutboundClaim.objects.get(idempotency_key="gitlab_approve:org/repo!16:unapprove")
@@ -147,7 +165,9 @@ class TestFailurePathsDoNotRecordClaims:
         _gate_off(tmp_path, monkeypatch)
 
     def test_approve_failure_does_not_record(self) -> None:
-        service, stub = _service()
+        # A genuine 500 with the identity NOT in approved_by — the idempotent
+        # "already approved" probe (#1029) must not mask the real failure.
+        service, stub = _service(approvers=[])
         stub.post_status = lambda _endpoint: 500  # type: ignore[method-assign]
         _msg, code = service.approve("org/repo", 7)
         assert code == 1

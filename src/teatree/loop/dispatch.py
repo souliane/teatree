@@ -362,18 +362,60 @@ def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     return handler(signal) if handler is not None else None
 
 
-def _gate_review_intent(_signal: ScanSignal) -> list[DispatchAction] | None:
-    """Gate a ``slack.review_intent`` dispatch on the review-loop-enabled state (#79).
+def _review_target_is_dead(pr_url: str) -> bool:
+    """Whether the MR/PR at *pr_url* is provably MERGED or CLOSED (#2081).
+
+    GitLab is the source of truth: a review note can never land on a merged or
+    closed MR, so the loop must not dispatch a reviewer for one. Resolves the
+    per-URL code host with the active overlay's credentials and reads the live
+    state via :meth:`CodeHostBackend.get_pr_open_state`.
+
+    Fail-OPEN doctrine (mirrors ``get_pr_open_state``'s own contract): only a
+    *definite* MERGED/CLOSED suppresses. UNKNOWN (any auth error, network
+    failure, unparsable URL), an unresolvable host, or any exception returns
+    ``False`` so a transient API hiccup never silently drops a legitimate
+    review.
+    """
+    if not pr_url:
+        return False
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
+
+    try:
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        host = get_code_host_for_url(get_overlay(), pr_url)
+        if host is None:
+            return False
+        state = host.get_pr_open_state(pr_url=pr_url)
+    except Exception:
+        logger.exception("Live-state check failed for %s — failing open (still dispatch)", pr_url)
+        return False
+    return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
+
+
+def _gate_review_intent(signal: ScanSignal) -> list[DispatchAction] | None:
+    """Gate a ``slack.review_intent`` dispatch on review-loop-enabled + live MR state.
 
     A review-intent dispatch is a claim on a colleague's review. Returning
-    ``[]`` when the review loop is stopped suppresses the reviewer dispatch
-    for a signal reaching dispatch from any source (not only the scanner
-    that already filters); ``None`` lets the enabled case fall through to the
-    generic ``_AGENT_BY_KIND`` route.
+    ``[]`` suppresses the reviewer dispatch for a signal reaching dispatch from
+    any source (not only the scanner that already filters):
+
+    * #79: the review loop is stopped — queue none of them;
+    * #2081: the target MR is already MERGED/CLOSED — a note can never land,
+        so skip it (GitLab is the source of truth). Fails open on UNKNOWN.
+
+    ``None`` lets the enabled, still-open case fall through to the generic
+    ``_AGENT_BY_KIND`` route.
     """
     from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
 
-    return [] if not review_loop_enabled() else None
+    if not review_loop_enabled():
+        return []
+    pr_url = str(signal.payload.get("mr_url") or signal.payload.get("url") or "")
+    if _review_target_is_dead(pr_url):
+        return []
+    return None
 
 
 def _dispatch_flag_no_review(signal: ScanSignal) -> list[DispatchAction] | None:
@@ -453,10 +495,17 @@ def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAc
     review loop is stopped the loop must queue none of them. The single
     chokepoint every mention/DM/task review-request flows through, so the
     stopped-loop gate lives here rather than scattered across callers.
+
+    #2081: the same chokepoint skips a review whose target MR is already
+    MERGED/CLOSED (GitLab is the source of truth — a note can never land on
+    one). Fails open on UNKNOWN so a transient API hiccup never drops a
+    legitimate review.
     """
     from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
 
     if not review_loop_enabled():
+        return []
+    if _review_target_is_dead(pr_url):
         return []
     return [
         DispatchAction(

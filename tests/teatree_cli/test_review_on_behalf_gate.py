@@ -31,10 +31,12 @@ the gated method ↔ approval recording loop is verified in one suite.
 """
 
 from collections.abc import Callable
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -46,6 +48,12 @@ from teatree.core.models import BotPing, OnBehalfApproval
 pytestmark = pytest.mark.django_db
 
 _runner = CliRunner()
+
+
+def _http_404() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://gitlab.example.com/api/v4/x")
+    response = httpx.Response(HTTPStatus.NOT_FOUND, request=request)
+    return httpx.HTTPStatusError("not found", request=request, response=response)
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
@@ -66,13 +74,14 @@ class _StubAPI:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self._deleted_ids: set[str] = set()
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
         # ``line_code`` keeps the draft-notes anchor check happy on the
         # new default-draft ``post_comment`` path (#1207); the discussions
         # endpoint ignores it, so the same shape serves both branches.
-        return {"id": 1, "notes": [{"type": "DiffNote"}], "line_code": "abc123_10_10"}
+        return {"id": 1, "notes": [{"type": "DiffNote", "id": 1}], "line_code": "abc123_10_10"}
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
@@ -84,10 +93,27 @@ class _StubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        # Verify-after-post (#2081) reads the artifact back: confirm it landed.
+        # A note whose delete already succeeded reads back as 404 (gone), which
+        # is exactly what ``verify_note_deleted`` requires for a clean delete.
+        last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+        if last.isdigit():
+            if last in self._deleted_ids:
+                raise _http_404()
+            return {"id": int(last), "resolvable": True, "resolved": True}
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": "souliane"}}]}
+        if last == "draft_notes":
+            return []  # all drafts published
+        if last == "notes":
+            return [{"id": 99, "author": {"username": "souliane"}}]
+        if "discussions/" in endpoint:
+            return {"notes": [{"resolvable": True, "resolved": True}]}
         return []
 
     def delete(self, endpoint: str) -> int:
         self.calls.append(("delete", endpoint, None))
+        self._deleted_ids.add(endpoint.rstrip("/").rsplit("/", 1)[-1])
         return 204
 
 
