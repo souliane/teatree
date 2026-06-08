@@ -268,6 +268,18 @@ class ShipExecutor(RunnerBase):
                 ok=False,
                 detail=(f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(pr.keys())!r})"),
             )
+        # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
+        # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
+        # the overlay) must not silently advance the FSM to ``in_review``.
+        expected_slug = git.remote_slug(repo=spec.repo)
+        if expected_slug and expected_slug not in url:
+            return RunnerResult(
+                ok=False,
+                detail=(
+                    f"host.create_pr returned a PR url for the wrong repo "
+                    f"(expected slug {expected_slug!r} not found in {url!r})"
+                ),
+            )
         self._record_pr_url(ticket, extra, url, branch)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
