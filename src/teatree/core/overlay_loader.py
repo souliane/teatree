@@ -10,8 +10,11 @@ import logging
 import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
+
+from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket, Worktree
@@ -213,18 +216,105 @@ def resolve_overlay_name(name: str) -> str | None:
     return _match_canonical_ep(name, known)
 
 
+def _url_to_slug(url: str) -> str:
+    """Normalize ``url`` to an ``owner/name`` slug for ownership matching.
+
+    ``infer_overlay_for_url`` is called with two input shapes. A full
+    issue/PR web URL (the ``workspace ticket`` / ``Ticket._infer_overlay``
+    path) is parsed via :func:`slug_from_issue_or_pr_url`, which strips the
+    ``/issues|pull|merge_requests/<n>`` suffix and handles GitLab subgroups.
+    A bare ``owner/repo`` slug (the merge-authorization path, where
+    ``MergeClear.slug`` is already ``owner/repo``) is returned as-is.
+
+    Returns the parsed slug, or ``""`` when neither shape yields a
+    multi-segment ``owner/name`` path.
+    """
+    issue_slug = slug_from_issue_or_pr_url(urlparse(url).path)
+    if issue_slug:
+        return issue_slug
+    # Bare-slug fallback: a path with no recognised forge issue/PR suffix.
+    path = urlparse(url).path if "://" in url else url
+    candidate = path.strip("/")
+    return candidate if candidate.count("/") >= 1 else ""
+
+
+def _full_slug_owns(repo_slug: str, url_slug: str) -> bool:
+    """True when the proper ``owner/name`` ``repo_slug`` owns ``url_slug``.
+
+    Segment/boundary-aware, not a raw substring: ``repo_slug`` must carry at
+    least one ``/`` (a real ``owner/name`` slug) and its ``/``-delimited
+    segments must align as a suffix of ``url_slug``. A bare relative token
+    (``t3-company``, as ``_discover_workspace_repos()`` emits) is rejected
+    here — it can never own a URL by its directory name, closing the #1120
+    misclassification where ``"t3-company" in <full URL>`` was True.
+
+    Examples (``repo_slug`` owns ``url_slug``?):
+
+    - ``company-fork-org/t3-company`` owns ``company-fork-org/t3-company`` (exact).
+    - ``subgroup/repo`` owns ``group/subgroup/repo`` (segment suffix).
+    - ``t3-company`` does NOT own ``company-fork-org/t3-company`` (bare token).
+    - ``acme/widget`` does NOT own ``acme/widget-extra`` (segment differs).
+    """
+    if "/" not in repo_slug:
+        return False
+    if repo_slug == url_slug:
+        return True
+    return url_slug.split("/")[-repo_slug.count("/") - 1 :] == repo_slug.split("/")
+
+
+def _bare_name_owns(repo_token: str, url_slug: str) -> bool:
+    """True when a bare repo-name ``repo_token`` matches ``url_slug``'s name segment.
+
+    The weak tiebreaker tier: a relative directory token (no ``/``) is
+    matched only against the trailing repo-name segment of ``url_slug``, on a
+    full-segment boundary. This preserves overlays that legitimately own a
+    repo but only expose its bare relative path (the bundled ``t3-teatree``
+    overlay, whose ``get_workspace_repos()`` returns ``["teatree"]``), without
+    the raw-substring collisions of the pre-#1120 matcher.
+    """
+    return "/" not in repo_token and url_slug.rsplit("/", 1)[-1] == repo_token
+
+
 def infer_overlay_for_url(url: str) -> str:
     """Return the overlay whose workspace repos own ``url``, or ``""``.
 
+    The single source of truth for URL→overlay inference, consumed by
+    ``Ticket._infer_overlay``, ``resolve_overlay_name_for_url`` (workspace
+    ticket), merge authorization, review-request routing, the eval corpus,
+    and loop persistence. ``url`` may be a full issue/PR web URL or a bare
+    ``owner/repo`` slug — both normalize to an ``owner/name`` via
+    :func:`_url_to_slug`.
+
     Routes through ``overlay.get_workspace_repos()`` rather than the raw
     ``config.workspace_repos`` attribute: overlays that compute their repo
-    list dynamically leave the attribute empty, so reading it directly
-    mis-attributes every one of their tickets. A registered entry that is
+    list dynamically leave the attribute empty. A registered entry that is
     not a full overlay, or whose hook raises, is skipped so one broken
     overlay can't poison inference for the others.
+
+    Matching is two-tier and ambiguity-safe (souliane/teatree#1120):
+
+    1. Full ``owner/name`` slug ownership (:func:`_full_slug_owns`) is
+        authoritative. A proper slug match always wins over a bare directory
+        token, so a sibling overlay clone's relative path (``t3-company``)
+        never out-votes the overlay that actually declares
+        ``company-fork-org/t3-company``.
+    2. Bare repo-name fallback (:func:`_bare_name_owns`) fires only when
+        NO overlay claims the URL by a full slug — preserving overlays that
+        expose only a bare relative path for a repo they own.
+
+    Within each tier, more than one matching overlay returns ``""`` rather
+    than an arbitrary first dict hit, so callers fall back to the explicit
+    ``T3_OVERLAY_NAME`` path (or a default) instead of a wrong-but-nonempty
+    attribution.
     """
     if not url:
         return ""
+    url_slug = _url_to_slug(url)
+    if not url_slug:
+        return ""
+
+    full_matches: list[str] = []
+    bare_matches: list[str] = []
     for name, overlay in get_all_overlays().items():
         getter = getattr(overlay, "get_workspace_repos", None)
         if not callable(getter):
@@ -234,10 +324,15 @@ def infer_overlay_for_url(url: str) -> str:
         except Exception:
             logger.warning("Overlay %r get_workspace_repos() failed during inference", name, exc_info=True)
             continue
-        for repo_slug in repo_slugs or []:
-            if isinstance(repo_slug, str) and repo_slug in url:
-                return name
-    return ""
+        slugs = [s for s in repo_slugs or [] if isinstance(s, str)]
+        if any(_full_slug_owns(s, url_slug) for s in slugs):
+            full_matches.append(name)
+        elif any(_bare_name_owns(s, url_slug) for s in slugs):
+            bare_matches.append(name)
+
+    if full_matches:
+        return full_matches[0] if len(full_matches) == 1 else ""
+    return bare_matches[0] if len(bare_matches) == 1 else ""
 
 
 @lru_cache(maxsize=1)

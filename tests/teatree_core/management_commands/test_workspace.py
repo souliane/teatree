@@ -1011,6 +1011,53 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             assert resolve_overlay_name_for_url("https://example.com/alpha-corp/backend/issues/77") is None
 
     @override_settings(**SETTINGS)
+    def test_ticket_stamps_true_owner_overlay_not_bare_path_sibling(self) -> None:
+        """``workspace ticket`` stamps the slug-owning overlay, not a bare-path sibling (#1120).
+
+        End-to-end at the command seam: with both ``t3-teatree`` (whose
+        ``get_workspace_repos()`` carries the bare relative path
+        ``t3-company`` exactly as ``_discover_workspace_repos()`` emits it)
+        and ``t3-company`` (whose list carries the proper ``owner/name``
+        slug) registered and ``T3_OVERLAY_NAME`` unset, a ticket for the
+        reporter's ``company-fork-org/t3-company`` URL must be attributed to
+        ``t3-company``. Pre-fix the raw-substring match made the first
+        dict hit (``t3-teatree``) win, poisoning every later step.
+        """
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+
+        class TeatreeSibling(FullOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return ["teatree", "t3-company"]
+
+        class CompanyOverlay(FullOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return ["company-fork-org/t3-company"]
+
+        result: dict[str, OverlayBase] = {
+            "t3-teatree": TeatreeSibling(),
+            "t3-company": CompanyOverlay(),
+        }
+
+        def _fake_discover() -> dict[str, OverlayBase]:
+            return result
+
+        _fake_discover.cache_clear = lambda: None
+
+        url = "https://github.com/company-fork-org/t3-company/issues/147"
+        env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=True, detail="ok")
+        with (
+            patch.dict(os.environ, env_without_overlay, clear=True),
+            patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
+            patch.object(workspace_mod, "WorktreeProvisioner", return_value=provisioner),
+        ):
+            ticket_id = cast("int", call_command("workspace", "ticket", url, repos="backend"))
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.overlay == "t3-company"
+
+    @override_settings(**SETTINGS)
     def test_teardown_does_not_need_overlay_resolution(self) -> None:
         """``workspace teardown`` does not call ``get_overlay()`` on the hot path.
 

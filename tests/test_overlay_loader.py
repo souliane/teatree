@@ -151,6 +151,83 @@ class TestInferOverlayForUrl:
             assert infer_overlay_for_url("https://gitlab.com/acme/widgets/-/issues/7") == "ok"
         assert "failed during inference" in caplog.text
 
+    def test_bare_relative_path_does_not_own_sibling_slug_url(self):
+        """A bare relative path (``t3-company``) must not own a sibling clone's URL (#1120).
+
+        ``t3-teatree.get_workspace_repos()`` falls back to
+        ``_discover_workspace_repos()``, which emits each discovered overlay
+        as a workspace-RELATIVE bare path (``"t3-company"``), not an
+        ``owner/name`` slug. With a raw-substring match, the bare token
+        ``"t3-company"`` is a substring of the reporter's URL
+        ``.../company-fork-org/t3-company/issues/147`` and the first
+        dict-iteration hit (``t3-teatree``) wins — poisoning the ticket's
+        overlay attribution. The real owner is ``t3-company``, whose
+        ``get_workspace_repos()`` carries the proper ``owner/name`` slug.
+        """
+        url = "https://github.com/company-fork-org/t3-company/issues/147"
+        overlays = {
+            "t3-teatree": self._overlay(["teatree", "t3-company"]),
+            "t3-company": self._overlay(["company-fork-org/t3-company"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert infer_overlay_for_url(url) == "t3-company"
+
+        # Guard against dict-iteration order: reversing the insertion order
+        # must still resolve the true owner (the slug match wins, not the
+        # first hit).
+        reversed_overlays = {
+            "t3-company": self._overlay(["company-fork-org/t3-company"]),
+            "t3-teatree": self._overlay(["teatree", "t3-company"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=reversed_overlays):
+            assert infer_overlay_for_url(url) == "t3-company"
+
+    def test_ambiguous_match_returns_empty(self):
+        """Two overlays both owning the URL fail safe to ``""`` (#1120).
+
+        Returning the first dict hit would silently bind the ticket to an
+        arbitrary one of the two. ``""`` instead routes ``get_overlay(None)``
+        to the explicit ``ImproperlyConfigured`` listing installed overlays,
+        so the operator passes ``T3_OVERLAY_NAME`` rather than getting a
+        wrong-but-nonempty attribution.
+        """
+        url = "https://github.com/company-fork-org/t3-company/issues/147"
+        overlays = {
+            "first": self._overlay(["company-fork-org/t3-company"]),
+            "second": self._overlay(["company-fork-org/t3-company"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert infer_overlay_for_url(url) == ""
+
+    def test_segment_boundary_prevents_prefix_collision(self):
+        """``acme/widget`` must not own ``acme/widget-extra`` (#1120).
+
+        The slug ``acme/widget`` IS a raw substring of
+        ``.../acme/widget-extra/issues/1``, so the old matcher wrongly
+        claimed the URL. A segment-boundary match rejects it: the trailing
+        path segment ``widget`` does not equal ``widget-extra``.
+        """
+        url = "https://github.com/acme/widget-extra/issues/1"
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlays",
+            return_value={"a": self._overlay(["acme/widget"])},
+        ):
+            assert infer_overlay_for_url(url) == ""
+
+    def test_gitlab_subgroup_slug_resolves(self):
+        """A GitLab subgroup ``owner/name`` slug still resolves its URL (#1120).
+
+        The boundary-aware match must not regress GitLab subgroup paths
+        (``group/subgroup/repo``) — the full project path parses correctly
+        and the equal slug wins.
+        """
+        url = "https://gitlab.com/group/subgroup/repo/-/issues/3"
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlays",
+            return_value={"gl": self._overlay(["group/subgroup/repo"])},
+        ):
+            assert infer_overlay_for_url(url) == "gl"
+
 
 def _init_repo_with_origin(path: Path, origin_url: str) -> None:
     """Create a real git repo at ``path`` with ``origin`` set to ``origin_url``."""
