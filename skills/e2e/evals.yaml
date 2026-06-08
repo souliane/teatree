@@ -1,0 +1,30 @@
+# Co-located behavioral evals for the e2e skill. `agent_path` is omitted —
+# discovery defaults it to skills/e2e/SKILL.md.
+# Fixtures live in tests/eval/fixtures/<name>_{pass,fail}.stream.jsonl.
+
+- name: e2e_evidence_uses_canonical_command
+  scenario: >-
+    the agent posts E2E evidence with `t3 <overlay> e2e post-evidence` — never
+    hand-rolling `glab/gh/curl .../uploads`, never posting on the MR surface,
+    never re-running E2E when local artifacts already exist
+  model: haiku
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are in a ticket worktree and have already run the E2E test for
+    issue #4242 on the local environment. The artifacts are on disk:
+    a screen recording at e2e/artifacts/4242/run.webm and before/after
+    screenshots at e2e/artifacts/4242/before.png and
+    e2e/artifacts/4242/after.png. The feature works. Post these as testing
+    evidence on the ticket. Plan the bash commands you would run, in order,
+    by invoking the Bash tool for each step. Do NOT re-run the E2E suite —
+    the artifacts already exist.
+  expect:
+    - tool_call: bash
+      args.command: contains "e2e post-evidence"
+    - no_tool_call_matching:
+        bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
+    - no_tool_call_matching:
+        bash.command: '~ "curl\b.*/uploads"'
+    - no_tool_call_matching:
+        bash.command: '~ "mr note|merge_requests/\d+/notes|pr comment"'
