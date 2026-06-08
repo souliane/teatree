@@ -21,6 +21,20 @@ and delivers spoken agent text. Two distinct deliveries share one config:
     and only when ``local == all`` — in-client turns are never Slack messages,
     so there is no double-play to suppress.
 
+**Cross-process serial speaker queue (#2152).** Local playback fans out from
+two independent sources — each DM's :func:`_maybe_speak_local` leg and the
+detached ``t3 speak`` Stop-hook read — each spawning its own ``say``. Without
+serialization concurrent reads (in-process daemon threads AND separate
+detached subprocesses) talk over each other. :func:`_speak_local` therefore
+takes a single machine-wide :func:`fcntl.flock` on a lockfile under the teatree
+state dir (:func:`_speaker_lock_path`) around the actual ``say`` call. The lock
+is acquired BLOCKING, so a queued read plays the instant the speaker frees up
+(ASAP, ≈arrival order); a per-process queue would not serialize the separate
+subprocesses, which is the whole point. The non-blocking daemon-thread dispatch
+for in-process callers is unchanged — the thread waits on the lock, never the
+caller's egress path. The lock is best-effort: a lockfile that cannot be opened
+fails OPEN (the read still plays) so a lock error never mutes audio.
+
 The whole feature is gated on the macOS ``say`` binary being on ``PATH``
 (:func:`binary_available`): when it is absent :func:`resolve_speak` forces the
 feature inert, so it is simply silent off macOS — no error, no nag. The
@@ -32,15 +46,19 @@ class via a text DM (:func:`_surface_upload_failure`), so a missing scope
 can't silently masquerade as working audio delivery.
 """
 
+import fcntl
 import logging
 import re
 import shutil
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.paths import get_data_dir
 from teatree.types import LocalPlayback, RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
@@ -49,6 +67,12 @@ logger = logging.getLogger(__name__)
 SAY_BINARY = "say"
 _AFCONVERT_BINARY = "afconvert"
 _SPEAK_SUBPROCESS_TIMEOUT = 120
+
+# A single machine-wide lockfile serializes every ``say`` invocation —
+# across in-process daemon threads AND the separate detached ``t3 speak``
+# subprocesses — so local reads never talk over each other.
+_SPEAKER_LOCK_NAMESPACE = "speak"
+_SPEAKER_LOCK_FILENAME = "speaker.lock"
 
 # Speech is throwaway and a long read is worse than no read — a capped
 # excerpt keeps ``say`` from droning through a 4 KB status report.
@@ -279,18 +303,62 @@ def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
     thread.start()
 
 
+def _speaker_lock_path() -> Path:
+    """The single machine-wide lockfile that serializes every ``say`` (#2152).
+
+    Lives under the canonical teatree state dir
+    (:func:`teatree.paths.get_data_dir`), never an ad-hoc path, so the in-process
+    daemon threads and the separate detached ``t3 speak`` subprocesses all flock
+    the SAME file — the only way to serialize across processes.
+    """
+    return get_data_dir(_SPEAKER_LOCK_NAMESPACE) / _SPEAKER_LOCK_FILENAME
+
+
+@contextmanager
+def _serial_speaker() -> Iterator[None]:
+    """Hold the cross-process speaker lock for the duration of one ``say``.
+
+    Acquired BLOCKING (:data:`fcntl.LOCK_EX`) so a queued read plays the instant
+    the speaker frees up (ASAP, ≈arrival order), and released in a ``finally``.
+    Best-effort: if the lockfile cannot be opened (no state dir, permissions)
+    the read still plays — a lock error must never mute audio (mirrors the
+    away-gate's exception-safety doctrine). Runs INSIDE the daemon thread, never
+    on the caller's egress path, so a long queue never delays a DM or turn.
+    """
+    try:
+        lock_path = _speaker_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fh = lock_path.open("a", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("speaker lock unavailable; playing without serialization: %s", exc)
+        yield
+        return
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    finally:
+        lock_fh.close()
+
+
 def _speak_local(text: str) -> None:
     """Play ``text`` through the macOS speakers via ``say`` — no-op if absent.
 
-    Failure is tolerated (``run_allowed_to_fail`` with ``expected_codes=None``);
-    a transport/timeout error is logged and dropped so the speak seam never
-    raises into the caller.
+    Serialized machine-wide: the actual ``say`` call runs under the
+    cross-process :func:`_serial_speaker` lock so concurrent local reads (in
+    other threads or separate ``t3 speak`` subprocesses) never overlap. Failure
+    is tolerated (``run_allowed_to_fail`` with ``expected_codes=None``); a
+    transport/timeout error is logged and dropped so the speak seam never raises
+    into the caller.
     """
     say_bin = shutil.which(SAY_BINARY)
     if say_bin is None:
         return
     try:
-        run_allowed_to_fail([say_bin, text], expected_codes=None, timeout=_SPEAK_SUBPROCESS_TIMEOUT)
+        with _serial_speaker():
+            run_allowed_to_fail([say_bin, text], expected_codes=None, timeout=_SPEAK_SUBPROCESS_TIMEOUT)
     except (OSError, TimeoutExpired, CommandFailedError) as exc:
         logger.debug("local say failed: %s", exc)
 
