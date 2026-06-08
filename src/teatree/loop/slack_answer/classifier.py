@@ -174,9 +174,11 @@ def classify(text: str) -> AnswerRoute:
         return AnswerRoute.NEEDS_WORK
     if _INVESTIGATION_RE.search(lowered):
         return AnswerRoute.NEEDS_WORK
-    if _is_ack(text, lowered):
+    url_stripped = strip_urls(text)
+    lowered_stripped = _normalized(url_stripped)
+    if _is_ack(url_stripped, lowered_stripped):
         return AnswerRoute.ACK_ONLY
-    if _is_simple(strip_urls(lowered)):
+    if _is_simple(lowered_stripped):
         return AnswerRoute.SIMPLE
     return AnswerRoute.NEEDS_WORK
 
