@@ -1,14 +1,19 @@
 """Review CLI commands — GitLab draft note operations.
 
-Every publishing method (``post_*`` / ``reply_*`` / ``resolve_*`` /
-``publish_*`` / ``update_*`` / ``approve`` / ``unapprove`` /
-``delete_discussion``) routes through the tri-state
-``on_behalf_post_mode`` pre-gate (#960/#1013) the reply transport uses;
-read-only methods (``list_draft_notes``, ``delete_draft_note``) bypass
-it. Under IMMEDIATE the gate is off; under ASK every method is gated;
-under DRAFT_OR_ASK (default) ``post_draft_note`` publishes autonomously
-and the agent DMs the user with publish/delete commands, every other
-method is gated identically to ASK.
+The ``on_behalf_post_mode`` pre-gate (#960/#1013) covers colleague-
+**VISIBLE** posts only. Every colleague-visible publishing method
+(``post_comment --live`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` /
+``update_*`` / ``approve`` / ``unapprove`` / ``delete_discussion``)
+routes through the same tri-state gate the reply transport uses.
+
+The colleague-INVISIBLE draft path is the ungated safe-by-default:
+``post_draft_note`` (and the default ``live=False`` path of
+``post_comment``, which routes through it) bypasses the gate under EVERY
+mode — a draft is never visible to colleagues, so it needs no approval.
+Under ASK / DRAFT_OR_ASK the draft still publishes autonomously and the
+agent DMs the user the publish/delete commands; under IMMEDIATE it
+publishes with no DM. Read-only methods (``list_draft_notes``,
+``delete_draft_note``) bypass the gate too.
 
 ``delete_discussion`` IS gated even though it is the deletion-shaped
 sibling of ``delete_draft_note`` — it removes a *published* note that
@@ -155,12 +160,16 @@ class ReviewService:
         (anchor refused, usually because the file diff is collapsed) are
         deleted and surfaced as an error so they cannot be published silently.
 
-        Gated by the pre-publish chain in :meth:`_run_pre_publish_gates` —
-        ``on_behalf_post_mode`` (#960), colleague-MR shape (#1114), TODO-anchor
-        (#1186), and structured-evidence (#1280, requires ``evidence`` on
-        ``missing/wrong/broken`` finding bodies). ``allow_long_review`` /
-        ``allow_todo_blocker`` are the documented per-call escapes for the
-        shape and TODO-anchor gates (#126).
+        A draft is colleague-INVISIBLE (only the user can submit it), so it
+        is EXEMPT from the ``on_behalf_post_mode`` gate under every mode —
+        it never needs approval. Under ASK / DRAFT_OR_ASK the gate resolves
+        to AUTO_DRAFT (publish + DM the user the publish/delete commands);
+        under IMMEDIATE it publishes with no DM. The remaining pre-publish
+        gates in :meth:`_run_pre_publish_gates` still apply: colleague-MR
+        shape (#1114), TODO-anchor (#1186), and structured-evidence (#1280,
+        requires ``evidence`` on ``missing/wrong/broken`` finding bodies).
+        ``allow_long_review`` / ``allow_todo_blocker`` are the documented
+        per-call escapes for the shape and TODO-anchor gates (#126).
         """
         refusal = self._run_pre_publish_gates(
             repo=repo,
@@ -247,8 +256,12 @@ class ReviewService:
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
-        Default path routes through :meth:`post_draft_note` (draft-form on-behalf carve-out).
-        ``--live`` requires both a ``post_comment`` on-behalf approval and a LivePostApproval.
+        The default (``live=False``) path routes through
+        :meth:`post_draft_note`, so it inherits the colleague-INVISIBLE
+        draft exemption — it bypasses the ``on_behalf_post_mode`` gate
+        under EVERY mode (a draft needs no approval). ``--live`` is the
+        colleague-VISIBLE branch and stays gated: it requires both a
+        ``post_comment`` on-behalf approval and a LivePostApproval.
 
         Also gated by the structured-evidence pre-publish gate (#1280):
         when ``note`` matches an "X is missing/wrong/broken" pattern, the

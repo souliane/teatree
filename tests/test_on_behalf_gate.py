@@ -47,10 +47,12 @@ class TestExplicitModes:
         _write(config_file, '[teatree]\non_behalf_post_mode = "immediate"\n')
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
 
-    def test_explicit_ask_blocks_every_action(self, config_file: Path) -> None:
+    def test_explicit_ask_blocks_visible_posts_but_exempts_drafts(self, config_file: Path) -> None:
         _write(config_file, '[teatree]\non_behalf_post_mode = "ask"\n')
-        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.BLOCK
+        # Colleague-visible post: BLOCKed under ASK.
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+        # Draft is colleague-invisible: EXEMPT even under ASK — it auto-drafts.
+        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
 
 class TestPerOverlayOverride:
@@ -106,11 +108,12 @@ class TestDeprecatedShim:
 class TestLegacyTomlAlias:
     """``ask_before_post_on_behalf = true/false`` keeps working for one release."""
 
-    def test_legacy_true_blocks_non_draft_actions(self, config_file: Path) -> None:
+    def test_legacy_true_blocks_visible_posts_but_exempts_drafts(self, config_file: Path) -> None:
         _write(config_file, "[teatree]\nask_before_post_on_behalf = true\n")
-        # Maps to ASK — even a draft-form action blocks (not DRAFT_OR_ASK).
+        # Maps to ASK: a colleague-visible post blocks.
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
-        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.BLOCK
+        # A draft is colleague-invisible — exempt under ASK too.
+        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
     def test_legacy_false_passes_every_action(self, config_file: Path) -> None:
         _write(config_file, "[teatree]\nask_before_post_on_behalf = false\n")

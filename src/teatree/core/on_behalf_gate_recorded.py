@@ -18,16 +18,20 @@ on the tri-state :class:`~teatree.config.OnBehalfPostMode`:
     :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`) → return, the post
     proceeds;
 *   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.AUTO_DRAFT`
-    (:attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` + the action is
-    a draft-form post like ``post_draft_note``) → emit a fire-and-forget
-    bot→user DM and return; the post proceeds without consuming any
-    recorded approval. The audit lives on the ``BotPing`` ledger
-    (``notify_user``); no ``OnBehalfAudit`` row is written because no
-    approval was needed;
+    (action is a colleague-invisible draft-form post like
+    ``post_draft_note`` under either
+    :attr:`~teatree.config.OnBehalfPostMode.ASK` or
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` — drafts are
+    exempt from the gate under every blocking mode) → emit a
+    fire-and-forget bot→user DM and return; the post proceeds without
+    consuming any recorded approval. The audit lives on the ``BotPing``
+    ledger (``notify_user``); no ``OnBehalfAudit`` row is written because
+    no approval was needed;
 *   :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.BLOCK`
-    (:attr:`~teatree.config.OnBehalfPostMode.ASK` or
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` for non-draft
-    actions) + a recorded, unconsumed, exactly-scoped
+    (a colleague-VISIBLE action under
+    :attr:`~teatree.config.OnBehalfPostMode.ASK` or
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`) + a recorded,
+    unconsumed, exactly-scoped
     :class:`OnBehalfApproval` → inside ONE ``transaction.atomic`` block:
     consume it single-use, run the caller's ``publish`` side-effect, write
     an :class:`OnBehalfAudit` row — all-or-nothing. The post's result is
@@ -58,12 +62,13 @@ refusal before doing expensive prep, then publish through
 :func:`require_on_behalf_approval`. The consuming path is exactly
 :func:`require_on_behalf_approval`; the peek can never burn an approval.
 
-Default DRAFT_OR_ASK: the new default mode publishes draft-form notes
-autonomously (drafts are colleague-invisible and revocable) but blocks
-every other colleague-visible mutation. The user satisfies the gate
-**without a TTY** via ``t3 review approve-on-behalf <target> <action>
---approver <id>`` (the #777/#953 interactive-TTY-only anti-pattern is
-deliberately avoided).
+Drafts are the ungated safe-by-default: every mode publishes draft-form
+notes autonomously (drafts are colleague-invisible and revocable, so they
+need no approval) while ASK / DRAFT_OR_ASK block every colleague-VISIBLE
+mutation until the user records an approval. The user satisfies the gate
+for a visible post **without a TTY** via ``t3 review approve-on-behalf
+<target> <action> --approver <id>`` (the #777/#953 interactive-TTY-only
+anti-pattern is deliberately avoided).
 
 The ORM-model imports (``OnBehalfApproval`` / ``OnBehalfAudit``) live
 inside the functions rather than at module top because
@@ -110,10 +115,11 @@ def require_on_behalf_approval[PublishResult](
     See the module docstring for the four-outcome table. ``publish`` performs
     the colleague-visible side-effect and returns its result (the posted
     artifact ref). Fail-closed: an unresolved (default) setting maps to
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, and that mode
-    BLOCKs every action that isn't in
-    :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` when no recorded
-    approval matches.
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`. Under both
+    blocking modes (ASK and DRAFT_OR_ASK) a colleague-VISIBLE action — any
+    action NOT in :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` —
+    BLOCKs when no recorded approval matches; a draft-form action is exempt
+    and AUTO_DRAFTs.
 
     *   PROCEED / AUTO_DRAFT → run ``publish`` and return its result (no
         consume, no audit; AUTO_DRAFT also emits the autodraft DM first).
