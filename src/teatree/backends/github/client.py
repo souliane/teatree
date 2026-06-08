@@ -7,6 +7,7 @@ from typing import cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
+from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import (
     _GitHubPullRequestSummary,
@@ -364,6 +365,12 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
         Returns ``{"error": ...}`` when the URL is not a recognised GitHub
         issue URL.
+
+        Raises:
+            IssueNotFoundError: when ``gh api`` reports HTTP 404 (issue
+                permanently deleted or never existed).  Any other failure
+                (5xx, timeout, network error) propagates as the original
+                ``CommandFailedError`` so the scanner keeps retrying it.
         """
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
@@ -371,7 +378,15 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
 
         endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
-        data = _gh_api_get(endpoint, token=self._token)
+        try:
+            data = _gh_api_get(endpoint, token=self._token)
+        except CommandFailedError as exc:
+            # ``gh api`` exits non-zero for ALL HTTP errors (404, 5xx alike).
+            # The only reliable signal for a permanent 404 is the literal
+            # "HTTP 404" string in stderr — returncode is always 1.
+            if "HTTP 404" in exc.stderr:
+                raise IssueNotFoundError(issue_url) from exc
+            raise
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:

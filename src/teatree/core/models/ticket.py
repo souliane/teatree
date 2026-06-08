@@ -125,6 +125,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     context = models.TextField(blank=True, default="")
     short_description = models.CharField(max_length=80, blank=True, default="")
     redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
+    # Set to True when the remote forge returns HTTP 404; the disposition scanner
+    # then excludes this ticket from future fetches (#1875).
+    remote_missing = models.BooleanField(default=False)
 
     objects = TicketManager()
 
@@ -173,15 +176,14 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         return not (self.overlay and resolve_overlay_name(self.overlay) is None)
 
+    def mark_remote_missing(self) -> None:
+        """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
+        Ticket.objects.filter(pk=self.pk).update(remote_missing=True)
+        self.remote_missing = True
+
     @property
     def is_terminal(self) -> bool:
-        """True when the ticket is in a genuinely terminal/abandoned state.
-
-        The public read of the model-owned terminal set (SHIPPED/MERGED/
-        DELIVERED/IGNORED): a terminal ticket is past recovery, so the outage
-        recovery sweep (#1764) skips its FAILED tasks rather than re-queuing
-        work that has already shipped.
-        """
+        """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
 
     @property
@@ -569,6 +571,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.CODED,
             State.TESTED,
             State.REVIEWED,
+            # #1431: DELIVERED self-transition (this transition's own target)
+            # makes a re-dispatched orphan's no-action path a no-op instead of
+            # a TransitionNotAllowed crash. SHIPPED/MERGED/IGNORED stay out —
+            # an IGNORED→DELIVERED move would resurrect; Gap B reaps those.
+            State.DELIVERED,
         ],
         target=State.DELIVERED,
         conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
@@ -576,26 +583,25 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def mark_review_no_action(self) -> None:
         """Reviewer-role terminal disposition for a no-postable-action review.
 
-        Sibling of :meth:`mark_reviewed_externally` for the case the
-        reviewer concludes an external review with nothing to post or
-        approve (e.g. a bot MR — Aikido/Dependabot — where there is no
-        diff worth commenting on and no approval to give). The reviewing
-        Task would otherwise never reach a terminal state — the only
-        terminal path is ``Task.complete()`` → ``mark_reviewed_externally``
-        which requires an APPROVED outcome — so ``pending-spawn``
-        re-dispatched the same task every Stop-hook pump forever (#1077).
+        Sibling of :meth:`mark_reviewed_externally` for the case the reviewer
+        concludes an external review with nothing to post or approve (e.g. a
+        bot MR — Aikido/Dependabot — no diff worth commenting on, no approval
+        to give). Without it the reviewing Task never reaches a terminal state
+        (the only other path, ``Task.complete()`` → ``mark_reviewed_externally``,
+        requires APPROVED), so ``pending-spawn`` re-dispatched it forever
+        (#1077).
 
         Unlike ``mark_reviewed_externally`` (fired *from* an
         already-COMPLETED task) this transition is driven directly via
         ``t3 teatree ticket transition <id> mark_review_no_action`` while the
         reviewing task is still PENDING, so it consumes that task itself.
-        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER
-        APPROVED): the dedup's APPROVED-only suppression therefore does not
-        hide a future *genuine* review, while ``_already_reviewed_at_head``
+        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER APPROVED):
+        the dedup's APPROVED-only suppression therefore does not hide a future
+        *genuine* review, while ``_already_reviewed_at_head``
         still treats a no-action observation at the current head SHA as
-        "already handled" so the task is not re-queued. A head-SHA move
-        drops ``last_review_state`` (the existing #959 reset) so a new
-        revision is still reviewed — no lost obligation.
+        "already handled" so the task is not re-queued. A head-SHA move drops
+        ``last_review_state`` (the existing #959 reset) so a new revision is
+        still reviewed — no lost obligation.
         """
         from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
