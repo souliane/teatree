@@ -143,30 +143,40 @@ class Autonomy(StrEnum):
 
 
 class OnBehalfPostMode(StrEnum):
-    """Tri-state pre-gate over on-behalf colleague/customer posts (#960).
+    """Tri-state pre-gate over on-behalf colleague-VISIBLE posts (#960).
 
-    Three points on the autonomy ramp for posts the agent makes *as the
-    user* to a colleague/customer surface (PR/MR comment, issue comment,
-    Slack channel/thread post, Notion post, PR/MR approve, reaction on
-    someone else's message):
+    Three points on the autonomy ramp for colleague-visible posts the
+    agent makes *as the user* to a colleague/customer surface (PR/MR
+    comment, issue comment, Slack channel/thread post, Notion post, PR/MR
+    approve, reaction on someone else's message).
 
-    *   :attr:`DRAFT_OR_ASK` (default) — colleague-invisible, revocable
-        draft notes (``t3 review post-draft-note``) publish autonomously
-        and the agent DMs the user with publish/delete commands; every
-        other gated action collapses to BLOCK, identical to :attr:`ASK`.
-        The user gets autonomous draft-note posting (drafts are not visible
-        to colleagues until explicitly published) without yielding control
-        over any other colleague-visible mutation.
-    *   :attr:`ASK` — every gated action requires an explicit recorded
-        approval (``t3 review approve-on-behalf <target> <action>
-        --approver <id>``) before it publishes.
+    Colleague-INVISIBLE *draft* notes (``t3 review post-draft-note``) are
+    exempt from this gate under EVERY mode — a draft is never visible to
+    colleagues (only the user can submit it), so it never needs approval.
+    That exemption is the whole purpose of the setting: keep the user in
+    control of their colleague-visible voice while letting the agent draft
+    freely. Drafts always publish autonomously; under :attr:`ASK` /
+    :attr:`DRAFT_OR_ASK` the agent additionally DMs the user with the
+    publish/delete commands so they can review and submit.
+
+    *   :attr:`DRAFT_OR_ASK` (default) and :attr:`ASK` behave identically:
+        both auto-publish a draft (+ DM the user) and both BLOCK every
+        colleague-visible post until the user records an approval. They
+        are kept as distinct names for clarity and backward compatibility;
+        the per-action draft exemption is what makes a draft ungated, not
+        the mode.
+    *   :attr:`ASK` — every colleague-VISIBLE action requires an explicit
+        recorded approval (``t3 review approve-on-behalf <target> <action>
+        --approver <id>``) before it publishes. Drafts are exempt.
     *   :attr:`IMMEDIATE` — the gate is off; gated actions publish
         directly (subject to the always-gated list in :class:`Mode`).
 
-    The user satisfies the gate without a TTY by recording an
+    The user satisfies the gate for a colleague-visible post without a TTY
+    by recording an
     :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`;
-    DMs *to the user themselves* and internal-only orchestration writes
-    are out of scope and remain ungated under every mode.
+    DMs *to the user themselves*, draft notes, and internal-only
+    orchestration writes are out of scope and remain ungated under every
+    mode.
     """
 
     DRAFT_OR_ASK = "draft_or_ask"
