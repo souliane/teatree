@@ -351,7 +351,7 @@ class TestActiveDmThreadResolver:
 
 class TestHooksJsonWiring:
     def test_askuserquestion_matcher_lives_on_pretooluse(self) -> None:
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(__file__).resolve().parents[3]
         hooks_config = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         pre_matchers = [entry.get("matcher", "") for entry in hooks_config["hooks"].get("PreToolUse", [])]
         post_matchers = [entry.get("matcher", "") for entry in hooks_config["hooks"].get("PostToolUse", [])]
@@ -359,7 +359,7 @@ class TestHooksJsonWiring:
         assert "AskUserQuestion" not in post_matchers
 
     def test_askuserquestion_hook_timeout_allows_sync_post(self) -> None:
-        repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(__file__).resolve().parents[3]
         hooks_config = json.loads((repo_root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         ask_entry = next(
             entry for entry in hooks_config["hooks"]["PreToolUse"] if entry.get("matcher") == "AskUserQuestion"
