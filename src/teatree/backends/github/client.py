@@ -394,6 +394,18 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             raise
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
 
+    def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+        """Return the ``<owner>/<repo>`` that owns *issue_url* (the note's own repo).
+
+        Parses the owner/repo out of a GitHub issue URL — the repo the note is
+        posted on. The evidence command targets this repo for artifact uploads
+        so they share the note's namespace. Returns ``""`` when the URL is not a
+        recognised GitHub issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        return f"{match['owner']}/{match['repo']}" if match is not None else ""
+
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
         """Post a comment to a GitHub issue.
 

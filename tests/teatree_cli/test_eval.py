@@ -42,6 +42,7 @@ def _run(
     terminal_reason: str = "success",
     is_error: bool = False,
     tool_calls: tuple[EvalToolCall, ...] = (),
+    cost_usd: float = 0.05,
 ) -> EvalRun:
     return EvalRun(
         spec_name=spec_name,
@@ -51,6 +52,7 @@ def _run(
         is_error=is_error,
         raw_stdout="",
         raw_stderr="",
+        cost_usd=cost_usd,
     )
 
 
@@ -107,6 +109,29 @@ class TestEvalRun:
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
+
+    def test_parallel_flag_is_forwarded_to_run_specs(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        captured: dict[str, int] = {}
+
+        def _fake_run_specs(runner: object, run_specs_arg: list[EvalSpec], *, parallel: int) -> list[EvalRun]:
+            captured["parallel"] = parallel
+            return [_run(s.name, tool_calls=_PASSING_CALL) for s in run_specs_arg]
+
+        class _StubRunner:
+            def __init__(self, *_: object, **__: object) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval.app.run_specs", side_effect=_fake_run_specs),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist", "--parallel", "8"])
+        assert result.exit_code == 0, result.output
+        assert captured["parallel"] == 8
 
     def test_runs_one_scenario_when_name_given(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
@@ -264,6 +289,64 @@ class TestTranscriptReplay:
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
 
+    def test_sdk_backend_forces_require_executed_without_the_flag(self) -> None:
+        # "if we run, of course we want it executed" — the sdk path arms the
+        # all-skipped gate unconditionally; --require-executed is not opt-in for it.
+        specs = [_spec("alpha")]
+        captured: dict[str, object] = {}
+
+        class _StubRunner:
+            def __init__(self, *, max_turns_override: int | None = None, require_executed: bool = False) -> None:
+                captured["require_executed"] = require_executed
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.05)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert captured["require_executed"] is True
+
+    def test_executed_but_unmetered_sdk_run_fails_loud(self) -> None:
+        # The $0/no-metered-calls state (the --bare auth bug) must FAIL, never pass.
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                # Executed (not skipped), matchers pass, but $0 metered → the
+                # vacuous-green state. The guard must turn this RED.
+                return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.0)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 1, result.output
+        assert "metered" in result.output.lower()
+
+    def test_metered_sdk_run_passes(self) -> None:
+        # The same passing run WITH real metered cost stays green — proves the
+        # guard keys on cost, not on the verdict (anti-vacuous companion).
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.0556)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+
 
 class TestEvalPassAtK:
     def test_trials_aggregates_and_reports_pass_rate(self) -> None:
@@ -329,7 +412,10 @@ class TestEvalPassAtK:
         assert payload["mode"] == "pass@2"
         assert payload["scenarios"][0]["passes"] == 2
 
-    def test_all_trials_skipped_reports_skip(self) -> None:
+    def test_all_trials_skipped_reports_skip_line_but_fails_loud(self) -> None:
+        # The per-scenario SKIP line is still printed for visibility, but because
+        # --trials always runs the metered sdk runner, an all-skipped run can only
+        # mean claude/credential is unprovisioned — it fails loud, never green.
         specs = [_spec("alpha")]
 
         class _StubRunner:
@@ -343,8 +429,9 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.multi_trial.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
-        assert result.exit_code == 0
+        assert result.exit_code != 0, result.output
         assert "SKIP alpha" in result.output
+        assert "executed 0" in result.output
 
 
 class _SkippingRunner:
@@ -367,13 +454,24 @@ class TestEvalRequireExecuted:
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
-    def test_single_trial_all_skipped_stays_green_without_flag(self) -> None:
+    def test_single_trial_sdk_all_skipped_fails_loud_without_flag(self) -> None:
+        # The sdk backend IS the metered path: "if we run, of course we want it
+        # executed". An all-skipped sdk run fails loud even without the flag.
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
+
+    def test_single_trial_subscription_all_skipped_stays_green_without_flag(self, tmp_path: Path) -> None:
+        # The subscription backend's pre-transcript all-skip is legitimate and
+        # stays green — the flag is still opt-in there.
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
     def test_single_trial_with_execution_passes_under_flag(self) -> None:
@@ -403,14 +501,17 @@ class TestEvalRequireExecuted:
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
-    def test_pass_at_k_all_skipped_stays_green_without_flag(self) -> None:
+    def test_pass_at_k_all_skipped_fails_loud_without_flag(self) -> None:
+        # --trials always uses the metered sdk runner, so an all-skipped pass@k
+        # run fails loud even without the flag (it can never be a legit all-skip).
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.cli.eval.multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
 
     def test_pass_at_k_with_execution_passes_under_flag(self) -> None:
         specs = [_spec("alpha")]
@@ -692,14 +793,17 @@ class TestEvalModelMatrix:
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
-    def test_matrix_all_skipped_stays_green_without_flag(self) -> None:
+    def test_matrix_all_skipped_fails_loud_without_flag(self) -> None:
+        # --models always uses the metered sdk runner, so an all-skipped matrix
+        # run fails loud even without the flag.
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.cli.eval.multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
 
 
 class TestPrepareSubscription:
@@ -975,12 +1079,88 @@ class TestEvalAll:
         assert "docker is not on PATH" in result.output
 
 
+class TestEvalFinalVerdict:
+    """Every ``t3 eval`` / ``t3 eval all`` run ends with a plain-language verdict.
+
+    A non-expert reader must be able to tell from the LAST lines whether the run
+    was all-good, found a real problem, or could not fully validate (the AI lane
+    was skipped for setup reasons). The verdict is honest: a setup-skip is never
+    rendered as a pass-with-no-caveat, and a real failure names the failing lane.
+    """
+
+    def test_all_pass_renders_all_good_verdict(self, tmp_path: Path) -> None:
+        # Free-only so every lane truly passes (no AI lane to caveat).
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "✅ ALL GOOD" in result.output, result.output
+        assert "every check passed" in result.output, result.output
+
+    def test_real_failure_renders_problems_and_names_the_lane(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "❌ PROBLEMS FOUND" in result.output, result.output
+        assert "negative-control" in result.output, result.output
+
+    def test_ai_lane_skipped_renders_needs_setup_not_failed(self, tmp_path: Path) -> None:
+        # Default backend, no transcripts on disk -> the AI lane cannot run.
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "SKIPPED" in result.output, result.output
+        assert "needs setup" in result.output, result.output
+        # The AI lane is NOT rendered as a failure.
+        assert "❌ PROBLEMS FOUND" not in result.output, result.output
+
+    def test_ai_lane_skipped_verdict_flags_not_validated(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # Deterministic part is good, AND the reader is told the AI lane was NOT run.
+        assert "Deterministic checks" in result.output, result.output
+        assert "ALL GOOD" in result.output, result.output
+        assert "NOT RUN" in result.output, result.output
+        assert "not yet validated" in result.output, result.output
+
+    def test_strict_makes_a_setup_skipped_lane_exit_nonzero(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--strict", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+
+    def test_strict_stays_green_when_everything_actually_passes(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(
+                app, ["eval", "all", "--strict", "--free-only", "--transcript-dir", str(tmp_path)]
+            )
+        assert result.exit_code == 0, result.output
+        assert "✅ ALL GOOD" in result.output, result.output
+
+    def test_bare_eval_default_also_renders_the_verdict(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "NOT RUN" in result.output, result.output
+
+
 class TestEvalRunDocker:
     """``t3 eval run --docker`` — the metered sdk lane runs in-container, not on the host."""
 
     def test_delegates_metered_run_to_the_container(self) -> None:
         with (
-            patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker,
             patch("teatree.cli.eval.app.discover_specs", side_effect=AssertionError("docker must not run on the host")),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--docker"])
@@ -989,24 +1169,24 @@ class TestEvalRunDocker:
         assert run_docker.call_args.args[0] == ["run", "--backend", "sdk", "--require-executed", "--no-persist"]
 
     def test_forwards_scenario_name_and_trials(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
             CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3", "--docker"])
         assert run_docker.call_args.args[0] == ["run", "alpha", "--trials", "3", "--require", "any", "--no-persist"]
 
     def test_propagates_container_exit_code(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=1):
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=1):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
         assert result.exit_code == 1, result.output
 
     def test_rejects_durable_history_flags(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker") as run_docker:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker:
             result = CliRunner().invoke(app, ["eval", "run", "--baseline", "--docker"])
         assert result.exit_code == 2
         run_docker.assert_not_called()
         assert "ephemeral container" in result.output
 
     def test_docker_unavailable_exits_code_2(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", side_effect=DockerUnavailableError):
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=DockerUnavailableError):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output

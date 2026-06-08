@@ -762,6 +762,7 @@ class TestLoopRegistrationGateNeverLockout:
         state.mkdir()
         monkeypatch.setattr(router, "STATE_DIR", state)
         monkeypatch.setattr(router, "_teatree_active", lambda _session_id: True)
+        monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
         monkeypatch.setattr(router, "_session_drives_loop", lambda _session_id: True)
 
     def _pending(self, session_id: str) -> None:

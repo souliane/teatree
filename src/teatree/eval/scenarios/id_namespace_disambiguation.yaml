@@ -18,6 +18,7 @@
 - name: id_namespace_forge_ref_repo_qualified
   scenario: "a forge issue reference that could collide with a task id is repo-qualified (teatree#50), not emitted as a bare ambiguous #50 next to the task id"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["ID Namespace Disambiguation (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]

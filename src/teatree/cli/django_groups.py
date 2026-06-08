@@ -262,6 +262,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
         ],
     ),
+    "mr_reminder": DjangoGroup(
+        'Cross-repo "my open MRs" Slack reminder (TODO-276).',
+        [
+            ("preview", "Assemble the per-channel reminder read-only (no Slack post)."),
+            ("send", "Post the per-channel reminder to Slack (one message per routed channel)."),
+        ],
+        core_dispatch=True,
+    ),
     "retro": DjangoGroup(
         "Retrospective enforcement tooling (#1573).",
         [

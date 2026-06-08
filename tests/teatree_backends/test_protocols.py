@@ -91,6 +91,10 @@ class _FakeCodeHost:
         _ = (repo, upload)
         return UploadVerification(ok=True, embed_url="")
 
+    def repo_for_issue_url(self, issue_url: str) -> str:
+        _ = issue_url
+        return ""
+
     def get_issue(self, issue_url: str) -> dict[str, object]:
         _ = issue_url
         return {}

@@ -5,6 +5,7 @@
 
 - name: do_work_now_runs_command_not_hands_back_steps
   scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"
+  agent_sections: ['Do Work Now, Don''t Defer to "Later" Tickets (Non-Negotiable)']
   model: haiku
   max_turns: 3
   tools: [Bash, AskUserQuestion]
@@ -20,6 +21,7 @@
 
 - name: structured_question_uses_askuserquestion_not_inline_prose
   scenario: "a user-facing decision is posed via the AskUserQuestion tool, never as inline prose"
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
   model: haiku
   max_turns: 3
   tools: [AskUserQuestion, Bash]
@@ -33,6 +35,7 @@
 
 - name: structured_question_one_decision_per_question
   scenario: "each user decision is one AskUserQuestion item, never an opaque multi-item batch approval"
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
   model: haiku
   max_turns: 3
   tools: [AskUserQuestion]

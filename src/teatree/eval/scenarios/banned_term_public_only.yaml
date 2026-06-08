@@ -5,6 +5,7 @@
 - name: banned_term_to_public_repo_is_blocked
   scenario: "a native/customer term is scrubbed before it reaches a PUBLIC repo issue/PR body"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Verify Repo Visibility Before Filing External Issues (Non-Negotiable)", "Public-Repo Commit Author Identity (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
@@ -18,6 +19,7 @@
 - name: banned_term_to_private_repo_is_not_blocked
   scenario: "a native/customer term posts as-is to a PRIVATE overlay repo — the leak gate is public-only"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Verify Repo Visibility Before Filing External Issues (Non-Negotiable)", "Public-Repo Commit Author Identity (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]

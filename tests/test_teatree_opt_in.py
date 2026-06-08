@@ -20,7 +20,9 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
     _OWNER_LOOP,
+    _loop_auto_load_active,
     _loop_registration_exempt,
+    _loops_auto_load_enabled,
     _read_loop_registry,
     _teatree_active,
     _write_loop_registry,
@@ -44,6 +46,11 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
+    # Model the opted-in loop OWNER for the marker-mechanism tests below — the
+    # session-start auto-load opt-in (#256) is exercised on its own in
+    # ``TestLoopAutoLoadOptInGate``. Default OFF would otherwise gate every
+    # marker-only must-fire assertion. The opt-in-gate class deletes this var.
+    monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
 
 
 def _mark_active(session_id: str) -> None:
@@ -404,6 +411,128 @@ class TestRisk6MidSessionOwnershipClaim:
         assert _read_loop_registry() == {}
 
 
+# ── #256: session-start auto-load is opt-in (default OFF, colleague-friendly) ──
+
+
+class TestLoopAutoLoadEnabledHelper:
+    """``_loops_auto_load_enabled`` — env-first, then ``[loops] auto_load``, default OFF."""
+
+    @pytest.fixture(autouse=True)
+    def _no_env_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The file-level _isolation fixture opts in via the env var; this gate's
+        # own tests control the env/toml directly, so drop the inherited opt-in.
+        monkeypatch.delenv("T3_LOOPS_AUTO_LOAD", raising=False)
+
+    def test_default_off_with_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path / "no-config-home"))
+        assert _loops_auto_load_enabled() is False
+
+    def test_env_truthy_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+        assert _loops_auto_load_enabled() is True
+
+    def test_env_falsey_disables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An explicit env false wins even when the toml would enable.
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "false")
+        assert _loops_auto_load_enabled() is False
+
+    def test_toml_auto_load_true_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        assert _loops_auto_load_enabled() is True
+
+    def test_toml_loops_without_auto_load_stays_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A [loops] section that only sets the kill-switch must NOT auto-load.
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("[loops]\nenabled = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        assert _loops_auto_load_enabled() is False
+
+
+class TestLoopAutoLoadOptInGate:
+    """A teatree-marked session that did NOT opt into auto-load is silent (#256).
+
+    Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and each of
+    the three injection points it now gates (bootstrap claim, prompt-time cron
+    nag, registration nudge exemption). The marker is always present here, so
+    the ONLY variable is the opt-in — revert the ``_loop_auto_load_active``
+    gate at any call site and the matching ``*_silent`` assertion goes RED.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _marked_colleague(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mark_active("colleague")
+        # Drop the file-level env opt-in so the default-OFF path is exercised.
+        monkeypatch.delenv("T3_LOOPS_AUTO_LOAD", raising=False)
+
+    def _opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+
+    # combined predicate ───────────────────────────────────────────────
+    def test_active_predicate_off_without_opt_in(self) -> None:
+        assert _loop_auto_load_active("colleague") is False
+
+    def test_active_predicate_on_with_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._opt_in(monkeypatch)
+        assert _loop_auto_load_active("colleague") is True
+
+    # bootstrap (SessionStart) ─────────────────────────────────────────
+    def test_bootstrap_silent_without_opt_in(self, capsys: pytest.CaptureFixture[str]) -> None:
+        handle_session_start_bootstrap({"session_id": "colleague"})
+        assert capsys.readouterr().out == ""
+
+    def test_bootstrap_does_not_claim_ownership_without_opt_in(self) -> None:
+        handle_session_start_bootstrap({"session_id": "colleague"})
+        assert _read_loop_registry() == {}
+
+    def test_bootstrap_fires_with_opt_in(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._opt_in(monkeypatch)
+        handle_session_start_bootstrap({"session_id": "colleague"})
+        out = capsys.readouterr().out
+        assert "t3 loop tick" in out
+        assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "colleague"
+
+    # prompt-time cron nag ─────────────────────────────────────────────
+    def test_prompt_nag_silent_without_opt_in(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        handle_enforce_loop_on_prompt({"session_id": "colleague"})
+        assert capsys.readouterr().out == ""
+        assert _read_loop_registry() == {}
+
+    def test_prompt_nag_fires_with_opt_in(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._opt_in(monkeypatch)
+        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        handle_enforce_loop_on_prompt({"session_id": "colleague"})
+        assert "register_cron" in capsys.readouterr().out
+
+    # registration nudge exemption ─────────────────────────────────────
+    def test_registration_exempt_without_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
+        monkeypatch.setattr(router, "_session_drives_loop", lambda sid: True)
+        assert _loop_registration_exempt({"session_id": "colleague", "tool_name": "Bash"}) is True
+
+    def test_registration_not_exempt_with_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._opt_in(monkeypatch)
+        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
+        monkeypatch.setattr(router, "_session_drives_loop", lambda sid: True)
+        assert _loop_registration_exempt({"session_id": "colleague", "tool_name": "Bash"}) is False
+
+
 # ── Statusline shell script gating ────────────────────────────────────
 
 _BASH = shutil.which("bash") or "/bin/bash"
@@ -415,13 +544,14 @@ class TestStatuslineGating:
         session_id: str,
         state_dir: Path,
         *,
+        home: Path | None = None,
         extra_env: dict | None = None,
     ) -> str:
         script = Path(__file__).resolve().parents[1] / "hooks" / "scripts" / "statusline.sh"
         payload = json.dumps({"session_id": session_id})
         env = {
             "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
+            "HOME": str(home) if home is not None else os.environ.get("HOME", ""),
             "TEATREE_CLAUDE_STATUSLINE_STATE_DIR": str(state_dir),
             "TEATREE_STATUSLINE_FILE": str(state_dir / "statusline.txt"),
         }
@@ -440,12 +570,31 @@ class TestStatuslineGating:
     def test_no_marker_produces_no_output(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
-        out = self._run_statusline("no-teatree-sess", state_dir)
+        out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_LOOPS_AUTO_LOAD": "1"})
         assert out == ""
 
-    def test_marker_present_produces_output(self, tmp_path: Path) -> None:
+    def test_marker_present_but_auto_load_off_produces_no_output(self, tmp_path: Path) -> None:
+        # The #256 colleague case: a session that loaded teatree (marker
+        # present) but never opted into auto-load stays silent.
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
-        out = self._run_statusline("teatree-sess", state_dir)
+        out = self._run_statusline("teatree-sess", state_dir, home=tmp_path / "fresh-home")
+        assert out == ""
+
+    def test_marker_and_env_opt_in_produces_output(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "teatree-sess.teatree-active").touch()
+        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_LOOPS_AUTO_LOAD": "1"})
+        assert out != ""
+
+    def test_marker_and_toml_opt_in_produces_output(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "teatree-sess.teatree-active").touch()
+        home = tmp_path / "opted-in-home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
+        out = self._run_statusline("teatree-sess", state_dir, home=home)
         assert out != ""

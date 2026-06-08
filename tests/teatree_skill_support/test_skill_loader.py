@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 
 # skill_loader lives in scripts/lib/, add scripts/ to path
-_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+_SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
@@ -26,7 +26,7 @@ from lib.skill_loader import (  # noqa: E402
 
 import teatree.skill_support.loading as skill_loading_mod  # noqa: E402
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
 
 # ── Trigger frontmatter parsing ──────────────────────────────────────

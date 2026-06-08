@@ -3,9 +3,16 @@
 Shells out to the Claude CLI in ``--output-format stream-json`` mode with
 a per-scenario wall-clock watchdog (120s) and a per-invocation budget
 circuit breaker (``--max-budget-usd 0.10``). The child runs in a virgin
-environment (``--bare`` plus :func:`~teatree.eval.isolation.isolated_claude_env`)
-so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
-``CLAUDE.md`` never bias a result. When ``claude`` is not on PATH the runner
+environment via :func:`~teatree.eval.isolation.isolated_claude_env` (``HOME``
+redirected at a ``.claude``-free temp dir + neutral cwd) plus the explicit
+``--settings``, ``--strict-mcp-config``, ``--system-prompt`` and ``--add-dir``
+flags, so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
+``CLAUDE.md`` never bias a result. The command deliberately does NOT pass
+``--bare``: in claude-code 2.x that flag forces "Anthropic auth is strictly
+ANTHROPIC_API_KEY … OAuth and keychain are never read", which disables
+``CLAUDE_CODE_OAUTH_TOKEN`` auth — the metered lane's only auth (we have no
+``sk-ant-api03`` API key), so ``--bare`` silently regressed every metered run to
+``$0 / no tool calls``. When ``claude`` is not on PATH the runner
 returns a skip-shaped :class:`EvalRun` so the harness can print a clear ``SKIP``
 banner and exit 0 — that path is exercised on contributors who have not
 installed the CLI locally.
@@ -24,6 +31,7 @@ import dataclasses
 import shutil
 from pathlib import Path
 
+from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
@@ -86,7 +94,7 @@ class ClaudePRunner:
                 raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
 
-        system_prompt = self._load_agent_definition(spec.agent_path)
+        system_prompt = self._load_agent_definition(spec.agent_path, spec.agent_sections)
         max_turns = self._max_turns_override if self._max_turns_override is not None else spec.max_turns
         command = self._build_command(
             binary,
@@ -135,7 +143,6 @@ class ClaudePRunner:
         return [
             binary,
             "-p",
-            "--bare",
             "--output-format",
             "stream-json",
             "--verbose",
@@ -189,7 +196,7 @@ class ClaudePRunner:
         )
 
     @staticmethod
-    def _load_agent_definition(agent_path: str) -> str:
+    def _load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ()) -> str:
         resolved = Path(agent_path).expanduser()
         if not resolved.is_absolute():
             for candidate in (Path.cwd() / resolved, _teatree_root() / resolved):
@@ -203,6 +210,8 @@ class ClaudePRunner:
         if not text.strip():
             msg = f"Agent definition is empty: {resolved}"
             raise ValueError(msg)
+        if agent_sections:
+            return extract_sections(text, agent_sections)
         return text
 
     @staticmethod
