@@ -1,10 +1,18 @@
 """On-behalf posting pre-gate — tri-state resolver (#960).
 
 Single source of truth for the *tri-state* setting that decides what
-teatree does *before* publishing a post made under the user's identity
-to a colleague/customer surface — a PR/MR comment, an issue comment, a
-Slack channel/thread message, a Notion post, a PR/MR approval, or a
-reaction on someone else's message.
+teatree does *before* publishing a colleague-**VISIBLE** post made under
+the user's identity to a colleague/customer surface — a PR/MR comment, an
+issue comment, a Slack channel/thread message, a Notion post, a PR/MR
+approval, or a reaction on someone else's message.
+
+The gate governs colleague-visible posts ONLY. A *draft*-form action
+(:data:`_DRAFT_FORM_ACTIONS`, e.g. ``post_draft_note``) is the ungated
+safe-by-default: a draft is never visible to colleagues — only the user
+can submit it — so it needs no approval under any mode and is exempt from
+the gate entirely. That exemption is the whole purpose of the
+``on_behalf_post_mode`` setting: it keeps the user in control of their
+colleague-visible voice while letting the agent draft freely.
 
 The setting is ``[teatree] on_behalf_post_mode`` (default
 :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, per-overlay
@@ -24,19 +32,21 @@ The resolver returns one of three :class:`OnBehalfVerdict` values:
 
 *   :attr:`OnBehalfVerdict.PROCEED` — the post proceeds, no approval needed.
     Returned under :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` for
-    every action.
+    every action (including draft-form actions).
 *   :attr:`OnBehalfVerdict.BLOCK` — no recorded approval matched, the
     caller must NOT publish; it surfaces the blocked post to the user (the
     user-notify path) so the user can record an approval in plain text.
-    Returned under :attr:`~teatree.config.OnBehalfPostMode.ASK` for every
-    action, and under :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`
-    for every non-draft-form action.
+    Returned for every colleague-**visible** action under
+    :attr:`~teatree.config.OnBehalfPostMode.ASK` and
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`. A draft-form
+    action NEVER yields BLOCK — it is exempt from the gate.
 *   :attr:`OnBehalfVerdict.AUTO_DRAFT` — the action is a draft-form post
     (colleague-invisible, revocable) and the caller proceeds autonomously
     while recording a DM to the user with the publish/delete commands.
-    Returned only under
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` for actions in
-    :data:`_DRAFT_FORM_ACTIONS`.
+    Returned for actions in :data:`_DRAFT_FORM_ACTIONS` under BOTH
+    :attr:`~teatree.config.OnBehalfPostMode.ASK` and
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (drafts are
+    exempt under every blocking mode, not just the default).
 
 The legacy boolean helper :func:`ask_before_post_on_behalf_enabled` is
 kept as a deprecated shim returning ``True`` for ASK/DRAFT_OR_ASK and
@@ -58,25 +68,40 @@ class OnBehalfVerdict(StrEnum):
     AUTO_DRAFT = "auto_draft"
 
 
-# Actions that publish in a colleague-invisible, revocable draft form
-# and therefore qualify for the AUTO_DRAFT verdict under DRAFT_OR_ASK.
-# Every other action collapses to BLOCK under DRAFT_OR_ASK (identical to
-# ASK), so this set is the load-bearing per-action carve-out for the new
-# default mode.
+# Actions that publish in a colleague-INVISIBLE, revocable draft form.
+# These are EXEMPT from the on-behalf gate under *every* mode: a draft is
+# never visible to colleagues (only the user can submit it), so it needs
+# no approval — that is the whole point of the gate, which exists to keep
+# the user in control of their colleague-VISIBLE voice. A draft-form
+# action therefore never BLOCKs; it resolves to AUTO_DRAFT under ASK /
+# DRAFT_OR_ASK (post the draft autonomously + DM the user the
+# publish/delete commands) and to PROCEED under IMMEDIATE. Every action
+# NOT in this set is a colleague-visible post and stays gated exactly as
+# before. This set is the single source of truth for the draft carve-out.
 _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 
 
 def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     """Return the verdict for *action* under the effective on-behalf mode.
 
-    *   :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` → always
+    The gate covers colleague-**VISIBLE** posts only. A draft-form action
+    (one of :data:`_DRAFT_FORM_ACTIONS`) is colleague-invisible and
+    revocable, so it is exempt under every mode and never BLOCKs:
+
+    *   draft-form action → :attr:`OnBehalfVerdict.AUTO_DRAFT` under
+        :attr:`~teatree.config.OnBehalfPostMode.ASK` /
+        :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (post the
+        draft autonomously and DM the user the publish/delete commands),
+        and :attr:`OnBehalfVerdict.PROCEED` under
+        :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
+
+    For every colleague-visible action:
+
+    *   :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` →
         :attr:`OnBehalfVerdict.PROCEED`.
-    *   :attr:`~teatree.config.OnBehalfPostMode.ASK` → always
+    *   :attr:`~teatree.config.OnBehalfPostMode.ASK` /
+        :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` →
         :attr:`OnBehalfVerdict.BLOCK`.
-    *   :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` →
-        :attr:`OnBehalfVerdict.AUTO_DRAFT` for actions in
-        :data:`_DRAFT_FORM_ACTIONS`, :attr:`OnBehalfVerdict.BLOCK`
-        otherwise.
 
     Resolution follows the standard env (``T3_ON_BEHALF_POST_MODE``) →
     active-overlay → global → default chain via
@@ -85,9 +110,9 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     mode = get_effective_settings().on_behalf_post_mode
     if mode is OnBehalfPostMode.IMMEDIATE:
         return OnBehalfVerdict.PROCEED
-    if mode is OnBehalfPostMode.ASK:
-        return OnBehalfVerdict.BLOCK
-    # DRAFT_OR_ASK
+    # Draft-form actions are colleague-invisible — exempt from the gate
+    # under every blocking mode (ASK and DRAFT_OR_ASK alike). They never
+    # need approval; they auto-draft with a user DM receipt.
     if action in _DRAFT_FORM_ACTIONS:
         return OnBehalfVerdict.AUTO_DRAFT
     return OnBehalfVerdict.BLOCK
@@ -100,11 +125,13 @@ def ask_before_post_on_behalf_enabled() -> bool:
     """Deprecated boolean shim — prefer :func:`resolve_on_behalf_verdict`.
 
     Returns ``True`` when the resolved mode is ASK or DRAFT_OR_ASK (both
-    of which BLOCK every action that isn't a draft-form post), ``False``
-    when IMMEDIATE. Emits a :class:`DeprecationWarning` on first call —
-    new code should call :func:`resolve_on_behalf_verdict` directly so
-    the tri-state distinction (BLOCK vs AUTO_DRAFT under DRAFT_OR_ASK)
-    isn't lost.
+    of which BLOCK colleague-visible posts), ``False`` when IMMEDIATE.
+    Note this boolean is per-mode, not per-action: it cannot express that
+    a draft-form action is exempt and auto-drafts under ASK/DRAFT_OR_ASK.
+    Emits a :class:`DeprecationWarning` on first call — new code should
+    call :func:`resolve_on_behalf_verdict` directly so the per-action
+    distinction (BLOCK for visible posts vs AUTO_DRAFT for drafts under
+    both blocking modes) isn't lost.
     """
     global _DEPRECATION_EMITTED  # noqa: PLW0603 — module-level first-call flag
     if not _DEPRECATION_EMITTED:
