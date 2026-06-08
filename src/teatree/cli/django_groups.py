@@ -128,7 +128,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("create", "Enqueue the next-phase task for a ticket."),
             ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
             ("start", "Claim and run the next interactive task in the current terminal."),
-            ("work-next-sdk", "Claim and execute an headless task."),
+            (
+                "work-next-sdk",
+                (
+                    "Claim and execute a headless task; refuses loop-dispatched "
+                    "phases unless LOOP_ALLOW_HEADLESS_DISPATCH."
+                ),
+            ),
             ("work-next-user-input", "Claim and execute a user input task."),
         ],
     ),

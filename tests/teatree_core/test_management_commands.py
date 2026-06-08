@@ -293,6 +293,50 @@ class TestTaskCommands(TestCase):
     def test_return_none_when_no_work_available(self) -> None:
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
 
+    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
+    def test_work_next_sdk_refuses_loop_dispatched_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+        # ``Task.save`` auto-routes a registered-phase HEADLESS insert to
+        # INTERACTIVE; force HEADLESS via ``route_to_headless`` (an UPDATE,
+        # not an insert) so the save default does not re-fire.
+        task.route_to_headless(reason="forced headless for the regression")
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+
+        with patch.object(headless_mod, "run_headless", MagicMock()) as run_headless_mock:
+            sdk_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+            )
+
+        run_headless_mock.assert_not_called()
+        assert "routing_error" in sdk_result
+        assert sdk_result["exit_code"] == "1"
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "routing_error" in attempt.result
+
+    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=True)
+    def test_work_next_sdk_override_allows_loop_dispatched_phase(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+        task.route_to_headless(reason="forced headless for the regression")
+
+        attempt = TaskAttempt(task=task, execution_target=task.execution_target, exit_code=0)
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(headless_mod, "run_headless", MagicMock(return_value=attempt)) as run_headless_mock,
+        ):
+            call_command("tasks", "work-next-sdk", claimed_by="worker-1")
+
+        run_headless_mock.assert_called_once()
+
 
 class TestTasksListSession(TestCase):
     """``t3 <overlay> tasks list --session`` scopes to the current Claude session."""
