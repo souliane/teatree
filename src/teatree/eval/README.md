@@ -23,7 +23,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring; `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
@@ -83,10 +83,11 @@ installed editable from a clone; the eval harness ships inside it.
 ## Invocation
 
 ```bash
+t3 eval                                      # THE DEFAULT: run the WHOLE suite (all lanes) in one summary table — no subcommand, no args
 t3 eval list                                # show available scenarios as a rich table
-t3 eval all                                  # all lanes (skill-triggers + skill-coverage + pinned-regressions + negative-control + transcript-replay + AI) in one summary table
-t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — on-demand; the pre-push gate is eval-pinned-regressions
-t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
+t3 eval all                                  # explicit alias of the bare-`t3 eval` default (all lanes) — kept for scripts/CI that spell it out
+t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane); bare `t3 eval --free-only` is identical
+t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; bare `t3 eval --docker` is identical
 t3 eval run --backend sdk --docker            # run the metered claude -p lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
@@ -145,10 +146,26 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
-### `t3 eval all` — the combined multi-lane surface (#1781)
+### Bare `t3 eval` — the whole suite, no arguments (the default)
 
-`t3 eval all` runs every lane in one summary table: the five free deterministic
-lanes (`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
+**Bare `t3 eval` (no subcommand, no args) runs the ENTIRE suite in one go** and
+prints a single aggregated summary table — the command to reach for by default.
+Arguments and subcommands are the *targeted/special* path: `run` (a single AI
+scenario, the metered `--backend sdk --docker` path), `pinned-regressions` /
+`negative-control` / `skill-triggers` / `coverage` (one free lane in isolation),
+`history` / `list` / `prepare-subscription` (introspection). The bare default
+accepts the same suite-shaping flags as `all` — `--free-only`, `--backend`,
+`--transcript-dir`, `--docker` — so `t3 eval --free-only` and `t3 eval all
+--free-only` are identical. The process exits non-zero if ANY lane fails
+(fail-loud); a SKIP never counts as a green pass.
+
+### `t3 eval all` — the explicit alias of the bare default (#1781)
+
+`t3 eval all` is the spelled-out form of the bare `t3 eval` default — both call
+the same `run_full_suite` chokepoint, so they run byte-for-byte the same suite,
+and `all` is kept for scripts/CI that prefer to name the full run explicitly. It
+runs every lane in one summary table: the five free deterministic lanes
+(`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`) plus the metered AI lane. The `skill-coverage` lane is
 warn-first (reports a gap, exit 0). The AI lane never meters silently — `--backend sdk` opts in.
 A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
@@ -393,6 +410,7 @@ class, where it is pinned, and the originating fix:
 | forge backend resolves by repo origin host, not token precedence | `regression_corpus` (`forge_from_remote`) | [#2085](https://github.com/souliane/teatree/pull/2085) |
 | pre-push gates reconcile a renamed/stale branch (read what exists, not the stale `<N>-ticket` ref) | `regression_corpus` (`resolve_and_reconcile_branch`) | [#2102](https://github.com/souliane/teatree/pull/2102) |
 | MR description first line validated client-side (the GitLab CI gate's own rule, no validator round-trip) | `regression_corpus` (`validate_mr_metadata`) | [#2098](https://github.com/souliane/teatree/pull/2098) |
+| review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `skills/review/evals.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`, co-located) | [#2173](https://github.com/souliane/teatree/issues/2173) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
@@ -788,6 +806,14 @@ token-free and deterministic (it never shells `claude -p`), so it runs as one of
 the free lanes `t3 eval all --free-only` gates on. A non-zero
 exit means the harness went green on a genuine violation, i.e. the harness
 itself is broken.
+
+**Caught = the lane PASSED.** The planted run is itself a *failing* scenario by
+design (the violation is supposed to be caught), so the lane's output states the
+honest lane verdict — `PASS negative-control: harness CAUGHT the planted
+violation …` plus the detected violation and offending tool call — rather than
+re-rendering the inner scenario's generic `FAIL <scenario>` / `N failed` summary,
+which describes the planted scenario and reads as if the lane itself failed. A
+not-caught outcome reads `FAIL … BROKEN — harness MISSED the planted violation`.
 
 It is anti-vacuous by construction: `src/teatree/eval/negative_control.py`
 builds both a violating run (caught) and a compliant run (not caught) of the

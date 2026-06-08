@@ -493,34 +493,46 @@ class Command(TyperCommand):
         raise SystemExit(rc)
 
     @command(name="post-evidence")
-    def post_evidence(  # noqa: PLR0913
+    def post_evidence(
         self,
         *,
+        manifest: str = "",
         ticket: str = "",
-        env: str = "",
-        commit: str = "",
-        before: str = "",
-        after: str = "",
-        video: str = "",
-        assertion: str = "",
+        title: str = "",
+        mrs: list[str] = typer.Option(  # noqa: B008 — typer.Option is the django-typer option-declaration idiom.
+            None,
+            "--mrs",
+            help="MR/PR URL(s) the evidence covers (repeat or comma-separate). Supplements the manifest's 'mrs'.",
+        ),
     ) -> _evidence.PostEvidenceResult:
-        """Post structured E2E evidence on the **ticket** (work item / bug), never the MR.
+        """Post (or update) the ticket's single E2E evidence note from a manifest.
 
-        Validation-gated (env ∈ {dev, local}, before ≠ after anti-fake,
-        commit known + tree clean, ticket resolvable) and idempotent on the
-        hidden ``env`` marker — one comment per ticket+env: a re-run on the
-        same env edits that comment in place (any commit) with an
-        ``old -> new`` delta, a different env posts anew. ``--ticket`` and
-        ``--commit`` auto-detect from the worktree. See
-        :mod:`._e2e_evidence` for the validators and the SKILL for usage.
+        There is ONE evidence note per ticket (work item / bug), never on an
+        MR. It renders as a test plan: a header (title, multi-repo MR links,
+        per-env commit provenance, dev-gap reconciliation) and one side-by-side
+        **Dev | Local** comparison table per workflow. The note carries a hidden
+        machine-readable state blob that is the source of truth, so a re-run
+        merges the env(s) it supplies over the prior state — a dev-only run
+        updates the Dev column and the deployed-commits/gap line while freezing
+        the Local column, and vice versa.
+
+        ``--manifest`` is a path to (or inline string of) the JSON describing
+        the ticket, MRs, per-env commits, dev gap, and per-workflow ``dev``/
+        ``local`` captures. ``--ticket`` (pk / number / URL) selects the issue
+        to post on (auto-detected from the worktree when omitted); ``--title``
+        overrides the heading. See :mod:`._e2e_evidence` for the manifest shape.
         """
         host = code_host_from_overlay()
         if host is None:
             self.stderr.write("No code host configured (check overlay GitLab/GitHub token).")
             raise SystemExit(1)
 
+        manifest_json = self._read_manifest(manifest)
         flags = _evidence.EvidenceFlags(
-            ticket=ticket, env=env, commit=commit, before=before, after=after, video=video, assertion=assertion
+            ticket=ticket,
+            manifest=manifest_json,
+            title=title,
+            mrs=tuple(mrs or ()),
         )
         try:
             post = _evidence.build_validated_post(flags)
@@ -528,5 +540,24 @@ class Command(TyperCommand):
         except (_evidence.EvidenceValidationError, OnBehalfPostBlockedError) as err:
             self.stderr.write(str(err))
             raise SystemExit(1) from err
-        self.stdout.write(f"  Evidence {result['action']} on {post.issue_url} (comment {result['comment_id']}).")
+        self.stdout.write(
+            f"  Evidence {result['action']} ({', '.join(result['envs'])}) "
+            f"on {post.issue_url} (comment {result['comment_id']}).",
+        )
         return result
+
+    def _read_manifest(self, manifest: str) -> str:
+        """Return the manifest JSON text — read a path when one exists, else the literal.
+
+        ``--manifest`` is required; an empty value exits non-zero. When the
+        value names an existing file the file is read, otherwise the value is
+        treated as an inline JSON string (validated downstream by
+        :func:`._e2e_evidence.parse_manifest`).
+        """
+        if not manifest.strip():
+            self.stderr.write("--manifest is required (a path to, or inline string of, the evidence manifest JSON).")
+            raise SystemExit(1)
+        path = Path(manifest)
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+        return manifest

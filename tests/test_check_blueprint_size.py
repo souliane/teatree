@@ -1,6 +1,6 @@
 """Tests for the BLUEPRINT.md hard size cap (#1180).
 
-The gate hard-fails when ``BLUEPRINT.md`` exceeds 102 KB. The
+The gate hard-fails when ``BLUEPRINT.md`` exceeds 104 KB. The
 documented escape hatch is ``T3_BLUEPRINT_SIZE_OVERRIDE=1`` for
 intentional, reviewed growth.
 """

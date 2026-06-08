@@ -10,21 +10,27 @@ metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
 """
 
 import dataclasses
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 import typer
+from rich.console import Console
 from rich.table import Table
 
+from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
+from teatree.cli.eval.transcript_replay import replay_transcript_for_all
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
-from teatree.eval.coverage import CoverageReport
+from teatree.eval.coverage import CoverageReport, skill_eval_coverage
+from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
-from teatree.eval.negative_control import NegativeControlOutcome
-from teatree.eval.regression_corpus import RegressionReport
+from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
+from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.transcript_conformance import InvariantResult
-from teatree.eval.trigger_qa import TriggerQAReport
+from teatree.eval.trigger_qa import TriggerQAReport, run_trigger_qa
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def _relative_source(path: Path) -> str:
@@ -207,3 +213,48 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
         color = "yellow" if lane.skipped else ("green" if lane.passed else "red")
         table.add_row(lane.name, lane.cost, f"[{color}]{lane.status}[/{color}]", lane.detail)
     return table
+
+
+def _full_suite_docker_passthrough(*, backend: str, free_only: bool) -> list[str]:
+    passthrough = ["all"]
+    if free_only:
+        passthrough.append("--free-only")
+    if backend != SUBSCRIPTION_BACKEND:
+        passthrough += ["--backend", backend]
+    return passthrough
+
+
+def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool) -> None:
+    """The single eval-suite chokepoint: run every lane and render one summary.
+
+    Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
+    call this so the no-arg path and the named path execute byte-for-byte the
+    same suite. The five free deterministic lanes (skill-triggers, skill-coverage,
+    pinned-regressions, negative-control, transcript-replay) always run;
+    skill-coverage is warn-first and transcript-replay SKIPs when no real session
+    transcript is in scope (a missing run is not a violation). The AI lane grades
+    subscription-produced transcripts when present and NEVER silently shells the
+    metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
+    A SKIP never fails the run; any real FAIL exits non-zero (fail-loud).
+    """
+    if docker:
+        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only)
+        try:
+            raise typer.Exit(code=run_eval_in_docker(passthrough))
+        except DockerUnavailableError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+    ensure_django()
+    target_dir = transcript_dir or Path.cwd()
+    lanes = [
+        trigger_lane(run_trigger_qa()),
+        coverage_lane(skill_eval_coverage()),
+        regression_lane(run_regression_corpus()),
+        negative_control_lane(run_negative_control()),
+        transcript_replay_lane(replay_transcript_for_all()),
+    ]
+    if not free_only:
+        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir))
+    Console().print(build_summary_table(lanes))
+    if any(not lane.passed and not lane.skipped for lane in lanes):
+        sys.exit(1)

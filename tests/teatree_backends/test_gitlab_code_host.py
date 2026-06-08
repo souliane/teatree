@@ -1070,7 +1070,7 @@ def test_create_sub_issue_errors_when_child_gid_unresolved() -> None:
     assert "Could not resolve created child work item" in result["error"]
 
 
-# --- verify_upload: the post-upload self-verification gate (#2156) ----------
+# --- verify_upload: the upload existence check + relative embed ref (#2156, #2165) ----------
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n" + b"rest"
 _WEBM_MAGIC = b"\x1a\x45\xdf\xa3" + b"webm-rest"
@@ -1091,15 +1091,17 @@ def _verify_host(*, status: int, content: bytes) -> GitLabCodeHost:
     return GitLabCodeHost(client=client)
 
 
-def test_verify_upload_returns_absolute_embed_and_ok_on_200_image() -> None:
+def test_verify_upload_returns_relative_embed_ref_and_ok_on_200_image() -> None:
     host = _verify_host(status=200, content=_PNG_MAGIC)
     result = host.verify_upload(repo="org/repo", upload=_UPLOAD)
     assert result.ok is True
-    # The ABSOLUTE full_path form GitLab renders context-independently — NOT
-    # the relative /uploads/... path that breaks in the work-items UI.
-    assert result.embed_url == "https://gitlab.com/-/project/42/uploads/deadbeefcafe/shot.png"
-    assert "/uploads/deadbeefcafe" in result.embed_url
-    assert not result.embed_url.startswith("/uploads/")
+    # The RELATIVE /uploads/<secret>/<file> reference GitLab claims on save —
+    # NOT the absolute /-/project/ or any https:// form (the #2165 regression
+    # that broke render because GitLab never claimed the upload).
+    assert result.embed_url == "/uploads/deadbeefcafe/shot.png"
+    assert result.embed_url.startswith("/uploads/")
+    assert "/-/project/" not in result.embed_url
+    assert "https://" not in result.embed_url
 
 
 def test_verify_upload_fails_on_non_200() -> None:
@@ -1114,7 +1116,7 @@ def test_verify_upload_fails_when_bytes_are_not_the_expected_medium() -> None:
     host = _verify_host(status=200, content=_HTML_404)
     result = host.verify_upload(repo="org/repo", upload=_UPLOAD)
     assert result.ok is False
-    assert "not a renderable image" in result.detail
+    assert "not a image" in result.detail
 
 
 def test_verify_upload_accepts_webm_video_bytes() -> None:
@@ -1126,7 +1128,7 @@ def test_verify_upload_accepts_webm_video_bytes() -> None:
     host = _verify_host(status=200, content=_WEBM_MAGIC)
     result = host.verify_upload(repo="org/repo", upload=upload)
     assert result.ok is True
-    assert result.embed_url == "https://gitlab.com/-/project/42/uploads/abc/clip.webm"
+    assert result.embed_url == "/uploads/abc/clip.webm"
 
 
 def test_verify_upload_fails_on_unparseable_response() -> None:
