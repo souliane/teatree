@@ -125,11 +125,19 @@ _LEADING_EMOJI_RE = re.compile(r"^\s*(?::[a-z0-9_+-]+:\s*)+", re.IGNORECASE)
 # line that is ONLY one of them is the marker preamble, never a real message.
 _NOISE_KIND_MARKERS = frozenset({"info", "answer", "question"})
 
-# A log line leads with a level token as a distinct leading token —
-# ``INFO: ...``, ``[DEBUG] ...``, ``WARNING - ...``. Anchored to the line START
-# so the same words mid-sentence ("the info you asked for") stay prose.
+# A log line leads with a level token AND a genuine log discriminator —
+# ``INFO: ...``, ``[DEBUG] ...``, ``WARNING - ...``, ``Notice: ...``. Two shapes:
+# a BRACKETED level (``[DEBUG]`` — the closing bracket is the discriminator), or
+# a bare level immediately followed by a ``:`` or ``-`` separator. The
+# discriminator is REQUIRED: without it the leading word is ordinary prose that
+# merely happens to start with a level token ("Warning users now about the
+# outage", "Critical bug found in prod.") and must stay spoken. Anchored to the
+# line START so the same words mid-sentence ("the info you asked for") stay prose.
 _LOG_LEVEL_LINE_RE = re.compile(
-    r"^\[?\s*(?:trace|debug|info|notice|warn|warning|error|critical|fatal)\s*\]?\s*[:\-]?\s+\S",
+    # bracketed level (``[DEBUG]`` — closing bracket is the discriminator) ...
+    r"^(?:\[\s*(?:trace|debug|info|notice|warn|warning|error|critical|fatal)\s*\]\s*[:\-]?\s+\S"
+    # ... or a bare level immediately followed by a required ``:`` / ``-`` separator.
+    r"|(?:trace|debug|info|notice|warn|warning|error|critical|fatal)\s*[:\-]\s+\S)",
     re.IGNORECASE,
 )
 

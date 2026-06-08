@@ -230,6 +230,30 @@ class TestFiltersStatusLogNoise:
     def test_all_noise_collapses_to_empty(self) -> None:
         assert speak_mod.clean_for_speech(":information_source: *info*\nINFO: done") == ""
 
+    def test_level_word_with_separator_is_filtered(self) -> None:
+        # A level token followed by a real log discriminator (closing bracket,
+        # ``:`` or ``-``) is a genuine log line and stays filtered.
+        for noise in (
+            "INFO: source",
+            "[DEBUG] cache warm",
+            "WARNING - low disk",
+            "[INFO] test green",
+            "Notice: maintenance",
+        ):
+            out = speak_mod.clean_for_speech(f"{noise}\nThe deploy finished cleanly.")
+            assert "The deploy finished cleanly." in out
+            assert speak_mod.clean_for_speech(noise) == "", noise
+
+    def test_level_word_without_separator_is_kept_as_prose(self) -> None:
+        # A line whose first word merely HAPPENS to be a level token, with no
+        # log discriminator after it, is ordinary prose the user wants spoken.
+        for prose in (
+            "Warning users now about the outage",
+            "Error handling was improved in this PR.",
+            "Critical bug found in prod.",
+        ):
+            assert speak_mod.clean_for_speech(prose) == prose, prose
+
 
 class TestSpeakLocalDispatch:
     """The in-client Stop-hook read: ``speak()`` fires only when ``local == all``."""
