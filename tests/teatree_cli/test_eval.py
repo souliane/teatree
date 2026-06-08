@@ -784,16 +784,116 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval a
     replay_results: list[InvariantResult] | None = None,
     coverage_gaps: tuple[str, ...] = (),
 ) -> "Iterator[None]":
-    """Patch every free-lane input `eval all` resolves so the run is deterministic."""
+    """Patch every free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
-        patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-        patch("teatree.cli.eval.app.run_trigger_qa", return_value=trigger or _good_trigger()),
-        patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
-        patch("teatree.cli.eval.app.run_regression_corpus", return_value=_regression(ok=regression_ok)),
-        patch("teatree.cli.eval.app.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
-        patch("teatree.cli.eval.app.replay_transcript_for_all", return_value=replay_results),
+        patch("teatree.cli.eval.all.discover_specs", return_value=specs),
+        patch("teatree.cli.eval.all.run_trigger_qa", return_value=trigger or _good_trigger()),
+        patch("teatree.cli.eval.all.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
+        patch("teatree.cli.eval.all.run_regression_corpus", return_value=_regression(ok=regression_ok)),
+        patch("teatree.cli.eval.all.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
+        patch("teatree.cli.eval.all.replay_transcript_for_all", return_value=replay_results),
     ):
         yield
+
+
+class TestEvalDefault:
+    """Bare ``t3 eval`` (no subcommand, no args) runs the ENTIRE suite.
+
+    The user's whole ask: ``t3 eval`` with nothing else runs everything in one
+    go with a single aggregated summary; subcommands/args are the targeted path.
+    """
+
+    def test_bare_eval_runs_all_lanes_and_renders_unified_table(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
+        for lane in ("skill-triggers", "skill-coverage", "pinned-regressions", "negative-control", "transcript-replay"):
+            assert lane in result.output, f"missing lane {lane!r}: {result.output}"
+
+    def test_bare_eval_with_no_args_at_all_runs_the_suite(self) -> None:
+        # The literal no-argument invocation: `t3 eval` and nothing else.
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval"])
+        assert result.exit_code == 0, result.output
+        assert "pinned-regressions" in result.output
+        assert "negative-control" in result.output
+
+    def test_bare_eval_exits_nonzero_when_a_lane_fails(self) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
+            result = CliRunner().invoke(app, ["eval"])
+        assert result.exit_code == 1, result.output
+
+    def test_bare_eval_exits_nonzero_on_a_trigger_failure(self) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], trigger=_bad_trigger()):
+            result = CliRunner().invoke(app, ["eval"])
+        assert result.exit_code == 1, result.output
+
+    def test_bare_eval_help_is_still_reachable(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "run" in result.output
+        assert "negative-control" in result.output
+
+    def test_bare_eval_docker_delegates_to_the_container(self) -> None:
+        with (
+            patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_called_once()
+        assert run_docker.call_args.args[0] == ["all", "--free-only"]
+
+    def test_bare_eval_docker_propagates_container_exit_code(self) -> None:
+        with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
+            result = CliRunner().invoke(app, ["eval", "--docker"])
+        assert result.exit_code == 1, result.output
+
+    def test_bare_eval_docker_unavailable_exits_code_2(self) -> None:
+        with patch("teatree.cli.eval.all.run_eval_in_docker", side_effect=DockerUnavailableError):
+            result = CliRunner().invoke(app, ["eval", "--docker"])
+        assert result.exit_code == 2
+        assert "docker is not on PATH" in result.output
+
+
+class TestEvalSubcommandsStillWork:
+    """Subcommands/args remain the special, targeted path (capability kept)."""
+
+    def test_run_subcommand_still_runs_one_scenario(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.app.find_spec", return_value=specs[0]),
+            patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "alpha" in result.output
+
+    def test_pinned_regressions_subcommand_still_works(self) -> None:
+        check = RegressionCheck(
+            failure_class="synthetic",
+            origin="https://example.com/x",
+            invariant="ok",
+            predicate=lambda: True,
+        )
+        good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
+        with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
+            result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
+        assert result.exit_code == 0, result.output
+        assert "PASS synthetic" in result.output
+
+    def test_negative_control_subcommand_still_works(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "negative-control"])
+        assert result.exit_code == 0, result.output
+        assert "worktree_first" in result.output
+
+    def test_all_subcommand_still_works(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "pinned-regressions" in result.output
 
 
 class TestEvalAll:
@@ -837,7 +937,7 @@ class TestEvalAll:
     def test_free_only_never_discovers_specs_or_meters(self, tmp_path: Path) -> None:
         with (
             _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.app.run_ai_lane", side_effect=AssertionError("free-only must not run the AI lane")),
+            patch("teatree.cli.eval.all.run_ai_lane", side_effect=AssertionError("free-only must not run the AI lane")),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
@@ -849,8 +949,8 @@ class TestEvalAll:
 
     def test_docker_delegates_to_the_container_and_skips_host_lanes(self) -> None:
         with (
-            patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker,
-            patch("teatree.cli.eval.app.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
+            patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--docker", "--free-only"])
         assert result.exit_code == 0, result.output
@@ -858,18 +958,18 @@ class TestEvalAll:
         assert run_docker.call_args.args[0] == ["all", "--free-only"]
 
     def test_docker_propagates_container_exit_code(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=1):
+        with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
             result = CliRunner().invoke(app, ["eval", "all", "--docker"])
         assert result.exit_code == 1, result.output
 
     def test_docker_passes_non_default_backend_through(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker:
+        with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker:
             result = CliRunner().invoke(app, ["eval", "all", "--docker", "--backend", "sdk"])
         assert result.exit_code == 0, result.output
         assert run_docker.call_args.args[0] == ["all", "--backend", "sdk"]
 
     def test_docker_unavailable_exits_code_2(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", side_effect=DockerUnavailableError):
+        with patch("teatree.cli.eval.all.run_eval_in_docker", side_effect=DockerUnavailableError):
             result = CliRunner().invoke(app, ["eval", "all", "--docker"])
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output

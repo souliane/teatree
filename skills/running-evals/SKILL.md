@@ -48,20 +48,25 @@ The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressi
 
 The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
 
-## `t3 eval all` — the orchestratable non-session piece
+## Bare `t3 eval` (and its `t3 eval all` alias) — the whole suite, one summary
 
 ```bash
-# Free deterministic lanes + AI lane, one unified summary table.
+# THE DEFAULT: bare `t3 eval` (no subcommand, no args) runs the WHOLE suite —
+# free deterministic lanes + AI lane — in one unified summary table.
 # Grades subscription transcripts when present in the transcript dir;
 # with none, emits the manifest + this skill's recipe — never meters.
+t3 eval
+t3 eval --transcript-dir ./transcripts
+
+# `t3 eval all` is the explicit alias of that default (same chokepoint),
+# kept for scripts/CI that spell the full run out.
 t3 eval all
-t3 eval all --transcript-dir ./transcripts
 
 # Explicit metered opt-in (CI, with ANTHROPIC_API_KEY).
-t3 eval all --backend sdk
+t3 eval --backend sdk
 ```
 
-`t3 eval all` runs the FREE lanes, then for the AI lane grades subscription transcripts when they exist, otherwise emits the subscription manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to the metered API path. This skill is the in-session entrypoint that produces the transcripts `t3 eval all` then grades; `t3 eval run` stays canonical and unchanged.
+Bare `t3 eval` runs the FREE lanes, then for the AI lane grades subscription transcripts when they exist, otherwise emits the subscription manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to the metered API path. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.
 
 ## CLI surface
 

@@ -9,17 +9,7 @@ import typer
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
-from teatree.cli.eval.all import (
-    build_scenarios_table,
-    build_summary_table,
-    coverage_lane,
-    hint_missing_transcripts,
-    negative_control_lane,
-    regression_lane,
-    run_ai_lane,
-    transcript_replay_lane,
-    trigger_lane,
-)
+from teatree.cli.eval.all import build_scenarios_table, hint_missing_transcripts, run_full_suite
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
@@ -32,14 +22,13 @@ from teatree.cli.eval.run_modes import (
     persist_single,
     render_subscription_text,
 )
-from teatree.cli.eval.transcript_replay import replay_transcript_for_all, transcript_replay
+from teatree.cli.eval.transcript_replay import transcript_replay
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import render_json as render_coverage_json
 from teatree.eval.coverage import render_text as render_coverage_text
 from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
-from teatree.eval.negative_control import run_negative_control
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
@@ -51,7 +40,10 @@ from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
 
-eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
+eval_app = typer.Typer(
+    no_args_is_help=False,
+    help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
+)
 eval_app.command("negative-control")(negative_control)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
@@ -448,6 +440,48 @@ def pinned_regressions(
         sys.exit(1)
 
 
+@eval_app.callback(invoke_without_command=True)
+def default(
+    ctx: typer.Context,
+    backend: str = typer.Option(
+        SUBSCRIPTION_BACKEND,
+        "--backend",
+        help=(
+            "AI-lane backend for the bare-`t3 eval` full suite: 'subscription' (default — grade "
+            "in-session transcripts, no API spend) or 'sdk' (metered claude -p, the explicit opt-in)."
+        ),
+    ),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Directory of <scenario>.jsonl subscription transcripts for the AI lane (default: cwd).",
+    ),
+    free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--free-only",
+        help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
+    ),
+    docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--docker",
+        help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
+    ),
+) -> None:
+    """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
+
+    Bare ``t3 eval`` (no subcommand, no args) runs every lane in one go and
+    prints a single aggregated summary table — the suite the user reaches for by
+    default. Subcommands are the targeted/special path: ``run`` (a single AI
+    scenario, the metered ``--backend sdk --docker`` path), ``pinned-regressions``
+    / ``negative-control`` / ``skill-triggers`` / ``coverage`` (one free lane),
+    ``history`` / ``list`` / ``prepare-subscription`` (introspection). The
+    process exits non-zero if ANY lane fails (fail-loud).
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
+
+
 @eval_app.command("all")
 def all_lanes(
     backend: str = typer.Option(
@@ -477,43 +511,14 @@ def all_lanes(
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
-    The five free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
-    negative-control, transcript-replay) always run; skill-coverage is warn-first
-    (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real session
-    transcript is in scope (a missing run is not a violation). The AI lane grades
-    subscription-produced transcripts when present; with none on disk it emits the
-    subscription manifest plus the in-session recipe and NEVER silently shells the
-    metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
-    (CI's path). ``--free-only`` drops the AI lane entirely — the deterministic,
-    token-free, spec-discovery-free gate the pre-push hook runs. ``--docker`` runs
-    the same gate inside the exact CI image for environment parity (host-run is the
-    default). A SKIP never fails the run; only a real FAIL exits non-zero.
+    The explicit form of the bare-``t3 eval`` default — both call
+    :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
+    named subcommand for scripts/CI that spell the full run out. ``--free-only``
+    drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
+    runs the same gate inside the exact CI image for parity. A SKIP never fails
+    the run; only a real FAIL exits non-zero.
     """
-    if docker:
-        passthrough = ["all"]
-        if free_only:
-            passthrough.append("--free-only")
-        if backend != SUBSCRIPTION_BACKEND:
-            passthrough += ["--backend", backend]
-        try:
-            raise typer.Exit(code=run_eval_in_docker(passthrough))
-        except DockerUnavailableError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=2) from None
-    ensure_django()
-    target_dir = transcript_dir or Path.cwd()
-    lanes = [
-        trigger_lane(run_trigger_qa()),
-        coverage_lane(skill_eval_coverage()),
-        regression_lane(run_regression_corpus()),
-        negative_control_lane(run_negative_control()),
-        transcript_replay_lane(replay_transcript_for_all()),
-    ]
-    if not free_only:
-        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir))
-    Console().print(build_summary_table(lanes))
-    if any(not lane.passed and not lane.skipped for lane in lanes):
-        sys.exit(1)
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
 
 
 def _require_spec(name: str) -> EvalSpec:

@@ -22,7 +22,7 @@ import typer
 
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall
-from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
+from teatree.eval.report import ScenarioResult, evaluate, render_json
 from teatree.utils.django_bootstrap import ensure_django
 
 NEGATIVE_CONTROL_SCENARIO = "worktree_first"
@@ -62,12 +62,31 @@ class NegativeControlOutcome:
     @property
     def banner(self) -> str:
         if self.caught:
-            return f"negative-control: harness CAUGHT the planted violation in {self.scenario_name!r}"
-        return f"negative-control: BROKEN — harness MISSED the planted violation in {self.scenario_name!r}"
+            return f"PASS negative-control: harness CAUGHT the planted violation in {self.scenario_name!r}"
+        return f"FAIL negative-control: BROKEN — harness MISSED the planted violation in {self.scenario_name!r}"
 
 
 def render_outcome_text(outcome: "NegativeControlOutcome") -> str:
-    return f"{outcome.banner}\nviolated rule: {outcome.violated_rule}\n\n{render_text([outcome.result])}"
+    """Render the lane outcome honestly: a CAUGHT violation is a lane PASS.
+
+    The detection detail (the violated rule + the offending tool call) is shown
+    so a maintainer can read the proof, but it is framed as the evidence the
+    lane succeeded — never re-rendered through :func:`render_text`, whose generic
+    ``FAIL <scenario>`` / ``N failed`` summary describes the *planted* scenario
+    and reads as the lane itself failing.
+    """
+    lines = [outcome.banner]
+    if outcome.caught:
+        lines.append(f"detected violation: {outcome.violated_rule}")
+        if outcome.offending_tool_call is not None:
+            call = outcome.offending_tool_call
+            lines.append(f"offending tool call: {call.name}({call.input})")
+    else:
+        lines.append(
+            f"the planted violation in {outcome.scenario_name!r} was NOT detected — "
+            "the harness is broken (a genuine violation went green)."
+        )
+    return "\n".join(lines)
 
 
 def render_outcome_json(outcome: "NegativeControlOutcome") -> str:

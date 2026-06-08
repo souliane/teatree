@@ -30,7 +30,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ codex           Auto-dispatch /codex:review surfaces.                        │
 │ review          Code review helpers.                                         │
 │ review-request  Batch review requests.                                       │
-│ eval            Behavioral eval harness.                                     │
+│ eval            Behavioral eval harness — bare `t3 eval` runs the whole      │
+│                 suite; subcommands target one lane.                          │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
 │ setup           First-time setup and global skill management.                │
@@ -1181,10 +1182,23 @@ Usage: t3 review-request post [OPTIONS]
 ```
 Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 
- Behavioral eval harness.
+ Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands
+ target one lane.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --backend               TEXT  AI-lane backend for the bare-`t3 eval` full    │
+│                               suite: 'subscription' (default — grade         │
+│                               in-session transcripts, no API spend) or 'sdk' │
+│                               (metered claude -p, the explicit opt-in).      │
+│                               [default: subscription]                        │
+│ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
+│                               transcripts for the AI lane (default: cwd).    │
+│ --free-only                   Run only the free deterministic lanes (drop    │
+│                               the AI lane) — the fast pre-push gate.         │
+│ --docker                      Run inside the exact CI image                  │
+│                               (dev/Dockerfile.test) for parity; host-run is  │
+│                               the default.                                   │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
@@ -1528,20 +1542,12 @@ Usage: t3 eval all [OPTIONS]
 
  Run every eval lane in sequence and render one unified summary table.
 
- The five free deterministic lanes (skill-triggers, skill-coverage,
- pinned-regressions,
- negative-control, transcript-replay) always run; skill-coverage is warn-first
- (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real
- session
- transcript is in scope (a missing run is not a violation). The AI lane grades
- subscription-produced transcripts when present; with none on disk it emits the
- subscription manifest plus the in-session recipe and NEVER silently shells the
- metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
- (CI's path). ``--free-only`` drops the AI lane entirely — the deterministic,
- token-free, spec-discovery-free gate the pre-push hook runs. ``--docker`` runs
- the same gate inside the exact CI image for environment parity (host-run is
- the
- default). A SKIP never fails the run; only a real FAIL exits non-zero.
+ The explicit form of the bare-``t3 eval`` default — both call
+ :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
+ named subcommand for scripts/CI that spell the full run out. ``--free-only``
+ drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
+ runs the same gate inside the exact CI image for parity. A SKIP never fails
+ the run; only a real FAIL exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
