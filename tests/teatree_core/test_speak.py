@@ -369,9 +369,13 @@ class TestDeliverUserDmAttachAudio:
 
 
 class TestSpeakLocal:
-    def test_runs_say_with_text(self) -> None:
+    # Each test pins its own per-test lockfile so the bounded acquire (#2156)
+    # never races a concurrent holder on the shared real lockfile and drops the
+    # read — these assert the un-contended path.
+    def test_runs_say_with_text(self, tmp_path: Path) -> None:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
@@ -379,17 +383,19 @@ class TestSpeakLocal:
         assert run.call_args.args[0] == ["/usr/bin/say", "hello"]
         assert run.call_args.kwargs["expected_codes"] is None
 
-    def test_noop_when_say_absent(self) -> None:
+    def test_noop_when_say_absent(self, tmp_path: Path) -> None:
         with (
             patch.object(speak_mod.shutil, "which", return_value=None),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
         run.assert_not_called()
 
-    def test_subprocess_error_is_swallowed(self) -> None:
+    def test_subprocess_error_is_swallowed(self, tmp_path: Path) -> None:
         with (
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "run_allowed_to_fail", side_effect=OSError("nope")),
         ):
             speak_mod._speak_local("hello")  # must not raise

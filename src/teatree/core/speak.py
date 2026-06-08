@@ -21,19 +21,26 @@ and delivers spoken agent text. Two distinct deliveries share one config:
     and only when ``local == all`` — in-client turns are never Slack messages,
     so there is no double-play to suppress.
 
-**Cross-process serial speaker queue (#2152).** Local playback fans out from
-two independent sources — each DM's :func:`_maybe_speak_local` leg and the
-detached ``t3 speak`` Stop-hook read — each spawning its own ``say``. Without
-serialization concurrent reads (in-process daemon threads AND separate
-detached subprocesses) talk over each other. :func:`_speak_local` therefore
-takes a single machine-wide :func:`fcntl.flock` on a lockfile under the teatree
-state dir (:func:`_speaker_lock_path`) around the actual ``say`` call. The lock
-is acquired BLOCKING, so a queued read plays the instant the speaker frees up
-(ASAP, ≈arrival order); a per-process queue would not serialize the separate
-subprocesses, which is the whole point. The non-blocking daemon-thread dispatch
-for in-process callers is unchanged — the thread waits on the lock, never the
-caller's egress path. The lock is best-effort: a lockfile that cannot be opened
-fails OPEN (the read still plays) so a lock error never mutes audio.
+**Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
+playback fans out from two independent sources — each DM's
+:func:`_maybe_speak_local` leg and the detached ``t3 speak`` Stop-hook read —
+each spawning its own ``say``. Without serialization concurrent reads
+(in-process daemon threads AND separate detached subprocesses) talk over each
+other. :func:`_speak_local` therefore takes a single machine-wide
+:func:`fcntl.flock` on a lockfile under the teatree state dir
+(:func:`_speaker_lock_path`) around the actual ``say`` call, guaranteeing MUTUAL
+EXCLUSION (no two ``say`` calls overlap). The lock is acquired with a BOUNDED
+wait, not blocking: :func:`_serial_speaker` retries a non-blocking acquire for a
+short total budget (:data:`_SPEAKER_LOCK_WAIT_BUDGET_S`) and, if the speaker is
+still busy, DROPS the read as stale instead of queuing it. A blocking acquire is
+not FIFO and builds an unbounded backlog under a flood of fan-out reads — a
+message could play many minutes after it was printed — so the queue caps latency
+at the budget and the spec is honoured: the lock prevents two reads playing at
+once, but every read either plays promptly or is dropped, never multi-minute
+late. The non-blocking daemon-thread dispatch for in-process callers is
+unchanged — the thread waits on the lock, never the caller's egress path. The
+lock is best-effort: a lockfile that cannot be opened fails OPEN (the read still
+plays) so a lock error never mutes audio.
 
 The whole feature is gated on the macOS ``say`` binary being on ``PATH``
 (:func:`binary_available`): when it is absent :func:`resolve_speak` forces the
@@ -52,9 +59,11 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import IO
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import MessagingBackend
@@ -68,11 +77,24 @@ SAY_BINARY = "say"
 _AFCONVERT_BINARY = "afconvert"
 _SPEAK_SUBPROCESS_TIMEOUT = 120
 
-# A single machine-wide lockfile serializes every ``say`` invocation —
-# across in-process daemon threads AND the separate detached ``t3 speak``
-# subprocesses — so local reads never talk over each other.
+# A single machine-wide lockfile gives every ``say`` invocation MUTUAL
+# EXCLUSION — across in-process daemon threads AND the separate detached
+# ``t3 speak`` subprocesses — so local reads never talk over each other.
 _SPEAKER_LOCK_NAMESPACE = "speak"
 _SPEAKER_LOCK_FILENAME = "speaker.lock"
+
+# Bounded wait for the speaker lock (#2156). The lock is acquired NON-BLOCKING
+# in a short retry loop with a total budget: a read that cannot acquire it
+# within the budget is DROPPED as stale rather than queued. Local reads fan out
+# from many sources (every bot→user DM local-play leg + every Stop-hook
+# ``t3 speak`` read), so an unbounded blocking acquire builds a multi-minute
+# backlog under a flood — a message could play 15 min after it was printed. A
+# dropped read is strictly better than a 15-min-late one: mutual exclusion is
+# preserved and latency is capped at the budget. The budget is short relative to
+# a single read (a ``say`` of the capped excerpt is well under a second), so a
+# read only drops when the speaker is genuinely saturated.
+_SPEAKER_LOCK_WAIT_BUDGET_S = 2.0
+_SPEAKER_LOCK_RETRY_INTERVAL_S = 0.05
 
 # Speech is throwaway and a long read is worse than no read — a capped
 # excerpt keeps ``say`` from droning through a 4 KB status report.
@@ -315,15 +337,26 @@ def _speaker_lock_path() -> Path:
 
 
 @contextmanager
-def _serial_speaker() -> Iterator[None]:
-    """Hold the cross-process speaker lock for the duration of one ``say``.
+def _serial_speaker() -> Iterator[bool]:
+    """Try to hold the cross-process speaker lock for one ``say`` — bounded (#2156).
 
-    Acquired BLOCKING (:data:`fcntl.LOCK_EX`) so a queued read plays the instant
-    the speaker frees up (ASAP, ≈arrival order), and released in a ``finally``.
+    Yields ``True`` when the caller may play (lock held, or the lockfile could
+    not be opened so the fail-open path lets the read through), ``False`` when
+    the read should be DROPPED as stale.
+
+    The lock guarantees MUTUAL EXCLUSION (no two ``say`` calls overlap) but
+    must NEVER build a multi-minute backlog: it is acquired NON-BLOCKING
+    (:data:`fcntl.LOCK_EX` | :data:`fcntl.LOCK_NB`) in a short retry loop with a
+    total budget of :data:`_SPEAKER_LOCK_WAIT_BUDGET_S`. If the lock is acquired
+    within the budget the caller plays and the lock is released in a ``finally``;
+    if it cannot be acquired the caller drops the read (latency is thus capped at
+    the budget instead of growing without bound under a flood of fan-out reads).
+
     Best-effort: if the lockfile cannot be opened (no state dir, permissions)
-    the read still plays — a lock error must never mute audio (mirrors the
-    away-gate's exception-safety doctrine). Runs INSIDE the daemon thread, never
-    on the caller's egress path, so a long queue never delays a DM or turn.
+    the read still plays (yields ``True``) — a lock error must never mute audio
+    (mirrors the away-gate's exception-safety doctrine). Runs INSIDE the daemon
+    thread, never on the caller's egress path, so the bounded wait never delays a
+    DM or turn.
     """
     try:
         lock_path = _speaker_lock_path()
@@ -331,33 +364,62 @@ def _serial_speaker() -> Iterator[None]:
         lock_fh = lock_path.open("a", encoding="utf-8")
     except OSError as exc:
         logger.debug("speaker lock unavailable; playing without serialization: %s", exc)
-        yield
+        yield True
         return
     try:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        if not _acquire_within_budget(lock_fh):
+            yield False
+            return
         try:
-            yield
+            yield True
         finally:
             fcntl.flock(lock_fh, fcntl.LOCK_UN)
     finally:
         lock_fh.close()
 
 
+def _acquire_within_budget(lock_fh: IO[str]) -> bool:
+    """Non-blocking ``flock`` retried until acquired or the wait budget elapses.
+
+    Returns ``True`` once the exclusive lock is held, ``False`` if the budget
+    (:data:`_SPEAKER_LOCK_WAIT_BUDGET_S`) elapses first. A short
+    :data:`_SPEAKER_LOCK_RETRY_INTERVAL_S` sleep between tries keeps the busy-wait
+    cheap. The first try happens before any sleep, so an uncontended lock is
+    acquired immediately.
+    """
+    deadline = time.monotonic() + _SPEAKER_LOCK_WAIT_BUDGET_S
+    while True:
+        try:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_SPEAKER_LOCK_RETRY_INTERVAL_S)
+        else:
+            return True
+
+
 def _speak_local(text: str) -> None:
     """Play ``text`` through the macOS speakers via ``say`` — no-op if absent.
 
-    Serialized machine-wide: the actual ``say`` call runs under the
+    Mutually exclusive machine-wide: the actual ``say`` call runs under the
     cross-process :func:`_serial_speaker` lock so concurrent local reads (in
-    other threads or separate ``t3 speak`` subprocesses) never overlap. Failure
-    is tolerated (``run_allowed_to_fail`` with ``expected_codes=None``); a
-    transport/timeout error is logged and dropped so the speak seam never raises
-    into the caller.
+    other threads or separate ``t3 speak`` subprocesses) never overlap. The lock
+    is bounded (#2156): if it cannot be acquired within the wait budget the
+    speaker is saturated and this read is DROPPED as stale rather than queued —
+    a 15-min-late read is worse than a dropped one, and latency stays capped at
+    the budget. Failure of ``say`` itself is tolerated (``run_allowed_to_fail``
+    with ``expected_codes=None``); a transport/timeout error is logged and
+    dropped so the speak seam never raises into the caller.
     """
     say_bin = shutil.which(SAY_BINARY)
     if say_bin is None:
         return
     try:
-        with _serial_speaker():
+        with _serial_speaker() as may_play:
+            if not may_play:
+                logger.debug("speaker busy; dropping stale read")
+                return
             run_allowed_to_fail([say_bin, text], expected_codes=None, timeout=_SPEAK_SUBPROCESS_TIMEOUT)
     except (OSError, TimeoutExpired, CommandFailedError) as exc:
         logger.debug("local say failed: %s", exc)
