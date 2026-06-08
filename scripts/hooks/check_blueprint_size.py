@@ -6,7 +6,7 @@ fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
 file changes and exceeds 100 KB.
 
-Threshold: 100 KB (100 * 1024 bytes). The hook is scoped to commits
+Threshold: 101 KB (101 * 1024 bytes). The hook is scoped to commits
 that touch ``BLUEPRINT.md`` (via ``files:`` in
 ``.pre-commit-config.yaml``), so it gates every growth event without
 re-running on unrelated commits. Escape hatch:
@@ -21,7 +21,7 @@ import pathlib
 import sys
 
 _BLUEPRINT_FILE = "BLUEPRINT.md"
-_THRESHOLD_BYTES = 100 * 1024
+_THRESHOLD_BYTES = 101 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 

@@ -11,6 +11,7 @@ from teatree.core.backend_protocols import (
     PrOpenState,
     PullRequestSpec,
     ReviewState,
+    UploadVerification,
 )
 
 
@@ -85,6 +86,10 @@ class _FakeCodeHost:
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         _ = (repo, filepath)
         return {}
+
+    def verify_upload(self, *, repo: str, upload: dict[str, object]) -> UploadVerification:
+        _ = (repo, upload)
+        return UploadVerification(ok=True, embed_url="")
 
     def get_issue(self, issue_url: str) -> dict[str, object]:
         _ = issue_url
