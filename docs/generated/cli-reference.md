@@ -1195,6 +1195,12 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                               transcripts for the AI lane (default: cwd).    │
 │ --free-only                   Run only the free deterministic lanes (drop    │
 │                               the AI lane) — the fast pre-push gate.         │
+│ --strict                      Exit non-zero when a lane was SKIPPED for      │
+│                               setup reasons (the AI behavioural lane with no │
+│                               transcripts / no key) — for CI, where 'not yet │
+│                               validated' must fail. Default leaves a         │
+│                               setup-skip green (the caveat is in the verdict │
+│                               text, not a confusing non-zero).               │
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │
@@ -1222,7 +1228,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ pinned-regressions    Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
-│                       summary table.                                         │
+│                       summary table + verdict.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1540,14 +1546,13 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 ```
 Usage: t3 eval all [OPTIONS]
 
- Run every eval lane in sequence and render one unified summary table.
+ Run every eval lane in sequence and render one unified summary table +
+ verdict.
 
  The explicit form of the bare-``t3 eval`` default — both call
- :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
- named subcommand for scripts/CI that spell the full run out. ``--free-only``
- drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
- runs the same gate inside the exact CI image for parity. A SKIP never fails
- the run; only a real FAIL exits non-zero.
+ :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
+ callback for the flag semantics). Kept as a named subcommand for scripts/CI
+ that spell the full run out.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
@@ -1562,6 +1567,12 @@ Usage: t3 eval all [OPTIONS]
 │                               transcripts for the AI lane (default: cwd).    │
 │ --free-only                   Run only the free deterministic lanes (drop    │
 │                               the AI lane) — the fast pre-push gate.         │
+│ --strict                      Exit non-zero when a lane was SKIPPED for      │
+│                               setup reasons (the AI behavioural lane with no │
+│                               transcripts / no key) — for CI, where 'not yet │
+│                               validated' must fail. Default leaves a         │
+│                               setup-skip green (the caveat is in the verdict │
+│                               text, not a confusing non-zero).               │
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │

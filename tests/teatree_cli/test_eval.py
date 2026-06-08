@@ -975,6 +975,82 @@ class TestEvalAll:
         assert "docker is not on PATH" in result.output
 
 
+class TestEvalFinalVerdict:
+    """Every ``t3 eval`` / ``t3 eval all`` run ends with a plain-language verdict.
+
+    A non-expert reader must be able to tell from the LAST lines whether the run
+    was all-good, found a real problem, or could not fully validate (the AI lane
+    was skipped for setup reasons). The verdict is honest: a setup-skip is never
+    rendered as a pass-with-no-caveat, and a real failure names the failing lane.
+    """
+
+    def test_all_pass_renders_all_good_verdict(self, tmp_path: Path) -> None:
+        # Free-only so every lane truly passes (no AI lane to caveat).
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "✅ ALL GOOD" in result.output, result.output
+        assert "every check passed" in result.output, result.output
+
+    def test_real_failure_renders_problems_and_names_the_lane(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "❌ PROBLEMS FOUND" in result.output, result.output
+        assert "negative-control" in result.output, result.output
+
+    def test_ai_lane_skipped_renders_needs_setup_not_failed(self, tmp_path: Path) -> None:
+        # Default backend, no transcripts on disk -> the AI lane cannot run.
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "SKIPPED" in result.output, result.output
+        assert "needs setup" in result.output, result.output
+        # The AI lane is NOT rendered as a failure.
+        assert "❌ PROBLEMS FOUND" not in result.output, result.output
+
+    def test_ai_lane_skipped_verdict_flags_not_validated(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        # Deterministic part is good, AND the reader is told the AI lane was NOT run.
+        assert "Deterministic checks" in result.output, result.output
+        assert "ALL GOOD" in result.output, result.output
+        assert "NOT RUN" in result.output, result.output
+        assert "not yet validated" in result.output, result.output
+
+    def test_strict_makes_a_setup_skipped_lane_exit_nonzero(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--strict", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+
+    def test_strict_stays_green_when_everything_actually_passes(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(
+                app, ["eval", "all", "--strict", "--free-only", "--transcript-dir", str(tmp_path)]
+            )
+        assert result.exit_code == 0, result.output
+        assert "✅ ALL GOOD" in result.output, result.output
+
+    def test_bare_eval_default_also_renders_the_verdict(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "NOT RUN" in result.output, result.output
+
+
 class TestEvalRunDocker:
     """``t3 eval run --docker`` — the metered sdk lane runs in-container, not on the host."""
 
