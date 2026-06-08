@@ -17,7 +17,17 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 from teatree.cli.review.approval import identity_in_approved_by
-from teatree.cli.review.audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
+from teatree.cli.review.audit import (
+    ReviewAfterReceipt,
+    notify_review_after_receipt,
+    record_note_claim,
+    verify_approval_landed,
+    verify_bulk_publish,
+    verify_discussion_resolved,
+    verify_note_deleted,
+    verify_note_landed,
+    verify_unapproval_landed,
+)
 
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
@@ -54,6 +64,7 @@ def post_draft_note_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public 
         if not result:
             return "Failed to post draft note", 1
         note_id = dict(result).get("id")
+        verify_note_landed(api, encoded, mr, note_id, endpoint="draft_notes")
         record_note_claim(service._resolve_base_url, repo, mr, note_id, endpoint="draft_notes")
         return f"OK draft_note_id={note_id}", 0
 
@@ -68,6 +79,7 @@ def post_draft_note_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public 
     note_id = result_dict.get("id")
     line_code = result_dict.get("line_code")
     if line_code:
+        verify_note_landed(api, encoded, mr, note_id, endpoint="draft_notes")
         record_note_claim(service._resolve_base_url, repo, mr, note_id, endpoint="draft_notes", file=file, line=line)
         return f"OK draft_note_id={note_id}\nline_code={line_code}", 0
 
@@ -101,6 +113,7 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
             return "Failed to post comment", 1
         result_dict = dict(result) if isinstance(result, dict) else {}
         note_id = result_dict.get("id")
+        verify_note_landed(api, encoded, mr, note_id, endpoint="notes")
         record_note_claim(service._resolve_base_url, repo, mr, note_id, endpoint="notes")
         notify_review_after_receipt(
             service._resolve_base_url,
@@ -130,6 +143,8 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
     first_note = notes[0] if isinstance(notes, list) and notes else {}
     note_type = first_note.get("type") if isinstance(first_note, dict) else None
     note_web_url = str(first_note.get("web_url", "")) if isinstance(first_note, dict) else ""
+    first_note_id = first_note.get("id") if isinstance(first_note, dict) else None
+    verify_note_landed(api, encoded, mr, first_note_id, endpoint="notes")
     record_note_claim(service._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
     notify_review_after_receipt(
         service._resolve_base_url,
@@ -154,6 +169,7 @@ def publish_draft_notes_impl(service: "ReviewService", repo: str, mr: int, *, en
     api = service._get_api()
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
     if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        verify_bulk_publish(api, encoded, mr)
         record_note_claim(service._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
         notify_review_after_receipt(
             service._resolve_base_url,
@@ -181,6 +197,7 @@ def reply_to_discussion_impl(  # noqa: PLR0913 — extracted ReviewService publi
         return "Failed to post reply", 1
     result_dict = dict(result) if isinstance(result, dict) else {}
     note_id = result_dict.get("id")
+    verify_note_landed(api, encoded, mr, note_id, endpoint="notes")
     record_note_claim(
         service._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
     )
@@ -205,6 +222,7 @@ def resolve_discussion_impl(  # noqa: PLR0913 — extracted ReviewService publis
     flag = "true" if resolved else "false"
     status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
     if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        verify_discussion_resolved(api, encoded, mr, discussion_id, resolved=resolved)
         record_note_claim(
             service._resolve_base_url,
             repo,
@@ -236,6 +254,7 @@ def update_note_impl(  # noqa: PLR0913 — extracted ReviewService publish body;
         {"note": body},
     )
     if draft_status == HTTPStatus.OK:
+        verify_note_landed(api, encoded, mr, note_id, endpoint="draft_notes")
         record_note_claim(service._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update")
         notify_review_after_receipt(
             service._resolve_base_url,
@@ -255,6 +274,7 @@ def update_note_impl(  # noqa: PLR0913 — extracted ReviewService publish body;
         {"body": body},
     )
     if pub_status == HTTPStatus.OK:
+        verify_note_landed(api, encoded, mr, note_id, endpoint="notes")
         record_note_claim(service._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
         notify_review_after_receipt(
             service._resolve_base_url,
@@ -276,6 +296,7 @@ def delete_discussion_impl(
     api = service._get_api()
     status = api.delete(f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}")
     if status == HTTPStatus.NO_CONTENT:
+        verify_note_deleted(api, encoded, mr, note_id)
         notify_review_after_receipt(
             service._resolve_base_url,
             repo,
@@ -294,6 +315,7 @@ def approve_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) 
     api = service._get_api()
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
     if status in _HTTP_OK_CODES:
+        verify_approval_landed(api, encoded, mr)
         record_note_claim(service._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
         return f"OK approved !{mr}", 0
     # GitLab returns 401 for the idempotent already-approved case as well as a
@@ -309,6 +331,7 @@ def unapprove_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str
     api = service._get_api()
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
     if status in _HTTP_OK_CODES:
+        verify_unapproval_landed(api, encoded, mr)
         record_note_claim(service._resolve_base_url, repo, mr, "unapprove", kind="gitlab_approve", endpoint="unapprove")
         return f"OK unapproved !{mr}", 0
     return f"Failed: HTTP {status}", 1

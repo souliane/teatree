@@ -1,5 +1,7 @@
+from http import HTTPStatus
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -31,6 +33,36 @@ def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: py
     HTTP call actually happens and the mocked GitLabAPI sees the request.
     """
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
+
+def _readback_404(_endpoint: str) -> object:
+    """A read-back side_effect that 404s — confirms a delete took (#2081)."""
+    request = httpx.Request("GET", "https://gitlab.example/api/v4/x")
+    response = httpx.Response(HTTPStatus.NOT_FOUND, request=request)
+    msg = "not found"
+    raise httpx.HTTPStatusError(msg, request=request, response=response)
+
+
+def _confirming_readback(endpoint: str, *, approver: str = "reviewer-bot") -> object:
+    """Verify-after-post (#2081) read-back side_effect: every artifact confirms it landed.
+
+    A note/draft note by id → present; ``/approvals`` → ``approver`` approved;
+    the bulk-publish lists → drafts flushed + an authored note present; a
+    discussion → resolved notes. Tests that need the inverse (a deleted note,
+    an unapprove) override this for the specific endpoint.
+    """
+    last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+    if last.isdigit():
+        return {"id": int(last), "resolvable": True, "resolved": True}
+    if endpoint.endswith("/approvals"):
+        return {"approved_by": [{"user": {"username": approver}}]}
+    if last == "draft_notes":
+        return []
+    if last == "notes":
+        return [{"id": 99, "author": {"username": approver}}]
+    if "discussions/" in endpoint:
+        return {"notes": [{"resolvable": True, "resolved": True}]}
+    return {}
 
 
 def _inline_api(changes_diff: str, post_result: dict[str, object] | None = None) -> MagicMock:
@@ -383,6 +415,7 @@ class TestPostComment:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.post_status.return_value = 204
+        mock_api.get_json.side_effect = _confirming_readback
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 0
@@ -429,6 +462,7 @@ class TestPostComment:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.put_status.return_value = 200
+        mock_api.get_json.side_effect = lambda ep: {"notes": [{"resolvable": True, "resolved": True}]}
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc123"])
             assert result.exit_code == 0
@@ -441,6 +475,7 @@ class TestPostComment:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.put_status.return_value = 200
+        mock_api.get_json.side_effect = lambda ep: {"notes": [{"resolvable": True, "resolved": False}]}
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "resolve-discussion", "org/repo", "1", "abc123", "--no-resolved"])
             assert result.exit_code == 0
@@ -644,6 +679,9 @@ class TestDeleteDiscussion:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.delete.return_value = 204
+        # Verify-after-delete (#2081): the read-back of the deleted note 404s,
+        # confirming it is gone.
+        mock_api.get_json.side_effect = _readback_404
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "delete-discussion", "org/repo", "1", "99"])
             assert result.exit_code == 0
@@ -694,7 +732,11 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        # Verify-after-approve (#2081): the /approvals read-back must show the
+        # identity present so the confirmed approve stays green.
+        mock_api.get_json.side_effect = lambda endpoint: (
+            {"approved_by": [{"user": {"username": "reviewer-bot"}}]} if endpoint.endswith("/approvals") else {"id": 1}
+        )
         mock_api.get_json_paginated.side_effect = lambda endpoint: (
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
@@ -760,7 +802,9 @@ class TestApprove:
             {"id": "d3", "notes": ["not-a-dict-note"]},
             {"id": "d4", "notes": [{"id": 9, "author": {"username": "reviewer-bot"}}]},
         ]
-        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: (
+            {"approved_by": [{"user": {"username": "reviewer-bot"}}]} if endpoint.endswith("/approvals") else {"id": 1}
+        )
         mock_api.get_json_paginated.side_effect = lambda endpoint: discussions if "/discussions" in endpoint else []
         mock_api.post_status.return_value = 201
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
@@ -821,13 +865,18 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.post_status.return_value = 201
+        mock_api.current_username.return_value = "reviewer-bot"
+        # Verify-after-unapprove (#2081): the /approvals read-back must show the
+        # identity ABSENT so the confirmed unapprove stays green.
+        mock_api.get_json.side_effect = lambda endpoint: (
+            {"approved_by": []} if endpoint.endswith("/approvals") else {"id": 1}
+        )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 0, result.output
             assert "OK unapproved" in result.output
             endpoint = mock_api.post_status.call_args.args[0]
             assert "merge_requests/7/unapprove" in endpoint
-            mock_api.current_username.assert_not_called()
 
     def test_unapprove_api_failure_surfaced(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")

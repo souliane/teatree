@@ -44,6 +44,7 @@ class _ApproveStubAPI:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Any]] = []
+        self._unapproved = False
 
     def current_username(self) -> str:
         self.calls.append(("current_username", "", None))
@@ -51,6 +52,13 @@ class _ApproveStubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        # Verify-after-post (#2081): the approve read-back of /approvals must
+        # show this identity present (and the unapprove read-back must show it
+        # absent) so both confirmed success paths stay green.
+        if endpoint.endswith("/approvals"):
+            if self._unapproved:
+                return {"approved_by": []}
+            return {"approved_by": [{"user": {"username": "souliane"}}]}
         return []
 
     def get_json_paginated(self, endpoint: str) -> list:
@@ -59,6 +67,8 @@ class _ApproveStubAPI:
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
+        if endpoint.endswith("/unapprove"):
+            self._unapproved = True
         return 200
 
 

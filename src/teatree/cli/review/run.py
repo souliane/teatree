@@ -249,6 +249,7 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         if changes_payload is None:
             msg = f"GET /changes returned no payload for {repo}!{iid} — token missing or MR inaccessible"
             raise _ReviewRunAPIError(msg)
+        skip_verdict = _skip_verdict_for_state(changes_payload)
         diff = _diff_stats_from_changes(changes_payload)
         state = _fetch_review_state(api, repo, iid)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
@@ -256,7 +257,10 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         raise _ReviewRunAPIError(msg) from exc
     complexity = _classify_complexity(files=diff.files, additions=diff.additions, deletions=diff.deletions)
     findings = _gather_findings(complexity=complexity, files=diff.files, touched_paths=diff.touched)
-    verdict = "needs_attention" if findings or state.open_discussions else "ready_to_review"
+    # #2081: a merged/closed MR can never take a review note — emit a skip
+    # verdict so a mid-flight close aborts the post rather than driving a
+    # doomed review.
+    verdict = skip_verdict or ("needs_attention" if findings or state.open_discussions else "ready_to_review")
     return ReviewRunResult(
         mr=canonical_mr_scope(url),
         forge="gitlab",
@@ -267,6 +271,22 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
         findings=findings,
         verdict=verdict,
     )
+
+
+def _skip_verdict_for_state(changes_payload: object) -> str:
+    """Return ``skipped_merged`` / ``skipped_closed`` for a dead MR, else ``""`` (#2081).
+
+    The GitLab ``/changes`` response carries the MR ``state`` field
+    (``opened`` / ``merged`` / ``closed`` / ``locked``). A merged or
+    closed MR cannot take a review note, so the read-only audit reports a
+    skip verdict instead of ``needs_attention`` / ``ready_to_review``.
+    """
+    state = cast("JSONObject", changes_payload).get("state") if isinstance(changes_payload, dict) else None
+    if state == "merged":
+        return "skipped_merged"
+    if state in {"closed", "locked"}:
+        return "skipped_closed"
+    return ""
 
 
 @review_app.command(name="run")

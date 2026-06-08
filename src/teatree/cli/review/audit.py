@@ -13,6 +13,27 @@ never breaks the CLI turn that just succeeded.
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from http import HTTPStatus
+
+import httpx
+
+from teatree.cli.review.approval import identity_in_approved_by
+
+
+class ReviewArtifactNotVerifiedError(RuntimeError):
+    """The post dispatched but a read-back could not confirm the artifact landed (#2081).
+
+    Raised by :func:`verify_review_artifact` ONLY on a *definite* "artifact is
+    not there" signal (a 404 on the read-back GET, or an approval whose
+    ``approved_by`` does not contain the posting identity). A non-404 transport
+    error (5xx, timeout, connection failure) is NOT this — it re-raises the raw
+    ``httpx`` error so a flaky GET never turns a genuinely successful post into
+    a phantom failure (the inverse of the incident).
+
+    Raised *inside* the ``publish`` body so it propagates through
+    :func:`teatree.cli.review.on_behalf.publish_on_behalf` and rolls back the
+    on-behalf approval consume + audit (#1879) — exactly like a post failure.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +55,123 @@ def gitlab_mr_url(base_url: str, repo: str, mr: int) -> str:
     """Web URL for the MR (claim ledger target_url; not the API endpoint)."""
     web_root = base_url.rstrip("/").removesuffix("/api/v4")
     return f"{web_root}/{repo}/-/merge_requests/{mr}"
+
+
+def verify_note_landed(api: object, encoded: str, mr: int, artifact_id: object, *, endpoint: str) -> None:
+    """Read back one posted note/draft note by id; raise if GitLab says it is gone (#2081).
+
+    The inline twin of ``gitlab_note_verifier_for_overlay``: GET
+    ``projects/{enc}/merge_requests/{mr}/{notes|draft_notes}/{id}`` and treat a
+    404 as a confirmed-missing artifact (raise
+    :class:`ReviewArtifactNotVerifiedError`). Any other transport error
+    re-raises unchanged so a flaky GET never becomes a phantom failure. A
+    non-integer ``artifact_id`` (no id to read back) is accepted as verified —
+    there is nothing to confirm, matching the delayed verifier's contract.
+    """
+    aid = str(artifact_id)
+    if not aid.isdigit():
+        return
+    sub = "draft_notes" if "draft_notes" in endpoint else "notes"
+    try:
+        result = api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{aid}")  # type: ignore[attr-defined]
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == HTTPStatus.NOT_FOUND:
+            msg = f"GitLab {sub[:-1].replace('_', ' ')} {aid} not found on !{mr} after post — not reporting as posted"
+            raise ReviewArtifactNotVerifiedError(msg) from exc
+        raise
+    if result is None:
+        msg = f"GitLab {sub[:-1].replace('_', ' ')} {aid} read-back returned no payload on !{mr}"
+        raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_note_deleted(api: object, encoded: str, mr: int, note_id: object) -> None:
+    """Confirm a deleted note is actually gone (#2081) — the inverse of :func:`verify_note_landed`.
+
+    GET the note: a 404 confirms the delete took. A 200 (note still present)
+    → :class:`ReviewArtifactNotVerifiedError`. Any other transport error
+    re-raises unchanged (transient, not a failed delete).
+    """
+    aid = str(note_id)
+    if not aid.isdigit():
+        return
+    try:
+        api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes/{aid}")  # type: ignore[attr-defined]
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == HTTPStatus.NOT_FOUND:
+            return
+        raise
+    msg = f"note {aid} still present on !{mr} after delete — not reporting as deleted"
+    raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_bulk_publish(api: object, encoded: str, mr: int) -> None:
+    """Confirm a bulk-publish actually flushed the drafts (#2081 incident's missed signal).
+
+    The incident: ``draft_notes/bulk_publish`` returned 200 yet ZERO notes
+    landed. Confirm by listing the MR's remaining draft notes — after a
+    successful publish there must be none — and that at least one authored note
+    now exists. A non-empty draft list (or no authored notes) means the publish
+    did not take; raise :class:`ReviewArtifactNotVerifiedError`. Transport
+    errors propagate unchanged (transient, not a failed post).
+    """
+    drafts = api.get_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes")  # type: ignore[attr-defined]
+    if isinstance(drafts, list) and drafts:
+        msg = f"bulk publish reported OK but {len(drafts)} draft note(s) remain on !{mr} — not reporting as published"
+        raise ReviewArtifactNotVerifiedError(msg)
+    notes = api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes")  # type: ignore[attr-defined]
+    if not (isinstance(notes, list) and notes):
+        msg = f"bulk publish reported OK but no authored notes are present on !{mr} — not reporting as published"
+        raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_discussion_resolved(api: object, encoded: str, mr: int, discussion_id: str, *, resolved: bool) -> None:
+    """Read back a discussion after a resolve flip; raise if the state did not take (#2081).
+
+    GET ``projects/{enc}/merge_requests/{mr}/discussions/{id}`` and confirm its
+    resolvable notes carry the requested ``resolved`` flag. A 404 (discussion
+    gone) or a mismatched flag → :class:`ReviewArtifactNotVerifiedError`. Any
+    other transport error re-raises unchanged (transient, not a failed flip).
+    """
+    try:
+        discussion = api.get_json(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}")  # type: ignore[attr-defined]
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == HTTPStatus.NOT_FOUND:
+            msg = f"discussion {discussion_id} not found on !{mr} after resolve flip — not reporting as resolved"
+            raise ReviewArtifactNotVerifiedError(msg) from exc
+        raise
+    notes = discussion.get("notes") if isinstance(discussion, dict) else None
+    resolvable = [n for n in notes if isinstance(n, dict) and n.get("resolvable")] if isinstance(notes, list) else []
+    if resolvable and all(bool(n.get("resolved")) == resolved for n in resolvable):
+        return
+    msg = f"discussion {discussion_id} resolved!={resolved} on !{mr} after flip — not reporting as resolved"
+    raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_approval_landed(api: object, encoded: str, mr: int) -> None:
+    """Confirm the posting identity is in the MR's ``approved_by`` after an approve (#2081).
+
+    Reuses :func:`identity_in_approved_by` (same GET shape as
+    ``gitlab_approve_verifier_for_overlay``). Identity absent → raise
+    :class:`ReviewArtifactNotVerifiedError`. A transport error inside
+    ``identity_in_approved_by`` propagates unchanged (transient, not a failed
+    approve).
+    """
+    if not identity_in_approved_by(api, encoded, mr):  # type: ignore[arg-type]
+        msg = f"approval not present in approved_by on !{mr} after approve — not reporting as approved"
+        raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_unapproval_landed(api: object, encoded: str, mr: int) -> None:
+    """Confirm the posting identity is NOT in ``approved_by`` after an unapprove (#2081).
+
+    The inverse of :func:`verify_approval_landed` — mirrors the
+    ``endpoint == "unapprove"`` branch of ``gitlab_approve_verifier_for_overlay``.
+    Identity still present → raise :class:`ReviewArtifactNotVerifiedError`.
+    A transport error propagates unchanged (transient, not a failed unapprove).
+    """
+    if identity_in_approved_by(api, encoded, mr):  # type: ignore[arg-type]
+        msg = f"approval still present in approved_by on !{mr} after unapprove — not reporting as unapproved"
+        raise ReviewArtifactNotVerifiedError(msg)
 
 
 def record_note_claim(
@@ -92,7 +230,14 @@ def notify_review_after_receipt(
 
 __all__ = [
     "ReviewAfterReceipt",
+    "ReviewArtifactNotVerifiedError",
     "gitlab_mr_url",
     "notify_review_after_receipt",
     "record_note_claim",
+    "verify_approval_landed",
+    "verify_bulk_publish",
+    "verify_discussion_resolved",
+    "verify_note_deleted",
+    "verify_note_landed",
+    "verify_unapproval_landed",
 ]
