@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_enforce_structured_question, handle_route_away_mode_question
+from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_route_away_mode_question
 from teatree.core import availability
 from teatree.core.availability import LIVE_TURN_FRESHNESS, PresenceHeartbeat
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -172,6 +172,53 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
 
     def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
         result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id="s-loop"))
+        assert result is True
+        out = _stdout(capsys)
+        assert out["permissionDecision"] == "deny"
+        assert DeferredQuestion.objects.count() == 1
+
+
+class TestSelfPumpTurnWithFreshUserPromptRendersLive:
+    """#2155: a fresh user prompt during a self-pump loop renders the question live.
+
+    The end-to-end reproduction of the reported high-irritation bug, driven
+    through the REAL ``handle_record_presence`` recording seam and the REAL
+    ``_is_live_user_turn`` predicate (no monkeypatch of either) — exactly the
+    path a live keystroke and the away-mode gate take.
+
+    The loop owner is self-pumping; the user types a genuine fresh prompt the
+    harness delivers prefixed by the loop continuation text. ``UserPromptSubmit``
+    must record presence for that live keystroke so the next
+    ``AskUserQuestion`` renders in-client instead of deferring to a
+    ``DeferredQuestion``. The invariant-9 anchor (a PURE loop tick, no user
+    text → still defers) lives in the second test so the must-render escape is
+    proven an escape, not a defanged gate.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "availability_presence"
+        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+
+    def test_fresh_user_prompt_prefixed_by_loop_text_renders_live(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session_id = "owner"
+        # 1. The user's live keystroke arrives during the self-pump, delivered
+        #    by the harness prefixed with the loop continuation text.
+        router.handle_record_presence(
+            {"prompt": f"{_LOOP_PROMPT}\n\nactually, ask me which option you prefer", "session_id": session_id}
+        )
+        # 2. The AskUserQuestion on this self-pump-bridged turn must render live.
+        result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id=session_id))
+        assert result is False, "a fresh same-session user prompt this turn must render the question live"
+        assert _stdout(capsys) == {}
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_pure_loop_tick_still_defers_invariant_9(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session_id = "owner"
+        # A pure autonomous tick (no genuine user text) must NOT stamp presence,
+        # so its AskUserQuestion still defers durably — invariant 9 intact.
+        router.handle_record_presence({"prompt": _LOOP_PROMPT, "session_id": session_id})
+        result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id=session_id))
         assert result is True
         out = _stdout(capsys)
         assert out["permissionDecision"] == "deny"

@@ -892,6 +892,20 @@ def handle_user_prompt_submit(data: dict) -> None:
 # ── UserPromptSubmit: live-presence heartbeat (#58 away-misclassification) ────
 
 
+def _is_bare_loop_prompt(prompt: str) -> bool:
+    """True when *prompt* is a PURE autonomous loop tick (no user content).
+
+    A cron-fired tick reaches ``UserPromptSubmit`` as ``_LOOP_PROMPT`` plus,
+    optionally, the harness-injected ``<system-reminder>`` ambient blocks — both
+    strip down to exactly the bare loop prompt. A genuine fresh user prompt that
+    the harness delivers PREFIXED by the loop continuation text leaves residual
+    user content after the strip, so it is NOT bare. The ambient strip reuses
+    :func:`_strip_ambient_context` (the same normalisation the skill-load gate
+    applies), keeping one definition of "what the harness appends".
+    """
+    return _strip_ambient_context(prompt) == _LOOP_PROMPT.strip()
+
+
 def handle_record_presence(data: dict) -> None:
     """Stamp a live-presence heartbeat — a prompt proves the user is here.
 
@@ -906,11 +920,20 @@ def handle_record_presence(data: dict) -> None:
     prompt = data.get("prompt")
     if not prompt:
         return
-    # A loop-tick continuation is autonomous, not user presence — stamping it
-    # would let the #189 live-turn predicate mistake an owner-session tick for a
-    # fresh keystroke, and it is not evidence the user is at the keyboard for the
-    # 15-min schedule upgrade either. Skip it on both counts.
-    if prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
+    # A PURE loop-tick continuation is autonomous, not user presence — stamping
+    # it would let the #189 live-turn predicate mistake an owner-session tick for
+    # a fresh keystroke, and it is not evidence the user is at the keyboard for
+    # the 15-min schedule upgrade either. Skip it on both counts.
+    #
+    # But suppress ONLY the bare tick, never a prompt that merely *starts with*
+    # the loop text (#2155): when the user types a genuine fresh prompt while the
+    # owner session is self-pumping, the harness delivers it PREFIXED by the loop
+    # continuation text. A `startswith` guard swallowed that live keystroke, so
+    # the next AskUserQuestion deferred to a DeferredQuestion even though the user
+    # was demonstrably present. `_is_bare_loop_prompt` strips the harness ambient
+    # blocks and suppresses only when nothing but the loop prompt remains —
+    # genuine user content beyond it proves presence and must stamp.
+    if _is_bare_loop_prompt(prompt):
         return
     if not _bootstrap_teatree_django():
         return
