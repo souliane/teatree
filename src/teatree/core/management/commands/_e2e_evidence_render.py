@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict
+from urllib.parse import urlparse
 
 from teatree.utils.media import MediaKind, media_kind
 from teatree.utils.url_slug import pr_ref_from_url
@@ -418,13 +419,78 @@ def merge_state(
 # --- render -----------------------------------------------------------------
 
 
-def _commits_line(label: str, side: SideState) -> str:
-    """The per-repo commit-provenance line for one side, or ``""`` when none."""
+def _commit_base_index(mrs: tuple[str, ...]) -> dict[str, str]:
+    """Map each repo short-name → its project web base URL, derived from the MRs.
+
+    A commit SHA in ``state["commits"]`` is keyed by repo short-name only, so the
+    full project path needed for a commit link is recovered by matching that
+    short-name against the MR/PR URLs already in the note (``…/<full>/-/merge_requests/<n>``
+    → base ``https://<host>/<full>``). Only URL-parseable MRs contribute; a repo
+    with no matching MR is absent, so its SHA renders as a bare code-span (never a
+    broken link). The web base is forge-shaped: GitLab ``…/-/commit/<sha>`` and
+    GitHub ``…/commit/<sha>`` are appended by :func:`_commit_md`.
+    """
+    index: dict[str, str] = {}
+    for ref in mrs:
+        parsed = pr_ref_from_url(ref)
+        if parsed is None:
+            continue
+        host = urlparse(ref).netloc
+        scheme = urlparse(ref).scheme or "https"
+        short_name = parsed.slug.rsplit("/", 1)[-1]
+        index.setdefault(short_name, f"{scheme}://{host}/{parsed.slug}|{parsed.host_kind}")
+    return index
+
+
+def _commit_md(repo: str, sha: str, base_index: dict[str, str]) -> str:
+    """Render one ``repo `sha``` cell, as a clickable commit link when resolvable.
+
+    Returns ``[repo `sha`](<base>/-/commit/<sha>)`` (GitLab) /
+    ``…/commit/<sha>`` (GitHub) when *repo* has a project base in *base_index*,
+    else the bare ``repo `sha``` code-span (never a broken link).
+    """
+    entry = base_index.get(repo)
+    if not entry:
+        return f"{repo} `{sha}`"
+    base, host_kind = entry.rsplit("|", 1)
+    commit_path = "commit" if host_kind == "github" else "-/commit"
+    return f"[{repo} `{sha}`]({base}/{commit_path}/{sha})"
+
+
+def _commits_line(label: str, side: SideState, base_index: dict[str, str]) -> str:
+    """The per-repo commit-provenance line for one side, or ``""`` when none.
+
+    Each ``repo `sha``` is a clickable commit link when the repo's project base
+    resolves from the note's MRs (see :func:`_commit_base_index`), else a bare
+    code-span.
+    """
     commits = side.get("commits") or {}
     if not commits:
         return ""
-    parts = [f"{repo} `{sha}`" for repo, sha in sorted(commits.items())]
+    parts = [_commit_md(repo, sha, base_index) for repo, sha in sorted(commits.items())]
     return f"{label}: " + ", ".join(parts)
+
+
+def _reconcile_line(dev: SideState, local: SideState) -> str:
+    """The per-repo Dev↔Local ``±`` reconciliation line, or ``""`` when no repo overlaps.
+
+    For each repo present on BOTH sides: ``repo: = same commit`` when the dev and
+    local SHAs match, else ``repo: ≠ dev `<sha>` vs local `<sha>``` — so "are dev
+    and local on the same commit?" is explicit and obvious per repo.
+    """
+    dev_commits = dev.get("commits") or {}
+    local_commits = local.get("commits") or {}
+    shared = sorted(set(dev_commits) & set(local_commits))
+    if not shared:
+        return ""
+    parts: list[str] = []
+    for repo in shared:
+        dev_sha, local_sha = dev_commits[repo], local_commits[repo]
+        if dev_sha == local_sha:
+            parts.append(f"{repo}: = same commit")
+        else:
+            parts.append(f"{repo}: ≠ dev `{dev_sha}` vs local `{local_sha}`")
+    return "Dev ± Local: " + ", ".join(parts)
 
 
 def _dev_gap_clause(side: SideState) -> str:
@@ -498,14 +564,17 @@ def render_body(state: EvidenceState) -> str:
     Layout: the hidden ticket marker, the hidden ``t3-e2e-data`` JSON blob (the
     source of truth for the next run's merge), the ``## E2E Evidence — <title>``
     heading, the ``Repos & MRs:`` line, the per-side ``Dev deployed`` / ``Local
-    tested`` commit-provenance lines (the dev line carrying the ``⚠️ Not yet on
-    dev`` gap clause when MRs are unmerged), then per workflow: its heading, the
-    optional ``**How to test:**`` numbered test-plan steps, and the side-by-side
-    ``Dev | Local`` comparison table.
+    tested`` commit-provenance lines (each ``repo `sha``` a clickable commit link
+    when resolvable; the dev line carrying the ``⚠️ Not yet on dev`` gap clause
+    when MRs are unmerged), the ``Dev ± Local`` reconciliation line (same / differ
+    per shared repo), then per workflow: its heading, the optional
+    ``**How to test:**`` numbered test-plan steps, and the side-by-side ``Dev |
+    Local`` comparison table.
     """
     ticket_id = state.get("ticket", "")
     title = state.get("title", "") or ticket_id
     dev, local = state["dev"], state["local"]
+    base_index = _commit_base_index(tuple(state.get("mrs", [])))
 
     lines = [
         evidence_marker(ticket_id=ticket_id),
@@ -516,13 +585,16 @@ def render_body(state: EvidenceState) -> str:
     mrs_line = render_mrs_line(tuple(state.get("mrs", [])))
     if mrs_line:
         lines.append(mrs_line)
-    dev_line = _commits_line("Dev deployed", dev)
+    dev_line = _commits_line("Dev deployed", dev, base_index)
     gap = _dev_gap_clause(dev)
     if dev_line or gap:
         lines.append("  ".join(part for part in (dev_line, gap) if part))
-    local_line = _commits_line("Local tested", local)
+    local_line = _commits_line("Local tested", local, base_index)
     if local_line:
         lines.append(local_line)
+    reconcile = _reconcile_line(dev, local)
+    if reconcile:
+        lines.append(reconcile)
     lines.append("")
     for workflow in _workflow_names(state):
         lines.extend(_workflow_table(state, workflow))

@@ -89,8 +89,12 @@ class TestRenderBody:
         # Multi-repo MR links, terse repo!num labels.
         assert "Repos & MRs: [client!6331](" in body
         assert "[product!7585](" in body
-        # Per-repo commit provenance for the tested side.
-        assert "Local tested: client `aaaa`, product `bbbb`" in body
+        # Per-repo commit provenance for the tested side — each SHA a clickable
+        # commit link derived from the matching MR URL.
+        assert (
+            "Local tested: [client `aaaa`](https://gitlab.com/org/client/-/commit/aaaa), "
+            "[product `bbbb`](https://gitlab.com/org/product/-/commit/bbbb)" in body
+        )
 
     def test_side_by_side_table_pairs_dev_left_local_right(self) -> None:
         state = self._state(
@@ -115,7 +119,9 @@ class TestRenderBody:
         assert "| ![v](/uploads/s/dev.webm) | ![v](/uploads/s/loc.webm) |" in body
         # Screenshot pair row.
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in body
-        assert "Dev deployed: client `ddee`" in body
+        assert "Dev deployed: [client `ddee`](https://gitlab.com/org/client/-/commit/ddee)" in body
+        # Dev (ddee) and local (aabb) differ → the ± reconciliation says so.
+        assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
 
     def test_missing_side_renders_emdash_cells(self) -> None:
         # Local captured, dev not yet deployed → dev column is all em-dashes.
@@ -181,6 +187,57 @@ class TestRenderBody:
         )
         body = _evidence.render_body(state)
         assert "**How to test:**" not in body
+
+    def test_commit_shas_render_as_clickable_links_derived_from_mrs(self) -> None:
+        # The repo short-name (client) matches the MR URL .../org/client/...,
+        # so its SHA links to that project's commit page.
+        state = self._state(
+            local={"commits": {"client": "aabbcc"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Local tested: [client `aabbcc`](https://gitlab.com/org/client/-/commit/aabbcc)" in body
+
+    def test_commit_sha_without_matching_mr_falls_back_to_bare_codespan(self) -> None:
+        # 'backend' has no MR URL → no link, bare code-span (never a broken link).
+        state = self._state(
+            mrs=["https://gitlab.com/org/client/-/merge_requests/6331"],
+            local={"commits": {"backend": "ddeeff"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Local tested: backend `ddeeff`" in body
+        assert "](https://gitlab.com/org/backend/-/commit/" not in body
+
+    def test_github_commit_link_uses_commit_path_not_dash_commit(self) -> None:
+        state = self._state(
+            mrs=["https://github.com/owner/product/pull/7585"],
+            local={"commits": {"product": "c0ffee"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "[product `c0ffee`](https://github.com/owner/product/commit/c0ffee)" in body
+
+    def test_reconcile_line_shows_same_when_dev_and_local_match(self) -> None:
+        state = self._state(
+            dev={"commits": {"client": "aabb"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local: client: = same commit" in body
+
+    def test_reconcile_line_shows_differ_with_both_shas(self) -> None:
+        state = self._state(
+            dev={"commits": {"client": "ddee"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
+
+    def test_reconcile_line_omitted_when_no_repo_on_both_sides(self) -> None:
+        # Local only → no shared repo → no reconciliation line.
+        state = self._state(
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local:" not in body
 
 
 class TestMergeState:
@@ -299,8 +356,8 @@ class TestMergeState:
         # Both columns are present and paired.
         assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in final
-        # Local survived the dev-only merge untouched.
-        assert "Local tested: client `aabb`" in final
+        # Local survived the dev-only merge untouched (rendered as a commit link).
+        assert "Local tested: [client `aabb`](https://gitlab.com/org/client/-/commit/aabb)" in final
 
 
 class TestParseManifest:
