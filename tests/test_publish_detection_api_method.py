@@ -12,6 +12,7 @@ from teatree.hooks._publish_detection import (
     _api_effective_method,
     command_has_token_aware_publish_surface,
     segment_is_api_call,
+    segment_is_api_read,
     segment_is_api_write,
 )
 
@@ -65,6 +66,41 @@ class TestSegmentIsApiWrite:
 
     def test_non_api_segment_is_not_a_write(self) -> None:
         assert not segment_is_api_write(["git", "status"])
+
+
+class TestSegmentIsApiRead:
+    """A read-only ``gh``/``glab api`` call posts NO body and can never leak content."""
+
+    @pytest.mark.parametrize(
+        "words",
+        [
+            ["gh", "api", "user"],
+            ["gh", "api", "repos/o/r/commits/main"],
+            ["gh", "api", "repos/o/r/issues", "--method", "GET"],
+            ["gh", "api", "repos/o/r/issues", "-X", "GET"],
+            ["glab", "api", "projects/42/merge_requests"],
+            ["glab", "api", "projects/42/issues", "-X", "POST", "-X", "GET"],
+        ],
+    )
+    def test_reads_are_reads(self, words: list[str]) -> None:
+        assert segment_is_api_read(words)
+        assert not segment_is_api_write(words)
+
+    @pytest.mark.parametrize(
+        "words",
+        [
+            ["gh", "api", "repos/o/r/issues", "-f", "body=x"],
+            ["gh", "api", "repos/o/r/issues", "-X", "POST"],
+            ["gh", "api", "repos/o/r/issues/1", "-X", "DELETE"],
+            ["glab", "api", "projects/42/notes", "-X", "PUT", "-f", "body=x"],
+        ],
+    )
+    def test_writes_are_not_reads(self, words: list[str]) -> None:
+        assert not segment_is_api_read(words)
+
+    def test_non_api_segment_is_not_a_read(self) -> None:
+        assert not segment_is_api_read(["git", "status"])
+        assert not segment_is_api_read(["gh", "pr", "create", "--body", "x"])
 
 
 class TestTokenAwarePublishSurface:
