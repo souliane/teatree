@@ -1198,6 +1198,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │
+│ --html                  PATH  Write a self-contained whole-suite HTML report │
+│                               to this path (CI artifact).                    │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
@@ -1546,8 +1548,9 @@ Usage: t3 eval all [OPTIONS]
  :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
  named subcommand for scripts/CI that spell the full run out. ``--free-only``
  drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
- runs the same gate inside the exact CI image for parity. A SKIP never fails
- the run; only a real FAIL exits non-zero.
+ runs the same gate inside the exact CI image for parity. ``--html`` writes a
+ whole-suite HTML report for CI to publish. A SKIP never fails the run; only a
+ real FAIL exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
@@ -1565,6 +1568,8 @@ Usage: t3 eval all [OPTIONS]
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │
+│ --html                  PATH  Write a self-contained whole-suite HTML report │
+│                               to this path (CI artifact).                    │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

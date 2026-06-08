@@ -11,7 +11,8 @@ metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
 
 import dataclasses
 import sys
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import typer
@@ -67,6 +68,7 @@ class LaneResult:
     passed: bool
     skipped: bool
     detail: str
+    duration_s: float = 0.0
 
     @property
     def status(self) -> str:
@@ -215,16 +217,27 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
     return table
 
 
-def _full_suite_docker_passthrough(*, backend: str, free_only: bool) -> list[str]:
+def _full_suite_docker_passthrough(*, backend: str, free_only: bool, html_path: Path | None) -> list[str]:
     passthrough = ["all"]
     if free_only:
         passthrough.append("--free-only")
     if backend != SUBSCRIPTION_BACKEND:
         passthrough += ["--backend", backend]
+    if html_path is not None:
+        passthrough += ["--html", str(html_path)]
     return passthrough
 
 
-def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool) -> None:
+def _timed(build: Callable[[], LaneResult]) -> LaneResult:
+    """Run a lane builder and stamp the lane with its wall-clock duration."""
+    started = time.monotonic()
+    lane = build()
+    return dataclasses.replace(lane, duration_s=time.monotonic() - started)
+
+
+def run_full_suite(
+    *, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool, html_path: Path | None = None
+) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
     Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
@@ -235,10 +248,11 @@ def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool
     transcript is in scope (a missing run is not a violation). The AI lane grades
     subscription-produced transcripts when present and NEVER silently shells the
     metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
+    ``html_path`` writes a self-contained whole-suite HTML report (CI artifact).
     A SKIP never fails the run; any real FAIL exits non-zero (fail-loud).
     """
     if docker:
-        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only)
+        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only, html_path=html_path)
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
         except DockerUnavailableError as exc:
@@ -247,14 +261,23 @@ def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
-        trigger_lane(run_trigger_qa()),
-        coverage_lane(skill_eval_coverage()),
-        regression_lane(run_regression_corpus()),
-        negative_control_lane(run_negative_control()),
-        transcript_replay_lane(replay_transcript_for_all()),
+        _timed(lambda: trigger_lane(run_trigger_qa())),
+        _timed(lambda: coverage_lane(skill_eval_coverage())),
+        _timed(lambda: regression_lane(run_regression_corpus())),
+        _timed(lambda: negative_control_lane(run_negative_control())),
+        _timed(lambda: transcript_replay_lane(replay_transcript_for_all())),
     ]
     if not free_only:
-        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir))
+        lanes.append(_timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir)))
     Console().print(build_summary_table(lanes))
+    if html_path is not None:
+        _write_html_report(lanes, html_path)
     if any(not lane.passed and not lane.skipped for lane in lanes):
         sys.exit(1)
+
+
+def _write_html_report(lanes: list[LaneResult], html_path: Path) -> None:
+    from teatree.cli.eval.suite_html import render_suite_html  # noqa: PLC0415
+
+    html_path.write_text(render_suite_html(lanes), encoding="utf-8")
+    typer.echo(f"HTML report written to {html_path}", err=True)

@@ -441,7 +441,7 @@ def pinned_regressions(
 
 
 @eval_app.callback(invoke_without_command=True)
-def default(
+def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public `t3 eval` flag. The arg list IS the CLI contract.
     ctx: typer.Context,
     backend: str = typer.Option(
         SUBSCRIPTION_BACKEND,
@@ -466,6 +466,11 @@ def default(
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    html: Path | None = typer.Option(
+        None,
+        "--html",
+        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
+    ),
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
@@ -474,12 +479,13 @@ def default(
     default. Subcommands are the targeted/special path: ``run`` (a single AI
     scenario, the metered ``--backend sdk --docker`` path), ``pinned-regressions``
     / ``negative-control`` / ``skill-triggers`` / ``coverage`` (one free lane),
-    ``history`` / ``list`` / ``prepare-subscription`` (introspection). The
-    process exits non-zero if ANY lane fails (fail-loud).
+    ``history`` / ``list`` / ``prepare-subscription`` (introspection). ``--html``
+    writes a whole-suite HTML report for CI to publish. The process exits
+    non-zero if ANY lane fails (fail-loud).
     """
     if ctx.invoked_subcommand is not None:
         return
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, html_path=html)
 
 
 @eval_app.command("all")
@@ -508,6 +514,11 @@ def all_lanes(
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    html: Path | None = typer.Option(
+        None,
+        "--html",
+        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
+    ),
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
@@ -515,10 +526,11 @@ def all_lanes(
     :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
     named subcommand for scripts/CI that spell the full run out. ``--free-only``
     drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
-    runs the same gate inside the exact CI image for parity. A SKIP never fails
-    the run; only a real FAIL exits non-zero.
+    runs the same gate inside the exact CI image for parity. ``--html`` writes a
+    whole-suite HTML report for CI to publish. A SKIP never fails the run; only a
+    real FAIL exits non-zero.
     """
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, html_path=html)
 
 
 def _require_spec(name: str) -> EvalSpec:

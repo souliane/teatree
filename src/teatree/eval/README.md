@@ -159,6 +159,14 @@ accepts the same suite-shaping flags as `all` — `--free-only`, `--backend`,
 --free-only` are identical. The process exits non-zero if ANY lane fails
 (fail-loud); a SKIP never counts as a green pass.
 
+`--html <path>` writes a self-contained whole-suite HTML report (inline CSS, no
+external assets): a plain-language final verdict banner at the top, then a lane
+table (lane | verdict | cost | duration | detail). `cli/eval/suite_html.py`
+renders it from the same `LaneResult` data the terminal table is built from; the
+metered CI workflow (`.github/workflows/eval.yml`) writes `--html
+eval-report.html` and uploads it as a job artifact (`if: always()`, so a red run
+still publishes its report).
+
 ### `t3 eval all` — the explicit alias of the bare default (#1781)
 
 `t3 eval all` is the spelled-out form of the bare `t3 eval` default — both call
