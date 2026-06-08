@@ -53,13 +53,23 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
     ``working-tree.diff`` (``git apply`` restorable). A partial artifact is
     cleaned up and the error re-raised so a caller never believes a snapshot
     exists when it does not.
+
+    ``branch`` may be a named branch or the literal ``HEAD`` (``git.DETACHED_HEAD``)
+    when the worktree is in detached HEAD. A named branch is meaningful in the
+    shared object store, so its probe + bundle run from ``repo_main``. ``HEAD``
+    is meaningful only in the worktree dir (it resolves to the detached commit
+    there, but to the main clone's tip in ``repo_main``), so its probe + bundle
+    run from ``wt_path`` itself — otherwise the bundle would capture the wrong
+    commits or refuse as empty, and the detached commits would be lost.
     """
     wt = Path(wt_path)
     if not wt.is_dir():
         return None
 
+    bundle_repo = wt if branch == git.DETACHED_HEAD else repo_main
+
     dirty = bool(git.status_porcelain(str(wt)))
-    unpushed = _has_unpushed_commits(repo_main, branch)
+    unpushed = _has_unpushed_commits(bundle_repo, branch)
     if not dirty and not unpushed:
         return None
 
@@ -69,7 +79,7 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
     recovery_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
 
     try:
-        git.bundle_create(str(repo_main), str(recovery_dir / _BUNDLE_NAME), branch)
+        git.bundle_create(str(bundle_repo), str(recovery_dir / _BUNDLE_NAME), branch)
         (recovery_dir / _DIFF_NAME).write_text(git.full_worktree_diff(str(wt)), encoding="utf-8")
     except Exception:
         shutil.rmtree(recovery_dir, ignore_errors=True)
