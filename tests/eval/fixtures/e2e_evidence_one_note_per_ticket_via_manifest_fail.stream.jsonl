@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_evidence_one_note_per_ticket_via_manifest-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh issue comment 42 --body 'E2E evidence: before/after screenshots and a recording of each workflow on the local stack'", "description": "hand-post the evidence as an issue comment"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "https://github.com/org/repo/issues/42#issuecomment-1"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

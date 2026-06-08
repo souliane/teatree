@@ -150,7 +150,9 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 **Use `t3 <overlay> e2e post-evidence --manifest <json>`.** It maintains ONE structured evidence note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
 
-The note renders as a **test plan**: a header (the ticket title, multi-repo MR links, the per-env commit provenance, and a dev-gap reconciliation line) followed by one **side-by-side `Dev | Local` comparison table per workflow** — each workflow's video row first, then one row per screenshot pair (`—` where a side has no capture, e.g. dev not yet deployed).
+The note renders as a **test plan**: a header (the ticket title, multi-repo MR links, the per-env commit provenance, and a dev-gap reconciliation line) followed by one block per workflow — the workflow heading, an optional **`How to test:` numbered step list** (the click-through a human follows to reproduce it manually), then the **side-by-side `Dev | Local` comparison table** — each workflow's video row first, then one row per screenshot pair (`—` where a side has no capture, e.g. dev not yet deployed).
+
+Artifacts always upload to the **ticket's own project** (resolved from the issue URL the note posts on), never to a manifest MR's repo or the overlay's CI project — a note only renders the uploads its own project claims, so the upload target follows the note.
 
 The note is keyed on a hidden ticket marker `<!-- t3-e2e-evidence ticket=<n> -->` and carries a hidden machine-readable state blob `<!-- t3-e2e-data {…} -->` that is the source of truth. Each run **merges** the env(s) its manifest carries over the prior state: a `local`-only manifest fills/refreshes the Local column and freezes Dev; after merge + deploy a `dev`-only manifest fills the Dev column (and clears the "⚠️ Not yet on dev" line) while freezing Local. You never hand-dedup; re-running is always safe.
 
@@ -177,19 +179,36 @@ Flags (all keyword-only):
   "local": {"commits": {"client": "<branch-sha>", "product": "<branch-sha>"}},
   "workflows": [
     {"workflow": "<test name>",
+     "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
      "dev":   {"video": null, "images": []},
-     "local": {"video": "artifacts/8521/run.webm", "images": ["a.png", "b.png"]}}
+     "local": {"video": "artifacts/8521/local/run.webm",
+               "images": ["artifacts/8521/local/step1.png", "artifacts/8521/local/step2.png"]}}
   ]
 }
 ```
 
 - One object per workflow; each carries its `dev` and `local` captures. A side's captures may be empty (e.g. dev before deploy) → that column shows `—`.
-- `images` and the optional `video` are file paths; just paste what Playwright captured.
+- `steps` (optional, workflow-level — shared across dev/local) is the written test plan: the numbered "how to test / where to click" list rendered above that workflow's table. Omit it and the block is omitted. It persists across re-runs — a later steps-less run keeps the recorded steps.
+- `images` and the optional `video` are file paths under the **per-env artifact directory** (see the layout rule below) — just paste what Playwright captured there.
 - `dev.missing_on_dev` lists the MRs whose commits are not yet deployed — the note renders them as an expected gap so a dev column of `—` reads as normal, not a failure.
+
+### Artifact directory layout (Non-Negotiable)
+
+E2E artifacts live in a **dedicated directory per environment**: `artifacts/<TICKET>/<env>/<file>`, with `env ∈ {dev, local}`. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
+
+```
+artifacts/8521/local/run.webm
+artifacts/8521/local/step1.png
+artifacts/8521/dev/run.webm
+artifacts/8521/dev/step1.png
+```
+
+This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-evidence` resolves manifest paths relative to the worktree root, so reference them as `artifacts/<TICKET>/<env>/<file>`.
 
 ### Rules
 
-- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none).
+- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `artifacts/<TICKET>/<env>/` directory.
+- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree evidence note, not optional. Write it in plain manual-testing language.
 - **One note per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same note.
 - Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.

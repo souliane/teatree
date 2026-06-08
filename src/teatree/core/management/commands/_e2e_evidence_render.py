@@ -75,13 +75,20 @@ class SideState(TypedDict):
 
 
 class EvidenceState(TypedDict):
-    """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob."""
+    """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
+
+    ``steps`` maps a workflow name → its written test-plan steps. It is
+    workflow-level (shared across dev/local) so the steps survive any single-side
+    re-render, and a steps-less re-run preserves the prior steps (see
+    :func:`merge_state`).
+    """
 
     ticket: str
     title: str
     mrs: list[str]
     dev: SideState
     local: SideState
+    steps: dict[str, list[str]]
 
 
 def empty_state(*, ticket: str, title: str) -> EvidenceState:
@@ -92,6 +99,7 @@ def empty_state(*, ticket: str, title: str) -> EvidenceState:
         "mrs": [],
         "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
         "local": {"commits": {}, "workflows": {}},
+        "steps": {},
     }
 
 
@@ -127,7 +135,13 @@ def coerce_state(raw: object) -> EvidenceState:
         "mrs": [str(m) for m in _as_list(raw_dict.get("mrs"))],
         "dev": _coerce_side(raw_dict.get("dev"), env="dev"),
         "local": _coerce_side(raw_dict.get("local"), env="local"),
+        "steps": _coerce_steps(raw_dict.get("steps")),
     }
+
+
+def _coerce_steps(raw: object) -> dict[str, list[str]]:
+    """Rebuild the workflow → test-plan-steps mapping, dropping malformed entries."""
+    return {str(name): [str(s) for s in _as_list(steps)] for name, steps in _as_dict(raw).items() if _as_list(steps)}
 
 
 # --- parsed manifest (one run's input) --------------------------------------
@@ -168,12 +182,19 @@ class SideManifest:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceManifest:
-    """The whole parsed + validated ``--manifest``: ticket, MRs, and per-side input."""
+    """The whole parsed + validated ``--manifest``: ticket, MRs, and per-side input.
+
+    ``steps`` maps a workflow name → its ordered written test-plan steps (the
+    "how to test / where to click" list a human follows to reproduce). Steps are
+    workflow-level (shared across dev/local), not per-side; a workflow with no
+    steps is simply absent from the mapping.
+    """
 
     ticket: str
     mrs: tuple[str, ...]
     dev: SideManifest
     local: SideManifest
+    steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def evidence_marker(*, ticket_id: str) -> str:
@@ -232,6 +253,7 @@ def parse_manifest(raw: str) -> EvidenceManifest:
             "workflows": [
                 {
                     "workflow": "<name>",
+                    "steps": ["open the app", "click Login", "expect the dashboard"],
                     "dev": {"video": null, "images": []},
                     "local": {"video": "v.webm", "images": ["a.png"]}
                 }
@@ -240,9 +262,12 @@ def parse_manifest(raw: str) -> EvidenceManifest:
 
     A side is "present" when the manifest carries it (its ``commits`` block or
     any workflow captures for it), so a single-env manifest updates only that
-    column. Validates every referenced file exists and is the right media kind;
-    a missing file or wrong kind raises :class:`EvidenceValidationError` so no
-    upload runs on bad input.
+    column. A workflow's optional ``steps`` array is the written test plan (the
+    "how to test / where to click" list); it is workflow-level — shared across
+    dev/local — and rendered above that workflow's comparison table. Validates
+    every referenced file exists and is the right media kind; a missing file or
+    wrong kind raises :class:`EvidenceValidationError` so no upload runs on bad
+    input.
     """
     try:
         data = json.loads(raw)
@@ -261,7 +286,30 @@ def parse_manifest(raw: str) -> EvidenceManifest:
     if not sides["dev"].present and not sides["local"].present:
         msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
         raise EvidenceValidationError(msg)
-    return EvidenceManifest(ticket=str(data.get("ticket", "")).strip(), mrs=mrs, dev=sides["dev"], local=sides["local"])
+    return EvidenceManifest(
+        ticket=str(data.get("ticket", "")).strip(),
+        mrs=mrs,
+        dev=sides["dev"],
+        local=sides["local"],
+        steps=_parse_workflow_steps(raw_workflows),
+    )
+
+
+def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, ...]]:
+    """Extract each workflow's optional ``steps`` test plan (workflow-level, shared).
+
+    Returns ``{workflow_name: (step, ...)}`` for every workflow that carries a
+    non-empty ``steps`` array; a workflow with no steps is simply absent from the
+    mapping (back-compat — its render omits the test-plan block).
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for entry in raw_workflows:
+        entry_dict = _as_dict(entry)
+        name = str(entry_dict.get("workflow", "")).strip()
+        steps = tuple(str(s).strip() for s in _as_list(entry_dict.get("steps")) if str(s).strip())
+        if name and steps:
+            out[name] = steps
+    return out
 
 
 def _parse_side(data: Mapping[str, object], raw_workflows: list[object], *, env: str) -> SideManifest:
@@ -341,7 +389,10 @@ def merge_state(
     uploaded embed markdown for this run's workflows, keyed
     ``embeds[env][workflow]``. The title and MRs are refreshed from this run's
     inputs. When the dev commits now include the deployed MR commits, supplying
-    an empty ``missing_on_dev`` naturally clears the gap line.
+    an empty ``missing_on_dev`` naturally clears the gap line. The per-workflow
+    test-plan ``steps`` are workflow-level and persist across re-runs: this run's
+    steps overwrite a workflow's steps, but a steps-less re-run preserves the
+    prior steps (a workflow whose steps this run omits keeps what was recorded).
     """
     state: EvidenceState = {
         "ticket": manifest.ticket or prior.get("ticket", ""),
@@ -349,6 +400,7 @@ def merge_state(
         "mrs": list(manifest.mrs) if manifest.mrs else list(prior.get("mrs", [])),
         "dev": prior.get("dev", {"commits": {}, "missing_on_dev": [], "workflows": {}}),
         "local": prior.get("local", {"commits": {}, "workflows": {}}),
+        "steps": {name: list(steps) for name, steps in prior.get("steps", {}).items()},
     }
     if manifest.dev.present:
         state["dev"] = {
@@ -358,6 +410,8 @@ def merge_state(
         }
     if manifest.local.present:
         state["local"] = {"commits": dict(manifest.local.commits), "workflows": embeds.get("local", {})}
+    for name, steps in manifest.steps.items():
+        state["steps"][name] = list(steps)
     return state
 
 
@@ -403,17 +457,33 @@ def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
     return wf.get("video_md") or _EMPTY_CELL, list(wf.get("image_md", []))
 
 
-def _workflow_table(state: EvidenceState, workflow: str) -> list[str]:
-    """Render the side-by-side ``| Dev | Local |`` table for one workflow.
+def _test_plan_block(state: EvidenceState, workflow: str) -> list[str]:
+    """Render the ``**How to test:**`` numbered step list for one workflow, or ``[]``.
 
-    Row 1 = each side's video (``—`` when absent). Then one row per screenshot
-    pair (dev capture left, local capture right; ``—`` where a side has fewer
-    captures — e.g. dev not deployed yet, so its column is all ``—``).
+    The written test plan a human follows to reproduce the workflow manually,
+    rendered ABOVE the workflow's comparison table. Omitted entirely (back-compat)
+    when the workflow has no recorded steps.
+    """
+    steps = state.get("steps", {}).get(workflow, [])
+    if not steps:
+        return []
+    return ["**How to test:**", "", *[f"{i}. {step}" for i, step in enumerate(steps, start=1)], ""]
+
+
+def _workflow_table(state: EvidenceState, workflow: str) -> list[str]:
+    """Render one workflow's block: heading, test-plan steps, then the ``| Dev | Local |`` table.
+
+    The optional ``**How to test:**`` numbered step list (the written test plan)
+    renders above the table. Table row 1 = each side's video (``—`` when absent);
+    then one row per screenshot pair (dev capture left, local capture right; ``—``
+    where a side has fewer captures — e.g. dev not deployed yet, all ``—``).
     """
     dev_video, dev_images = _cells(state["dev"], workflow)
     local_video, local_images = _cells(state["local"], workflow)
 
-    lines = [f"### {workflow}", "", "| Dev | Local |", "|---|---|", f"| {dev_video} | {local_video} |"]
+    lines = [f"### {workflow}", ""]
+    lines.extend(_test_plan_block(state, workflow))
+    lines.extend(["| Dev | Local |", "|---|---|", f"| {dev_video} | {local_video} |"])
     for i in range(max(len(dev_images), len(local_images))):
         left = dev_images[i] if i < len(dev_images) else _EMPTY_CELL
         right = local_images[i] if i < len(local_images) else _EMPTY_CELL
@@ -429,8 +499,9 @@ def render_body(state: EvidenceState) -> str:
     source of truth for the next run's merge), the ``## E2E Evidence — <title>``
     heading, the ``Repos & MRs:`` line, the per-side ``Dev deployed`` / ``Local
     tested`` commit-provenance lines (the dev line carrying the ``⚠️ Not yet on
-    dev`` gap clause when MRs are unmerged), then one side-by-side ``Dev |
-    Local`` table per workflow.
+    dev`` gap clause when MRs are unmerged), then per workflow: its heading, the
+    optional ``**How to test:**`` numbered test-plan steps, and the side-by-side
+    ``Dev | Local`` comparison table.
     """
     ticket_id = state.get("ticket", "")
     title = state.get("title", "") or ticket_id
