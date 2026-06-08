@@ -24,6 +24,7 @@ import dataclasses
 import shutil
 from pathlib import Path
 
+from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
@@ -86,7 +87,7 @@ class ClaudePRunner:
                 raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
 
-        system_prompt = self._load_agent_definition(spec.agent_path)
+        system_prompt = self._load_agent_definition(spec.agent_path, spec.agent_sections)
         max_turns = self._max_turns_override if self._max_turns_override is not None else spec.max_turns
         command = self._build_command(
             binary,
@@ -189,7 +190,7 @@ class ClaudePRunner:
         )
 
     @staticmethod
-    def _load_agent_definition(agent_path: str) -> str:
+    def _load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ()) -> str:
         resolved = Path(agent_path).expanduser()
         if not resolved.is_absolute():
             for candidate in (Path.cwd() / resolved, _teatree_root() / resolved):
@@ -203,6 +204,8 @@ class ClaudePRunner:
         if not text.strip():
             msg = f"Agent definition is empty: {resolved}"
             raise ValueError(msg)
+        if agent_sections:
+            return extract_sections(text, agent_sections)
         return text
 
     @staticmethod

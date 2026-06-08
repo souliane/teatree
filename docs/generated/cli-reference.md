@@ -1186,19 +1186,24 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
  target one lane.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --backend               TEXT  AI-lane backend for the bare-`t3 eval` full    │
-│                               suite: 'subscription' (default — grade         │
-│                               in-session transcripts, no API spend) or 'sdk' │
-│                               (metered claude -p, the explicit opt-in).      │
-│                               [default: subscription]                        │
-│ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
-│                               transcripts for the AI lane (default: cwd).    │
-│ --free-only                   Run only the free deterministic lanes (drop    │
-│                               the AI lane) — the fast pre-push gate.         │
-│ --docker                      Run inside the exact CI image                  │
-│                               (dev/Dockerfile.test) for parity; host-run is  │
-│                               the default.                                   │
-│ --help                        Show this message and exit.                    │
+│ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
+│                                  suite: 'subscription' (default — grade      │
+│                                  in-session transcripts, no API spend) or    │
+│                                  'sdk' (metered claude -p, the explicit      │
+│                                  opt-in).                                    │
+│                                  [default: subscription]                     │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
+│                                  transcripts for the AI lane (default: cwd). │
+│ --free-only                      Run only the free deterministic lanes (drop │
+│                                  the AI lane) — the fast pre-push gate.      │
+│ --docker                         Run inside the exact CI image               │
+│                                  (dev/Dockerfile.test) for parity; host-run  │
+│                                  is the default.                             │
+│ --parallel              INTEGER  Run this many AI-lane scenarios             │
+│                                  concurrently (wall-clock; default 1 =       │
+│                                  sequential).                                │
+│                                  [default: 1]                                │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
@@ -1348,6 +1353,10 @@ Usage: t3 eval run [OPTIONS] [NAME]
  ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
  clean container and never lands on the command line.
 
+ ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
+ I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
+ Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1420,6 +1429,13 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                by the host's                 │
 │                                                CLAUDE_CODE_OAUTH_TOKEN/ANTH… │
 │                                                (env pass-through).           │
+│ --parallel                            INTEGER  Run this many scenarios       │
+│                                                concurrently (each claude -p  │
+│                                                is I/O-bound; a bounded pool  │
+│                                                cuts wall-clock from          │
+│                                                Nxlatency to ~latency).       │
+│                                                Default 1 = sequential.       │
+│                                                [default: 1]                  │
 │ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1550,22 +1566,26 @@ Usage: t3 eval all [OPTIONS]
  the run; only a real FAIL exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
-│                               grade in-session transcripts, no API spend) or │
-│                               'sdk' (metered claude -p, authed by            │
-│                               CLAUDE_CODE_OAUTH_TOKEN; the explicit CI       │
-│                               opt-in via the standalone eval.yml job;        │
-│                               ANTHROPIC_API_KEY also honored as a legacy     │
-│                               alternative).                                  │
-│                               [default: subscription]                        │
-│ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
-│                               transcripts for the AI lane (default: cwd).    │
-│ --free-only                   Run only the free deterministic lanes (drop    │
-│                               the AI lane) — the fast pre-push gate.         │
-│ --docker                      Run inside the exact CI image                  │
-│                               (dev/Dockerfile.test) for parity; host-run is  │
-│                               the default.                                   │
-│ --help                        Show this message and exit.                    │
+│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
+│                                  grade in-session transcripts, no API spend) │
+│                                  or 'sdk' (metered claude -p, authed by      │
+│                                  CLAUDE_CODE_OAUTH_TOKEN; the explicit CI    │
+│                                  opt-in via the standalone eval.yml job;     │
+│                                  ANTHROPIC_API_KEY also honored as a legacy  │
+│                                  alternative).                               │
+│                                  [default: subscription]                     │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
+│                                  transcripts for the AI lane (default: cwd). │
+│ --free-only                      Run only the free deterministic lanes (drop │
+│                                  the AI lane) — the fast pre-push gate.      │
+│ --docker                         Run inside the exact CI image               │
+│                                  (dev/Dockerfile.test) for parity; host-run  │
+│                                  is the default.                             │
+│ --parallel              INTEGER  Run this many AI-lane scenarios             │
+│                                  concurrently (wall-clock; default 1 =       │
+│                                  sequential).                                │
+│                                  [default: 1]                                │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

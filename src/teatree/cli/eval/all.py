@@ -12,6 +12,7 @@ metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
 import dataclasses
 import sys
 from collections.abc import Iterable
+from itertools import starmap
 from pathlib import Path
 
 import typer
@@ -26,6 +27,7 @@ from teatree.eval.coverage import CoverageReport, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
+from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.transcript_conformance import InvariantResult
@@ -135,7 +137,9 @@ def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
     )
 
 
-def run_ai_lane(specs: list[EvalSpec], *, backend: str, target_dir: Path) -> LaneResult:
+def run_ai_lane(
+    specs: list[EvalSpec], *, backend: str, target_dir: Path, parallel: int = DEFAULT_PARALLEL
+) -> LaneResult:
     try:
         runner = make_runner(backend, transcript_dir=target_dir)
     except UnknownBackendError as exc:
@@ -144,7 +148,8 @@ def run_ai_lane(specs: list[EvalSpec], *, backend: str, target_dir: Path) -> Lan
     if isinstance(runner, SubscriptionTranscriptRunner) and not _any_transcript_present(specs, runner):
         _emit_subscription_recipe(specs, target_dir)
         return _ai_lane_result([], backend=backend, graded=False)
-    results = [evaluate(spec, runner.run(spec)) for spec in specs]
+    runs = run_specs(runner, specs, parallel=parallel)
+    results = list(starmap(evaluate, zip(specs, runs, strict=True)))
     return _ai_lane_result(results, backend=backend, graded=True)
 
 
@@ -215,16 +220,20 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
     return table
 
 
-def _full_suite_docker_passthrough(*, backend: str, free_only: bool) -> list[str]:
+def _full_suite_docker_passthrough(*, backend: str, free_only: bool, parallel: int = DEFAULT_PARALLEL) -> list[str]:
     passthrough = ["all"]
     if free_only:
         passthrough.append("--free-only")
     if backend != SUBSCRIPTION_BACKEND:
         passthrough += ["--backend", backend]
+    if parallel != DEFAULT_PARALLEL:
+        passthrough += ["--parallel", str(parallel)]
     return passthrough
 
 
-def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool) -> None:
+def run_full_suite(
+    *, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool, parallel: int = DEFAULT_PARALLEL
+) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
     Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
@@ -235,10 +244,11 @@ def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool
     transcript is in scope (a missing run is not a violation). The AI lane grades
     subscription-produced transcripts when present and NEVER silently shells the
     metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
+    ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
     A SKIP never fails the run; any real FAIL exits non-zero (fail-loud).
     """
     if docker:
-        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only)
+        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only, parallel=parallel)
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
         except DockerUnavailableError as exc:
@@ -254,7 +264,7 @@ def run_full_suite(*, backend: str, transcript_dir: Path | None, free_only: bool
         transcript_replay_lane(replay_transcript_for_all()),
     ]
     if not free_only:
-        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir))
+        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
     Console().print(build_summary_table(lanes))
     if any(not lane.passed and not lane.skipped for lane in lanes):
         sys.exit(1)
