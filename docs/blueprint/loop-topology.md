@@ -127,11 +127,14 @@ The loop respects the active overlay's `mode` (§ 10.1, canonical default `inter
 - **`[teatree] require_human_approval_to_answer = true` (default).** Gates the `t3:answerer` capability the same way: the agent drafts a reply to an inbound `question` intent, DMs the user for approval, and posts only on confirmation. Set it `false` per-overlay to let answers post directly.
 - **`[teatree] on_behalf_post_mode = "draft_or_ask"` (default).** The tri-state *pre*-gate over every post the agent makes under the user's identity to a colleague/customer surface — a PR/MR comment, an issue comment, a Slack channel/thread message, a Notion post, a PR/MR **approval**, or a reaction on someone else's message.
 
-The three `on_behalf_post_mode` values form an autonomy ramp:
+The three `on_behalf_post_mode` values form an autonomy ramp. The gate
+covers colleague-**VISIBLE** posts only — a draft (`post-draft-note`) is
+colleague-invisible, so it is exempt under every mode and never needs
+approval:
 
 - `immediate` — gate off; every action publishes directly.
-- `ask` — every action requires an explicit recorded approval before publishing.
-- `draft_or_ask` (the new default) — `t3 review post-draft-note` publishes autonomously (drafts are colleague-invisible and revocable, and the agent DMs the user with the publish/delete commands); every other action collapses to BLOCK identical to `ask`.
+- `ask` — every colleague-VISIBLE action requires an explicit recorded approval before publishing; a draft is exempt and auto-publishes (+ DMs the user) without approval.
+- `draft_or_ask` (the new default) — identical to `ask`: `t3 review post-draft-note` publishes autonomously (drafts are colleague-invisible and revocable, and the agent DMs the user with the publish/delete commands); every colleague-visible action BLOCKs until the user records an approval.
 
 The legacy boolean `ask_before_post_on_behalf = true/false` keeps working through one deprecation release (true → `ask`, false → `immediate`). The setting is resolved through the env (`T3_ON_BEHALF_POST_MODE`) → active-overlay → global → default chain (`teatree.on_behalf_gate.resolve_on_behalf_verdict`); it is the *pre*-gate companion to the notify-*after* path (#949). Both ship on; the user flips this one off per-overlay first.
 
