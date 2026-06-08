@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_evidence_uses_canonical_command-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The canonical command posts one idempotent comment on the ticket and uploads the media itself. I'll use it directly with the existing artifacts."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme e2e post-evidence --ticket 4242 --env local --before e2e/artifacts/4242/before.png --after e2e/artifacts/4242/after.png --video e2e/artifacts/4242/run.webm --assertion \"The widget renders the new summary panel\"", "description": "post E2E evidence on the ticket via the canonical CLI"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "posted evidence comment on ticket #4242 (env=local)"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
