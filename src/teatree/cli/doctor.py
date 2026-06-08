@@ -41,7 +41,7 @@ from teatree.cli.recommended_authorizations import authorizations, report_missin
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
-doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
+doctor_app = typer.Typer(no_args_is_help=False, help="Smoke-test hooks, imports, services.")
 doctor_app.command()(authorizations)
 _REQUIRED_TOOLS = ("direnv", "git", "jq")
 _CLAUDE_PLUGIN_ID = "t3@souliane"
@@ -561,3 +561,10 @@ def check() -> bool:
     if ok:
         typer.echo("All checks passed")
     return ok
+
+
+@doctor_app.callback(invoke_without_command=True)
+def _doctor_default(ctx: typer.Context) -> None:
+    """Run ``check`` when ``t3 doctor`` is invoked with no subcommand (#2065)."""
+    if ctx.invoked_subcommand is None:
+        raise typer.Exit(code=0 if check() else 1)
