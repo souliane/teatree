@@ -138,3 +138,21 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 60
           command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --require-executed
+      # Render a human-readable whole-suite HTML report and publish it as a job
+      # artifact. `if: always()` so a red run still publishes its report (the
+      # report is exactly what a maintainer reads to triage the failure). The
+      # report run is non-gating: `|| true` keeps a render hiccup from masking the
+      # real eval verdict above, which already decided the job's exit code.
+      - name: Render the whole-suite HTML report
+        if: always() && steps.gate.outputs.run_eval == 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
+        run: uv run t3 eval all --backend "$EVAL_BACKEND" --html eval-report.html || true
+      - name: Upload the HTML eval report
+        if: always() && steps.gate.outputs.run_eval == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.html
+          if-no-files-found: warn
