@@ -1210,6 +1210,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
 │                                  [default: 1]                                │
+│ --html                  PATH     Write a self-contained whole-suite HTML     │
+│                                  report to this path (CI artifact).          │
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
@@ -1573,8 +1575,8 @@ Usage: t3 eval all [OPTIONS]
 
  The explicit form of the bare-``t3 eval`` default — both call
  :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
- callback for the flag semantics). Kept as a named subcommand for scripts/CI
- that spell the full run out.
+ callback for the flag semantics, including ``--html``). Kept as a named
+ subcommand for scripts/CI that spell the full run out.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
@@ -1603,6 +1605,8 @@ Usage: t3 eval all [OPTIONS]
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
 │                                  [default: 1]                                │
+│ --html                  PATH     Write a self-contained whole-suite HTML     │
+│                                  report to this path (CI artifact).          │
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

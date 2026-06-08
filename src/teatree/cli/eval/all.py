@@ -9,8 +9,10 @@ subscription manifest plus the in-session recipe and NEVER silently shells the
 metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
 """
 
+import dataclasses
 import sys
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from itertools import starmap
 from pathlib import Path
 
@@ -214,7 +216,7 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
 
 
 def _full_suite_docker_passthrough(
-    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL
+    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL, html_path: Path | None = None
 ) -> list[str]:
     passthrough = ["all"]
     if free_only:
@@ -225,7 +227,16 @@ def _full_suite_docker_passthrough(
         passthrough.append("--strict")
     if parallel != DEFAULT_PARALLEL:
         passthrough += ["--parallel", str(parallel)]
+    if html_path is not None:
+        passthrough += ["--html", str(html_path)]
     return passthrough
+
+
+def _timed(build: Callable[[], LaneResult]) -> LaneResult:
+    """Run a lane builder and stamp the lane with its wall-clock duration."""
+    started = time.monotonic()
+    lane = build()
+    return dataclasses.replace(lane, duration_s=time.monotonic() - started)
 
 
 def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` / `t3 eval all` flag. The arg list IS the CLI contract.
@@ -236,6 +247,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     docker: bool,
     strict: bool,
     parallel: int = DEFAULT_PARALLEL,
+    html_path: Path | None = None,
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
@@ -248,6 +260,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     subscription-produced transcripts when present and NEVER silently shells the
     metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
     ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
+    ``html_path`` writes a self-contained whole-suite HTML report (CI artifact).
 
     The run always ends with a plain-language verdict (:func:`build_verdict`) a
     non-expert can read: ``✅ ALL GOOD`` / ``❌ PROBLEMS FOUND`` / a ``✅`` for the
@@ -259,7 +272,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     """
     if docker:
         passthrough = _full_suite_docker_passthrough(
-            backend=backend, free_only=free_only, strict=strict, parallel=parallel
+            backend=backend, free_only=free_only, strict=strict, parallel=parallel, html_path=html_path
         )
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
@@ -269,17 +282,28 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
-        trigger_lane(run_trigger_qa()),
-        coverage_lane(skill_eval_coverage()),
-        regression_lane(run_regression_corpus()),
-        negative_control_lane(run_negative_control()),
-        transcript_replay_lane(replay_transcript_for_all()),
+        _timed(lambda: trigger_lane(run_trigger_qa())),
+        _timed(lambda: coverage_lane(skill_eval_coverage())),
+        _timed(lambda: regression_lane(run_regression_corpus())),
+        _timed(lambda: negative_control_lane(run_negative_control())),
+        _timed(lambda: transcript_replay_lane(replay_transcript_for_all())),
     ]
     if not free_only:
-        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
+        lanes.append(
+            _timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
+        )
     Console().print(build_summary_table(lanes))
     print_verdict(lanes)
+    if html_path is not None:
+        _write_html_report(lanes, html_path)
     real_failure = any(not lane.passed and not lane.skipped for lane in lanes)
     strict_failure = strict and any(lane.needs_setup for lane in lanes)
     if real_failure or strict_failure:
         sys.exit(1)
+
+
+def _write_html_report(lanes: list[LaneResult], html_path: Path) -> None:
+    from teatree.cli.eval.suite_html import render_suite_html  # noqa: PLC0415
+
+    html_path.write_text(render_suite_html(lanes), encoding="utf-8")
+    typer.echo(f"HTML report written to {html_path}", err=True)

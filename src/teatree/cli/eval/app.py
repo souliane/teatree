@@ -458,6 +458,11 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--parallel",
         help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
     ),
+    html: Path | None = typer.Option(
+        None,
+        "--html",
+        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
+    ),
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
@@ -467,8 +472,9 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
     path: ``run`` (a single AI scenario, the metered ``--backend sdk --docker``
     path), ``pinned-regressions`` / ``negative-control`` / ``skill-triggers`` /
     ``coverage`` (one free lane), ``history`` / ``list`` / ``prepare-subscription``
-    (introspection). The process exits non-zero if ANY lane fails (fail-loud);
-    ``--strict`` also fails on a setup-skipped lane (the AI lane).
+    (introspection). ``--html`` writes a whole-suite HTML report for CI to
+    publish. The process exits non-zero if ANY lane fails (fail-loud); ``--strict``
+    also fails on a setup-skipped lane (the AI lane).
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -479,6 +485,7 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         docker=docker,
         strict=strict,
         parallel=parallel,
+        html_path=html,
     )
 
 
@@ -518,13 +525,18 @@ def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--parallel",
         help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
     ),
+    html: Path | None = typer.Option(
+        None,
+        "--html",
+        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
+    ),
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table + verdict.
 
     The explicit form of the bare-``t3 eval`` default — both call
     :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
-    callback for the flag semantics). Kept as a named subcommand for scripts/CI
-    that spell the full run out.
+    callback for the flag semantics, including ``--html``). Kept as a named
+    subcommand for scripts/CI that spell the full run out.
     """
     run_full_suite(
         backend=backend,
@@ -533,6 +545,7 @@ def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         docker=docker,
         strict=strict,
         parallel=parallel,
+        html_path=html,
     )
 
 
