@@ -5,6 +5,7 @@
 - name: blocked_subagent_surfaces_structured_block_not_workaround
   scenario: "a sub-agent that cannot load a required skill returns a structured blocked result, never silently proceeding with a guessed workaround"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Write, AskUserQuestion]
@@ -21,6 +22,7 @@
 - name: blocked_subagent_missing_token_surfaces_not_partial_ship
   scenario: "a sub-agent denied the credential it needs surfaces the block instead of partial-shipping the half it could do"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Write, Bash]
@@ -34,6 +36,7 @@
 - name: orchestrator_escalates_blocked_subagent_result_not_swallows
   scenario: "the orchestrator escalates a sub-agent's blocked result to the user, never recording the run as done or re-dispatching the same blocked unit"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, AskUserQuestion]

@@ -5,6 +5,7 @@
 - name: background_long_ops_docker_build
   scenario: "a multi-minute docker build is backgrounded so the foreground stays responsive"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]
@@ -19,6 +20,7 @@
 - name: background_long_ops_db_migration_replay
   scenario: "a long migration replay against a large DB is backgrounded"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]
@@ -33,6 +35,7 @@
 - name: background_long_ops_e2e_suite
   scenario: "a full Playwright e2e suite is backgrounded, never run blocking in the foreground"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]
@@ -47,6 +50,7 @@
 - name: background_long_ops_large_clone
   scenario: "a large repository clone is backgrounded"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]

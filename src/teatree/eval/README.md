@@ -146,6 +146,44 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
+### Token cost — the per-scenario system prompt (`agent_sections`)
+
+The metered lane's dominant input cost is the system prompt: each scenario sends
+its whole `agent_path` SKILL.md to `claude -p`, resent fresh per scenario with no
+cross-scenario cache. `skills/rules/SKILL.md` (77 KB / ~19 K tokens) is sent for
+~40 scenarios — each pins ONE rule but resends all ~50.
+
+A scenario declares `agent_sections: ["<## heading>", ...]` to send only the
+`##` sections it tests (plus the file preamble) instead of the whole file. This
+is faithful — the section IS the rule under test — and is the single biggest
+token lever: scoping the rules-targeting scenarios cuts the whole-suite
+system-prompt input ~36% (≈585 K tokens). Empty (the default) sends the whole
+file, so a scenario is only scoped when its rule maps cleanly to one heading.
+
+`agent_sections` resolution is guarded two ways: a missing/typo'd heading raises
+`MissingSectionError` (`teatree.eval.context_budget`) at run time, and
+`tests/eval/test_scenarios_anti_vacuous.py` resolves every declared section
+against the real SKILL.md on every PR — so a drifted heading is a hard RED, never
+a silently-empty (vacuous) prompt. Generated scenarios declare their sections in
+`scripts/eval/corpus_gen/all_scenarios.py::_AGENT_SECTIONS` (one auditable map,
+self-checked at generation).
+
+**Prompt caching across scenarios is NOT available on this path.** `claude -p`
+exposes `--exclude-dynamic-system-prompt-sections` for cross-call cache reuse,
+but it is explicitly *ignored with `--system-prompt`* (the flag the runner uses
+to inject the SKILL.md). There is no honored prefix-cache knob for our path, so
+no cross-scenario cache saving is claimed — the win is the smaller prompt itself.
+
+### Wall-clock — `--parallel N`
+
+Each `claude -p` is I/O-bound (network round-trips), so the suite runs scenarios
+sequentially by default and the wall-clock is N × per-scenario latency. `t3 eval
+run --parallel N` / `t3 eval --parallel N` runs N scenarios concurrently through
+a bounded thread pool (`teatree.eval.parallel.run_specs`, capped at 20), turning
+the wall-clock toward ~latency while preserving spec order in the report. Default
+`--parallel 1` reproduces today's sequential behaviour byte-for-byte. This is a
+wall-clock lever only — it does not change token cost.
+
 ### Bare `t3 eval` — the whole suite, no arguments (the default)
 
 **Bare `t3 eval` (no subcommand, no args) runs the ENTIRE suite in one go** and
