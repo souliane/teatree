@@ -1,7 +1,6 @@
 import logging
 from typing import TypedDict
 
-from django.conf import settings
 from django.db import transaction
 from django.tasks import task
 
@@ -25,6 +24,7 @@ class TransitionResult(TypedDict, total=False):
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     import traceback  # noqa: PLC0415
 
+    from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
 
     task_obj = Task.objects.get(pk=task_id)
@@ -45,26 +45,19 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     # Fail-closed billing guard: a loop-dispatched phase task (one whose
     # (role, phase) has a registered phase agent) must run INTERACTIVE in the
     # in-session ``/loop`` slot, never as a metered detached ``claude -p``
-    # subprocess. Unless the single ``LOOP_ALLOW_HEADLESS_DISPATCH`` toggle is
-    # explicitly enabled, refuse here and record a ``routing_error`` instead
-    # of shelling out — closing the seam where a stray enqueue (a re-enqueue,
-    # a queue drainer, a manual ``enqueue``) would silently meter the loop's
-    # phase work.
-    if not getattr(settings, "LOOP_ALLOW_HEADLESS_DISPATCH", False) and Task.loop_dispatched(
-        role=task_obj.ticket.role,
-        phase=task_obj.phase,
-    ):
-        reason = (
-            f"refused headless dispatch for loop-dispatched phase "
-            f"(role={task_obj.ticket.role!r}, phase={task_obj.phase!r}): "
-            "this task must run INTERACTIVE via the /loop slot "
-            "(set LOOP_ALLOW_HEADLESS_DISPATCH=True to override)"
-        )
-        logger.warning("Task %s: %s", task_obj.pk, reason)
+    # subprocess. The predicate lives in ONE shared helper both headless entry
+    # points consult (``loop_dispatch_refusal``), so the ``work-next-sdk`` CLI
+    # path cannot drift from this seam (souliane/teatree#1375). Refuse here and
+    # record a ``routing_error`` instead of shelling out — closing the seam
+    # where a stray enqueue (a re-enqueue, a queue drainer, a manual
+    # ``enqueue``) would silently meter the loop's phase work.
+    routing_refusal = loop_dispatch_refusal(task_obj)
+    if routing_refusal is not None:
+        logger.warning("Task %s: %s", task_obj.pk, routing_refusal)
         if task_obj.status == Task.Status.PENDING:
             task_obj.claim(claimed_by="headless-routing-guard")
-        task_obj.complete_with_attempt(exit_code=1, error=reason, result={"routing_error": reason})
-        return {"exit_code": 1, "routing_error": reason}
+        task_obj.complete_with_attempt(exit_code=1, error=routing_refusal, result={"routing_error": routing_refusal})
+        return {"exit_code": 1, "routing_error": routing_refusal}
 
     # Claim here (when the worker actually starts) instead of at enqueue time
     if task_obj.status == Task.Status.PENDING:

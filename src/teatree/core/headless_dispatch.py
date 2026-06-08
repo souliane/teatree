@@ -44,3 +44,36 @@ def get_headless_runner() -> HeadlessRunner:
         )
         raise RuntimeError(msg)
     return _runner
+
+
+def loop_dispatch_refusal(task: "Task") -> str | None:
+    """Reason a headless dispatch of ``task`` is refused, or ``None`` to proceed.
+
+    The single fail-closed billing guard both headless entry points consult
+    (souliane/teatree#1375): a loop-dispatched phase task — one whose
+    ``(ticket.role, phase)`` has a registered phase agent (``Task.loop_dispatched``)
+    — must run INTERACTIVE in the in-session ``/loop`` slot, never as a metered
+    detached ``claude -p`` subprocess (post-2026-06-15 billing). Unless the single
+    ``LOOP_ALLOW_HEADLESS_DISPATCH`` toggle is explicitly enabled, return a
+    ``routing_error`` reason so the caller records a refusal instead of shelling
+    out. Free-form headless work (no registered phase agent) returns ``None`` and
+    proceeds.
+
+    Both ``core.tasks.execute_headless_task`` (the django-tasks worker) and
+    ``core.management.commands.tasks.Command._execute_sdk`` (the ``work-next-sdk``
+    CLI path) call this so the guard cannot drift between the two seams.
+    """
+    from django.conf import settings  # noqa: PLC0415
+
+    from teatree.core.models import Task  # noqa: PLC0415
+
+    if getattr(settings, "LOOP_ALLOW_HEADLESS_DISPATCH", False):
+        return None
+    if not Task.loop_dispatched(role=task.ticket.role, phase=task.phase):
+        return None
+    return (
+        f"refused headless dispatch for loop-dispatched phase "
+        f"(role={task.ticket.role!r}, phase={task.phase!r}): "
+        "this task must run INTERACTIVE via the /loop slot "
+        "(set LOOP_ALLOW_HEADLESS_DISPATCH=True to override)"
+    )

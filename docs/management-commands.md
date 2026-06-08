@@ -74,7 +74,7 @@ Task queue for multi-agent coordination.
 | Subcommand | Arguments | Returns | Description |
 |------------|-----------|---------|-------------|
 | `claim` | `execution_target`, `claimed_by` | task ID or None | Claims the next pending task of the given target type |
-| `work-next-sdk` | `claimed_by` | dict or None | Claims and completes the next SDK task using the configured runtime |
+| `work-next-sdk` | `claimed_by` | dict or None | Claims and completes the next headless task using the configured runtime; refuses loop-dispatched phases (records a `routing_error`) unless `LOOP_ALLOW_HEADLESS_DISPATCH` is set |
 | `work-next-user-input` | `claimed_by` | dict or None | Claims and completes the next user-input task |
 | `cancel` | `task_id`, `--confirm` | None | Cancels a pending or claimed task. Requires `--confirm` for claimed tasks. |
 | `list` | `--status`, `--execution-target` | list of dicts | Lists tasks, optionally filtered by status and/or execution target |
