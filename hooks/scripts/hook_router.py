@@ -1562,6 +1562,26 @@ def _skill_gate_targets_code_work(data: dict) -> bool:
     return False
 
 
+def _skill_loading_exempt(session_id: str) -> bool:
+    """True when the skill-load gate must NOT fire for this session's code work.
+
+    NEVER-LOCKOUT (#1918): a loop-registration / loop-owner bootstrap turn
+    routinely surfaces a resolvable intent skill (the bare word ``loops`` is a
+    hard intent trigger) in ``<session>.pending`` while doing genuine code work
+    during teatree's own Django setup. Blocking that to demand an unrelated
+    ``/loops`` load deadlocks the bootstrap. The skill-load gate is a UX nudge,
+    not a safety gate, so it exempts the turn — keyed on the SAME short-lived
+    ``<session>.loop-pending`` marker the loop gates use (written by
+    :func:`handle_enforce_loop_on_prompt`, cleared once the loop registers), so
+    there is one source of truth for "this session is mid loop-bootstrap".
+
+    ``.is_file()`` never raises, so a missing/unreadable marker preserves the
+    gate (fails to "not exempt"), never crashes — per the hooks crash-proof
+    contract.
+    """
+    return _state_file(session_id, "loop-pending").is_file()
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
     """Block Python/Django code work when *loadable* suggested skills aren't loaded.
 
@@ -1578,7 +1598,7 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     lacking that token.
     """
     session_id = data.get("session_id", "")
-    if not session_id or not _skill_gate_targets_code_work(data):
+    if not session_id or not _skill_gate_targets_code_work(data) or _skill_loading_exempt(session_id):
         return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
