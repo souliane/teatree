@@ -21,6 +21,9 @@ class LaneResult:
     final verdict flags it as not-yet-validated and ``--strict`` fails on it. A
     skip with no hint is a benign no-applicable-work skip (e.g. transcript-replay
     when no session transcript is in scope) that does not undermine the verdict.
+
+    ``duration_s`` is the lane's wall-clock, stamped by ``all._timed`` for the
+    whole-suite HTML report (the terminal table does not show it).
     """
 
     name: str
@@ -29,6 +32,7 @@ class LaneResult:
     skipped: bool
     detail: str
     setup_hint: str | None = None
+    duration_s: float = 0.0
 
     @property
     def needs_setup(self) -> bool:
