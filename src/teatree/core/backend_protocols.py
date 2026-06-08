@@ -158,17 +158,25 @@ class ForgeMergeResult:
 
 @dataclass(frozen=True, slots=True)
 class UploadVerification:
-    """The token-verified renderability of one uploaded artifact (#2156).
+    """One uploaded artifact's existence check + the reference to embed (#2156, #2165).
 
     ``ok`` is True only when the backend confirmed, with its own
-    credentials, that the upload resolves and carries the expected media
-    bytes — not merely that the upload POST returned 201. ``embed_url`` is
-    the absolute, context-independent URL the comment body must embed so the
-    artifact renders in the work-items UI (for GitLab, the
-    ``https://<host>/-/project/<id>/uploads/<secret>/<file>`` form GitLab's
-    own renderer rewrites a relative ``/uploads/`` path to). ``detail``
-    carries the failure reason (HTTP status, wrong magic bytes) when
-    ``ok`` is False so the command can name the broken artifact.
+    credentials, that the upload exists and carries the expected media bytes
+    — not merely that the upload POST returned 201. This is an *existence*
+    guard ("the upload succeeded and is the right media kind"), NOT a render
+    guarantee: an unclaimed upload returns 200 via the token API yet 404s in
+    a browser, so the token fetch alone can never prove the embed renders.
+
+    ``embed_url`` is the **relative** reference GitLab returns for the upload
+    (``/uploads/<secret>/<file>``). Embedding that relative form is what makes
+    render correctness happen: GitLab's reference scanner recognises a
+    relative ``/uploads/<secret>/...`` in the saved note markdown, *claims*
+    the upload, and serves it — its rendered DOM ``<img>``/``<video>`` then
+    resolves. The absolute ``https://<host>/-/project/<id>/uploads/...`` form
+    is NOT recognised by the scanner, so the upload is never claimed and every
+    browser route 404s (the #2165 regression this supersedes). ``detail``
+    carries the failure reason (HTTP status, wrong magic bytes) when ``ok`` is
+    False so the command can name the broken artifact.
     """
 
     ok: bool
