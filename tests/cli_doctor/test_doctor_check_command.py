@@ -237,3 +237,74 @@ class TestDoctorCheckCommand:
             result = runner.invoke(app, ["doctor", "check"])
 
         assert "FAIL" in result.output
+
+
+class TestBareDoctorRunsChecks:
+    """Bare ``t3 doctor`` aliases to ``t3 doctor check`` (souliane/teatree#2065).
+
+    ``no_args_is_help=True`` made bare ``t3 doctor`` print the usage banner and
+    run no verification — a fresh user's verify step silently did nothing. The
+    group callback must run ``check`` when no subcommand is given, while leaving
+    the ``check`` and ``authorizations`` subcommands intact.
+    """
+
+    def _write_noop_toml(self, home: Path) -> None:
+        _write_teatree_toml(home / ".teatree.toml", "[teatree]\ncontribute = false\n")
+
+    def test_bare_doctor_runs_checks_not_help(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        with (
+            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+        assert "Usage:" not in result.output
+
+    def test_bare_doctor_propagates_failure_exit_code(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        with (
+            patch.object(
+                teatree_cli_doctor.shutil,
+                "which",
+                side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}",
+            ),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "FAIL  Required tool not found: direnv" in result.output
+
+    def test_check_subcommand_still_dispatches(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        with (
+            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+
+    def test_authorizations_subcommand_still_dispatches(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        result = runner.invoke(app, ["doctor", "authorizations", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "authorizations" in result.output
