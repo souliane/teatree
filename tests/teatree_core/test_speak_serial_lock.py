@@ -1,18 +1,21 @@
-"""Cross-process serial speaker queue around the ``say`` invocation (#2152).
+"""Cross-process speaker mutual exclusion around ``say`` (#2152, bounded #2156).
 
 Two local reads — whether two in-process daemon threads or two separate
 detached ``t3 speak`` subprocesses — must never run ``say`` at the same time,
 or messages talk over each other. :func:`_speak_local` wraps the actual ``say``
 call in a single cross-process ``fcntl.flock`` on a lockfile under the teatree
-state dir, so plays serialize machine-wide and a queued read plays the instant
-the speaker frees up.
+state dir, so plays are mutually exclusive machine-wide. The lock is acquired
+with a BOUNDED wait, not blocking: a read that cannot acquire it within the wait
+budget is DROPPED as stale rather than queued, so a flood of fan-out reads can
+never build a multi-minute backlog (#2156).
 
 Observability: a fake ``say`` script (on PATH ahead of the real one) appends
 ``START <ns>`` / ``STOP <ns>`` to a log with a sleep between, so two concurrent
 plays that overlapped would interleave (a second START before the first STOP).
 The lock makes the second START land at-or-after the first STOP. The fake is a
 real subprocess (the lock must serialize real processes), not a mock — only the
-binary itself is faked.
+binary itself is faked. :class:`TestBoundedWaitDropsStaleRead` covers the #2156
+bounded-drop behaviour with a real cross-process lock holder.
 """
 
 import threading
@@ -139,3 +142,94 @@ class TestLockPath:
         ):
             speak_mod._speak_local("hello")
         run.assert_called_once()
+
+
+_HOLD_LOCK = """#!/usr/bin/env python3
+import fcntl, sys, time
+lock_path, ready_path, hold_s = sys.argv[1], sys.argv[2], float(sys.argv[3])
+fh = open(lock_path, "a", encoding="utf-8")
+fcntl.flock(fh, fcntl.LOCK_EX)
+# Signal "lock held" only AFTER the exclusive flock is actually acquired.
+open(ready_path, "w").close()
+time.sleep(hold_s)
+fcntl.flock(fh, fcntl.LOCK_UN)
+fh.close()
+"""
+
+
+class TestBoundedWaitDropsStaleRead:
+    """The #2156 regression: a busy speaker must DROP a read, not queue it for minutes.
+
+    A separate REAL process holds the REAL ``fcntl.flock`` on the lockfile (no
+    mock of teatree code or the lock). While it is held far longer than the wait
+    budget, an in-process ``_speak_local`` must return WITHIN ~the budget and
+    must NOT invoke ``say`` — proving mutual exclusion is preserved (it never
+    overlapped the holder) while latency is capped at the budget instead of
+    blocking for the full hold. Only the ``say`` subprocess is mocked.
+
+    Anti-vacuity: revert the fix (restore an unbounded blocking ``LOCK_EX`` in
+    ``_acquire_within_budget`` / ``_serial_speaker``) and this test HANGS for the
+    whole hold (``HOLD_S``) — far past ``BUDGET_S`` — so the elapsed-time and
+    not-called assertions fail. It guards the bounded behaviour, not just "a
+    lock exists".
+    """
+
+    BUDGET_S = 0.3
+    HOLD_S = 5.0
+
+    def test_busy_speaker_drops_read_within_budget_without_calling_say(self, tmp_path: Path) -> None:
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+        import time  # noqa: PLC0415
+
+        lock = tmp_path / "speaker.lock"
+        ready = tmp_path / "lock-held.ready"
+        holder_script = tmp_path / "hold_lock.py"
+        holder_script.write_text(_HOLD_LOCK, encoding="utf-8")
+
+        holder = subprocess.Popen([sys.executable, str(holder_script), str(lock), str(ready), str(self.HOLD_S)])
+        try:
+            # Wait until the holder has the exclusive lock (bounded wait, not a sleep).
+            deadline = time.monotonic() + 10
+            while not ready.exists():
+                assert time.monotonic() < deadline, "holder never acquired the lock"
+                assert holder.poll() is None, "holder exited before signalling"
+                time.sleep(0.01)
+
+            with (
+                patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+                patch.object(speak_mod, "_speaker_lock_path", return_value=lock),
+                patch.object(speak_mod, "_SPEAKER_LOCK_WAIT_BUDGET_S", self.BUDGET_S),
+                patch.object(speak_mod, "run_allowed_to_fail") as run,
+            ):
+                start = time.monotonic()
+                speak_mod._speak_local("hello while the speaker is busy")
+                elapsed = time.monotonic() - start
+
+            # Dropped, not queued: it never ran ``say`` (mutual exclusion preserved).
+            run.assert_not_called()
+            # Latency capped at the budget — NOT the full hold a blocking acquire would wait.
+            assert elapsed < self.HOLD_S, (
+                f"speak blocked for {elapsed:.2f}s (>= the {self.HOLD_S}s hold) — "
+                f"unbounded blocking acquire, not bounded-wait-then-drop"
+            )
+            assert elapsed < self.BUDGET_S + 1.0, f"speak took {elapsed:.2f}s — far over the {self.BUDGET_S}s budget"
+        finally:
+            holder.wait(timeout=self.HOLD_S + 10)
+
+    def test_free_speaker_acquires_immediately_and_plays(self, tmp_path: Path) -> None:
+        """With the lock FREE, the bounded acquire succeeds at once and ``say`` runs."""
+        import time  # noqa: PLC0415
+
+        lock = tmp_path / "speaker.lock"
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=lock),
+            patch.object(speak_mod, "_SPEAKER_LOCK_WAIT_BUDGET_S", self.BUDGET_S),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            start = time.monotonic()
+            speak_mod._speak_local("hello with a free speaker")
+            elapsed = time.monotonic() - start
+        run.assert_called_once()
+        assert elapsed < self.BUDGET_S, f"free-lock acquire took {elapsed:.2f}s — should be immediate"
