@@ -1,6 +1,5 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
-import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -11,9 +10,9 @@ from rich.console import Console
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import build_scenarios_table, hint_missing_transcripts, run_full_suite
 from teatree.cli.eval.capture_subagent import capture_subagent
-from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
+from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
 from teatree.cli.eval.run_modes import (
     RunGuards,
     build_subscription_manifest,
@@ -35,6 +34,7 @@ from teatree.eval.coverage import render_text as render_coverage_text
 from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
+from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
@@ -60,62 +60,6 @@ eval_app = typer.Typer(
 eval_app.command("negative-control")(negative_control)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
-
-
-@dataclasses.dataclass(frozen=True)
-class RunDockerArgs:
-    """The ``t3 eval run`` flags forwarded into the CI image by ``--docker``.
-
-    The metered ``sdk`` lane runs in-container, never on the host; the container
-    is ephemeral (``--rm``), so the durable-history flags (``--baseline`` /
-    ``--gate-regressions``) are unsupported and the run is forced ``--no-persist``.
-    """
-
-    name: str | None
-    output_format: str
-    max_turns: int | None
-    trials: int
-    require: str
-    models: str | None
-    backend: str
-    require_executed: bool
-
-    def passthrough(self) -> list[str]:
-        args = ["run"]
-        if self.name is not None:
-            args.append(self.name)
-        if self.output_format != "text":
-            args += ["--format", self.output_format]
-        if self.max_turns is not None:
-            args += ["--max-turns", str(self.max_turns)]
-        if self.trials != 1:
-            args += ["--trials", str(self.trials), "--require", self.require]
-        if self.models is not None:
-            args += ["--models", self.models]
-        if self.backend != SUBSCRIPTION_BACKEND:
-            args += ["--backend", self.backend]
-        if self.require_executed:
-            args.append("--require-executed")
-        args.append("--no-persist")
-        return args
-
-    def dispatch(self) -> None:
-        try:
-            raise typer.Exit(code=run_eval_in_docker(self.passthrough()))
-        except DockerUnavailableError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=2) from None
-
-
-def _run_in_docker_or_exit(args: RunDockerArgs, *, baseline: bool, gate_regressions: bool) -> None:
-    if baseline or gate_regressions:
-        typer.echo(
-            "--docker runs in an ephemeral container, so it cannot update or compare the "
-            "durable baseline; drop --baseline/--gate-regressions or run on the host.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    args.dispatch()
 
 
 @eval_app.command("list")
@@ -210,6 +154,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "authenticated by the host's CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY (env pass-through)."
         ),
     ),
+    parallel: int = typer.Option(
+        DEFAULT_PARALLEL,
+        "--parallel",
+        help=(
+            "Run this many scenarios concurrently (each claude -p is I/O-bound; a bounded pool "
+            "cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
+        ),
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -243,9 +195,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
     ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
     clean container and never lands on the command line.
+
+    ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
+    I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
+    Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
     """
     if docker:
-        _run_in_docker_or_exit(
+        run_in_docker_or_exit(
             RunDockerArgs(
                 name=name,
                 output_format=output_format,
@@ -255,6 +211,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
                 models=models,
                 backend=backend,
                 require_executed=require_executed,
+                parallel=parallel,
             ),
             baseline=baseline,
             gate_regressions=gate_regressions,
@@ -318,7 +275,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
-    results = [evaluate(spec, runner.run(spec), judge=grader) for spec in specs]
+    runs = run_specs(runner, specs, parallel=parallel)
+    results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
     renderers = {"json": render_json, "html": render_html}
     typer.echo(renderers.get(output_format, render_text)(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
@@ -495,6 +453,11 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    parallel: int = typer.Option(
+        DEFAULT_PARALLEL,
+        "--parallel",
+        help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
+    ),
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
@@ -509,11 +472,18 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
     """
     if ctx.invoked_subcommand is not None:
         return
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, strict=strict)
+    run_full_suite(
+        backend=backend,
+        transcript_dir=transcript_dir,
+        free_only=free_only,
+        docker=docker,
+        strict=strict,
+        parallel=parallel,
+    )
 
 
 @eval_app.command("all")
-def all_lanes(
+def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public `t3 eval all` flag. The arg list IS the CLI contract.
     backend: str = typer.Option(
         SUBSCRIPTION_BACKEND,
         "--backend",
@@ -543,6 +513,11 @@ def all_lanes(
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    parallel: int = typer.Option(
+        DEFAULT_PARALLEL,
+        "--parallel",
+        help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
+    ),
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table + verdict.
 
@@ -551,7 +526,14 @@ def all_lanes(
     callback for the flag semantics). Kept as a named subcommand for scripts/CI
     that spell the full run out.
     """
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, strict=strict)
+    run_full_suite(
+        backend=backend,
+        transcript_dir=transcript_dir,
+        free_only=free_only,
+        docker=docker,
+        strict=strict,
+        parallel=parallel,
+    )
 
 
 def _require_spec(name: str) -> EvalSpec:

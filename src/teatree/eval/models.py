@@ -58,7 +58,14 @@ class JudgeSpec:
 
 @dataclasses.dataclass(frozen=True)
 class EvalSpec:
-    """A single eval scenario loaded from YAML."""
+    """A single eval scenario loaded from YAML.
+
+    ``agent_sections`` is the token-cost lever: when non-empty, only those
+    ``## `` sections of ``agent_path`` (the SKILL.md) are sent as the system
+    prompt instead of the whole file. A scenario pinning one rule sends that one
+    rule, not all fifty — cutting the dominant per-scenario input cost. Empty
+    (the default) sends the whole file, so existing scenarios are unchanged.
+    """
 
     name: str
     scenario: str
@@ -70,6 +77,7 @@ class EvalSpec:
     max_turns: int = 4
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None
+    agent_sections: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)

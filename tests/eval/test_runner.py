@@ -181,6 +181,69 @@ class TestClaudePRunner:
         ):
             ClaudePRunner(workspace=tmp_path).run(spec)
 
+    def test_agent_sections_send_only_the_named_section_as_system_prompt(self, tmp_path: Path) -> None:
+        # The token-cost lever: with agent_sections set, the --system-prompt arg
+        # carries ONLY the named section, not the whole multi-rule file.
+        agent = tmp_path / "rules.md"
+        agent.write_text(
+            "# Agent Rules\n\nframing\n\n"
+            "## Background Long Operations\n\nBackground >15s work.\n\n"
+            "## Unrelated Other Rule\n\nfifty other rules here.\n",
+            encoding="utf-8",
+        )
+        spec = EvalSpec(
+            name="bg",
+            scenario="background long ops",
+            agent_path=str(agent),
+            prompt="x",
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+            source_path=tmp_path / "spec.yaml",
+            agent_sections=("Background Long Operations",),
+        )
+        captured: dict[str, list[str]] = {}
+
+        def _capture(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return _FakeCompleted(stdout='{"type":"result","subtype":"success"}\n')
+
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.utils.run.subprocess.run", side_effect=_capture),
+        ):
+            ClaudePRunner(workspace=tmp_path).run(spec)
+
+        system_prompt = captured["cmd"][captured["cmd"].index("--system-prompt") + 1]
+        assert "Background >15s work." in system_prompt
+        assert "fifty other rules here." not in system_prompt
+        assert len(system_prompt) < len(agent.read_text(encoding="utf-8"))
+
+    def test_no_agent_sections_sends_the_whole_file(self, tmp_path: Path) -> None:
+        # Preservation: a spec without agent_sections sends the full file byte-for-byte.
+        agent = tmp_path / "rules.md"
+        full = "# Agent Rules\n\n## A\n\naaa\n\n## B\n\nbbb\n"
+        agent.write_text(full, encoding="utf-8")
+        spec = EvalSpec(
+            name="full",
+            scenario="full file",
+            agent_path=str(agent),
+            prompt="x",
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+            source_path=tmp_path / "spec.yaml",
+        )
+        captured: dict[str, list[str]] = {}
+
+        def _capture(cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            return _FakeCompleted(stdout='{"type":"result","subtype":"success"}\n')
+
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.utils.run.subprocess.run", side_effect=_capture),
+        ):
+            ClaudePRunner(workspace=tmp_path).run(spec)
+
+        assert captured["cmd"][captured["cmd"].index("--system-prompt") + 1] == full
+
     def test_nonzero_returncode_with_aborted_terminal_marks_is_error(self, tmp_path: Path) -> None:
         # No `result` event in the stream → terminal_reason is "aborted".
         # Combined with returncode != 0, the runner must set is_error=True

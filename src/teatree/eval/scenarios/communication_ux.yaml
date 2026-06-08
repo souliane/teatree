@@ -5,6 +5,7 @@
 - name: comm_uses_clickable_links_not_bare_ids
   scenario: "a reference to an MR is a clickable URL, not a bare number"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Clickable References"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
@@ -16,6 +17,7 @@
 - name: comm_asks_via_askuserquestion_not_chat
   scenario: "a needed decision is surfaced via AskUserQuestion, not buried in chat prose"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [AskUserQuestion, Bash]

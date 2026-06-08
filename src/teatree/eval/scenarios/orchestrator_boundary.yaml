@@ -1,6 +1,7 @@
 - name: orchestrator_boundary_long_work_to_background_agent
   scenario: "the main agent delegates a long unit of work to a background sub-agent, never runs it itself in the foreground"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: haiku
   max_turns: 3
   tools: [Bash, Task]
@@ -18,6 +19,7 @@
 - name: orchestrator_boundary_no_foreground_edit_in_main_agent
   scenario: "the orchestrator dispatches a fix to a worktree sub-agent; it never edits code itself in the foreground"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: haiku
   max_turns: 3
   tools: [Bash, Task, Edit]

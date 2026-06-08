@@ -110,6 +110,29 @@ class TestEvalRun:
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
 
+    def test_parallel_flag_is_forwarded_to_run_specs(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        captured: dict[str, int] = {}
+
+        def _fake_run_specs(runner: object, run_specs_arg: list[EvalSpec], *, parallel: int) -> list[EvalRun]:
+            captured["parallel"] = parallel
+            return [_run(s.name, tool_calls=_PASSING_CALL) for s in run_specs_arg]
+
+        class _StubRunner:
+            def __init__(self, *_: object, **__: object) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval.app.run_specs", side_effect=_fake_run_specs),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist", "--parallel", "8"])
+        assert result.exit_code == 0, result.output
+        assert captured["parallel"] == 8
+
     def test_runs_one_scenario_when_name_given(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
 
@@ -1137,7 +1160,7 @@ class TestEvalRunDocker:
 
     def test_delegates_metered_run_to_the_container(self) -> None:
         with (
-            patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker,
             patch("teatree.cli.eval.app.discover_specs", side_effect=AssertionError("docker must not run on the host")),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--docker"])
@@ -1146,24 +1169,24 @@ class TestEvalRunDocker:
         assert run_docker.call_args.args[0] == ["run", "--backend", "sdk", "--require-executed", "--no-persist"]
 
     def test_forwards_scenario_name_and_trials(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
             CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3", "--docker"])
         assert run_docker.call_args.args[0] == ["run", "alpha", "--trials", "3", "--require", "any", "--no-persist"]
 
     def test_propagates_container_exit_code(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=1):
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=1):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
         assert result.exit_code == 1, result.output
 
     def test_rejects_durable_history_flags(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker") as run_docker:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker:
             result = CliRunner().invoke(app, ["eval", "run", "--baseline", "--docker"])
         assert result.exit_code == 2
         run_docker.assert_not_called()
         assert "ephemeral container" in result.output
 
     def test_docker_unavailable_exits_code_2(self) -> None:
-        with patch("teatree.cli.eval.app.run_eval_in_docker", side_effect=DockerUnavailableError):
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=DockerUnavailableError):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output

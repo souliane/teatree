@@ -64,6 +64,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     model = str(spec_map.get("model") or DEFAULT_MODEL)
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
+    agent_sections = _parse_agent_sections(spec_map, name, path)
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -75,6 +76,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         max_turns=max_turns,
         tools=tools,
         judge=judge,
+        agent_sections=agent_sections,
     )
 
 
@@ -113,6 +115,17 @@ def _parse_tools(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[
         return DEFAULT_TOOLS
     if not isinstance(raw, list) or not raw or not all(isinstance(t, str) and t for t in raw):
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `tools` must be a non-empty list of strings")
+    return tuple(raw)
+
+
+def _parse_agent_sections(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    raw = entry.get("agent_sections")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
+        raise EvalSpecError(
+            path, None, f"spec {spec_name!r}: `agent_sections` must be a non-empty list of section-heading strings"
+        )
     return tuple(raw)
 
 
