@@ -1409,10 +1409,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                (default: cwd).               │
 │ --require-executed                             Fail when the suite collected │
 │                                                scenarios but executed none   │
-│                                                (all skipped) — the CI gate   │
-│                                                so a decorative run with no   │
-│                                                claude/credential can't pass  │
-│                                                green.                        │
+│                                                (all skipped). AUTO-ON for    │
+│                                                the metered sdk backend and   │
+│                                                --trials/--models (a metered  │
+│                                                run that executes nothing     │
+│                                                always fails loud); the flag  │
+│                                                only matters for the          │
+│                                                subscription backend, whose   │
+│                                                pre-transcript all-skip is    │
+│                                                legitimate.                   │
 │ --docker                                       Run inside the CI image       │
 │                                                (dev/Dockerfile.test); the    │
 │                                                metered sdk lane runs         │

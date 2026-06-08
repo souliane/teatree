@@ -15,15 +15,21 @@ from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.run_modes import (
+    RunGuards,
     build_subscription_manifest,
     gate_run_regressions,
-    guard_executed,
     make_grader,
     persist_single,
     render_subscription_text,
 )
 from teatree.cli.eval.transcript_replay import transcript_replay
-from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.backends import (
+    SDK_BACKEND,
+    SUBSCRIPTION_BACKEND,
+    SubscriptionTranscriptRunner,
+    UnknownBackendError,
+    make_runner,
+)
 from teatree.eval.coverage import render_json as render_coverage_json
 from teatree.eval.coverage import render_text as render_coverage_text
 from teatree.eval.coverage import skill_eval_coverage
@@ -183,8 +189,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         False,
         "--require-executed",
         help=(
-            "Fail when the suite collected scenarios but executed none (all skipped) — "
-            "the CI gate so a decorative run with no claude/credential can't pass green."
+            "Fail when the suite collected scenarios but executed none (all skipped). "
+            "AUTO-ON for the metered sdk backend and --trials/--models (a metered run "
+            "that executes nothing always fails loud); the flag only matters for the "
+            "subscription backend, whose pre-transcript all-skip is legitimate."
         ),
     ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -251,6 +259,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
+    # "If we run the metered lane, of course we want it executed." The sdk backend
+    # (and the always-metered --trials/--models lanes) arm the all-skipped gate
+    # unconditionally — a metered run that executes nothing must fail loud, never
+    # pass. --require-executed stays only as the opt-in knob for the subscription
+    # backend's legitimate pre-transcript all-skip.
+    sdk_metered = backend == SDK_BACKEND or trials > 1 or models is not None
+    require_executed = require_executed or sdk_metered
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
         typer.echo(
             "note: --trials/--models force the metered sdk runner (claude -p, API-billed); "
@@ -301,7 +316,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     typer.echo(renderers.get(output_format, render_text)(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
-    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
+    executed = sum(1 for r in results if not r.skipped)
+    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
+    RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
     regressed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
