@@ -23,6 +23,7 @@ from teatree.core.backend_protocols import (
     PrOpenState,
     PullRequestSpec,
     ReviewState,
+    UploadVerification,
 )
 from teatree.types import RawAPIDict
 from teatree.utils import git
@@ -357,6 +358,10 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
+        raise NotImplementedError(msg)
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification:
+        msg = f"Upload verification for {repo} not supported (GitHub has no project upload API; upload={upload})"
         raise NotImplementedError(msg)
 
     def get_issue(self, issue_url: str) -> RawAPIDict:

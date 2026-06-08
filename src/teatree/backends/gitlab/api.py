@@ -196,6 +196,29 @@ class GitLabHTTPClient:
         response.raise_for_status()
         return cast("dict[str, object]", response.json())
 
+    def fetch_upload(self, project_id: int, secret: str, filename: str) -> tuple[int, bytes]:
+        """Fetch an uploaded file's bytes through the token-authenticated API route.
+
+        The web upload-serving routes (``/uploads/<secret>/<file>`` and the
+        ``/-/project/<id>/uploads/...`` form a rendered note's ``<img>``/``<video>``
+        points at) reject a ``PRIVATE-TOKEN`` — they require a browser session
+        cookie (a token request 302s to sign-in or 404s). The API route
+        ``GET /projects/:id/uploads/:secret/:filename`` (GitLab 16.6+) is the
+        only token-authenticated way to confirm an upload resolves. Returns the
+        HTTP status and the response body so the caller can assert ``200`` and
+        magic-byte-check the content (GitLab serves every upload as
+        ``application/octet-stream``, so the content-type header proves nothing).
+        Returns ``(0, b"")`` when there is no token.
+        """
+        if not self.token:
+            return 0, b""
+        response = httpx.get(
+            f"{self.base_url}/projects/{project_id}/uploads/{secret}/{filename}",
+            headers=self._headers(),
+            timeout=30.0,
+        )
+        return response.status_code, response.content
+
     def graphql(self, query: str, variables: dict[str, object] | None = None) -> dict[str, object] | None:
         if not self.token:
             return None
