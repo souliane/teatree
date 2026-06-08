@@ -234,6 +234,8 @@ class CodeHostBackend(Protocol):
 
     def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification: ...  # pragma: no branch
 
+    def repo_for_issue_url(self, issue_url: str) -> str: ...  # pragma: no branch
+
     def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch

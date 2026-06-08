@@ -145,6 +145,40 @@ class TestAuthPassthroughIntoContainer:
         return command[index - 1 : index + 1]
 
 
+class TestDockerResolvesTokenFromPassForSdkLane:
+    """Local ``--backend sdk --docker`` auto-resolves the OAuth token from pass.
+
+    The container authenticates from the host's ``CLAUDE_CODE_OAUTH_TOKEN`` via
+    the ``-e`` pass-through. When the operator has NOT exported it, the docker
+    dispatcher resolves it from the ``pass`` store and exports it into the parent
+    env BEFORE ``_auth_passthrough_flags()`` is computed, so the ``-e`` flag is
+    emitted and the token reaches the container — ``--backend sdk --docker`` just
+    works. The free / subscription lane must not read the secret store.
+    """
+
+    def _run(self, args: list[str], env: dict[str, str], pass_token: str) -> list[str]:
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.os.environ", env),
+            patch("teatree.eval.auth.os.environ", env),
+            patch("teatree.eval.auth.read_pass", return_value=pass_token) as read_pass,
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(args)
+            self.read_pass = read_pass
+        return streamed.call_args.args[0]
+
+    def test_sdk_lane_exports_pass_token_so_it_is_forwarded(self) -> None:
+        command = self._run(["run", "--backend", "sdk", "--require-executed"], env={}, pass_token="pass-tok")
+        index = command.index("CLAUDE_CODE_OAUTH_TOKEN")
+        assert command[index - 1 : index + 1] == ["-e", "CLAUDE_CODE_OAUTH_TOKEN"]
+
+    def test_free_only_lane_does_not_read_pass(self) -> None:
+        self._run(["all", "--free-only"], env={}, pass_token="pass-tok")
+        self.read_pass.assert_not_called()
+
+
 class TestAuthPassthroughFlags:
     def test_emits_e_varname_pairs_for_present_vars_only(self) -> None:
         with patch(f"{_MODULE}.os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "x", "ANTHROPIC_API_KEY": "y"}):

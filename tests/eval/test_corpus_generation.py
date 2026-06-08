@@ -74,6 +74,41 @@ def test_scenario_names_are_unique() -> None:
     assert len(names) == len(set(names))
 
 
+class TestAgentSectionsEmission:
+    @staticmethod
+    def _scenario(*, agent_sections: tuple[str, ...] = ()) -> Scenario:
+        from scripts.eval.corpus_gen.model import Call, match, positive  # noqa: PLC0415
+
+        return Scenario(
+            name="scoped",
+            scenario="a scoped scenario",
+            agent_path="skills/rules/SKILL.md",
+            prompt="do the thing",
+            expects=(
+                positive(
+                    match("Bash", "command", "x"),
+                    pass_call=Call(tool="Bash", args={"command": "x here"}),
+                    fail_call=Call(tool="Bash", args={"command": "nope"}),
+                ),
+            ),
+            agent_sections=agent_sections,
+        )
+
+    def test_agent_sections_renders_a_yaml_list_the_loader_accepts(self, tmp_path: Path) -> None:
+        from scripts.eval.corpus_gen.model import scenario_yaml  # noqa: PLC0415
+
+        scenario = self._scenario(agent_sections=("Background Long Operations (Non-Negotiable)",))
+        spec_path = tmp_path / "scoped.yaml"
+        spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
+        spec = load_eval_yaml(spec_path)[0]
+        assert spec.agent_sections == ("Background Long Operations (Non-Negotiable)",)
+
+    def test_no_agent_sections_omits_the_field(self) -> None:
+        from scripts.eval.corpus_gen.model import scenario_yaml  # noqa: PLC0415
+
+        assert "agent_sections" not in scenario_yaml(self._scenario())
+
+
 @pytest.mark.parametrize("scenario", ALL_SCENARIOS, ids=lambda s: s.name)
 class TestDeclarationIsAntiVacuous:
     def test_pass_fixture_grades_green(self, scenario: Scenario, tmp_path: Path) -> None:

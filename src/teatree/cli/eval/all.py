@@ -13,6 +13,7 @@ import dataclasses
 import sys
 import time
 from collections.abc import Callable, Iterable
+from itertools import starmap
 from pathlib import Path
 
 import typer
@@ -22,11 +23,13 @@ from rich.table import Table
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
+from teatree.cli.eval.verdict import LaneResult, print_verdict
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import CoverageReport, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
+from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.transcript_conformance import InvariantResult
@@ -57,24 +60,6 @@ def build_scenarios_table(specs: list[EvalSpec]) -> Table:
             str(len(spec.matchers)),
         )
     return table
-
-
-@dataclasses.dataclass(frozen=True)
-class LaneResult:
-    """One eval lane's outcome in the unified ``t3 eval all`` summary."""
-
-    name: str
-    cost: str
-    passed: bool
-    skipped: bool
-    detail: str
-    duration_s: float = 0.0
-
-    @property
-    def status(self) -> str:
-        if self.skipped:
-            return "SKIP"
-        return "PASS" if self.passed else "FAIL"
 
 
 def trigger_lane(report: TriggerQAReport) -> LaneResult:
@@ -137,7 +122,9 @@ def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
     )
 
 
-def run_ai_lane(specs: list[EvalSpec], *, backend: str, target_dir: Path) -> LaneResult:
+def run_ai_lane(
+    specs: list[EvalSpec], *, backend: str, target_dir: Path, parallel: int = DEFAULT_PARALLEL
+) -> LaneResult:
     try:
         runner = make_runner(backend, transcript_dir=target_dir)
     except UnknownBackendError as exc:
@@ -146,7 +133,8 @@ def run_ai_lane(specs: list[EvalSpec], *, backend: str, target_dir: Path) -> Lan
     if isinstance(runner, SubscriptionTranscriptRunner) and not _any_transcript_present(specs, runner):
         _emit_subscription_recipe(specs, target_dir)
         return _ai_lane_result([], backend=backend, graded=False)
-    results = [evaluate(spec, runner.run(spec)) for spec in specs]
+    runs = run_specs(runner, specs, parallel=parallel)
+    results = list(starmap(evaluate, zip(specs, runs, strict=True)))
     return _ai_lane_result(results, backend=backend, graded=True)
 
 
@@ -164,6 +152,13 @@ def _emit_subscription_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
     )
 
 
+#: One-line, plain-language instruction for enabling the AI behavioural lane.
+AI_LANE_SETUP_HINT = (
+    "no in-session transcripts; run `t3 eval capture-subagent` "
+    "(see /t3:running-evals) or use `--backend sdk` with an API key"
+)
+
+
 def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool) -> LaneResult:
     if not graded:
         return LaneResult(
@@ -171,7 +166,8 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
             cost="subscription",
             passed=True,
             skipped=True,
-            detail="no transcripts — see /t3:running-evals to produce them in-session",
+            detail="not run — no transcripts to grade",
+            setup_hint=AI_LANE_SETUP_HINT,
         )
     executed = [r for r in results if not r.skipped]
     failed = sum(1 for r in executed if not r.passed)
@@ -182,6 +178,7 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
         passed=failed == 0,
         skipped=not executed,
         detail=f"{len(executed)} graded, {failed} failed, {len(results) - len(executed)} skipped",
+        setup_hint=AI_LANE_SETUP_HINT if not executed else None,
     )
 
 
@@ -213,16 +210,23 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
     table.add_column("Detail")
     for lane in lanes:
         color = "yellow" if lane.skipped else ("green" if lane.passed else "red")
-        table.add_row(lane.name, lane.cost, f"[{color}]{lane.status}[/{color}]", lane.detail)
+        detail = f"{lane.detail} ({lane.setup_hint})" if lane.needs_setup else lane.detail
+        table.add_row(lane.name, lane.cost, f"[{color}]{lane.status}[/{color}]", detail)
     return table
 
 
-def _full_suite_docker_passthrough(*, backend: str, free_only: bool, html_path: Path | None) -> list[str]:
+def _full_suite_docker_passthrough(
+    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL, html_path: Path | None = None
+) -> list[str]:
     passthrough = ["all"]
     if free_only:
         passthrough.append("--free-only")
     if backend != SUBSCRIPTION_BACKEND:
         passthrough += ["--backend", backend]
+    if strict:
+        passthrough.append("--strict")
+    if parallel != DEFAULT_PARALLEL:
+        passthrough += ["--parallel", str(parallel)]
     if html_path is not None:
         passthrough += ["--html", str(html_path)]
     return passthrough
@@ -235,8 +239,15 @@ def _timed(build: Callable[[], LaneResult]) -> LaneResult:
     return dataclasses.replace(lane, duration_s=time.monotonic() - started)
 
 
-def run_full_suite(
-    *, backend: str, transcript_dir: Path | None, free_only: bool, docker: bool, html_path: Path | None = None
+def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` / `t3 eval all` flag. The arg list IS the CLI contract.
+    *,
+    backend: str,
+    transcript_dir: Path | None,
+    free_only: bool,
+    docker: bool,
+    strict: bool,
+    parallel: int = DEFAULT_PARALLEL,
+    html_path: Path | None = None,
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
@@ -248,11 +259,21 @@ def run_full_suite(
     transcript is in scope (a missing run is not a violation). The AI lane grades
     subscription-produced transcripts when present and NEVER silently shells the
     metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
+    ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
     ``html_path`` writes a self-contained whole-suite HTML report (CI artifact).
-    A SKIP never fails the run; any real FAIL exits non-zero (fail-loud).
+
+    The run always ends with a plain-language verdict (:func:`build_verdict`) a
+    non-expert can read: ``✅ ALL GOOD`` / ``❌ PROBLEMS FOUND`` / a ``✅`` for the
+    deterministic part plus a ``⚠️ NOT RUN … not yet validated`` for any lane that
+    was skipped because it needs setup (the AI lane with no transcripts / no key).
+    A real FAIL always exits non-zero (fail-loud). A setup-skip stays exit 0 by
+    default (the clarity is in the verdict text, not a confusing non-zero); pass
+    ``--strict`` to make a setup-skipped lane exit non-zero for CI use.
     """
     if docker:
-        passthrough = _full_suite_docker_passthrough(backend=backend, free_only=free_only, html_path=html_path)
+        passthrough = _full_suite_docker_passthrough(
+            backend=backend, free_only=free_only, strict=strict, parallel=parallel, html_path=html_path
+        )
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
         except DockerUnavailableError as exc:
@@ -268,11 +289,16 @@ def run_full_suite(
         _timed(lambda: transcript_replay_lane(replay_transcript_for_all())),
     ]
     if not free_only:
-        lanes.append(_timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir)))
+        lanes.append(
+            _timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
+        )
     Console().print(build_summary_table(lanes))
+    print_verdict(lanes)
     if html_path is not None:
         _write_html_report(lanes, html_path)
-    if any(not lane.passed and not lane.skipped for lane in lanes):
+    real_failure = any(not lane.passed and not lane.skipped for lane in lanes)
+    strict_failure = strict and any(lane.needs_setup for lane in lanes)
+    if real_failure or strict_failure:
         sys.exit(1)
 
 

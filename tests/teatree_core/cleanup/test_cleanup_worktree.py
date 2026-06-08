@@ -281,7 +281,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
             pytest.raises(RuntimeError, match="unsynced commit"),
         ):
             cleanup_worktree(wt)
@@ -316,10 +316,11 @@ class TestCleanupWorktree(TestCase):
         mock_classify.return_value = BranchClassification(
             genuinely_ahead=[BranchCommit(sha="abc123", subject="retro: post-merge docs", is_merge=False)]
         )
-        mock_git.check.return_value = True  # git diff --quiet returns 0 → tree-equal
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"):
+        # The squash-tree match (PR merge commit tree == branch tip) is the
+        # safe-to-remove signal — control it at cleanup's call site.
+        with patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=True):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
@@ -349,7 +350,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"),
+            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value="squash123"),
             pytest.raises(RuntimeError, match="unsynced commit"),
         ):
             cleanup_worktree(wt)
@@ -413,7 +414,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"),
+            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value="squash123"),
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True),
         ):
             cleanup_worktree(wt)
@@ -450,7 +451,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
             pytest.raises(RuntimeError, match="unsynced commit"),
         ):
@@ -639,7 +640,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
             pytest.raises(RuntimeError, match="unsynced commit"),
         ):
             cleanup_worktree(wt, strict_hygiene=True)

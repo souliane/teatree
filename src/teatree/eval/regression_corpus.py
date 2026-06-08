@@ -28,6 +28,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from teatree.eval.regression_corpus_e2e import (
+    check_e2e_evidence_embeds_claimable_relative_ref,
+    check_e2e_evidence_uploads_to_note_project,
+)
 from teatree.eval.regression_corpus_fixtures import (
     StubBackend,
     seed_repo_behind_but_clean,
@@ -438,50 +442,6 @@ def _check_mr_description_first_line_validated() -> bool:
     return any("first line" in err.lower() for err in rejected) and accepted == []
 
 
-def _check_e2e_evidence_embeds_claimable_relative_ref() -> bool:
-    """#2165: the e2e-evidence embed uses the CLAIMABLE relative /uploads ref.
-
-    GitLab claims (and renders) an upload only when the SAVED note markdown
-    carries the relative ``/uploads/<secret>/<file>`` reference its scanner
-    recognises. PR #2165 embedded the ABSOLUTE
-    ``https://<host>/-/project/<id>/uploads/...`` form directly, which the
-    scanner does NOT recognise → the upload is never claimed → every browser
-    route 404s (broken image + dead video). The fixed real path
-    (:func:`teatree.backends.gitlab.uploads.verify_upload`, the single source of
-    the embedded reference that ``_verified_embed`` wraps as ``![label](ref)``)
-    must:
-    * choose the relative ``/uploads/<secret>/<file>`` reference, and
-    * NEVER choose an absolute ``/-/project/`` or any ``https://`` upload URL.
-
-    Anti-vacuity: restore the absolute-embed form (embed ``full_path`` or an
-    ``https://`` upload URL) in ``verify_upload`` and this check goes RED.
-    """
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.backends.gitlab import uploads as _uploads  # noqa: PLC0415
-
-    upload = {
-        "url": "/uploads/deadbeefcafe/shot.png",
-        "full_path": "/-/project/42/uploads/deadbeefcafe/shot.png",
-        "markdown": "![shot](/uploads/deadbeefcafe/shot.png)",
-    }
-    # A real GitLabAPI client (stubbed transport): the 200 + PNG magic bytes
-    # pass the existence check, so the embedded ref is whatever the REAL
-    # verify_upload chose — the assertion is on that choice.
-    client = MagicMock()
-    client.base_url = "https://gitlab.com/api/v4"
-    client.fetch_upload.return_value = (200, b"\x89PNG\r\n\x1a\n" + b"rest")
-
-    verification = _uploads.verify_upload(client, project=None, upload=upload)
-    embed = f"![before]({verification.embed_url})"
-    return (
-        verification.ok
-        and "](/uploads/deadbeefcafe/shot.png)" in embed
-        and "/-/project/" not in embed
-        and "https://" not in embed
-    )
-
-
 _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="branch-currency §940 (conflict-only, never behind-only)",
@@ -571,7 +531,16 @@ _CHECKS: tuple[RegressionCheck, ...] = (
             "_verified_embed embeds the relative /uploads/<secret>/<file> reference GitLab claims on "
             "save; never the absolute /-/project/ or any https:// upload URL"
         ),
-        predicate=_check_e2e_evidence_embeds_claimable_relative_ref,
+        predicate=check_e2e_evidence_embeds_claimable_relative_ref,
+    ),
+    RegressionCheck(
+        failure_class="e2e-evidence uploads to the note's own project, not a 2nd repo",
+        origin="https://github.com/souliane/teatree/pull/2181",
+        invariant=(
+            "post_evidence_comment uploads every artifact to repo_for_issue_url(issue_url) — the note's "
+            "own project — never the manifest's second/CI repo, so the note's /uploads refs resolve"
+        ),
+        predicate=check_e2e_evidence_uploads_to_note_project,
     ),
 )
 

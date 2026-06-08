@@ -1,7 +1,7 @@
 """Whole-suite HTML report for a ``t3 eval`` run (#280).
 
 The terminal `t3 eval` table is ephemeral; CI needs a human-readable artifact.
-This renders the run's lane outcomes (the same :class:`~teatree.cli.eval.all.LaneResult`
+This renders the run's lane outcomes (the same :class:`~teatree.cli.eval.verdict.LaneResult`
 data the terminal table is built from) to a self-contained HTML file — inline
 CSS, no external assets — with a plain-language final verdict at the top so a
 non-expert can read "is this good?" at a glance, then the lane table
@@ -10,16 +10,17 @@ non-expert can read "is this good?" at a glance, then the lane table
 Every run-derived value is HTML-escaped so a lane detail string (which can carry
 a transcript fragment) can never inject markup.
 
-``build_suite_verdict`` is the plain-language verdict. It mirrors PR #2182's
-``cli/eval/verdict.build_verdict`` shape (three honest outcomes) but is computed
-from the on-main ``LaneResult`` (which has no ``setup_hint`` yet). When #2182
-merges, the two collapse to one helper.
+``build_suite_verdict`` is the report's plain-language verdict. It mirrors
+``cli/eval/verdict.build_verdict``'s three honest outcomes but is intentionally
+distinct: the report NAMES any skipped lane (so the artifact never reads as
+fully validated when a benign no-work skip is present), whereas the terminal
+verdict only flags a *setup*-skip. Kept separate by design, not merged.
 """
 
 from collections.abc import Sequence
 from html import escape
 
-from teatree.cli.eval.all import LaneResult
+from teatree.cli.eval.verdict import LaneResult
 
 _STYLE = """
 :root { color-scheme: light dark; }

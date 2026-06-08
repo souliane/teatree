@@ -303,3 +303,29 @@ class TestGateSkipsDestination:
         cfg = _config(tmp_path, ["internalcorp"])
         cmd = f'gh pr create -R internalcorp/private-svc --body "ok" && {tail}'
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            "gh api repos/souliane/teatree/issues",
+            "glab api projects/souliane%2Fteatree/issues",
+            "gh api repos/souliane/teatree/issues --method GET",
+            "glab api projects/42/merge_requests -X GET",
+        ],
+        ids=["gh-get", "glab-get", "gh-method-get", "glab-x-get"],
+    )
+    def test_read_only_api_chain_stays_skipped(self, tmp_path: Path, read: str) -> None:
+        # A read-only ``gh``/``glab api`` GET posts NO body, so it can never leak
+        # content -- regardless of the repo its URL names. Chained after a
+        # provably-internal post it must stay skip-safe, not over-block the whole
+        # command on the bare ``api`` word (#1530 over-block).
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = f'gh pr create -R internalcorp/private-svc --body "ok" && {read}'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_api_write_chain_still_fails_closed(self, tmp_path: Path) -> None:
+        # Leak guard: a chained ``api`` WRITE carries a body to an arbitrary
+        # endpoint, so a leading internal post must NOT let it skip the leak scan.
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = "gh pr create -R internalcorp/private-svc --body ok && gh api repos/souliane/teatree/issues -f body=x"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False

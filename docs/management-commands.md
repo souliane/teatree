@@ -109,6 +109,21 @@ entirely from `TicketTransition` + `TaskAttempt` + per-worktree `git log`.
 | `generate` | `--days`, `--since` | dict | Cross-references phase changes and agent runs in the window; returns `{since, yesterday, blockers, markdown}` |
 | `stale` | `--days` | list of dicts | Tickets with no `TaskAttempt`/`TicketTransition` activity past the threshold (same query as the `stale_tickets` scanner) |
 
+## `mr_reminder`
+
+Cross-repo "my open MRs" Slack reminder. Lists every open MR/PR the user
+authors across all repos one code-host token can see, routes each to a
+Slack channel via the `[mr_reminder]` repo→channel map, and assembles one
+message per channel. Assembly + routing are pure (`teatree.core.mr_reminder`);
+the per-channel post routes through the on-behalf egress chokepoint
+(`OnBehalfSlackEgress.post`) — a reminder channel is a colleague surface, so it is
+gated + audited like any on-behalf post.
+
+| Subcommand | Arguments | Returns | Description |
+|------------|-----------|---------|-------------|
+| `preview` | `--header` | dict | Assembles the per-channel reminder read-only (no Slack post); returns `{total, channels:[{channel, count, text}], unrouted}` |
+| `send` | `--header` | dict | Posts one message per routed channel; returns `{total, posted, failed, unrouted}` (exit 1 if any post fails) |
+
 ## `ticket`
 
 Ticket state management.

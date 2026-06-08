@@ -174,6 +174,19 @@ def segment_is_api_write(words: list[str]) -> bool:
     return segment_is_api_call(words) and _api_effective_method(words) not in _API_READ_METHODS
 
 
+def segment_is_api_read(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``gh``/``glab api`` call whose method only READS.
+
+    The complement of :func:`segment_is_api_write` over the ``api`` surface: a
+    call whose effective method is ``GET``/``HEAD`` (``gh api user``, ``gh api
+    repos/o/r/issues --method GET``, ``glab api projects/42/issues``) posts NO
+    request body, so it cannot leak content onto a public surface and is not a
+    publish the gates must scan or fail-closed on. A non-``api`` segment is
+    neither a read nor a write.
+    """
+    return segment_is_api_call(words) and _api_effective_method(words) in _API_READ_METHODS
+
+
 def segment_is_git_commit_publish(words: list[str]) -> bool:
     """Return True iff ``words`` is a ``git [global-flags] commit`` with a body flag.
 

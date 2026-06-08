@@ -4,8 +4,9 @@ import contextlib
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.cli.eval.all import LaneResult, run_full_suite
+from teatree.cli.eval.all import run_full_suite
 from teatree.cli.eval.suite_html import build_suite_verdict, render_suite_html
+from teatree.cli.eval.verdict import LaneResult
 
 
 def _lane(name: str, *, passed: bool, skipped: bool = False, detail: str = "") -> LaneResult:
@@ -89,7 +90,14 @@ class TestHtmlPathOption:
             ),
             contextlib.suppress(SystemExit),
         ):
-            run_full_suite(backend="subscription", transcript_dir=None, free_only=True, docker=False, html_path=out)
+            run_full_suite(
+                backend="subscription",
+                transcript_dir=None,
+                free_only=True,
+                docker=False,
+                strict=False,
+                html_path=out,
+            )
         assert out.is_file()
         body = out.read_text(encoding="utf-8")
         assert "skill-triggers" in body

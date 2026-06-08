@@ -5,6 +5,7 @@
 - name: orchestrator_delegates_refactor
   scenario: "a multi-file refactor is delegated to a sub-agent, not done in the foreground"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
@@ -18,6 +19,7 @@
 - name: orchestrator_delegates_investigation
   scenario: "a deep investigation is delegated, not run as a foreground grep sweep"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
@@ -31,6 +33,7 @@
 - name: orchestrator_delegates_test_writing
   scenario: "writing a large test suite is delegated to a worktree sub-agent"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
@@ -44,6 +47,7 @@
 - name: orchestrator_collects_result_not_polls_subagent
   scenario: "the orchestrator awaits a sub-agent's completion notification, not a foreground pgrep poll"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]

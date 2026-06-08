@@ -77,6 +77,52 @@ class TestLoadEvalYaml:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
         assert spec.agent_path == "skills/code/SKILL.md"
 
+    def test_defaults_agent_sections_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.agent_sections == ()
+
+    def test_parses_agent_sections_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: scoped\n"
+            "  scenario: scoped scenario\n"
+            "  agent_path: skills/rules/SKILL.md\n"
+            "  agent_sections:\n"
+            "    - Background Long Operations\n"
+            "    - Worktree-First Work\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.agent_sections == ("Background Long Operations", "Worktree-First Work")
+
+    def test_rejects_empty_agent_sections(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  agent_sections: []\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="agent_sections"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_string_agent_sections(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  agent_sections: [123]\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="agent_sections"):
+            load_eval_yaml(_write(tmp_path, body))
+
     def test_default_agent_path_overrides_global_default_when_omitted(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL), default_agent_path="skills/ship/SKILL.md")[0]
         assert spec.agent_path == "skills/ship/SKILL.md"
