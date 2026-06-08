@@ -84,14 +84,15 @@ def _is_config_error(combined: str) -> bool:
     return any(m in combined for m in _CONFIG_ERROR_MARKERS)
 
 
-def _migrate_runner_prefix(repo: Path) -> list[str]:
+def runner_prefix(repo: Path) -> list[str]:
     """Build the interpreter prefix that runs ``python`` from *repo*'s environment.
 
-    Pipenv repos (see :func:`_is_pipenv_repo`) resolve through ``pipenv run``
-    with ``PIPENV_PIPFILE`` pinned to *repo*'s ``Pipfile``, so pipenv resolves
-    *repo*'s populated venv regardless of the subprocess cwd. Everything else
-    keeps the uv path: ``uv --directory <repo> run`` auto-isolates the repo's
-    locked environment.
+    The SOLE site that emits a ``manage.py`` interpreter prefix (migrate +
+    overlay ``managepy`` / ``db_worker`` route here) so the pipenv-vs-uv
+    detection lives in one place; a hand-rolled second prefix silently diverges
+    (souliane/teatree#1976, #1973; pinned by ``test_runner_prefix_chokepoint``).
+    Pipenv repos (:func:`_is_pipenv_repo`) use ``pipenv run`` with
+    ``PIPENV_PIPFILE`` pinned (cwd-independent); else ``uv --directory <repo> run``.
     """
     if _is_pipenv_repo(repo):
         return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
@@ -324,7 +325,7 @@ class DjangoDbImporter:
         """
         if self._migrate_via_docker and self.cfg.dockerized_migrate is not None:
             return self.cfg.dockerized_migrate(manage_args, run_env)
-        runner = _migrate_runner_prefix(Path(self.cfg.main_repo_path))
+        runner = runner_prefix(Path(self.cfg.main_repo_path))
         return run_allowed_to_fail(
             [*runner, *manage_args], cwd=self.cfg.main_repo_path, env=run_env, expected_codes=None
         )
@@ -644,5 +645,6 @@ __all__ = [
     "DjangoDbImporter",
     "django_db_import",
     "prune_dslr_snapshots",
+    "runner_prefix",
     "validate_dump",
 ]
