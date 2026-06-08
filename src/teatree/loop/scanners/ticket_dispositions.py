@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
+from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase
@@ -154,6 +155,14 @@ class TicketDispositionScanner:
                 continue
             try:
                 issue = host.get_issue(ticket.issue_url)
+            except IssueNotFoundError:
+                logger.info(
+                    "Remote issue permanently gone (HTTP 404) for ticket %s (%s); marking remote_missing",
+                    ticket.pk,
+                    ticket.issue_url,
+                )
+                ticket.mark_remote_missing()
+                continue
             except Exception:  # noqa: BLE001
                 logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
                 continue
@@ -184,7 +193,11 @@ class TicketDispositionScanner:
 
     def _candidate_tickets(self) -> Iterable["Ticket"]:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-        qs = ticket_model.objects.filter(state__in=_DISPOSITIONABLE_STATES).exclude(issue_url="")
+        qs = (
+            ticket_model.objects.filter(state__in=_DISPOSITIONABLE_STATES)
+            .exclude(issue_url="")
+            .filter(remote_missing=False)
+        )
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
         return qs.only("id", "issue_url", "state", "overlay")

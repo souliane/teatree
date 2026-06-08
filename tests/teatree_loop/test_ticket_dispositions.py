@@ -5,6 +5,7 @@ from typing import Any
 
 from django.test import TestCase
 
+from teatree.backends.errors import IssueNotFoundError
 from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
@@ -18,6 +19,10 @@ class _Host:
     user: str = "alice"
     issues_by_url: dict[str, RawAPIDict] = field(default_factory=dict)
     get_issue_calls: list[str] = field(default_factory=list)
+    # URLs in this set raise ``IssueNotFoundError`` (simulates a 404 from the forge).
+    not_found_urls: set[str] = field(default_factory=set)
+    # URLs in this set raise a generic ``RuntimeError`` (simulates a transient 5xx / timeout).
+    transient_error_urls: set[str] = field(default_factory=set)
 
     def current_user(self) -> str:
         return self.user
@@ -56,6 +61,11 @@ class _Host:
 
     def get_issue(self, issue_url: str) -> RawAPIDict:
         self.get_issue_calls.append(issue_url)
+        if issue_url in self.not_found_urls:
+            raise IssueNotFoundError(issue_url)
+        if issue_url in self.transient_error_urls:
+            msg = "Connection timeout fetching " + issue_url
+            raise RuntimeError(msg)
         return self.issues_by_url.get(issue_url, {"error": "not found"})
 
 
@@ -401,3 +411,62 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         disposition = next(j.scanner for j in jobs if j.scanner.name == "ticket_dispositions")
         assert isinstance(disposition, TicketDispositionScanner)
         assert disposition.identity_alias_groups == (("explicit", "group"),)
+
+
+class TicketDispositionRemoteMissingTests(TestCase):
+    """#1875 — scanner must stop re-fetching tickets whose remote issue returned HTTP 404.
+
+    Two branches are both tested:
+
+    404 branch: ``IssueNotFoundError`` from the host sets ``ticket.remote_missing``
+    to ``True`` on first scan, and the ticket is excluded from the next scan
+    (``get_issue`` is NOT called again).
+
+    Transient branch: a generic ``RuntimeError`` (simulating 5xx / timeout) leaves
+    ``ticket.remote_missing`` ``False``, and the ticket IS re-fetched on the next scan.
+
+    The anti-vacuous guarantee: reverting the ``IssueNotFoundError`` catch in the scanner
+    makes the 404-branch test go RED; reverting the ``remote_missing`` filter in
+    ``_candidate_tickets`` makes the re-fetch assertions go RED.
+    """
+
+    OVERLAY = "acme"
+    URL_404 = "https://example.com/issues/404"
+    URL_TRANSIENT = "https://example.com/issues/500"
+
+    def _scanner(self, host: _Host) -> TicketDispositionScanner:
+        return TicketDispositionScanner(host=host, ready_labels=(), overlay_name=self.OVERLAY)
+
+    def test_404_sets_remote_missing_and_ticket_is_not_refetched(self) -> None:
+        """A definitive 404 marks the ticket and stops future fetches."""
+        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL_404, state=Ticket.State.STARTED)
+        host = _Host(not_found_urls={self.URL_404})
+
+        # First scan — should mark the ticket remote_missing.
+        self._scanner(host).scan()
+
+        ticket.refresh_from_db()
+        assert ticket.remote_missing is True, "ticket.remote_missing should be True after a 404"
+        assert host.get_issue_calls == [self.URL_404], "get_issue should be called exactly once (on first scan)"
+
+        # Second scan — remote_missing ticket must be excluded from _candidate_tickets.
+        host.get_issue_calls.clear()
+        self._scanner(host).scan()
+        assert host.get_issue_calls == [], "get_issue must NOT be called again for a remote_missing ticket"
+
+    def test_transient_error_leaves_remote_missing_false_and_ticket_is_retried(self) -> None:
+        """A transient 5xx / timeout must NOT mark the ticket; it is retried next tick."""
+        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL_TRANSIENT, state=Ticket.State.STARTED)
+        host = _Host(transient_error_urls={self.URL_TRANSIENT})
+
+        # First scan — transient error; ticket must NOT be marked remote_missing.
+        self._scanner(host).scan()
+
+        ticket.refresh_from_db()
+        assert ticket.remote_missing is False, "ticket.remote_missing must stay False after a transient error"
+        assert host.get_issue_calls == [self.URL_TRANSIENT], "get_issue should be called once on first scan"
+
+        # Second scan — ticket must be retried (get_issue called again).
+        host.get_issue_calls.clear()
+        self._scanner(host).scan()
+        assert host.get_issue_calls == [self.URL_TRANSIENT], "get_issue must be called again after a transient error"
