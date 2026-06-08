@@ -17,9 +17,12 @@ Cost controls, by construction:
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,
     so a large suite cannot silently fan out into an unbounded bill.
 
-Like the runner, the judge call runs in a virgin environment (``--bare`` plus
-:func:`~teatree.eval.isolation.isolated_claude_env`) so the developer's personal
-context never reaches the grader. When ``claude`` is not on PATH the judge skips
+Like the runner, the judge call runs in a virgin environment via
+:func:`~teatree.eval.isolation.isolated_claude_env` plus the explicit
+``--settings`` / ``--strict-mcp-config`` flags so the developer's personal
+context never reaches the grader. It deliberately omits ``--bare`` for the same
+reason the runner does — ``--bare`` disables ``CLAUDE_CODE_OAUTH_TOKEN`` auth
+(the judge's only auth). When ``claude`` is not on PATH the judge skips
 (mirrors the runner's skip path) so CI and judge-less contributors are never
 blocked.
 """
@@ -135,7 +138,6 @@ class ClaudeJudge:
         return [
             binary,
             "-p",
-            "--bare",
             "--output-format",
             "text",
             "--max-turns",
