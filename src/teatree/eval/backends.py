@@ -35,6 +35,7 @@ on-disk files only, so the subscription lane never meters.
 from pathlib import Path
 from typing import Protocol
 
+from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.runner import ClaudePRunner
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
@@ -64,8 +65,12 @@ def make_runner(
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
-    ``"sdk"`` → the metered ``claude -p`` runner (CI, ``ANTHROPIC_API_KEY``).
-    ``"subscription"`` → the transcript-ingest runner (local, subscription).
+    ``"sdk"`` → the metered ``claude -p`` runner. Resolves
+    ``CLAUDE_CODE_OAUTH_TOKEN`` first (env wins for CI, else exports it from the
+    ``pass`` store for local) so the host runner's isolated-env copy and the
+    docker pass-through both carry it without a manual ``export``.
+    ``"subscription"`` → the transcript-ingest runner (local, subscription); it
+    never authenticates ``claude -p``, so it does not resolve the token.
 
     ``require_executed`` only affects the sdk runner: it arms the hard-error on a
     missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
@@ -73,6 +78,7 @@ def make_runner(
     pre-transcript all-skip is caught downstream by :func:`guard_executed`.
     """
     if backend == SDK_BACKEND:
+        ensure_oauth_token()
         return ClaudePRunner(max_turns_override=max_turns_override, require_executed=require_executed)
     if backend == SUBSCRIPTION_BACKEND:
         return SubscriptionTranscriptRunner(transcript_dir=transcript_dir or Path.cwd())

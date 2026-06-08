@@ -32,7 +32,16 @@ def _spec(name: str, *, model: str = "haiku") -> EvalSpec:
     )
 
 
-def _run(spec_name: str, *, tool_calls: tuple[EvalToolCall, ...] = (), is_error: bool = False) -> EvalRun:
+def _run(
+    spec_name: str,
+    *,
+    tool_calls: tuple[EvalToolCall, ...] = (),
+    is_error: bool = False,
+    cost_usd: float = 0.01,
+) -> EvalRun:
+    # cost_usd defaults to a non-zero value: sdk runs bill something by
+    # definition; the sdk_metered guard fires when total_cost_usd == 0, which
+    # would prevent persistence from running.  Stubs represent a metered call.
     return EvalRun(
         spec_name=spec_name,
         tool_calls=tool_calls,
@@ -41,6 +50,7 @@ def _run(spec_name: str, *, tool_calls: tuple[EvalToolCall, ...] = (), is_error:
         is_error=is_error,
         raw_stdout="",
         raw_stderr="",
+        cost_usd=cost_usd,
     )
 
 
