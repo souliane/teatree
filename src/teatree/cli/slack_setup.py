@@ -32,6 +32,7 @@ import re
 import time
 import webbrowser
 from pathlib import Path
+from typing import NoReturn
 
 import typer
 
@@ -370,7 +371,7 @@ def _migrate_token_ref(
     new_ref: str,
     *,
     skip_smoke_test: bool,
-) -> None:
+) -> NoReturn:
     """Copy tokens from *old_ref* slots to *new_ref* slots, rewrite the TOML, and smoke-test.
 
     Raises :class:`typer.Exit` (code 1) when either old-slot value is absent

@@ -218,7 +218,6 @@ def manifests_equivalent(a: SlackManifest, b: SlackManifest) -> bool:
 
 __all__ = [
     "_BOT_ONLY_SCOPES",
-    "_BOT_SCOPES",
     "_CONFIG_REFRESH_REF",
     "_CONFIG_TOKEN_REF",
     "_USER_SCOPES",
