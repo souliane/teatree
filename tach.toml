@@ -272,7 +272,7 @@ depends_on = []
 [[modules]]
 path = "teatree.settings"
 layer = "platform"
-depends_on = ["teatree.config", "teatree.paths"]
+depends_on = ["teatree.config", "teatree.paths", "teatree.timeouts"]
 
 [[modules]]
 path = "teatree.cli_reference"

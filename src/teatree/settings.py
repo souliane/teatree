@@ -6,6 +6,7 @@ Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_A
 
 from teatree.config import default_logging
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, seed_isolated_db
+from teatree.timeouts import CORE_DEFAULTS
 
 _DATA_DIR = DATA_DIR
 if DATA_DIR_AUTO_ISOLATED:
@@ -134,18 +135,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGGING = default_logging("teatree")
 
 # Operation timeouts (seconds).  0 = no timeout.
-# Override per-overlay via OverlayBase.get_timeouts() or per-user
-# via [teatree.timeouts] in ~/.teatree.toml.
-TEATREE_TIMEOUTS = {
-    "setup": 120,
-    "start": 60,
-    "db_import": 180,
-    "docker_compose_up": 60,
-    "docker_compose_build": 600,
-    "docker_compose_down": 30,
-    "provision_step": 120,
-    "pre_run_step": 60,
-}
+# Sourced from the canonical CORE_DEFAULTS registry in teatree.timeouts so the
+# two surfaces cannot drift; tests/test_timeouts.py::TestTimeoutRegistryParity
+# pins the binding. Override per-overlay via OverlayBase.get_timeouts() or
+# per-user via [teatree.timeouts] in ~/.teatree.toml.
+TEATREE_TIMEOUTS = dict(CORE_DEFAULTS)
 TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 — fixed agent-controlled path, not user input
 
 TASKS = {
