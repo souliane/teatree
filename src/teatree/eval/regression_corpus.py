@@ -535,7 +535,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
     ),
     RegressionCheck(
         failure_class="e2e-evidence uploads to the note's own project, not a 2nd repo",
-        origin="https://github.com/souliane/teatree/pull/PR_NUMBER",
+        origin="https://github.com/souliane/teatree/pull/2181",
         invariant=(
             "post_evidence_comment uploads every artifact to repo_for_issue_url(issue_url) — the note's "
             "own project — never the manifest's second/CI repo, so the note's /uploads refs resolve"
