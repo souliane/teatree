@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_findings_posted_inline_not_general-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Posting the whole review as one general MR-level note."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review post-comment my-org/my-repo 4120 \"Review of MR !4120. The sweep loop in src/teatree/core/sweep.py around line 88 reallocates the candidate list on every call; hoist the allocation. Otherwise the change looks fine.\""}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

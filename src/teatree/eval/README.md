@@ -410,6 +410,7 @@ class, where it is pinned, and the originating fix:
 | forge backend resolves by repo origin host, not token precedence | `regression_corpus` (`forge_from_remote`) | [#2085](https://github.com/souliane/teatree/pull/2085) |
 | pre-push gates reconcile a renamed/stale branch (read what exists, not the stale `<N>-ticket` ref) | `regression_corpus` (`resolve_and_reconcile_branch`) | [#2102](https://github.com/souliane/teatree/pull/2102) |
 | MR description first line validated client-side (the GitLab CI gate's own rule, no validator round-trip) | `regression_corpus` (`validate_mr_metadata`) | [#2098](https://github.com/souliane/teatree/pull/2098) |
+| review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `skills/review/evals.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`, co-located) | [#2173](https://github.com/souliane/teatree/issues/2173) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
