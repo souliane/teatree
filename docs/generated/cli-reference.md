@@ -3118,6 +3118,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 │ notify        Slack egress from the shell (#1030, #1750).                    │
+│ mr_reminder   Cross-repo "my open MRs" Slack reminder (TODO-276).            │
 │ retro         Retrospective enforcement tooling (#1573).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6202,6 +6203,49 @@ Usage: t3 teatree notify react [OPTIONS]
 │    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
 │                           credentials).                                      │
 │    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree mr_reminder`
+
+```
+Usage: t3 teatree mr_reminder [OPTIONS] COMMAND [ARGS]...
+
+ Cross-repo "my open MRs" Slack reminder (TODO-276).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ preview  Assemble the per-channel reminder read-only (no Slack post).        │
+│ send     Post the per-channel reminder to Slack (one message per routed      │
+│          channel).                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree mr_reminder preview`
+
+```
+Usage: t3 teatree mr_reminder preview [OPTIONS]
+
+ Assemble the per-channel reminder read-only (no Slack post).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --header        TEXT  Message header line. [default: Your open MRs]          │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree mr_reminder send`
+
+```
+Usage: t3 teatree mr_reminder send [OPTIONS]
+
+ Post the per-channel reminder to Slack (one message per routed channel).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --header        TEXT  Message header line. [default: Your open MRs]          │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

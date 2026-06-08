@@ -57,6 +57,7 @@ from teatree.config.settings import (
     _parse_excluded_skills,
     _parse_user_identity_aliases,
 )
+from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.config_speak import resolve_speak, speak_from_subtable
 from teatree.paths import DATA_DIR, get_data_dir
 
@@ -68,6 +69,7 @@ __all__ = [
     "Autonomy",
     "E2ERepo",
     "Mode",
+    "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
     "Speed",
@@ -102,6 +104,8 @@ __all__ = [
     "get_effective_settings",
     "load_config",
     "load_e2e_repos",
+    "mr_reminder_from_table",
+    "resolve_mr_reminder",
     "resolve_speak",
     "speak_from_subtable",
     "workspace_dir",
