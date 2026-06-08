@@ -12,7 +12,7 @@ from pathlib import Path
 
 from teatree.core.gates.open_questions_gate import OPEN_QUESTIONS_HINT
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _SHIP_SKILL = _REPO_ROOT / "skills" / "ship" / "SKILL.md"
 _CODE_SKILL = _REPO_ROOT / "skills" / "code" / "SKILL.md"
 
