@@ -15,6 +15,7 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils.module_loading import import_string
 
+import teatree.core.branch_classification as bc_mod
 import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
@@ -1140,6 +1141,10 @@ class TestWorkspaceCleanAll(TestCase):
                 mock_git.status_porcelain.return_value = ""
                 mock_git.unsynced_commits.return_value = []
                 mock_git.commits_absent_from_all_remotes.return_value = []
+                # The on-disk worktree's effective branch matches the DB slug
+                # (no drift) — the teardown resolves and deletes that real branch.
+                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
+                mock_git.current_branch.return_value = "ac-backend-80-ticket"
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
@@ -1452,6 +1457,12 @@ class TestWorkspaceCleanAll(TestCase):
                 # #706 data-loss guard passes; this test targets the stricter
                 # origin/main hygiene refusal on the frontend branch.
                 mock_git.commits_absent_from_all_remotes.return_value = []
+                # No drift: each on-disk worktree's effective branch is its DB
+                # slug. The hygiene classification runs against that real branch.
+                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
+                mock_git.current_branch.side_effect = lambda wt: (
+                    "ac-frontend-360-ticket" if str(stuck_wt_dir) == str(wt) else "ac-backend-360-ticket"
+                )
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
@@ -2455,7 +2466,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # The PR-merge-SHA probe returns the branch tip itself, so
             # `_branch_tree_matches_squash` (diff --quiet tip feature) is True
             # and the existing unsynced SKIP guard is bypassed.
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=tip):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=tip):
                 result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
 
             # DATA-LOSS ASSERTION: the unique commit must still exist.
@@ -2518,7 +2529,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # The PR's squash commit tree equals the feature tip tree by
             # construction, so `_branch_tree_matches_squash` is True and the
             # branch is correctly classified squash-merged regardless of SHA.
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
 
             branches = _git(work, "branch", "--format=%(refname:short)").split()
@@ -2546,7 +2557,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # Mock the PR squash commit (tree == feature tip) so the branch is
             # classified squash-merged via the tree match, not via an accidental
             # SHA collision — hermetic regardless of commit timestamps (#915).
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", {})
 
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
@@ -2636,7 +2647,7 @@ class TestPruneGoneRemoteWorktree(TestCase):
             _remote, work = _init_repo_with_remote(tmp)
             wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 cleaned = ws_cleanup_mod.prune_branches(str(work))
 
             assert not Path(wt_path).is_dir(), f"gone-remote worktree should be removed, got: {cleaned!r}"
@@ -2654,7 +2665,7 @@ class TestPruneGoneRemoteWorktree(TestCase):
             # Uncommitted change in the worktree → must be kept.
             (Path(wt_path) / "dirty.py").write_text("local edit\n", encoding="utf-8")
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 cleaned = ws_cleanup_mod.prune_branches(str(work))
 
             assert Path(wt_path).is_dir(), f"dirty worktree must be kept, got: {cleaned!r}"
@@ -2669,7 +2680,7 @@ class TestPruneGoneRemoteWorktree(TestCase):
             # A regenerable env cache is not real work — the worktree is clean.
             (Path(wt_path) / ".t3-env.cache").write_text("POSTGRES_USER=x\n", encoding="utf-8")
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 cleaned = ws_cleanup_mod.prune_branches(str(work))
 
             assert not Path(wt_path).is_dir(), (
@@ -2710,7 +2721,7 @@ class TestPruneGoneRemoteWorktree(TestCase):
             _git(Path(wt_path), "add", "extra.py")
             _git(Path(wt_path), "commit", "-q", "-m", "feat: extra unmerged work")
 
-            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
                 cleaned = ws_cleanup_mod.prune_branches(str(work))
 
             assert Path(wt_path).is_dir(), f"genuinely-ahead worktree must be kept, got: {cleaned!r}"
@@ -2744,7 +2755,7 @@ class TestPruneGoneRemoteWorktree(TestCase):
             wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
 
             with (
-                patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha),
+                patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha),
                 patch.object(git_mod, "worktree_remove", return_value=False),
             ):
                 result = ws_cleanup_mod._prune_gone_worktree(str(work), "feature", wt_path)
