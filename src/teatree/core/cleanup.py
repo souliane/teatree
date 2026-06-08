@@ -1,27 +1,32 @@
 """Shared worktree cleanup logic used by sync (auto-clean on merge) and workspace commands.
 
-The classifier below is the reason this module can be honest about squash-merges:
-``git log <branch> --not origin/main`` detects commits by SHA, but a squash-merge
-creates a new SHA on the default branch. Without subject-matching, every
-squash-merged branch looks "unsynced" and blocks cleanup. Comparing against
-``origin/main`` (not ``--remotes``) is essential — ``--remotes`` would also
-exclude the feature branch's own remote tracking ref, hiding commits that are
-pushed but not yet on main.
+The squash-merge-aware classification this module relies on lives in
+:mod:`teatree.core.branch_classification`; the data-loss guards and the
+worktree-teardown orchestration live here. The names re-exported below keep the
+import surface (``from teatree.core.cleanup import classify_branch_commits``,
+``cleanup_mod._branch_pr_is_merged``) stable for the management commands and the
+sync backends that funnel through this seam.
 """
 
-import json
 import logging
-import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 from teatree.config import load_config
 from teatree.core import prek_hook
+from teatree.core.branch_classification import (
+    BranchClassification,
+    BranchCommit,
+    _branch_pr_is_merged,
+    _branch_tree_matches_squash,
+    _pr_merge_commit_sha,
+    classify_branch_commits,
+    probe_host_cli,
+)
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
@@ -30,15 +35,23 @@ from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recove
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
-from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+from teatree.utils.run import CommandFailedError
+
+__all__ = [
+    "BranchClassification",
+    "BranchCommit",
+    "CleanupResult",
+    "_branch_pr_is_merged",
+    "_branch_tree_matches_squash",
+    "_pr_merge_commit_sha",
+    "classify_branch_commits",
+    "cleanup_worktree",
+    "probe_host_cli",
+]
 
 logger = logging.getLogger(__name__)
 
 
-_PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
-_RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
-_TYPE_PREFIX_RE = re.compile(r"^[a-z]+(?:\([^)]+\))?!?:\s*", re.IGNORECASE)
-_BRANCH_LOG_FIELDS = 3
 _SUBJECT_PREVIEW_LIMIT = 3
 
 
@@ -74,193 +87,74 @@ class CleanupResult:
 
 
 @dataclass(frozen=True)
-class BranchCommit:
-    """A commit on a branch that is not reachable from any remote by SHA."""
+class _EffectiveTarget:
+    """The worktree's ACTUAL teardown target, resolved from git — not the DB row.
 
-    sha: str
-    subject: str
-    is_merge: bool
+    ``Worktree.branch`` (the DB-recorded slug) can drift from the branch actually
+    checked out in the on-disk worktree: provisioning records the ticket slug
+    while a later checkout/rename inside the worktree leaves the slug ref pointing
+    elsewhere (or gone). Trusting the slug makes the data-loss probe interrogate
+    the wrong branch (missing the real unpushed work, or erroring with "unknown
+    revision") and makes ``branch -D`` no-op on a non-existent slug, leaving the
+    REAL branch dangling after its worktree is removed.
 
+    This resolves the truth at the teardown seam:
 
-@dataclass(frozen=True)
-class BranchClassification:
-    """Structured view of a branch's unsynced commits, split by disposition.
-
-    ``squash_merged`` — subject matches a commit on the target branch, so the
-    content is already integrated (typical squash-merge case, including the
-    ``relax:`` → ``feat:`` prefix rewrite).
-
-    ``merge_commits`` — commits with multiple parents (Merge branch 'main' into
-    feature). They carry no net content of their own and are safe to discard.
-
-    ``genuinely_ahead`` — everything else. The branch has work that does not
-    appear on the target, so removing it would lose content.
+    - ``ref`` is the revision to probe for unpushed work: the literal ``HEAD``
+        in the worktree dir when present (robust to drift AND detached HEAD), or
+        the DB slug in the main clone when the dir is gone.
+    - ``probe_repo`` is where to run the probe: the worktree dir when present
+        (``HEAD`` is meaningful there), else the main clone.
+    - ``branch_to_delete`` is the named branch to ``branch -D``: the real
+        checked-out branch when present and named, the DB slug as fallback, or
+        ``None`` when detached (no branch to delete).
+    - ``label`` is the branch/ref shown in refusal messages and forge probes.
     """
 
-    squash_merged: list[BranchCommit] = field(default_factory=list)
-    merge_commits: list[BranchCommit] = field(default_factory=list)
-    genuinely_ahead: list[BranchCommit] = field(default_factory=list)
+    ref: str
+    probe_repo: str
+    branch_to_delete: str | None
+    label: str
 
 
-def _canonicalize_subject(subject: str) -> str:
-    """Normalize a commit subject for cross-branch matching.
+def _effective_target(repo_main: str, wt_path: str, worktree: Worktree) -> _EffectiveTarget:
+    """Resolve the worktree's actual teardown target from git, falling back to the DB row.
 
-    Strips, in order: trailing ``(#NNN)`` (added on squash-merge), trailing
-    ``[flag] (ticket_url)`` (release-note suffix enforced by the PR-metadata
-    hook — present on the merged title but usually absent from the local
-    commit), and leading ``type(scope):`` so the ``relax:`` → ``feat(scope):``
-    rewrite still matches.
+    When ``wt_path`` is a present git worktree, the effective branch is
+    ``git -C <wt_path> rev-parse --abbrev-ref HEAD`` (``DETACHED_HEAD`` when
+    detached); the probe runs against ``HEAD`` in the worktree dir, which exactly
+    reflects what removal would orphan and is immune to a drifted DB slug. When
+    the dir is gone (worktree already removed, DB row lingering) — or the
+    branch read came back empty (a broken worktree git could not resolve) — the
+    only handle left is the DB ``Worktree.branch`` slug, probed in the main clone
+    — the pre-#706/#835 behaviour, preserved as the fallback.
     """
-    stripped = _PR_SUFFIX_RE.sub("", subject).strip()
-    stripped = _RELEASE_NOTE_SUFFIX_RE.sub("", stripped).strip()
-    stripped = _TYPE_PREFIX_RE.sub("", stripped).strip()
-    return stripped.lower()
-
-
-def classify_branch_commits(repo: str, branch: str, target: str = "origin/main") -> BranchClassification:
-    """Split the branch's unsynced commits into squash-merged / merge / genuinely-ahead buckets.
-
-    Runs two git log invocations: one to list branch commits not on any remote
-    (same as :func:`git.unsynced_commits`), one to fetch subjects on ``target``
-    for subject matching.
-    """
-    raw = git.run(
-        repo=repo,
-        args=["log", branch, "--not", target, "--format=%H%x00%P%x00%s"],
-    )
-    classification = BranchClassification()
-    if not raw.strip():
-        return classification
-
-    target_raw = git.run(repo=repo, args=["log", target, "--format=%s", "-n", "500"])
-    target_subjects = {_canonicalize_subject(line) for line in target_raw.splitlines() if line.strip()}
-    target_subjects.discard("")
-
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\x00", 2)
-        if len(parts) < _BRANCH_LOG_FIELDS:
-            continue
-        sha, parents, subject = parts
-        is_merge = len(parents.split()) > 1
-        commit = BranchCommit(sha=sha, subject=subject, is_merge=is_merge)
-        if is_merge:
-            classification.merge_commits.append(commit)
-        elif _canonicalize_subject(subject) in target_subjects:
-            classification.squash_merged.append(commit)
-        else:
-            classification.genuinely_ahead.append(commit)
-    return classification
-
-
-def _pr_merge_commit_sha(repo: str, branch: str) -> str:
-    """Return the SHA of the merge/squash commit for ``branch``'s merged PR, or ``""``.
-
-    Queries GitHub (``gh pr list``) and GitLab (``glab mr list``) for a merged
-    PR whose source branch matches. The merge commit's tree captures the
-    branch's net content at merge time — used by :func:`_branch_tree_matches_squash`
-    to distinguish post-merge follow-up commits already captured by the squash
-    from commits that add new content.
-
-    Returns ``""`` when neither CLI is available (sandbox, CI without auth) —
-    the caller falls back to subject-match classification.
-    """
-    sha = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "mergeCommit", "--limit", "1"],
-        repo,
-        lambda data: data[0]["mergeCommit"]["oid"],
-    )
-    if sha:
-        return sha
-    return probe_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        repo,
-        lambda data: data[0]["merge_commit_sha"],
+    effective = git.current_branch(wt_path) if Path(wt_path).is_dir() else ""
+    if effective:
+        detached = effective == git.DETACHED_HEAD
+        return _EffectiveTarget(
+            ref=git.DETACHED_HEAD,
+            probe_repo=wt_path,
+            branch_to_delete=None if detached else effective,
+            label=effective,
+        )
+    return _EffectiveTarget(
+        ref=worktree.branch,
+        probe_repo=repo_main,
+        branch_to_delete=worktree.branch,
+        label=worktree.branch,
     )
 
 
-def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, timeout: float = 30.0) -> str:
-    """Invoke a host CLI that may be missing, parse its JSON, extract the SHA.
-
-    Swallows ``OSError`` (missing binary, permission denied in sandboxes) and
-    JSON/key errors — both are legitimate "no merged PR found" outcomes.
-
-    ``timeout`` bounds the host CLI invocation (seconds): a hung ``gh``/``glab``
-    must not block ``clean-all`` or the loop tick. On expiry the
-    ``subprocess.TimeoutExpired`` is swallowed and ``""`` is returned — the same
-    fail-safe "not found / skip" value as every other failure path, so a timeout
-    can never produce a positive merged signal and never wrongly reaps work.
-    """
-    try:
-        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout)
-    except (OSError, TimeoutExpired):
-        return ""
-    if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:
-        return ""
-    try:
-        data = json.loads(result.stdout)
-        sha = extract(data) if data else ""
-    except (json.JSONDecodeError, IndexError, KeyError, TypeError):
-        return ""
-    return sha or ""
-
-
-def _branch_pr_is_merged(repo: str, branch: str) -> bool:
-    """Whether the forge canonically reports ``branch``'s PR/MR as merged (#1578).
-
-    The subject-match classifier and :func:`_branch_tree_matches_squash` both
-    break down for branches that diverged long before they were squash-merged:
-    the squash creates a new SHA on the default branch (so no subject matches and
-    the branch's own SHAs are absent from every remote) and the branch tip tree
-    no longer equals the squash commit tree (main moved on). Such a worktree is
-    fully merged yet looks ``genuinely_ahead`` / "commits on NO remote", so the
-    guards refuse it forever.
-
-    This asks the forge directly — the canonical truth, not a heuristic. A merged
-    PR/MR whose source branch matches ``branch`` means the work shipped, however
-    far the local branch has since diverged. GitHub marks a squash-merged PR
-    ``state=merged``; GitLab marks the MR ``merged`` — both are covered by the
-    same ``--state merged`` / ``--merged`` queries the squash-commit probe uses,
-    so this reuses :func:`probe_host_cli` (which swallows a missing ``gh``/``glab``
-    binary and any parse error as "not found").
-
-    **Fail-safe to skip.** Returns ``True`` only on a positive merged signal;
-    every uncertain outcome (no merged PR, CLI absent, probe/JSON failure) returns
-    ``False`` so the caller keeps the conservative refuse-and-report — ambiguity
-    never reaps real work.
-    """
-    found = probe_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
-        repo,
-        lambda data: str(data[0]["number"]),
-    )
-    if found:
-        return True
-    found = probe_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
-        repo,
-        lambda data: str(data[0]["iid"]),
-    )
-    return bool(found)
-
-
-def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
-    """Return ``True`` when the PR's merge commit has the same tree as the branch tip.
-
-    Post-merge follow-up commits (retro, docs) appear as ``genuinely_ahead``
-    because their subjects don't match the squash commit's final message.
-    When their cumulative effect is already captured in the squash tree, the
-    branch is safe to clean despite the unmatched subjects.
-    """
-    merge_sha = _pr_merge_commit_sha(repo, branch)
-    if not merge_sha:
-        return False
-    return git.check(repo=repo, args=["diff", "--quiet", merge_sha, branch])
-
-
-def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
+def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
     """Raise ``RuntimeError`` when the branch carries commits not on ``origin/main``.
+
+    Operates on ``target`` (the effective branch resolved from git), not the
+    possibly-drifted DB ``Worktree.branch`` slug. The ``origin/main``-relative
+    classification needs a named branch reachable from the main clone, so it runs
+    against the main clone using the effective label; a detached HEAD has no named
+    branch to classify and is skipped (the #706 data-loss guard already covered
+    its unpushed commits via the worktree-dir probe).
 
     Merge commits and squash-merged commits are ignored — only ``genuinely_ahead``
     work blocks cleanup. Two fallbacks run before refusing, both confirming the
@@ -272,22 +166,28 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     lists up to ``_SUBJECT_PREVIEW_LIMIT`` commit subjects so the caller can
     decide whether to push or abandon.
     """
-    unsynced = git.unsynced_commits(repo_main, worktree.branch)
+    branch = target.branch_to_delete
+    if branch is None:
+        # Detached HEAD: no named branch to classify against origin/main. The
+        # #706 unpushed guard already probed HEAD in the worktree dir, so any
+        # work-to-lose was caught there.
+        return
+    unsynced = git.unsynced_commits(repo_main, branch)
     if not unsynced:
         return
-    classification = classify_branch_commits(repo_main, worktree.branch)
+    classification = classify_branch_commits(repo_main, branch)
     if not classification.genuinely_ahead:
         return
-    if _branch_tree_matches_squash(repo_main, worktree.branch):
+    if _branch_tree_matches_squash(repo_main, branch):
         return
-    if _branch_pr_is_merged(repo_main, worktree.branch):
+    if _branch_pr_is_merged(repo_main, branch):
         return
     preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
     subjects = ", ".join(c.subject for c in preview)
     if len(classification.genuinely_ahead) > _SUBJECT_PREVIEW_LIMIT:
         subjects += ", …"
     msg = (
-        f"{worktree.repo_path} ({worktree.branch}): "
+        f"{worktree.repo_path} ({target.label}): "
         f"refused cleanup — {len(classification.genuinely_ahead)} unsynced commit(s) "
         f"not on origin/main: {subjects}. "
         "Push them to a new branch or pass force=True."
@@ -295,13 +195,19 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     raise RuntimeError(msg)
 
 
-def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
-    """Raise ``RuntimeError`` when the branch has commits on NO remote ref (#706).
+def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
+    """Raise ``RuntimeError`` when the worktree's tip has commits on NO remote ref (#706).
 
     The data-loss guard. The lifecycle FSM can read a teardown-eligible state
     (MERGED / shipped) while the branch was never actually pushed — async ship
     never drained (#707/#708). Removing the git worktree then destroys those
     commits irrecoverably once refs are pruned or ``git gc`` runs.
+
+    Probes ``target`` (the effective branch/HEAD resolved from git), not the
+    possibly-drifted DB ``Worktree.branch`` slug. When the worktree dir is
+    present it probes ``HEAD`` in the worktree dir itself — robust to DB drift
+    AND detached HEAD, and reflecting exactly what removal would orphan; when the
+    dir is gone it falls back to probing the slug in the main clone.
 
     This is intentionally distinct from :func:`_raise_if_genuinely_ahead`
     (squash-merge-aware, ``origin/main``-relative cleanup hygiene). A branch
@@ -310,7 +216,7 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
     ``refs/remotes/*`` block teardown. The error names the branch, the count,
     and up to ``_SUBJECT_PREVIEW_LIMIT`` short SHAs so the loss is loud.
 
-    **Fails closed.** If the probe itself errors (invalid/missing branch,
+    **Fails closed.** If the probe itself errors (invalid/missing ref,
     corrupt repo, any ``git log`` failure) it raises ``CommandFailedError``;
     we translate that into a refusal rather than proceeding, because an
     inconclusive probe means we cannot prove the commits are pushed.
@@ -318,30 +224,30 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
     **Canonical merged override (#1578).** A squash-merge creates a new SHA on
     the default branch and deletes the source ref, so the branch's own commits
     are absent from every remote even though the work shipped. Before refusing,
-    the forge is asked whether the branch's PR is merged; a positive answer is
-    the ground truth that the content is safe on the default branch, so teardown
-    proceeds. The check fails safe to skip — only a positive merged signal
-    overrides; any uncertainty keeps the refusal.
+    the forge is asked (by the named branch) whether its PR is merged; a positive
+    answer is the ground truth that the content is safe on the default branch, so
+    teardown proceeds. The check fails safe to skip — only a positive merged
+    signal overrides; any uncertainty keeps the refusal.
     """
     try:
-        unpushed = git.commits_absent_from_all_remotes(repo_main, worktree.branch)
+        unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
     except CommandFailedError as exc:
         msg = (
-            f"{worktree.repo_path} ({worktree.branch}): "
+            f"{worktree.repo_path} ({target.label}): "
             f"refused teardown — could not verify the branch is pushed "
             f"(git probe failed: {exc}). Push the branch or pass force=True to discard."
         )
         raise RuntimeError(msg) from exc
     if not unpushed:
         return
-    if _branch_pr_is_merged(repo_main, worktree.branch):
+    if target.branch_to_delete is not None and _branch_pr_is_merged(repo_main, target.branch_to_delete):
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
     shas = ", ".join(preview)
     if len(unpushed) > _SUBJECT_PREVIEW_LIMIT:
         shas += ", …"
     msg = (
-        f"{worktree.repo_path} ({worktree.branch}): "
+        f"{worktree.repo_path} ({target.label}): "
         f"refused teardown — {len(unpushed)} commit(s) on NO remote (data loss): "
         f"{shas}. Push the branch or pass force=True to discard."
     )
@@ -379,6 +285,12 @@ def _remove_git_worktree(
     """
     if not repo_main.is_dir():
         return [f"source repo missing at {repo_main}"]
+    # Resolve the teardown target from git ONCE, then operate on it throughout.
+    # ``Worktree.branch`` (the DB slug) can drift from the branch actually
+    # checked out in the worktree; trusting it makes the data-loss probe
+    # interrogate the wrong branch and makes ``branch -D`` no-op on a phantom
+    # slug, leaving the real branch dangling after its worktree is removed.
+    target = _effective_target(str(repo_main), wt_path, worktree)
     if not force:
         # #706 — the data-loss guard runs first. It is the seam every
         # Worktree-row-driven teardown caller funnels through (execute_teardown
@@ -396,23 +308,24 @@ def _remove_git_worktree(
         # blocking legitimately squash-merged branches whose local SHAs differ
         # from the squash commit. Unifying that path is tracked as follow-up
         # (see #706 review) rather than forced here.
-        _raise_if_unpushed(str(repo_main), worktree)
+        _raise_if_unpushed(str(repo_main), worktree, target)
         # The squash-merge-aware origin/main hygiene gate is stricter: it also
         # blocks pushed-but-unmerged branches. Sync backends and interactive
         # clean-all want it (they clean only on detected merge / orphan reap);
         # the automated FSM teardown path does not (the ticket is MERGED and
         # the work is already preserved on the remote).
         if strict_hygiene:
-            _raise_if_genuinely_ahead(str(repo_main), worktree)
+            _raise_if_genuinely_ahead(str(repo_main), worktree, target)
     errors: list[str] = []
     # #835 — capture before the destructive remove. When force=True the guards
     # above are skipped (the clean-all / abandon reaping path that destroyed a
     # completed-but-uncommitted change set): a dirty or unpushed worktree gets a
     # restorable bundle + working-tree diff under the system temp dir first. A
     # clean, fully-pushed worktree captures nothing — the hard-delete path is
-    # unchanged.
+    # unchanged. The captured branch is the EFFECTIVE one (not the drifted slug),
+    # so the bundle holds the work removal would actually orphan.
     try:
-        capture_recovery_artifact(repo_main, wt_path, worktree)
+        capture_recovery_artifact(repo_main, wt_path, worktree, branch=target.label)
     except Exception as exc:
         # #1506 — under force the recovery artifact is the ONLY protection, so a
         # capture failure must not silently fall through to the destructive
@@ -424,25 +337,27 @@ def _remove_git_worktree(
         # non-blocking intent is preserved for the safe case: a clean +
         # fully-pushed worktree (where the failed capture was a no-op anyway)
         # falls through and is still reaped.
-        logger.exception("recovery capture failed for %s (%s)", worktree.repo_path, worktree.branch)
-        if _worktree_has_work_to_lose(repo_main, wt_path, worktree):
+        logger.exception("recovery capture failed for %s (%s)", worktree.repo_path, target.label)
+        if _worktree_has_work_to_lose(wt_path, target):
             msg = (
-                f"{worktree.repo_path} ({worktree.branch}): "
+                f"{worktree.repo_path} ({target.label}): "
                 f"refused teardown — recovery capture failed ({exc}) and the worktree has "
                 f"unrecoverable work (dirty or unpushed). Kept it on disk at {wt_path}; "
                 f"restore or push it, then re-run cleanup."
             )
             raise RuntimeError(msg) from exc
-        errors.append(f"recovery capture failed for {worktree.branch}: {exc}")
+        errors.append(f"recovery capture failed for {target.label}: {exc}")
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
-    if not git.branch_delete(str(repo_main), worktree.branch):
-        errors.append(f"git branch -D failed for {worktree.branch}")
+    # Delete the REAL checked-out branch, not the possibly-phantom DB slug. A
+    # detached HEAD has no branch to delete (``branch_to_delete is None``).
+    if target.branch_to_delete is not None and not git.branch_delete(str(repo_main), target.branch_to_delete):
+        errors.append(f"git branch -D failed for {target.branch_to_delete}")
     prek_hook.remove_stale_hooks(str(repo_main), wt_path)
     return errors
 
 
-def _worktree_has_work_to_lose(repo_main: Path, wt_path: str, worktree: Worktree) -> bool:
+def _worktree_has_work_to_lose(wt_path: str, target: _EffectiveTarget) -> bool:
     """Whether removing this worktree would destroy unrecoverable work.
 
     Re-evaluates the same dirty/unpushed criteria :func:`capture_recovery_artifact`
@@ -450,10 +365,12 @@ def _worktree_has_work_to_lose(repo_main: Path, wt_path: str, worktree: Worktree
     ``branch -D`` + ``worktree remove`` after the recovery capture already
     failed, so "couldn't determine" must mean "might lose work", not "safe".
 
-    Unpushed commits are checked first via the same fail-open probe the capture
-    uses (it returns ``True`` on an inconclusive ``git log``). Those commits
-    live in the main clone's object store, so a missing worktree dir does not
-    make them safe — the branch is the only copy.
+    Operates on ``target`` (the effective branch/HEAD resolved from git), not the
+    drifted DB slug. Unpushed commits are checked first via the same fail-open
+    probe the capture uses (it returns ``True`` on an inconclusive ``git log``),
+    against the worktree-dir ``HEAD`` when present (or the slug in the main clone
+    when the dir is gone). Those commits live in the object store, so a missing
+    worktree dir does not make them safe — the branch is the only copy.
 
     The dirty working-tree check runs only when the dir is present and uses the
     strict porcelain probe; an inconclusive ``git status`` (lock contention,
@@ -463,7 +380,7 @@ def _worktree_has_work_to_lose(repo_main: Path, wt_path: str, worktree: Worktree
     to lose — a clean (or already-gone) worktree whose branch is fully pushed,
     the safe case #835's non-blocking intent still reaps.
     """
-    if _has_unpushed_commits(repo_main, worktree.branch):
+    if _has_unpushed_commits(Path(target.probe_repo), target.ref):
         return True
     if not Path(wt_path).is_dir():
         return False

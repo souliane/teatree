@@ -15,15 +15,21 @@ from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.run_modes import (
+    RunGuards,
     build_subscription_manifest,
     gate_run_regressions,
-    guard_executed,
     make_grader,
     persist_single,
     render_subscription_text,
 )
 from teatree.cli.eval.transcript_replay import transcript_replay
-from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.backends import (
+    SDK_BACKEND,
+    SUBSCRIPTION_BACKEND,
+    SubscriptionTranscriptRunner,
+    UnknownBackendError,
+    make_runner,
+)
 from teatree.eval.coverage import render_json as render_coverage_json
 from teatree.eval.coverage import render_text as render_coverage_text
 from teatree.eval.coverage import skill_eval_coverage
@@ -39,6 +45,13 @@ from teatree.eval.trigger_qa import run_trigger_qa
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
+
+#: Shared by the bare-``t3 eval`` callback and the ``t3 eval all`` command (identical full-suite flag).
+_STRICT_HELP = (
+    "Exit non-zero when a lane was SKIPPED for setup reasons (the AI behavioural lane with no "
+    "transcripts / no key) — for CI, where 'not yet validated' must fail. Default leaves a "
+    "setup-skip green (the caveat is in the verdict text, not a confusing non-zero)."
+)
 
 eval_app = typer.Typer(
     no_args_is_help=False,
@@ -183,8 +196,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         False,
         "--require-executed",
         help=(
-            "Fail when the suite collected scenarios but executed none (all skipped) — "
-            "the CI gate so a decorative run with no claude/credential can't pass green."
+            "Fail when the suite collected scenarios but executed none (all skipped). "
+            "AUTO-ON for the metered sdk backend and --trials/--models (a metered run "
+            "that executes nothing always fails loud); the flag only matters for the "
+            "subscription backend, whose pre-transcript all-skip is legitimate."
         ),
     ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -251,6 +266,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
+    # "If we run the metered lane, of course we want it executed." The sdk backend
+    # (and the always-metered --trials/--models lanes) arm the all-skipped gate
+    # unconditionally — a metered run that executes nothing must fail loud, never
+    # pass. --require-executed stays only as the opt-in knob for the subscription
+    # backend's legitimate pre-transcript all-skip.
+    sdk_metered = backend == SDK_BACKEND or trials > 1 or models is not None
+    require_executed = require_executed or sdk_metered
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
         typer.echo(
             "note: --trials/--models force the metered sdk runner (claude -p, API-billed); "
@@ -301,7 +323,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     typer.echo(renderers.get(output_format, render_text)(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
-    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
+    executed = sum(1 for r in results if not r.skipped)
+    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
+    RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
     regressed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
@@ -441,7 +465,7 @@ def pinned_regressions(
 
 
 @eval_app.callback(invoke_without_command=True)
-def default(
+def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public bare-``t3 eval`` flag. The arg list IS the CLI contract.
     ctx: typer.Context,
     backend: str = typer.Option(
         SUBSCRIPTION_BACKEND,
@@ -461,6 +485,11 @@ def default(
         "--free-only",
         help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
     ),
+    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--strict",
+        help=_STRICT_HELP,
+    ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--docker",
@@ -470,16 +499,17 @@ def default(
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
     Bare ``t3 eval`` (no subcommand, no args) runs every lane in one go and
-    prints a single aggregated summary table — the suite the user reaches for by
-    default. Subcommands are the targeted/special path: ``run`` (a single AI
-    scenario, the metered ``--backend sdk --docker`` path), ``pinned-regressions``
-    / ``negative-control`` / ``skill-triggers`` / ``coverage`` (one free lane),
-    ``history`` / ``list`` / ``prepare-subscription`` (introspection). The
-    process exits non-zero if ANY lane fails (fail-loud).
+    prints a single aggregated summary table plus a plain-language verdict — the
+    suite the user reaches for by default. Subcommands are the targeted/special
+    path: ``run`` (a single AI scenario, the metered ``--backend sdk --docker``
+    path), ``pinned-regressions`` / ``negative-control`` / ``skill-triggers`` /
+    ``coverage`` (one free lane), ``history`` / ``list`` / ``prepare-subscription``
+    (introspection). The process exits non-zero if ANY lane fails (fail-loud);
+    ``--strict`` also fails on a setup-skipped lane (the AI lane).
     """
     if ctx.invoked_subcommand is not None:
         return
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, strict=strict)
 
 
 @eval_app.command("all")
@@ -503,22 +533,25 @@ def all_lanes(
         "--free-only",
         help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
     ),
+    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--strict",
+        help=_STRICT_HELP,
+    ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
 ) -> None:
-    """Run every eval lane in sequence and render one unified summary table.
+    """Run every eval lane in sequence and render one unified summary table + verdict.
 
     The explicit form of the bare-``t3 eval`` default — both call
-    :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
-    named subcommand for scripts/CI that spell the full run out. ``--free-only``
-    drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
-    runs the same gate inside the exact CI image for parity. A SKIP never fails
-    the run; only a real FAIL exits non-zero.
+    :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
+    callback for the flag semantics). Kept as a named subcommand for scripts/CI
+    that spell the full run out.
     """
-    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker)
+    run_full_suite(backend=backend, transcript_dir=transcript_dir, free_only=free_only, docker=docker, strict=strict)
 
 
 def _require_spec(name: str) -> EvalSpec:

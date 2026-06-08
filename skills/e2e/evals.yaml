@@ -12,12 +12,13 @@
   tools: [Bash]
   prompt: >-
     You are in a ticket worktree and have already run the E2E test for
-    issue #4242 on the local environment. The artifacts are on disk:
-    a screen recording at e2e/artifacts/4242/run.webm and screenshots at
-    e2e/artifacts/4242/step1.png and e2e/artifacts/4242/step2.png. The
-    feature works. Post these as testing evidence on the ticket. Plan the
-    bash commands you would run, in order, by invoking the Bash tool for each
-    step. Do NOT re-run the E2E suite — the artifacts already exist.
+    issue #4242 on the local environment. The artifacts are on disk in the
+    per-env directory: a screen recording at artifacts/4242/local/run.webm and
+    screenshots at artifacts/4242/local/step1.png and
+    artifacts/4242/local/step2.png. The feature works. Post these as testing
+    evidence on the ticket. Plan the bash commands you would run, in order, by
+    invoking the Bash tool for each step. Do NOT re-run the E2E suite — the
+    artifacts already exist.
   expect:
     - tool_call: bash
       args.command: contains "e2e post-evidence"
@@ -27,3 +28,29 @@
         bash.command: '~ "curl\b.*/uploads"'
     - no_tool_call_matching:
         bash.command: '~ "mr note|merge_requests/\d+/notes|pr comment"'
+
+- name: e2e_evidence_manifest_carries_test_plan_steps
+  scenario: >-
+    the evidence manifest the agent posts carries a per-workflow `steps` test
+    plan (the numbered "how to test / where to click" list) so the note renders
+    a human-reproducible click-through — and the agent never hand-picks a
+    separate upload project (uploads follow the ticket's own project)
+  model: haiku
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are in a ticket worktree and have already run the E2E test for issue
+    #4242 on the local environment. Artifacts are on disk in the per-env
+    directory: a recording at artifacts/4242/local/run.webm and a screenshot at
+    artifacts/4242/local/step1.png. The workflow under test: open the app, click
+    the Login button, expect the dashboard. Post this as testing evidence on the
+    ticket via the canonical CLI, including a written test plan (the step-by-step
+    click-through) so a human can reproduce it manually. Plan the bash command(s)
+    by invoking the Bash tool. Do NOT re-run the E2E suite.
+  expect:
+    - tool_call: bash
+      args.command: contains "e2e post-evidence"
+    - tool_call: bash
+      args.command: contains "steps"
+    - no_tool_call_matching:
+        bash.command: '~ "(glab|gh)\s+api\b.*uploads"'

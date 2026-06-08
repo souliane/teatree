@@ -39,7 +39,8 @@ from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
-from teatree.hooks._publish_detection import segment_is_api_call as _segment_is_api_call
+from teatree.hooks._publish_detection import segment_is_api_read as _segment_is_api_read
+from teatree.hooks._publish_detection import segment_is_api_write as _segment_is_api_write
 from teatree.hooks._repo_visibility import (
     _config_path,
     slug_for_cwd,
@@ -357,7 +358,7 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
     skip is the ALL-SEGMENTS inversion that mirrors
     :func:`publish_surface.command_is_pure_private_gh_glab_post`: skip ONLY
     when EVERY top-level segment is provably safe to skip and there is at
-    least one publish segment. A single public, unresolvable, ``api``, or
+    least one publish segment. A single public, unresolvable, ``api`` WRITE, or
     substitution/transport-carrying segment makes the WHOLE command scan
     (fail-closed). Otherwise a chained or substituted public post hides
     behind a leading internal segment and is never scanned.
@@ -365,7 +366,10 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
     A segment is skip-safe when it is one of:
 
     - a publish segment whose destination resolves to a provably-INTERNAL
-        repo/namespace, which carries no substitution/transport construct; or
+        repo/namespace, which carries no substitution/transport construct;
+    - a read-only ``gh``/``glab api`` GET (:func:`_segment_is_api_read`) --
+        a read posts NO body, so it can never leak content regardless of the
+        repo its URL names, and is skip-safe without resolving a destination; or
     - a segment that is PROVABLY a recognised navigation / local-only /
         git-transport command (:func:`_segment_is_skip_inert` -- its leading
         executable is in the closed ``_SKIP_INERT_LEADERS`` allowlist, e.g.
@@ -373,7 +377,8 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
         substitution/transport construct).
 
     Every OTHER segment is NOT skip-safe and makes the whole command scan
-    (fail-closed): a raw ``gh api`` / ``glab api`` call, a
+    (fail-closed): a raw ``gh api`` / ``glab api`` WRITE (effective method ≠
+    GET -- it carries a body to an arbitrary endpoint), a
     ``$(...)`` / process-substitution / redirection construct, a PUBLIC or
     unresolvable publish destination, and -- the closed inversion -- ANY
     segment whose leading word is an UNRECOGNISED executable (an interpreter
@@ -390,8 +395,10 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
         return False
     saw_internal_publish = False
     for words in segments:
-        if _segment_carries_substitution_or_transport(words) or _segment_is_api_call(words):
+        if _segment_carries_substitution_or_transport(words) or _segment_is_api_write(words):
             return False
+        if _segment_is_api_read(words):
+            continue
         dest = _destination_from_words(words, cwd)
         if dest is not None:
             if is_public_destination(dest, config_path=config_path):

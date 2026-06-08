@@ -45,27 +45,29 @@ def unsynced_commits(repo: str, branch: str, target: str = "origin/main") -> lis
     return [line for line in output.splitlines() if line.strip()]
 
 
-def commits_absent_from_all_remotes(repo: str, branch: str) -> list[str]:
-    """Return ``branch`` commits not reachable from ANY ``refs/remotes/*`` ref.
+def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:
+    """Return ``ref`` commits not reachable from ANY ``refs/remotes/*`` ref.
 
-    The data-loss guard for worktree teardown (#706). Unlike
-    :func:`unsynced_commits` (which compares against ``origin/main`` only and
-    therefore flags pushed-but-unmerged branches), ``--not --remotes`` is empty
-    whenever the branch tip was pushed anywhere — to its own remote tracking
-    ref, to main, or captured by a squash-merge that was itself pushed. A
-    non-empty result means these commits exist on NO remote: removing the
-    worktree would destroy them irrecoverably. Returns ``"<sha> <subject>"``
-    lines (newest first).
+    The data-loss guard for worktree teardown (#706). ``ref`` is any revision
+    git accepts — a branch name, or the literal ``HEAD`` when probing a worktree
+    directory directly (robust to a DB-vs-git branch drift and to detached HEAD).
+    Unlike :func:`unsynced_commits` (which compares against ``origin/main`` only
+    and therefore flags pushed-but-unmerged branches), ``--not --remotes`` is
+    empty whenever the tip was pushed anywhere — to its own remote tracking ref,
+    to main, or captured by a squash-merge that was itself pushed. A non-empty
+    result means these commits exist on NO remote: removing the worktree would
+    destroy them irrecoverably. Returns ``"<sha> <subject>"`` lines (newest
+    first).
 
     **Fails closed.** Uses :func:`run_strict` so a non-zero ``git log`` exit
-    (invalid/missing branch, corrupt repo, any git error) raises
+    (invalid/missing ref, corrupt repo, any git error) raises
     ``CommandFailedError`` rather than yielding an empty list. For a data-loss
     guard, "we couldn't determine whether the commits are pushed" must block
     teardown, not allow it. The legitimate empty case (``git log`` exits 0 with
-    no output because the branch genuinely has nothing absent from remotes)
+    no output because the ref genuinely has nothing absent from remotes)
     still returns ``[]`` and allows teardown.
     """
-    output = run_strict(repo=repo, args=["log", branch, "--not", "--remotes", "--oneline"])
+    output = run_strict(repo=repo, args=["log", ref, "--not", "--remotes", "--oneline"])
     return [line for line in output.splitlines() if line.strip()]
 
 
@@ -218,7 +220,18 @@ def branch_merged(repo: str, branch: str, target: str = "origin/main") -> bool:
     return any(line.strip() == branch for line in output.splitlines())
 
 
+DETACHED_HEAD = "HEAD"
+
+
 def current_branch(repo: str = ".") -> str:
+    """Return the branch checked out in ``repo``, or ``DETACHED_HEAD`` when detached.
+
+    ``rev-parse --abbrev-ref HEAD`` resolves the symbolic branch name on a
+    branch and the literal string ``HEAD`` (``DETACHED_HEAD``) when the worktree
+    is in detached HEAD. The teardown seam uses this to resolve a worktree's
+    EFFECTIVE branch from git rather than trusting a possibly-drifted DB
+    ``Worktree.branch`` row.
+    """
     return run(repo=repo, args=["rev-parse", "--abbrev-ref", "HEAD"])
 
 

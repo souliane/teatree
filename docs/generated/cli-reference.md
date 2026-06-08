@@ -1195,6 +1195,12 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                               transcripts for the AI lane (default: cwd).    │
 │ --free-only                   Run only the free deterministic lanes (drop    │
 │                               the AI lane) — the fast pre-push gate.         │
+│ --strict                      Exit non-zero when a lane was SKIPPED for      │
+│                               setup reasons (the AI behavioural lane with no │
+│                               transcripts / no key) — for CI, where 'not yet │
+│                               validated' must fail. Default leaves a         │
+│                               setup-skip green (the caveat is in the verdict │
+│                               text, not a confusing non-zero).               │
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │
@@ -1222,7 +1228,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ pinned-regressions    Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
-│                       summary table.                                         │
+│                       summary table + verdict.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1409,10 +1415,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                (default: cwd).               │
 │ --require-executed                             Fail when the suite collected │
 │                                                scenarios but executed none   │
-│                                                (all skipped) — the CI gate   │
-│                                                so a decorative run with no   │
-│                                                claude/credential can't pass  │
-│                                                green.                        │
+│                                                (all skipped). AUTO-ON for    │
+│                                                the metered sdk backend and   │
+│                                                --trials/--models (a metered  │
+│                                                run that executes nothing     │
+│                                                always fails loud); the flag  │
+│                                                only matters for the          │
+│                                                subscription backend, whose   │
+│                                                pre-transcript all-skip is    │
+│                                                legitimate.                   │
 │ --docker                                       Run inside the CI image       │
 │                                                (dev/Dockerfile.test); the    │
 │                                                metered sdk lane runs         │
@@ -1540,14 +1551,13 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 ```
 Usage: t3 eval all [OPTIONS]
 
- Run every eval lane in sequence and render one unified summary table.
+ Run every eval lane in sequence and render one unified summary table +
+ verdict.
 
  The explicit form of the bare-``t3 eval`` default — both call
- :func:`run_full_suite`, so they run byte-for-byte the same suite. Kept as a
- named subcommand for scripts/CI that spell the full run out. ``--free-only``
- drops the AI lane (the deterministic, token-free pre-push gate); ``--docker``
- runs the same gate inside the exact CI image for parity. A SKIP never fails
- the run; only a real FAIL exits non-zero.
+ :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
+ callback for the flag semantics). Kept as a named subcommand for scripts/CI
+ that spell the full run out.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
@@ -1562,6 +1572,12 @@ Usage: t3 eval all [OPTIONS]
 │                               transcripts for the AI lane (default: cwd).    │
 │ --free-only                   Run only the free deterministic lanes (drop    │
 │                               the AI lane) — the fast pre-push gate.         │
+│ --strict                      Exit non-zero when a lane was SKIPPED for      │
+│                               setup reasons (the AI behavioural lane with no │
+│                               transcripts / no key) — for CI, where 'not yet │
+│                               validated' must fail. Default leaves a         │
+│                               setup-skip green (the caveat is in the verdict │
+│                               text, not a confusing non-zero).               │
 │ --docker                      Run inside the exact CI image                  │
 │                               (dev/Dockerfile.test) for parity; host-run is  │
 │                               the default.                                   │
@@ -3107,6 +3123,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 │ notify        Slack egress from the shell (#1030, #1750).                    │
+│ mr_reminder   Cross-repo "my open MRs" Slack reminder (TODO-276).            │
 │ retro         Retrospective enforcement tooling (#1573).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6191,6 +6208,49 @@ Usage: t3 teatree notify react [OPTIONS]
 │    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
 │                           credentials).                                      │
 │    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree mr_reminder`
+
+```
+Usage: t3 teatree mr_reminder [OPTIONS] COMMAND [ARGS]...
+
+ Cross-repo "my open MRs" Slack reminder (TODO-276).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ preview  Assemble the per-channel reminder read-only (no Slack post).        │
+│ send     Post the per-channel reminder to Slack (one message per routed      │
+│          channel).                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree mr_reminder preview`
+
+```
+Usage: t3 teatree mr_reminder preview [OPTIONS]
+
+ Assemble the per-channel reminder read-only (no Slack post).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --header        TEXT  Message header line. [default: Your open MRs]          │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree mr_reminder send`
+
+```
+Usage: t3 teatree mr_reminder send [OPTIONS]
+
+ Post the per-channel reminder to Slack (one message per routed channel).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --header        TEXT  Message header line. [default: Your open MRs]          │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
