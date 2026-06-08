@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase, override_settings
 
+from teatree import settings as teatree_settings
 from teatree.timeouts import (
     CORE_DEFAULTS,
     DB_IMPORT,
@@ -139,3 +140,28 @@ class TestLoadTimeouts(TestCase):
             val = cfg.get(op)
             assert val is not None, f"{op} should not be None"
             assert val > 0, f"{op} should have a positive default"
+
+
+class TestTimeoutRegistryParity:
+    """Fitness test binding the Django settings registry to CORE_DEFAULTS.
+
+    The tier-3 core defaults have two surfaces: ``CORE_DEFAULTS`` in
+    ``teatree.timeouts`` (the canonical, Django-free source) and
+    ``TEATREE_TIMEOUTS`` in ``teatree.settings`` (the Django-settings
+    surface that ``load_timeouts`` reads via ``django.conf.settings``).
+    They must stay identical — same keys, same values. A key present in one
+    registry but not the other silently falls to the 120s unknown-operation
+    fallback in ``TimeoutConfig.get`` (the #2014 bug class). This binding
+    makes that drift impossible.
+
+    The assertion targets the production ``teatree.settings`` module
+    directly, not the active ``django.conf.settings`` (the test harness
+    swaps in ``tests.django_settings``, which intentionally omits the
+    timeout registry).
+    """
+
+    def test_settings_registry_has_same_keys_as_core_defaults(self) -> None:
+        assert set(teatree_settings.TEATREE_TIMEOUTS) == set(CORE_DEFAULTS)
+
+    def test_settings_registry_equals_core_defaults(self) -> None:
+        assert teatree_settings.TEATREE_TIMEOUTS == CORE_DEFAULTS

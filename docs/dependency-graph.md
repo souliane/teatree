@@ -118,6 +118,7 @@ graph TD
     teatree.outbound_claim --> teatree.core
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
+    teatree.settings --> teatree.timeouts
     teatree.cli_reference --> teatree.cli
     teatree.triage --> teatree.utils
     teatree.url_title_fetcher --> teatree.utils
