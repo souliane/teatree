@@ -61,6 +61,10 @@ def _write_pending(session_id: str, skills: list[str]) -> None:
     (router.STATE_DIR / f"{session_id}.pending").write_text("\n".join(skills) + "\n", encoding="utf-8")
 
 
+def _write_loop_pending(session_id: str) -> None:
+    (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
+
+
 def _run(data: dict) -> tuple[bool, dict | None]:
     out = StringIO()
     err = StringIO()
@@ -185,3 +189,31 @@ class TestGateStillFiresOnCodeWork:
         )
         assert blocked is False
         assert payload is None
+
+
+class TestLoopBootstrapExemption:
+    """The skill-load gate must not deadlock a loop-registration bootstrap turn (#1918)."""
+
+    def test_loop_bootstrap_turn_not_blocked(self, gate: Path) -> None:
+        # A code-work Bash with a resolvable unloaded skill pending would normally
+        # block; the loop-pending marker (this session is mid loop-bootstrap) exempts it.
+        _write_pending("sess-loop", ["ac-python"])
+        _write_loop_pending("sess-loop")
+        blocked, payload = _run(
+            {"session_id": "sess-loop", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is False, (
+            "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn was blocked."
+        )
+        assert payload is None
+
+    def test_gate_still_fires_after_loop_registers(self, gate: Path) -> None:
+        # No loop-pending marker (the bootstrap turn cleared it once the loop
+        # registered) → the gate keeps its teeth on genuine code work.
+        _write_pending("sess-registered", ["ac-python"])
+        blocked, payload = _run(
+            {"session_id": "sess-registered", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is True
+        assert payload is not None
+        assert payload["permissionDecision"] == "deny"

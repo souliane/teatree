@@ -432,6 +432,65 @@ class TestSkillLoadingLockoutDimension:
         assert blocked is False, "OVER-BLOCK regression — AskUserQuestion was gated (must NEVER be gated)."
 
 
+class TestSkillLoadingGateExemptDuringLoopBootstrap:
+    """The skill-load gate must NOT fire during a loop-registration bootstrap turn (#1918).
+
+    When the loop-registration / loop-owner bootstrap turn surfaces a resolvable
+    intent skill (the bare word ``loops`` is a hard intent trigger), it lands in
+    ``<session>.pending``. The very next genuine code-work call in the same turn
+    (``uv run pytest``, ``manage.py``, a ``.py`` edit — routine during teatree's
+    own Django setup) would then hard-deny demanding ``/loops``, a skill unrelated
+    to the work and unsatisfiable mid-setup — a deadlock. The skill-load gate is a
+    UX nudge, not a safety gate, so it must exempt the loop-bootstrap turn.
+
+    The exemption keys strictly on the existing ``<session>.loop-pending`` marker
+    (written by the loop-registration gate, cleared once the loop registers), so it
+    is the canonical "this session is mid loop-bootstrap" signal both loop gates
+    already key on. The must-DENY ANCHOR (same skill pending, NO marker → still
+    blocked) proves the must-ALLOW is an escape, not a defanged gate.
+    """
+
+    @pytest.fixture
+    def skill_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        original_state = router.STATE_DIR
+        router.STATE_DIR = tmp_path / "state"
+        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        skills_dir = tmp_path / "skills"
+        skill = skills_dir / "loops"
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text("---\nname: loops\n---\n", encoding="utf-8")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
+        yield
+        router.STATE_DIR = original_state
+
+    def _write(self, session_id: str, suffix: str, names: list[str]) -> None:
+        (router.STATE_DIR / f"{session_id}.{suffix}").write_text("\n".join(names) + "\n", encoding="utf-8")
+
+    def _marker(self, session_id: str) -> None:
+        (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
+
+    def test_must_deny_anchor_no_loop_marker(self, skill_gate: None) -> None:
+        self._write("sess-loop-anchor", "pending", ["loops"])
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-loop-anchor", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is True, (
+            "ANCHOR regression — the skill-load gate no longer fires for code work with a resolvable "
+            "unloaded skill pending and NO loop-bootstrap marker; the must-ALLOW row below would be vacuous."
+        )
+
+    def test_must_allow_during_loop_bootstrap(self, skill_gate: None) -> None:
+        self._write("sess-loop-boot", "pending", ["loops"])
+        self._marker("sess-loop-boot")
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-loop-boot", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is False, (
+            "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn "
+            "(loop-pending marker present) was blocked demanding an unrelated skill load."
+        )
+
+
 class TestMustDenyMerge:
     """Merge commands on teatree-managed repos must be blocked."""
 
