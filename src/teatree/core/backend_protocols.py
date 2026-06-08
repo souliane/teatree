@@ -156,6 +156,26 @@ class ForgeMergeResult:
     merged_sha: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class UploadVerification:
+    """The token-verified renderability of one uploaded artifact (#2156).
+
+    ``ok`` is True only when the backend confirmed, with its own
+    credentials, that the upload resolves and carries the expected media
+    bytes — not merely that the upload POST returned 201. ``embed_url`` is
+    the absolute, context-independent URL the comment body must embed so the
+    artifact renders in the work-items UI (for GitLab, the
+    ``https://<host>/-/project/<id>/uploads/<secret>/<file>`` form GitLab's
+    own renderer rewrites a relative ``/uploads/`` path to). ``detail``
+    carries the failure reason (HTTP status, wrong magic bytes) when
+    ``ok`` is False so the command can name the broken artifact.
+    """
+
+    ok: bool
+    embed_url: str
+    detail: str = ""
+
+
 @runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
     """Pull/merge requests + issue fetch — the canonical code-host concern.
@@ -203,6 +223,8 @@ class CodeHostBackend(Protocol):
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict: ...  # pragma: no branch
+
+    def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification: ...  # pragma: no branch
 
     def get_issue(self, issue_url: str) -> RawAPIDict: ...  # pragma: no branch
 
