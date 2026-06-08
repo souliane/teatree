@@ -16,9 +16,11 @@ run for real. The on-behalf pre-gate is set to ``immediate`` via the
 test config so these tests isolate the after-receipt behaviour.
 """
 
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
@@ -36,6 +38,12 @@ def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: str) ->
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
 
 
+def _http_404() -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://gitlab.example/api/v4/x")
+    response = httpx.Response(HTTPStatus.NOT_FOUND, request=request)
+    return httpx.HTTPStatusError("not found", request=request, response=response)
+
+
 def _wire_notify_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = MagicMock()
     backend.open_dm.return_value = "D-OPERATOR"
@@ -47,8 +55,15 @@ def _wire_notify_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 class _StubAPI:
     """In-memory ``GitLabAPI`` stand-in returning success shapes."""
 
+    def __init__(self) -> None:
+        self._deleted_ids: set[str] = set()
+
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
-        return {"id": 11, "web_url": "https://gitlab.example/org/repo/-/mr/7#note_11", "notes": [{"type": "DiffNote"}]}
+        return {
+            "id": 11,
+            "web_url": "https://gitlab.example/org/repo/-/mr/7#note_11",
+            "notes": [{"type": "DiffNote", "id": 11}],
+        }
 
     def post_status(self, endpoint: str) -> int:
         return 200
@@ -56,10 +71,28 @@ class _StubAPI:
     def put_status(self, endpoint: str, payload: object | None = None) -> int:
         return 200
 
+    def current_username(self) -> str:
+        return "souliane"
+
     def get_json(self, endpoint: str) -> object:
+        # Verify-after-post (#2081) reads the artifact back: confirm it landed.
+        last = endpoint.rstrip("/").rsplit("/", 1)[-1]
+        if last.isdigit():
+            if last in self._deleted_ids:
+                raise _http_404()
+            return {"id": int(last), "resolvable": True, "resolved": True}
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": "souliane"}}]}
+        if last == "draft_notes":
+            return []
+        if last == "notes":
+            return [{"id": 99, "author": {"username": "souliane"}}]
+        if "discussions/" in endpoint:
+            return {"notes": [{"resolvable": True, "resolved": True}]}
         return []
 
     def delete(self, endpoint: str) -> int:
+        self._deleted_ids.add(endpoint.rstrip("/").rsplit("/", 1)[-1])
         return 204
 
 

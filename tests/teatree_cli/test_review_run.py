@@ -290,3 +290,86 @@ class TestReviewRunLargeMRFinding:
         assert payload["complexity"] == "large"
         assert payload["verdict"] == "needs_attention"
         assert any("large change" in finding for finding in payload["findings_catalog"]), payload
+
+
+class TestReviewRunSkipsMergedClosed:
+    """A merged/closed MR aborts the read-only audit with a skip verdict (#2081).
+
+    The ``/changes`` payload carries the MR ``state`` field. When it is
+    ``merged`` or ``closed`` a review note can never land, so the audit emits
+    a ``skipped_merged`` / ``skipped_closed`` verdict instead of
+    ``needs_attention`` / ``ready_to_review`` — a mid-flight close aborts the
+    post rather than driving a doomed review.
+    """
+
+    def test_merged_mr_emits_skipped_merged_verdict(self) -> None:
+        runner = CliRunner()
+        stub = _StubGitLabAPI(
+            changes={
+                "state": "merged",
+                "changes": [{"new_path": "src/foo.py", "diff": _diff(added=5, removed=2)}],
+            },
+            discussions=[{"notes": [{"resolved": False, "body": "still open"}]}],
+        )
+        url = "https://gitlab.com/org/proj/-/merge_requests/42"
+
+        with (
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
+            patch(
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
+                return_value="t",
+            ),
+        ):
+            result = runner.invoke(review_app, ["run", url])
+
+        assert result.exit_code == 0, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["verdict"] == "skipped_merged", payload
+
+    def test_closed_mr_emits_skipped_closed_verdict(self) -> None:
+        runner = CliRunner()
+        stub = _StubGitLabAPI(
+            changes={
+                "state": "closed",
+                "changes": [{"new_path": "src/foo.py", "diff": _diff(added=5, removed=2)}],
+            },
+            discussions=[],
+        )
+        url = "https://gitlab.com/org/proj/-/merge_requests/43"
+
+        with (
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
+            patch(
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
+                return_value="t",
+            ),
+        ):
+            result = runner.invoke(review_app, ["run", url])
+
+        assert result.exit_code == 0, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["verdict"] == "skipped_closed", payload
+
+    def test_open_mr_keeps_normal_verdict(self) -> None:
+        runner = CliRunner()
+        stub = _StubGitLabAPI(
+            changes={
+                "state": "opened",
+                "changes": [{"new_path": "src/foo.py", "diff": _diff(added=5, removed=2)}],
+            },
+            discussions=[{"notes": [{"resolved": False, "body": "still open"}]}],
+        )
+        url = "https://gitlab.com/org/proj/-/merge_requests/44"
+
+        with (
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
+            patch(
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
+                return_value="t",
+            ),
+        ):
+            result = runner.invoke(review_app, ["run", url])
+
+        assert result.exit_code == 0, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["verdict"] == "needs_attention", payload

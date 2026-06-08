@@ -98,13 +98,24 @@ class ReviewService:
         consumed in the same ``transaction.atomic`` as the post, so a failed
         post rolls back the consume (no burn) and writes no lying audit. A
         BLOCK racing in after the peek is surfaced as ``(message, 1)``.
+
+        A verify-after-post failure (#2081) raises
+        :class:`ReviewArtifactNotVerifiedError` from *inside* ``body``, so it
+        propagates through the same ``transaction.atomic`` and rolls back the
+        consume + audit exactly like a post failure — then it is surfaced here
+        as ``(message, 1)`` instead of the phantom "posted" claim. A non-404
+        transport error on the read-back is NOT caught here: it propagates so a
+        flaky GET surfaces as ``api_unavailable``, never a false post-failure.
         """
+        from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415
         from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415
 
         try:
             return publish_on_behalf(repo, mr, action, body)
         except OnBehalfPostBlockedError as blocked:
             return str(blocked), 1
+        except ReviewArtifactNotVerifiedError as unverified:
+            return str(unverified), 1
 
     @staticmethod
     def _resolve_base_url() -> str:
