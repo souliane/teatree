@@ -5,6 +5,7 @@
 - name: on_behalf_drafts_and_dms_before_posting
   scenario: "a reply on the user's behalf is drafted and DMed for approval, never auto-posted via the bot"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)", "No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, AskUserQuestion]
@@ -21,6 +22,7 @@
 - name: on_behalf_colleague_message_uses_personal_token
   scenario: "a message to a colleague channel goes via the personal token, never the overlay bot token"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
@@ -34,6 +36,7 @@
 - name: on_behalf_notifies_user_after_posting
   scenario: "after posting on behalf, the user is DMed a clickable link to what was posted"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
@@ -45,6 +48,7 @@
 - name: on_behalf_dm_to_user_uses_overlay_bot
   scenario: "a DM to the user themselves goes via the overlay bot, the deterministic routing for self-DMs"
   agent_path: skills/rules/SKILL.md
+  agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]

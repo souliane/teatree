@@ -232,6 +232,34 @@ def test_fixtureless_behavioral_scenario_is_caught_by_the_gate(tmp_path: Path) -
     )
 
 
+def test_every_declared_agent_section_resolves_against_its_skill() -> None:
+    """A scenario's ``agent_sections`` must name real ``## `` sections of its skill.
+
+    The token-cost lever sends only the named sections as the system prompt. A
+    typo'd / renamed section would, at metered-run time, raise MissingSectionError
+    — but only when the metered lane runs (weekly). This load-time guard turns a
+    bad anchor into a RED on every PR: it resolves each declared section against
+    the real on-disk SKILL.md the same way the runner does, so a drifted heading
+    fails here, not silently months later.
+    """
+    from teatree.eval.context_budget import MissingSectionError, extract_sections  # noqa: PLC0415
+
+    offenders: list[str] = []
+    for spec in discover_specs():
+        if not spec.agent_sections:
+            continue
+        text = ClaudePRunner._load_agent_definition(spec.agent_path)
+        try:
+            extract_sections(text, spec.agent_sections)
+        except MissingSectionError as exc:
+            offenders.append(f"  - {spec.name} ({spec.source_path.name}): {exc}")
+    assert not offenders, (
+        "scenario(s) declare agent_sections that do not match any `## ` heading in "
+        "their agent_path SKILL.md (a drifted/typo'd anchor would send an empty rule "
+        "prompt and make the scenario vacuous at metered-run time):\n" + "\n".join(offenders)
+    )
+
+
 def _gate_flags(spec: EvalSpec) -> bool:
     """Whether the REAL gate predicate flags ``spec`` as an offender.
 

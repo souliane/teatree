@@ -101,6 +101,7 @@ class Scenario:
     expects: tuple[Expect, ...]
     tools: tuple[str, ...] = ("Bash",)
     max_turns: int = 3
+    agent_sections: tuple[str, ...] = ()
     yaml_file: str = ""
 
     @property
@@ -153,6 +154,11 @@ def scenario_yaml(scenario: Scenario) -> str:
         f"- name: {scenario.name}",
         f"  scenario: {json.dumps(scenario.scenario, ensure_ascii=False)}",
         f"  agent_path: {scenario.agent_path}",
+    ]
+    if scenario.agent_sections:
+        sections = "[" + ", ".join(json.dumps(s, ensure_ascii=False) for s in scenario.agent_sections) + "]"
+        lines.append(f"  agent_sections: {sections}")
+    lines += [
         "  model: claude-sonnet-4-6",
         f"  max_turns: {scenario.max_turns}",
         f"  tools: {tools}",
