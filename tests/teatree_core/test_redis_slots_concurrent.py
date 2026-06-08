@@ -58,6 +58,7 @@ def _make_alias(tmp_path: Path) -> str:
         "TEST": {},
     }
     with connections[alias].cursor() as cur:
+        # Hand-maintained mirror of the Ticket schema — add any new Ticket column here too.
         cur.execute(
             """
             CREATE TABLE teatree_ticket (
@@ -72,7 +73,8 @@ def _make_alias(tmp_path: Path) -> str:
                 extra TEXT NOT NULL DEFAULT '{}',
                 context TEXT NOT NULL DEFAULT '',
                 short_description VARCHAR(80) NOT NULL DEFAULT '',
-                redis_db_index INTEGER NULL UNIQUE
+                redis_db_index INTEGER NULL UNIQUE,
+                remote_missing BOOLEAN NOT NULL DEFAULT 0
             )
             """
         )
