@@ -180,6 +180,8 @@ def run_tick(
     if not jobs:
         empty_zones = StatuslineZones()
         _populate_live_loops_in_anchors(empty_zones, colorize=colorize)
+        _write_open_prs_cache(report.signals, target=statusline_path)
+        _populate_open_prs_in_anchors(empty_zones, target=statusline_path, colorize=colorize)
         _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
@@ -199,6 +201,8 @@ def run_tick(
 
     zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
     _write_tick_meta(started_at, target=statusline_path)
+    _write_open_prs_cache(report.signals, target=statusline_path)
+    _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     _populate_loop_owner_anchor(zones)
@@ -261,6 +265,44 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones, *, colorize: bool | 
         return
     try:
         zones.anchors.extend(live_loops_anchor(colorize=colorize_enabled(colorize=colorize)))
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _write_open_prs_cache(signals: list[ScanSignal], *, target: Path | None) -> None:
+    """Snapshot the tick's open PRs to the ``open-prs.json`` sidecar (#271).
+
+    Projects the ``my_pr.*`` signals the scanners already produced — no extra
+    code-host call — so the statusline's open-PR anchor reads a fresh cache
+    without ever hitting the API itself. Writing on every tick (even with an
+    empty signal list) keeps the cache from going stale when the last PR is
+    merged. Fails open: any import/write error degrades to a no-op so a broken
+    snapshot can never abort the tick.
+    """
+    try:
+        from teatree.loop.open_prs import open_prs_from_signals, write_open_prs_cache  # noqa: PLC0415
+        from teatree.loop.statusline import default_path  # noqa: PLC0415
+
+        write_open_prs_cache(open_prs_from_signals(signals), statusline_path=target or default_path())
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _populate_open_prs_in_anchors(zones: StatuslineZones, *, target: Path | None, colorize: bool | None = None) -> None:
+    """Append the open-PR summary anchor (#271).
+
+    Reads the snapshot :func:`_write_open_prs_cache` just wrote and folds the
+    count/list rows into the anchor zone. Must run AFTER the cache write so
+    it reflects this tick, not the previous one. Fails open: any import/read
+    error degrades to a no-op so a broken cache can never blank the statusline.
+    """
+    try:
+        from teatree.loop.open_prs import open_prs_anchor  # noqa: PLC0415
+        from teatree.loop.statusline import colorize_enabled, default_path  # noqa: PLC0415
+
+        zones.anchors.extend(
+            open_prs_anchor(target=target or default_path(), colorize=colorize_enabled(colorize=colorize))
+        )
     except Exception:  # noqa: BLE001
         return
 
