@@ -85,6 +85,45 @@ class TestPresenceStampsSessionForLiveTurn:
         assert presence.last_user_turn() is None
         assert presence.last_seen() is None
 
+    def test_bare_loop_prompt_with_harness_ambient_does_not_stamp(
+        self, presence: availability.PresenceHeartbeat
+    ) -> None:
+        # A pure cron tick still reduces to the bare loop prompt after the
+        # harness-injected <system-reminder> ambient blocks are stripped, so it
+        # must NOT stamp — invariant 9 holds for the autonomous tick.
+        prompt = _LOOP_PROMPT + "\n<system-reminder>CLAUDE.md body…</system-reminder>"
+        handle_record_presence({"prompt": prompt, "session_id": "owner"})
+        assert presence.last_user_turn() is None
+        assert presence.last_seen() is None
+
+
+class TestFreshUserPromptDuringLoopStampsPresence:
+    """#2155: a fresh user prompt interleaved with a loop continuation stamps.
+
+    The reported high-irritation bug: the loop owner is self-pumping; the user
+    types a genuine fresh prompt that the harness delivers PREFIXED by the loop
+    continuation text. The old guard suppressed recording for ANY prompt that
+    merely ``startswith(_LOOP_PROMPT)``, so the user's live keystroke was
+    swallowed — and the next ``AskUserQuestion`` deferred to Slack as a
+    ``DeferredQuestion`` even though the user was demonstrably present. The fix
+    suppresses ONLY the BARE loop prompt (after ambient strip): any genuine
+    user-authored content beyond it proves presence and must stamp.
+    """
+
+    def test_loop_prefixed_prompt_with_user_text_stamps(self, presence: availability.PresenceHeartbeat) -> None:
+        prompt = _LOOP_PROMPT + "\n\nactually, hold off and check #2111 first"
+        handle_record_presence({"prompt": prompt, "session_id": "owner"})
+        turn = presence.last_user_turn()
+        assert turn is not None, "a fresh user prompt prefixed by the loop text must still stamp"
+        assert turn.session_id == "owner"
+
+    def test_loop_prefixed_user_prompt_makes_the_turn_live(self, presence: availability.PresenceHeartbeat) -> None:
+        # End-to-end through the seam: stamping makes the live-turn predicate true,
+        # so a same-session AskUserQuestion on this turn renders in-client.
+        prompt = _LOOP_PROMPT + "\n\nwhich option do you prefer, A or B?"
+        handle_record_presence({"prompt": prompt, "session_id": "owner"})
+        assert _is_live_user_turn({"session_id": "owner"}) is True
+
 
 class TestIsLiveUserTurnHookPredicate:
     """The hook-side ``_is_live_user_turn`` wraps the availability predicate.
