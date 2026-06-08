@@ -39,6 +39,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.types import RawAPIDict
 from teatree.utils import git
+from teatree.utils.media import MediaKind, media_kind
 from teatree.utils.run import CommandFailedError
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
@@ -81,6 +82,19 @@ class EvidenceResolutionError(EvidenceValidationError):
     A subclass of :class:`EvidenceValidationError` so the command's single
     ``except EvidenceValidationError`` arm catches resolution and validation
     failures alike — both must exit non-zero with no host side effect.
+    """
+
+
+class EvidenceMediaError(EvidenceValidationError):
+    """An uploaded artifact would not render in the posted comment.
+
+    Raised by the post-upload self-verification gate when an embedded media
+    URL does not resolve (non-200) or the fetched bytes are not the expected
+    medium — so "posted" can never mean "returned 201 but rendered as a
+    broken image / dead video player". A subclass of
+    :class:`EvidenceValidationError` so the command's existing arm surfaces
+    it as a non-zero exit; the gate runs before the post, so a failure burns
+    no on-behalf approval and writes no comment.
     """
 
 
@@ -259,8 +273,10 @@ def build_evidence_body(comment: EvidenceComment) -> str:
 
     Order: hidden marker, environment banner, the ``old -> new`` commit
     delta (only when a prior commit is given and it differs from the
-    current one), commit tested, the Before/After table (plus a Video row
-    when a video embed is given), then the feature-claim assertion text.
+    current one), commit tested, the **video first** (the user's standard:
+    the clip sits above the stills), then the Before/After table, then the
+    feature-claim assertion text. The video is embedded inline (not in a
+    one-cell table) so GitLab renders it as a full-width ``<video>`` player.
     """
     lines = [
         evidence_marker(env=comment.env),
@@ -269,18 +285,18 @@ def build_evidence_body(comment: EvidenceComment) -> str:
     ]
     if comment.prior_commit and comment.prior_commit != comment.commit:
         lines.extend([f"Re-verified: `{comment.prior_commit[:8]}` -> `{comment.commit[:8]}`", ""])
+    lines.extend([f"Commit tested: `{comment.commit}`", ""])
+    if comment.video_md:
+        lines.extend(["### Video", comment.video_md, ""])
     lines.extend(
         [
-            f"Commit tested: `{comment.commit}`",
-            "",
             "| Before | After |",
             "|---|---|",
             f"| {comment.before_md} | {comment.after_md} |",
+            "",
+            comment.assertion,
         ]
     )
-    if comment.video_md:
-        lines.append(f"| Video | {comment.video_md} |")
-    lines.extend(["", comment.assertion])
     return "\n".join(lines)
 
 
@@ -412,15 +428,46 @@ def _comment_id(result: RawAPIDict) -> int:
     return 0
 
 
-def _upload_artifact(host: CodeHostBackend, *, repo: str, filepath: str, label: str) -> str:
-    """Upload one artifact and return its markdown embed.
+def _verified_embed(host: CodeHostBackend, *, repo: str, filepath: str, label: str) -> str:
+    """Upload one artifact, self-verify it renders, and return its absolute embed.
 
-    Falls back to a bare ``[label](filepath)`` link when the host's upload
-    returns no markdown (keeps the table well-formed).
+    The self-verification gate (#2156): after uploading, the host fetches the
+    artifact back through its token-authenticated route and magic-byte-checks
+    the content. A non-200 fetch, wrong media bytes, or an unparsable upload
+    response raises :class:`EvidenceMediaError` naming the broken artifact —
+    so the comment is never posted with media that renders as a broken image
+    link or a dead video player. The returned markdown embeds the verified
+    **absolute** ``embed_url`` (GitLab's context-independent
+    ``/-/project/<id>/uploads/...`` form), never the relative ``/uploads/...``
+    path — the bug behind the broken stills AND the dead video player was that
+    relative path failing to resolve in the work-items UI, identical for both
+    media kinds (a ``<video src>`` that doesn't resolve renders the player
+    chrome stuck at 0:00). GitLab renders the same ``![label](url)`` syntax as
+    an ``<img>`` for an image extension and a ``<video controls>`` for a video
+    extension, so one embed form serves both; no re-encoding is involved (the
+    recorded VP8/WebM plays natively in a Chromium browser).
     """
-    result = host.upload_file(repo=repo, filepath=filepath)
-    markdown = str(result.get("markdown", ""))
-    return markdown or f"[{label}]({filepath})"
+    upload = host.upload_file(repo=repo, filepath=filepath)
+    verification = host.verify_upload(repo=repo, upload=upload)
+    if not verification.ok:
+        msg = f"E2E evidence {label} ({Path(filepath).name}) would not render: {verification.detail}"
+        raise EvidenceMediaError(msg)
+    return f"![{label}]({verification.embed_url})"
+
+
+def _verified_video_embed(host: CodeHostBackend, *, repo: str, video: str) -> str:
+    """Upload + self-verify the evidence video, returning its verified embed.
+
+    A non-video file is rejected up front so the body never embeds a still as
+    a ``<video>``. The actual rendering fix is the absolute embed URL the
+    shared :func:`_verified_embed` builds — the same one that fixes the
+    stills.
+    """
+    src = Path(video)
+    if media_kind(src) is not MediaKind.VIDEO:
+        msg = f"E2E evidence video ({src.name}) is not a recognised video file."
+        raise EvidenceMediaError(msg)
+    return _verified_embed(host, repo=repo, filepath=str(src), label="video")
 
 
 def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvidenceResult:
@@ -443,9 +490,9 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
 
     existing = find_matching_comment(host.list_issue_comments(issue_url=post.issue_url), env=post.env)
 
-    before_md = _upload_artifact(host, repo=post.repo, filepath=str(post.before_path), label="before")
-    after_md = _upload_artifact(host, repo=post.repo, filepath=str(post.after_path), label="after")
-    video_md = _upload_artifact(host, repo=post.repo, filepath=post.video, label="video") if post.video else ""
+    before_md = _verified_embed(host, repo=post.repo, filepath=str(post.before_path), label="before")
+    after_md = _verified_embed(host, repo=post.repo, filepath=str(post.after_path), label="after")
+    video_md = _verified_video_embed(host, repo=post.repo, video=post.video) if post.video else ""
 
     body = build_evidence_body(
         EvidenceComment(
