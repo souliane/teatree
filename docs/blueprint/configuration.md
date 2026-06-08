@@ -15,7 +15,7 @@ mode = "interactive"                       # global default — confirm before p
 loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
 require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
-on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960): draft_or_ask (default; draft notes publish autonomously, every other action BLOCKs identical to ask) | ask (every action BLOCKs) | immediate (gate off)
+on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960) over colleague-VISIBLE posts; drafts (post-draft-note) are exempt under every mode: draft_or_ask (default) | ask (both BLOCK every colleague-visible action, EXEMPT drafts) | immediate (gate off)
 notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
 user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
 statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
@@ -131,7 +131,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `require_human_approval_to_merge` | Training-wheel: auto-mode overlay can publish autonomously, merge stays gated |
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
 | `ask_before_post_on_behalf` | Legacy boolean pre-gate over on-behalf posts (kept for back-compat — prefer `on_behalf_post_mode`) |
-| `on_behalf_post_mode` | Tri-state pre-gate (#960): `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate` |
+| `on_behalf_post_mode` | Tri-state pre-gate (#960) over colleague-VISIBLE posts: `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate`. Drafts (`post-draft-note`) are colleague-invisible and exempt under every mode — they never need approval |
 | `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see config.py for the boundary) |
 | `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
