@@ -4002,8 +4002,8 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ external       Run Playwright tests from the external test repo              │
 │                (T3_PRIVATE_TESTS).                                           │
 │ project        Run E2E tests from the project's own test directory.          │
-│ post-evidence  Post structured E2E evidence on the ticket (validation-gated, │
-│                idempotent on env+commit).                                    │
+│ post-evidence  Post/update the ticket's single E2E evidence note             │
+│                (side-by-side Dev|Local test plan) from a manifest.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4163,26 +4163,30 @@ Usage: t3 teatree e2e project [OPTIONS]
 ```
 Usage: t3 teatree e2e post-evidence [OPTIONS]
 
- Post structured E2E evidence on the **ticket** (work item / bug), never the
- MR.
+ Post (or update) the ticket's single E2E evidence note from a manifest.
 
- Validation-gated (env ∈ {dev, local}, before ≠ after anti-fake,
- commit known + tree clean, ticket resolvable) and idempotent on the
- hidden ``env`` marker — one comment per ticket+env: a re-run on the
- same env edits that comment in place (any commit) with an
- ``old -> new`` delta, a different env posts anew. ``--ticket`` and
- ``--commit`` auto-detect from the worktree. See
- :mod:`._e2e_evidence` for the validators and the SKILL for usage.
+ There is ONE evidence note per ticket (work item / bug), never on an
+ MR. It renders as a test plan: a header (title, multi-repo MR links,
+ per-env commit provenance, dev-gap reconciliation) and one side-by-side
+ **Dev | Local** comparison table per workflow. The note carries a hidden
+ machine-readable state blob that is the source of truth, so a re-run
+ merges the env(s) it supplies over the prior state — a dev-only run
+ updates the Dev column and the deployed-commits/gap line while freezing
+ the Local column, and vice versa.
+
+ ``--manifest`` is a path to (or inline string of) the JSON describing
+ the ticket, MRs, per-env commits, dev gap, and per-workflow ``dev``/
+ ``local`` captures. ``--ticket`` (pk / number / URL) selects the issue
+ to post on (auto-detected from the worktree when omitted); ``--title``
+ overrides the heading. See :mod:`._e2e_evidence` for the manifest shape.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --ticket           TEXT                                                      │
-│ --env              TEXT                                                      │
-│ --commit           TEXT                                                      │
-│ --before           TEXT                                                      │
-│ --after            TEXT                                                      │
-│ --video            TEXT                                                      │
-│ --assertion        TEXT                                                      │
-│ --help                   Show this message and exit.                         │
+│ --manifest        TEXT                                                       │
+│ --ticket          TEXT                                                       │
+│ --title           TEXT                                                       │
+│ --mrs             TEXT  MR/PR URL(s) the evidence covers (repeat or          │
+│                         comma-separate). Supplements the manifest's 'mrs'.   │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

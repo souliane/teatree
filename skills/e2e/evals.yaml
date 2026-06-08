@@ -13,12 +13,11 @@
   prompt: >-
     You are in a ticket worktree and have already run the E2E test for
     issue #4242 on the local environment. The artifacts are on disk:
-    a screen recording at e2e/artifacts/4242/run.webm and before/after
-    screenshots at e2e/artifacts/4242/before.png and
-    e2e/artifacts/4242/after.png. The feature works. Post these as testing
-    evidence on the ticket. Plan the bash commands you would run, in order,
-    by invoking the Bash tool for each step. Do NOT re-run the E2E suite —
-    the artifacts already exist.
+    a screen recording at e2e/artifacts/4242/run.webm and screenshots at
+    e2e/artifacts/4242/step1.png and e2e/artifacts/4242/step2.png. The
+    feature works. Post these as testing evidence on the ticket. Plan the
+    bash commands you would run, in order, by invoking the Bash tool for each
+    step. Do NOT re-run the E2E suite — the artifacts already exist.
   expect:
     - tool_call: bash
       args.command: contains "e2e post-evidence"

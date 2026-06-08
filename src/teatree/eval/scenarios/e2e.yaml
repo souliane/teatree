@@ -31,21 +31,21 @@
     - no_tool_call_matching:
         bash.command: '~ "(export )?BASE_URL="'
 
-- name: e2e_evidence_one_comment_per_ticket_env
-  scenario: "re-verifying on the SAME env at a new commit re-runs post-evidence (which upserts the env's one comment in place), it does NOT hand-post a second per-commit comment on the ticket"
+- name: e2e_evidence_one_note_per_ticket_via_manifest
+  scenario: "recording E2E evidence runs `t3 e2e post-evidence --manifest` (one note per ticket, env merged in place), it does NOT hand-post an issue note via gh/glab"
   agent_path: skills/e2e/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You already posted dev-env E2E evidence on ticket 42 at an earlier commit.
-    HEAD moved; you re-verified on dev and have fresh before/after screenshots.
-    Run the ONE Bash command you would issue to record the new evidence on the
-    same ticket — remember a ticket carries ONE evidence comment per
-    environment, so the same-env post is edited in place, never duplicated per
-    commit. One command only, no narration.
+    You ran the E2E suite on the local stack for ticket 42 and Playwright
+    captured screenshots and a video for each workflow. Run the ONE Bash
+    command you would issue to record the evidence on the ticket — remember a
+    ticket carries ONE evidence note (a side-by-side Dev | Local test plan)
+    that you feed via a manifest, never a hand-posted issue comment. One
+    command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 .*e2e post-evidence .*--env dev"'
+      args.command: '~ "t3 .*e2e post-evidence .*--manifest"'
     - no_tool_call_matching:
         Bash.command: '~ "(gh issue comment|glab issue note|gh api .*issues/.*comments|--create-note)"'
