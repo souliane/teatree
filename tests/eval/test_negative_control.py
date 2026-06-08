@@ -21,6 +21,7 @@ from teatree.eval.negative_control import (
     build_compliant_run,
     build_violating_run,
     main,
+    render_outcome,
     run_negative_control,
 )
 from teatree.eval.report import ScenarioResult, render_json, render_text
@@ -75,6 +76,42 @@ class TestNegativeControlReportContent:
         assert scenario["passed"] is False
         assert any(call["name"] == "Edit" for call in scenario["tool_calls"])
         assert any(not matcher["passed"] for matcher in scenario["matchers"])
+
+
+class TestNegativeControlHonestWording:
+    """A CAUGHT planted violation = the lane PASSED; the text must say so.
+
+    The lane's own output previously embedded the inner scenario render, which
+    reads ``FAIL worktree_first`` + ``1 failed`` — the planted violation being
+    correctly detected, but framed as if the lane itself failed. A reader
+    skimming it concludes the harness is broken when it just did its job.
+    """
+
+    def test_caught_outcome_text_states_pass_not_failure(self) -> None:
+        text = render_outcome(run_negative_control(), as_json=False)
+        assert "PASS" in text
+        assert NEGATIVE_CONTROL_SCENARIO in text
+        assert "Edit" in text
+        # The misleading verdict framing must not appear for a CAUGHT lane:
+        # neither a bare ``FAIL worktree_first`` line nor a ``N failed`` summary
+        # that reads as the lane failing.
+        assert f"FAIL {NEGATIVE_CONTROL_SCENARIO}" not in text
+        assert "1 failed" not in text
+
+    def test_missed_outcome_text_states_failure(self) -> None:
+        missed = NegativeControlOutcome(
+            scenario_name=NEGATIVE_CONTROL_SCENARIO,
+            result=ScenarioResult(
+                spec=run_negative_control().result.spec,
+                run=build_compliant_run(),
+                matcher_results=(),
+                skipped=False,
+            ),
+            offending_tool_call=None,
+        )
+        text = render_outcome(missed, as_json=False)
+        assert "FAIL" in text
+        assert "MISSED" in text or "BROKEN" in text
 
 
 class TestMainEntrypoint:
