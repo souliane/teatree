@@ -8,6 +8,7 @@ import httpx
 from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
+from teatree.backends.gitlab import issue_notes as _issue_notes
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
@@ -24,9 +25,6 @@ from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
 _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
-# GitLab serves the same iid under both /-/issues/<iid> and /-/work_items/<iid>;
-# the notes API endpoint is identical for either.
-_ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
 
 
 _GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
@@ -452,79 +450,28 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             or {}
         )
 
-    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
-        """Post a comment to a GitLab issue or work item.
+    def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+        """Return the project slug that OWNS *issue_url* (the note's own project).
 
-        Accepts the canonical web formats
-        ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>`` and
-        ``…/-/work_items/<iid>`` (GitLab exposes the same iid under both).
-        Returns ``{"error": ...}`` when the URL is not a recognised GitLab
-        issue URL or when the project cannot be resolved.
+        The evidence command uploads artifacts to this slug so they land in the
+        same project's ``/uploads`` namespace the note is created on — a note
+        renders only the uploads claimed by its OWN project (a different repo's
+        upload 404s). Returns ``""`` for a non-issue URL. See
+        :mod:`teatree.backends.gitlab.issue_notes`.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+        return _issue_notes.repo_for_issue_url(issue_url)
 
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
-        return (
-            self._client.post_json(
-                f"projects/{project.project_id}/issues/{int(match['iid'])}/notes",
-                {"body": body},
-            )
-            or {}
-        )
+    def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Post a note on a GitLab issue / work item (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.post_issue_comment(self._client, issue_url=issue_url, body=body)
 
     def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
-        """List the notes on a GitLab issue or work item.
-
-        Accepts the same ``…/-/issues/<iid>`` and ``…/-/work_items/<iid>``
-        forms as :meth:`post_issue_comment` (GitLab serves the same iid and
-        notes API under both). Returns an empty list when the URL is not a
-        recognised GitLab issue URL or the project cannot be resolved — the
-        caller treats "no comments" and "unresolvable" identically (it will
-        create a fresh comment either way).
-        """
-        path = urlparse(issue_url).path
-        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
-        if match is None:
-            return []
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return []
-
-        return self._client.get_json_paginated(
-            f"projects/{project.project_id}/issues/{int(match['iid'])}/notes?per_page=100",
-        )
+        """List the notes on a GitLab issue / work item (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.list_issue_comments(self._client, issue_url=issue_url)
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
-        """Edit an existing note on a GitLab issue or work item in place.
-
-        Used by ``e2e post-evidence`` to keep a single evidence comment
-        per ``(ticket, env)`` rather than appending a new one on
-        re-run. Returns ``{"error": ...}`` when the URL is not a recognised
-        GitLab issue URL or the project cannot be resolved.
-        """
-        path = urlparse(issue_url).path
-        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
-        if match is None:
-            return {"error": f"Not a GitLab issue URL: {issue_url}"}
-
-        project = self._client.resolve_project(match["path"])
-        if project is None:
-            return {"error": f"Could not resolve project: {match['path']}"}
-
-        return (
-            self._client.put_json(
-                f"projects/{project.project_id}/issues/{int(match['iid'])}/notes/{comment_id}",
-                {"body": body},
-            )
-            or {}
-        )
+        """Edit a note in place to keep ONE evidence note per ticket (delegates to :mod:`issue_notes`)."""
+        return _issue_notes.update_issue_comment(self._client, issue_url=issue_url, comment_id=comment_id, body=body)
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         """Return the approval state for an MR — used by ``GitLabApprovalsScanner`` (#936).

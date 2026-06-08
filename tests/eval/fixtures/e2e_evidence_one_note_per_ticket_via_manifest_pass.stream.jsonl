@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_evidence_one_note_per_ticket_via_manifest-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme e2e post-evidence --ticket 42 --manifest '{\"ticket\":\"42\",\"local\":{\"commits\":{\"client\":\"aabb\"}},\"workflows\":[{\"workflow\":\"Login\",\"steps\":[\"Open the app\",\"Click Login\",\"Expect the dashboard\"],\"local\":{\"video\":\"artifacts/42/local/run.webm\",\"images\":[\"artifacts/42/local/step1.png\"]}}]}'", "description": "record the ticket's single evidence note via the manifest"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Evidence created (local) on the ticket #42."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

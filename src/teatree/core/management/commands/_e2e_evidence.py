@@ -40,7 +40,6 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.types import RawAPIDict
 
@@ -131,10 +130,16 @@ class PostEvidenceResult(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class EvidencePost:
-    """Validated inputs for :func:`post_evidence_comment`."""
+    """Validated inputs for :func:`post_evidence_comment`.
+
+    No ``repo`` field: the artifact-upload project is NOT a free input — it is
+    resolved at post time from ``issue_url`` (the note's own project) so every
+    upload lands in the same project's ``/uploads`` namespace the note is
+    created on. A note renders only the uploads its OWN project claims, so the
+    upload target must follow the note, never the manifest's MRs / CI project.
+    """
 
     issue_url: str
-    repo: str
     ticket_id: str
     title: str
     manifest: EvidenceManifest
@@ -189,9 +194,10 @@ def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
     Order: manifest parse + per-file existence/media-kind → ticket resolvable.
     Any failure raises :class:`EvidenceValidationError` (or its
     :class:`EvidenceResolutionError` subclass) so the caller exits non-zero
-    before any host side effect. The repo for artifact upload comes from the
-    overlay's CI project path; the marker id is the resolved ticket number; the
-    title falls back to the issue URL. ``--mrs`` supplements the manifest's MRs.
+    before any host side effect. The marker id is the resolved ticket number;
+    the title falls back to the issue URL. ``--mrs`` supplements the manifest's
+    MRs. The artifact-upload project is NOT decided here — it is resolved from
+    ``issue_url`` at post time (see :class:`EvidencePost`).
     """
     worktree = _resolve_worktree_or_none()
     manifest = parse_manifest(flags.manifest)
@@ -199,10 +205,15 @@ def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
     issue_url = str(ticket.issue_url)
 
     mrs = manifest.mrs or _normalize_mrs(list(flags.mrs))
-    merged = EvidenceManifest(ticket=manifest.ticket, mrs=tuple(mrs), dev=manifest.dev, local=manifest.local)
+    merged = EvidenceManifest(
+        ticket=manifest.ticket,
+        mrs=tuple(mrs),
+        dev=manifest.dev,
+        local=manifest.local,
+        steps=manifest.steps,
+    )
     return EvidencePost(
         issue_url=issue_url,
-        repo=get_overlay().metadata.get_ci_project_path(),
         ticket_id=ticket.ticket_number,
         title=flags.title.strip() or issue_url,
         manifest=merged,
@@ -289,17 +300,27 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
     side), re-renders the full side-by-side body, and writes back both the
     hidden blob and the rendered markdown — update in place, or create when
     absent.
+
+    The artifact-upload project is the note's OWN project, resolved from
+    ``issue_url`` via :meth:`CodeHostBackend.repo_for_issue_url` — never the
+    manifest's MRs or the overlay's CI project. GitLab serves a note's relative
+    ``/uploads/<secret>/<file>`` reference from the note's project namespace, so
+    an upload that landed on a different repo (e.g. the manifest's second/CI
+    repo) 404s in the rendered note. Uploading to the note's project keeps
+    upload-target == note-project by construction, regardless of how many repos
+    the manifest references.
     """
     blocked = on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION)
     if blocked:
         raise OnBehalfPostBlockedError(post.issue_url, _ON_BEHALF_ACTION)
 
+    upload_repo = host.repo_for_issue_url(post.issue_url)
     existing = find_existing_note(host.list_issue_comments(issue_url=post.issue_url), ticket_id=post.ticket_id)
     prior = existing.state if existing else empty_state(ticket=post.ticket_id, title=post.title)
 
     embeds: dict[str, dict[str, WorkflowEmbed]] = {
-        "dev": _embed_side(host, repo=post.repo, side=post.manifest.dev) if post.manifest.dev.present else {},
-        "local": _embed_side(host, repo=post.repo, side=post.manifest.local) if post.manifest.local.present else {},
+        "dev": _embed_side(host, repo=upload_repo, side=post.manifest.dev) if post.manifest.dev.present else {},
+        "local": _embed_side(host, repo=upload_repo, side=post.manifest.local) if post.manifest.local.present else {},
     }
     state = merge_state(prior, manifest=post.manifest, title=post.title, embeds=embeds)
     state["ticket"] = post.ticket_id
