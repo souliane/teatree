@@ -1,18 +1,24 @@
-"""Tests for ``t3 <overlay> e2e post-evidence`` (souliane/teatree#1409).
+"""Tests for ``t3 <overlay> e2e post-evidence`` (teatree #272, #2165).
 
-Mirrors ``tests/teatree_core/pr_command/test_post_evidence_and_sweep.py``:
-``TestCase`` + ``call_command`` + a ``MagicMock`` host, with the
-``disable_on_behalf_gate`` fixture so the transport-mechanics tests don't
-trip the on-behalf gate.
+The one-note-per-ticket evidence model: a single GitLab note per ticket that
+renders a side-by-side ``Dev | Local`` test plan and accumulates environment
+columns across runs via a hidden machine-readable state blob.
 
-The hard-fail half asserts the validators refuse bad evidence with no host
-side effect; the idempotency half asserts the one-comment-per-(ticket, env)
-hidden-marker create-or-update flow (a new commit on the same env edits in
-place with an old -> new delta); the gate half asserts the on-behalf gate
-stays in front of both branches; the pure-validator half exercises the regex
-/ hash / enum helpers directly.
+The pure-builder half exercises the manifest parse, the merge over prior state,
+the side-by-side render (videos row, screenshot pairs, em-dash cells, the
+dev-gap line, per-repo commit provenance, MR links), and the splice that adds a
+dev column while preserving a frozen local column.
+
+The relative-embed half asserts the body embeds the claimable relative
+``/uploads/<secret>/<file>`` reference, never the absolute ``/-/project/`` or
+any ``https://`` upload URL (the #2165 regression).
+
+The hard-fail half asserts the validators refuse bad evidence with no host side
+effect; the media-gate half asserts a non-rendering upload aborts the post; the
+on-behalf half asserts the gate stays in front of the post.
 """
 
+import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -23,23 +29,293 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import UploadVerification
 from teatree.core.management.commands import _e2e_evidence as _evidence
+from teatree.core.management.commands import _e2e_evidence_render as _render
 from teatree.core.management.commands import e2e as e2e_command
-from teatree.core.management.commands._e2e_evidence import EvidenceEnv
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
-_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/1409"
+_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
 
 
-def _write_png(path, payload: bytes) -> str:
-    """Write a tiny distinct PNG-ish blob and return its path string."""
+def _write_png(path: Path, payload: bytes) -> str:
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + payload)
     return str(path)
 
 
+def _write_webm(path: Path, payload: bytes) -> str:
+    path.write_bytes(b"\x1a\x45\xdf\xa3" + payload)
+    return str(path)
+
+
+# --- pure builder: render + merge + parse -----------------------------------
+
+
+class TestRenderBody:
+    """The side-by-side Dev | Local render is a pure function of the merged state."""
+
+    def _embedded(self, *, video: str = "", images: tuple[str, ...] = ()) -> _render.WorkflowEmbed:
+        return {"video_md": video, "image_md": list(images)}
+
+    def _state(
+        self,
+        *,
+        dev: _render.SideState | None = None,
+        local: _render.SideState | None = None,
+        mrs: list[str] | None = None,
+    ) -> _render.EvidenceState:
+        default_mrs = [
+            "https://gitlab.com/org/client/-/merge_requests/6331",
+            "https://gitlab.com/org/product/-/merge_requests/7585",
+        ]
+        return {
+            "ticket": "8521",
+            "title": "My feature",
+            "mrs": default_mrs if mrs is None else mrs,
+            "dev": dev if dev is not None else {"commits": {}, "missing_on_dev": [], "workflows": {}},
+            "local": local if local is not None else {"commits": {}, "workflows": {}},
+        }
+
+    def test_header_has_marker_data_blob_title_and_mr_links(self) -> None:
+        state = self._state(
+            local={"commits": {"client": "aaaa", "product": "bbbb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
+        assert "<!-- t3-e2e-data " in body
+        assert "## E2E Evidence — My feature" in body
+        # Multi-repo MR links, terse repo!num labels.
+        assert "Repos & MRs: [client!6331](" in body
+        assert "[product!7585](" in body
+        # Per-repo commit provenance for the tested side.
+        assert "Local tested: client `aaaa`, product `bbbb`" in body
+
+    def test_side_by_side_table_pairs_dev_left_local_right(self) -> None:
+        state = self._state(
+            dev={
+                "commits": {"client": "ddee"},
+                "missing_on_dev": [],
+                "workflows": {
+                    "Login": self._embedded(video="![v](/uploads/s/dev.webm)", images=("![i](/uploads/s/d1.png)",))
+                },
+            },
+            local={
+                "commits": {"client": "aabb"},
+                "workflows": {
+                    "Login": self._embedded(video="![v](/uploads/s/loc.webm)", images=("![i](/uploads/s/l1.png)",))
+                },
+            },
+        )
+        body = _evidence.render_body(state)
+        assert "### Login" in body
+        assert "| Dev | Local |" in body
+        # Video row first: dev video left, local video right.
+        assert "| ![v](/uploads/s/dev.webm) | ![v](/uploads/s/loc.webm) |" in body
+        # Screenshot pair row.
+        assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in body
+        assert "Dev deployed: client `ddee`" in body
+
+    def test_missing_side_renders_emdash_cells(self) -> None:
+        # Local captured, dev not yet deployed → dev column is all em-dashes.
+        state = self._state(
+            local={
+                "commits": {"client": "aabb"},
+                "workflows": {
+                    "Login": self._embedded(video="![v](/uploads/s/loc.webm)", images=("![i](/uploads/s/l1.png)",))
+                },
+            },
+        )
+        body = _evidence.render_body(state)
+        assert "| — | ![v](/uploads/s/loc.webm) |" in body
+        assert "| — | ![i](/uploads/s/l1.png) |" in body
+
+    def test_dev_gap_reconciliation_line_renders(self) -> None:
+        state = self._state(
+            dev={
+                "commits": {"client": "ddee"},
+                "missing_on_dev": ["client!6331 (unmerged)", "product!7585 (draft)"],
+                "workflows": {"Login": self._embedded()},
+            },
+        )
+        body = _evidence.render_body(state)
+        assert "⚠️ Not yet on dev: client!6331 (unmerged), product!7585 (draft) — expected gap." in body
+
+    def test_workflow_with_no_video_omits_video_cell_content(self) -> None:
+        state = self._state(
+            local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](/uploads/s/x.png)",))}},
+        )
+        body = _evidence.render_body(state)
+        # No local video → the video cell is the em-dash placeholder, not blank.
+        assert "| — | — |" in body  # dev side absent + local video absent
+        assert "| — | ![i](/uploads/s/x.png) |" in body
+
+    def test_mrs_line_omitted_when_no_mrs(self) -> None:
+        state = self._state(mrs=[], local={"commits": {}, "workflows": {"Wf": self._embedded(images=("![i](u)",))}})
+        body = _evidence.render_body(state)
+        assert "Repos & MRs:" not in body
+
+
+class TestMergeState:
+    """The merge over prior state freezes the side this run does not carry."""
+
+    def _local_manifest(self) -> _evidence.EvidenceManifest:
+        return _evidence.EvidenceManifest(
+            ticket="8521",
+            mrs=("https://gitlab.com/org/client/-/merge_requests/6331",),
+            dev=_evidence.SideManifest(present=False),
+            local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+        )
+
+    def _dev_manifest(self) -> _evidence.EvidenceManifest:
+        return _evidence.EvidenceManifest(
+            ticket="8521",
+            mrs=(),
+            dev=_evidence.SideManifest(present=True, commits={"client": "ddee"}, missing_on_dev=()),
+            local=_evidence.SideManifest(present=False),
+        )
+
+    def test_dev_only_run_preserves_existing_local_column(self) -> None:
+        prior: _render.EvidenceState = {
+            "ticket": "8521",
+            "title": "t",
+            "mrs": [],
+            "dev": {"commits": {}, "missing_on_dev": ["client!6331 (unmerged)"], "workflows": {}},
+            "local": {
+                "commits": {"client": "aabb"},
+                "workflows": {"Login": {"video_md": "![v](/uploads/s/l.webm)", "image_md": []}},
+            },
+        }
+        merged = _evidence.merge_state(
+            prior,
+            manifest=self._dev_manifest(),
+            title="t",
+            embeds={"dev": {"Login": {"video_md": "![v](/uploads/s/dev.webm)", "image_md": []}}, "local": {}},
+        )
+        # Dev overwritten (new commit, gap cleared, new captures).
+        assert merged["dev"]["commits"] == {"client": "ddee"}
+        assert merged["dev"]["missing_on_dev"] == []
+        assert merged["dev"]["workflows"]["Login"]["video_md"] == "![v](/uploads/s/dev.webm)"
+        # Local frozen exactly as it was.
+        assert merged["local"]["commits"] == {"client": "aabb"}
+        assert merged["local"]["workflows"]["Login"]["video_md"] == "![v](/uploads/s/l.webm)"
+
+    def test_local_only_run_over_empty_prior_leaves_dev_empty(self) -> None:
+        merged = _evidence.merge_state(
+            _render.empty_state(ticket="8521", title="t"),
+            manifest=self._local_manifest(),
+            title="t",
+            embeds={"dev": {}, "local": {"Login": {"video_md": "", "image_md": ["![i](/uploads/s/x.png)"]}}},
+        )
+        assert merged["local"]["commits"] == {"client": "aabb"}
+        assert merged["dev"]["workflows"] == {}
+
+    def test_add_dev_section_preserves_then_renders_both(self) -> None:
+        # local first → render → recover state → dev run merges → both columns render.
+        local_state = _evidence.merge_state(
+            _render.empty_state(ticket="8521", title="My feature"),
+            manifest=self._local_manifest(),
+            title="My feature",
+            embeds={
+                "dev": {},
+                "local": {"Login": {"video_md": "![v](/uploads/s/l.webm)", "image_md": ["![i](/uploads/s/l1.png)"]}},
+            },
+        )
+        local_state["ticket"] = "8521"
+        body_after_local = _evidence.render_body(local_state)
+        recovered = _evidence.parse_state_blob(body_after_local)
+
+        dev_state = _evidence.merge_state(
+            recovered,
+            manifest=self._dev_manifest(),
+            title="My feature",
+            embeds={
+                "dev": {"Login": {"video_md": "![v](/uploads/s/d.webm)", "image_md": ["![i](/uploads/s/d1.png)"]}},
+                "local": {},
+            },
+        )
+        dev_state["ticket"] = "8521"
+        final = _evidence.render_body(dev_state)
+        # Both columns are present and paired.
+        assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
+        assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in final
+        # Local survived the dev-only merge untouched.
+        assert "Local tested: client `aabb`" in final
+
+
+class TestParseManifest:
+    """The manifest validator: shape, per-file existence, media kind."""
+
+    def _manifest(self, tmp_path: Path, *, video: str | None, images: list[str]) -> str:
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"video": video, "images": images}}],
+            },
+        )
+
+    def test_parses_valid_local_manifest(self, tmp_path: Path) -> None:
+        img = _write_png(tmp_path / "a.png", b"A")
+        vid = _write_webm(tmp_path / "v.webm", b"V")
+        manifest = self._manifest(tmp_path, video=vid, images=[img])
+        parsed = _evidence.parse_manifest(manifest)
+        assert parsed.ticket == "8521"
+        assert parsed.local.present is True
+        assert parsed.dev.present is False
+        wf = parsed.local.workflows["Login"]
+        assert wf.video is not None
+        assert len(wf.images) == 1
+
+    def test_rejects_invalid_json(self) -> None:
+        with pytest.raises(_evidence.EvidenceValidationError, match="not valid JSON"):
+            _evidence.parse_manifest("{not json")
+
+    def test_rejects_missing_workflows(self) -> None:
+        with pytest.raises(_evidence.EvidenceValidationError, match="workflows"):
+            _evidence.parse_manifest(json.dumps({"ticket": "8521", "local": {}}))
+
+    def test_rejects_missing_artifact_file(self, tmp_path: Path) -> None:
+        manifest = self._manifest(tmp_path, video=None, images=[str(tmp_path / "absent.png")])
+        with pytest.raises(_evidence.EvidenceValidationError, match="not found"):
+            _evidence.parse_manifest(manifest)
+
+    def test_rejects_wrong_media_kind_for_video_slot(self, tmp_path: Path) -> None:
+        # A .png handed to the video slot must be rejected.
+        png = _write_png(tmp_path / "still.png", b"X")
+        manifest = self._manifest(tmp_path, video=png, images=[_write_png(tmp_path / "ok.png", b"Y")])
+        with pytest.raises(_evidence.EvidenceValidationError, match="not a recognised video"):
+            _evidence.parse_manifest(manifest)
+
+    def test_rejects_when_no_side_carries_captures(self, tmp_path: Path) -> None:
+        manifest = json.dumps(
+            {"ticket": "8521", "workflows": [{"workflow": "Login"}]},
+        )
+        with pytest.raises(_evidence.EvidenceValidationError, match="no 'dev' or 'local'"):
+            _evidence.parse_manifest(manifest)
+
+
+class TestMrLabel:
+    """The MR link rendering is a pure helper."""
+
+    def test_gitlab_mr_renders_repo_bang_num(self) -> None:
+        line = _evidence.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
+        assert line == "Repos & MRs: [client!6331](https://gitlab.com/grp/sub/client/-/merge_requests/6331)"
+
+    def test_github_pr_renders_repo_hash_num(self) -> None:
+        line = _evidence.render_mrs_line(("https://github.com/owner/product/pull/7585",))
+        assert line == "Repos & MRs: [product#7585](https://github.com/owner/product/pull/7585)"
+
+    def test_non_url_ref_shown_verbatim(self) -> None:
+        line = _evidence.render_mrs_line(("client!6331",))
+        assert line == "Repos & MRs: client!6331"
+
+
+# --- command + host integration ---------------------------------------------
+
+
 class _EvidenceTestBase(TestCase):
     @pytest.fixture(autouse=True)
-    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         self._tmp = tmp_path
 
@@ -53,313 +329,95 @@ class _EvidenceTestBase(TestCase):
 
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
-    def _clean_repo(self) -> None:
-        """Make the commit validators deterministic: known SHA + clean tree."""
-        self._monkeypatch.setattr(_evidence.git, "head_sha", lambda repo=".": "a" * 40)
-        self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
-        self._monkeypatch.setattr(
-            _evidence.git,
-            "check",
-            lambda *, repo=".", args: True,
-        )
-
     def _patch_host(self, host: MagicMock) -> None:
         self._monkeypatch.setattr(e2e_command, "code_host_from_overlay", lambda: host)
-        # No worktree resolvable from the test cwd → ticket comes from --ticket.
         self._monkeypatch.setattr(
             _evidence,
             "resolve_worktree",
             MagicMock(side_effect=_evidence.WorktreeNotFoundError("none")),
         )
 
-    def _before_after(self) -> tuple[str, str]:
-        before = _write_png(self._tmp / "before.png", b"BEFORE")
-        after = _write_png(self._tmp / "after.png", b"AFTER")
-        return before, after
-
-
-class TestHardFail(_EvidenceTestBase):
-    """Each invalid input exits non-zero and posts/uploads nothing."""
-
-    def _run_expecting_exit(self, host: MagicMock, **kwargs: str) -> None:
-        # A real ticket exists, so the ONLY failure path is the validator
-        # under test — never an unresolvable-ticket false positive.
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
-        self._patch_host(host)
-        with (
-            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            pytest.raises(SystemExit),
-        ):
-            call_command("e2e", "post-evidence", **kwargs)
-        host.upload_file.assert_not_called()
-        host.post_issue_comment.assert_not_called()
-        host.update_issue_comment.assert_not_called()
-
-    def test_bad_env(self) -> None:
-        self._clean_repo()
-        before, after = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="staging",
-            before=before,
-            after=after,
-            assertion="It works",
-        )
-
-    def test_missing_before(self) -> None:
-        self._clean_repo()
-        _, after = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before="",
-            after=after,
-            assertion="It works",
-        )
-
-    def test_missing_after(self) -> None:
-        self._clean_repo()
-        before, _ = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after="",
-            assertion="It works",
-        )
-
-    def test_identical_before_after_same_path(self) -> None:
-        self._clean_repo()
-        before, _ = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=before,
-            assertion="It works",
-        )
-
-    def test_byte_identical_distinct_paths(self) -> None:
-        self._clean_repo()
-        before = _write_png(self._tmp / "before.png", b"SAME")
-        after = _write_png(self._tmp / "after.png", b"SAME")
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="local",
-            before=before,
-            after=after,
-            assertion="It works",
-        )
-
-    def test_dirty_tree(self) -> None:
-        self._monkeypatch.setattr(_evidence.git, "head_sha", lambda repo=".": "a" * 40)
-        self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": " M src/x.py")
-        before, after = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="It works",
-        )
-
-    def test_unknown_commit(self) -> None:
-        self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
-
-        def _reject(*, repo: str = ".", args: list[str]) -> str:
-            raise _evidence.CommandFailedError(["git", *args], 128, "", "bad object")
-
-        self._monkeypatch.setattr(_evidence.git, "run_strict", _reject)
-        before, after = self._before_after()
-        host = MagicMock()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            commit="deadbeef",
-            before=before,
-            after=after,
-            assertion="It works",
-        )
-
-
-class TestIdempotency(_EvidenceTestBase):
-    """The (ticket, env) hidden-marker create-or-update flow (gate disabled)."""
-
     def _ticket(self) -> None:
         from teatree.core.models import Ticket  # noqa: PLC0415
 
         Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
 
-    def _run(self, host: MagicMock, **kwargs: str) -> dict[str, object]:
-        self._clean_repo()
+    def _local_manifest(self) -> str:
+        img = _write_png(self._tmp / "step1.png", b"A")
+        vid = _write_webm(self._tmp / "run.webm", b"V")
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"video": vid, "images": [img]}}],
+            },
+        )
+
+
+class TestCreateAndRelativeEmbed(_EvidenceTestBase):
+    """A first run creates the note and embeds the RELATIVE upload reference (#2165)."""
+
+    def _run(self, host: MagicMock, **kwargs: object) -> dict[str, object]:
         self._patch_host(host)
         host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
-        # The self-verification gate passes: each upload resolves + renders, and
-        # the embed is the verified ABSOLUTE url (never the relative /uploads path).
-        host.verify_upload.return_value = UploadVerification(
-            ok=True, embed_url="https://gitlab.com/-/project/9/uploads/deadbeef/x.png"
-        )
+        # The existence gate passes; the embed is the RELATIVE /uploads ref GitLab
+        # claims on save — never the absolute /-/project or https:// form (#2165).
+        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
             return cast("dict[str, object]", call_command("e2e", "post-evidence", **kwargs))
 
-    def _existing_comment(self, *, env: str, commit: str, comment_id: int) -> dict[str, object]:
-        marker = f"<!-- t3-e2e-evidence env={env} -->"
-        return {"id": comment_id, "body": f"{marker}\n## old\nCommit tested: `{commit}`\n"}
-
-    def test_creates_new_when_list_empty(self) -> None:
+    def test_creates_note_with_relative_embed(self) -> None:
         self._ticket()
-        before, after = self._before_after()
         host = MagicMock()
         host.list_issue_comments.return_value = []
         host.post_issue_comment.return_value = {"id": 77, "web_url": "u"}
 
-        result = self._run(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="The thing works",
-        )
+        result = self._run(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
 
         assert result["action"] == "created"
         assert result["comment_id"] == 77
-        assert result["env"] == "dev"
+        assert result["envs"] == ["local"]
         host.post_issue_comment.assert_called_once()
         host.update_issue_comment.assert_not_called()
         body = host.post_issue_comment.call_args.kwargs["body"]
-        assert "t3-e2e-evidence env=dev -->" in body
-        assert "Commit tested: `" + "a" * 40 + "`" in body
-        assert "The thing works" in body
-        # The body embeds the verified ABSOLUTE upload URL, never the relative
-        # /uploads path that fails to render in the work-items UI (#2156).
-        assert "https://gitlab.com/-/project/9/uploads/deadbeef/x.png" in body
-        assert "](/uploads/" not in body
+        assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
+        # The body embeds the RELATIVE /uploads ref, never the absolute forms.
+        assert "](/uploads/deadbeef/x.png)" in body
+        assert "/-/project/" not in body
+        assert "https://gitlab.com/-/project/" not in body
         host.verify_upload.assert_called()
 
-    def test_updates_when_marker_env_matches(self) -> None:
+    def test_updates_existing_note_in_place(self) -> None:
         self._ticket()
-        before, after = self._before_after()
         host = MagicMock()
-        host.list_issue_comments.return_value = [
-            self._existing_comment(env="dev", commit="a" * 40, comment_id=33),
-        ]
+        prior_state = {
+            "ticket": "8521",
+            "title": "t",
+            "mrs": [],
+            "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
+            "local": {
+                "commits": {"client": "old"},
+                "workflows": {"Old": {"video_md": "", "image_md": ["![i](/uploads/s/o.png)"]}},
+            },
+        }
+        marker = "<!-- t3-e2e-evidence ticket=8521 -->"
+        blob = "<!-- t3-e2e-data " + json.dumps(prior_state, separators=(",", ":"), sort_keys=True) + " -->"
+        host.list_issue_comments.return_value = [{"id": 33, "body": f"{marker}\n{blob}\n## E2E Evidence — t\n"}]
         host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
 
-        result = self._run(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="works",
-        )
+        result = self._run(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
 
         assert result["action"] == "updated"
         assert result["comment_id"] == 33
         host.update_issue_comment.assert_called_once()
         host.post_issue_comment.assert_not_called()
-
-    def test_updates_in_place_when_commit_differs(self) -> None:
-        self._ticket()
-        before, after = self._before_after()
-        host = MagicMock()
-        host.list_issue_comments.return_value = [
-            self._existing_comment(env="dev", commit="b" * 40, comment_id=33),
-        ]
-        host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
-
-        result = self._run(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="works",
-        )
-
-        assert result["action"] == "updated"
-        assert result["comment_id"] == 33
-        host.update_issue_comment.assert_called_once()
-        host.post_issue_comment.assert_not_called()
-
-    def test_update_body_renders_commit_delta(self) -> None:
-        self._ticket()
-        before, after = self._before_after()
-        host = MagicMock()
-        host.list_issue_comments.return_value = [
-            self._existing_comment(env="dev", commit="b" * 40, comment_id=33),
-        ]
-        host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
-
-        self._run(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="works",
-        )
-
-        body = host.update_issue_comment.call_args.kwargs["body"]
-        assert "Re-verified: `" + "b" * 8 + "` -> `" + "a" * 8 + "`" in body
-        match = _evidence._E2E_MARKER_RE.search(body)
-        assert match is not None
-        assert match.group("env") == "dev"
-
-    def test_new_comment_when_env_differs(self) -> None:
-        self._ticket()
-        before, after = self._before_after()
-        host = MagicMock()
-        host.list_issue_comments.return_value = [
-            self._existing_comment(env="local", commit="a" * 40, comment_id=33),
-        ]
-        host.post_issue_comment.return_value = {"id": 99}
-
-        result = self._run(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="works",
-        )
-
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
-        host.update_issue_comment.assert_not_called()
 
 
 class TestMediaRenderGate(_EvidenceTestBase):
-    """The post-upload self-verification gate refuses to post broken media (#2156).
+    """A non-rendering upload aborts the post — "posted" never means "broken media"."""
 
-    "Posted" must mean "the media is verified renderable", not "the upload
-    POST returned 201". If any embedded artifact does not resolve + render,
-    the command aborts non-zero, posts no comment, and burns no approval.
-    """
-
-    def _ticket(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
-        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
-
-    def _run_expecting_exit(self, host: MagicMock, **kwargs: str) -> None:
-        self._clean_repo()
+    def _run_expecting_exit(self, host: MagicMock, **kwargs: object) -> None:
         self._patch_host(host)
         host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
         self._ticket()
@@ -368,84 +426,54 @@ class TestMediaRenderGate(_EvidenceTestBase):
             pytest.raises(SystemExit),
         ):
             call_command("e2e", "post-evidence", **kwargs)
-        # The defining assertion (anti-vacuity): a non-rendering artifact means
-        # NO comment is ever posted. Remove the gate in post_evidence_comment
-        # and these go RED — the broken-media comment would be created.
         host.post_issue_comment.assert_not_called()
         host.update_issue_comment.assert_not_called()
 
-    def test_refuses_to_post_when_upload_does_not_render(self) -> None:
+    def test_refuses_to_post_when_upload_does_not_resolve(self) -> None:
         host = MagicMock()
         host.list_issue_comments.return_value = []
-        # The upload returned 201 but the artifact does not resolve / render.
         host.verify_upload.return_value = UploadVerification(
             ok=False,
-            embed_url="https://gitlab.com/-/project/9/uploads/deadbeef/x.png",
+            embed_url="/uploads/deadbeef/x.png",
             detail="upload fetch returned HTTP 404",
         )
-        before, after = self._before_after()
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            assertion="works",
-        )
+        self._run_expecting_exit(host, ticket=_ISSUE_URL, manifest=self._local_manifest())
 
-    def test_refuses_to_post_when_only_the_video_does_not_render(self) -> None:
+    def test_missing_artifact_file_exits_before_any_upload(self) -> None:
         host = MagicMock()
         host.list_issue_comments.return_value = []
-        before, after = self._before_after()
-        video = self._tmp / "clip.webm"
-        video.write_bytes(b"\x1a\x45\xdf\xa3fakewebm")
-
-        # The stills verify fine; only the video fails the render check.
-        ok_then_video_fails = [
-            UploadVerification(ok=True, embed_url="https://gitlab.com/-/project/9/uploads/s/before.png"),
-            UploadVerification(ok=True, embed_url="https://gitlab.com/-/project/9/uploads/s/after.png"),
-            UploadVerification(ok=False, embed_url="", detail="fetched bytes are not a renderable video"),
-        ]
-        host.verify_upload.side_effect = ok_then_video_fails
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            video=str(video),
-            assertion="works",
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {}},
+                "workflows": [{"workflow": "Login", "local": {"images": [str(self._tmp / "absent.png")]}}],
+            },
         )
+        self._run_expecting_exit(host, ticket=_ISSUE_URL, manifest=manifest)
+        host.upload_file.assert_not_called()
 
-    def test_non_video_passed_as_video_is_rejected(self) -> None:
+
+class TestRequiresManifest(_EvidenceTestBase):
+    """An empty --manifest exits non-zero with no host side effect."""
+
+    def test_missing_manifest_exits(self) -> None:
+        self._ticket()
         host = MagicMock()
-        host.list_issue_comments.return_value = []
-        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="https://x/img.png")
-        before, after = self._before_after()
-        # A .txt handed to --video must never be embedded as a <video>.
-        not_a_video = self._tmp / "notes.txt"
-        not_a_video.write_text("not a video", encoding="utf-8")
-        self._run_expecting_exit(
-            host,
-            ticket=_ISSUE_URL,
-            env="dev",
-            before=before,
-            after=after,
-            video=str(not_a_video),
-            assertion="works",
-        )
+        self._patch_host(host)
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest="")
+        host.upload_file.assert_not_called()
+        host.post_issue_comment.assert_not_called()
 
 
 class TestOnBehalfGateConsulted(TestCase):
-    """The on-behalf gate stays in front of the upsert — no bypass.
-
-    The (ticket, env) idempotency change must NOT weaken the gate: with the
-    default blocking mode and no recorded approval, neither the create nor
-    the update branch may post; the command exits non-zero with no host write.
-    """
+    """The on-behalf gate stays in front of the post — no bypass."""
 
     @pytest.fixture(autouse=True)
-    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
@@ -457,11 +485,14 @@ class TestOnBehalfGateConsulted(TestCase):
         post = _evidence.EvidencePost(
             issue_url=_ISSUE_URL,
             repo="org/repo",
-            env=EvidenceEnv.DEV,
-            commit="a" * 40,
-            before_path=Path("/dev/null"),
-            after_path=Path("/dev/null"),
-            assertion="works",
+            ticket_id="8521",
+            title="t",
+            manifest=_evidence.EvidenceManifest(
+                ticket="8521",
+                mrs=(),
+                dev=_evidence.SideManifest(present=False),
+                local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+            ),
         )
         with pytest.raises(_evidence.OnBehalfPostBlockedError):
             _evidence.post_evidence_comment(host, post)
@@ -474,150 +505,38 @@ class TestOnBehalfGateConsulted(TestCase):
         self._post(comments=[])
 
     def test_update_branch_blocked_without_approval(self) -> None:
-        self._post(comments=[{"id": 1, "body": "<!-- t3-e2e-evidence env=dev -->\nx"}])
+        self._post(comments=[{"id": 1, "body": "<!-- t3-e2e-evidence ticket=8521 -->\nx"}])
 
 
-class TestPureValidators:
-    """The pure helpers in ``_e2e_evidence`` are independently testable."""
+class TestPureHelpers:
+    """The marker / state-blob / existing-note helpers are independently testable."""
 
-    def test_marker_regex_round_trip(self) -> None:
-        marker = _evidence.evidence_marker(env=EvidenceEnv.DEV)
-        match = _evidence._E2E_MARKER_RE.search(f"prefix {marker} suffix")
-        assert match is not None
-        assert match.group("env") == "dev"
+    def test_marker_round_trip(self) -> None:
+        marker = _evidence.evidence_marker(ticket_id="8521")
+        assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
+        assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
-    def test_before_after_hash_compare(self, tmp_path) -> None:
-        a = tmp_path / "a.png"
-        b = tmp_path / "b.png"
-        a.write_bytes(b"AAA")
-        b.write_bytes(b"BBB")
-        # Distinct bytes pass.
-        _evidence.validate_before_differs_from_after(before=a, after=b)
-        # Same bytes (distinct path) fail.
-        b.write_bytes(b"AAA")
-        with pytest.raises(_evidence.EvidenceValidationError):
-            _evidence.validate_before_differs_from_after(before=a, after=b)
+    def test_parse_state_blob_recovers_and_coerces(self) -> None:
+        state = {"ticket": "8521", "title": "t", "mrs": [], "dev": {}, "local": {}}
+        body = "<!-- t3-e2e-data " + json.dumps(state) + " -->\nrendered"
+        recovered = _evidence.parse_state_blob(body)
+        assert recovered["ticket"] == "8521"
+        assert recovered["title"] == "t"
+        # A coerced side always carries the typed keys.
+        assert recovered["dev"]["workflows"] == {}
+        assert recovered["local"]["commits"] == {}
+        # No blob / corrupt blob → an empty (but typed) state, never a crash.
+        assert _evidence.parse_state_blob("no blob here")["ticket"] == ""
+        assert _evidence.parse_state_blob("<!-- t3-e2e-data {not json} -->")["ticket"] == ""
 
-    def test_env_enum_coercion(self) -> None:
-        assert _evidence.coerce_env("DEV") is EvidenceEnv.DEV
-        assert _evidence.coerce_env(" local ") is EvidenceEnv.LOCAL
-        with pytest.raises(_evidence.EvidenceValidationError):
-            _evidence.coerce_env("")
-        with pytest.raises(_evidence.EvidenceValidationError):
-            _evidence.coerce_env("prod")
-
-    def test_find_matching_comment_keys_on_env_only(self) -> None:
+    def test_find_existing_note_keys_on_ticket_marker(self) -> None:
         comments = [
-            {"id": 1, "body": "<!-- t3-e2e-evidence env=dev -->\nCommit tested: `" + "f" * 40 + "`"},
-            {"id": 2, "body": "no marker here"},
-            {"id": 3, "body": "<!-- t3-e2e-evidence env=local -->\nx"},
+            {"id": 1, "body": "no marker"},
+            {"id": 2, "body": "<!-- t3-e2e-evidence ticket=9999 -->\nother ticket"},
+            {"id": 3, "body": '<!-- t3-e2e-evidence ticket=8521 -->\n<!-- t3-e2e-data {"ticket":"8521"} -->'},
         ]
-        dev = _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV)
-        assert dev is not None
-        assert dev.comment_id == 1
-        assert dev.prior_commit == "f" * 40
-        local = _evidence.find_matching_comment(comments, env=EvidenceEnv.LOCAL)
-        assert local is not None
-        assert local.comment_id == 3
-        assert local.prior_commit == ""
-        assert _evidence.find_matching_comment([], env=EvidenceEnv.DEV) is None
-        # A marker comment with no usable id is skipped, not returned.
-        assert (
-            _evidence.find_matching_comment(
-                [{"id": 0, "body": "<!-- t3-e2e-evidence env=dev -->"}], env=EvidenceEnv.DEV
-            )
-            is None
-        )
-
-    def test_prior_commit_from_body_parses_marker(self) -> None:
-        body = "<!-- t3-e2e-evidence env=dev -->\nCommit tested: `" + "b" * 40 + "`\nclaim"
-        assert _evidence._prior_commit_from_body(body) == "b" * 40
-        assert _evidence._prior_commit_from_body("no commit line") == ""
-
-    def test_build_body_renders_delta_when_prior_commit_given(self) -> None:
-        body = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.DEV,
-                commit="a" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-                prior_commit="b" * 40,
-            ),
-        )
-        assert ("b" * 8) in body
-        assert ("a" * 8) in body
-        assert "Re-verified:" in body
-        # No prior commit -> no delta line.
-        first = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.DEV,
-                commit="a" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-            ),
-        )
-        assert "Re-verified:" not in first
-        # Same prior == current commit -> no delta line either.
-        same = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.DEV,
-                commit="a" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-                prior_commit="a" * 40,
-            ),
-        )
-        assert "Re-verified:" not in same
-
-    def test_resolve_commit_expands_short_to_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # #1652: the supplied short SHA is captured from rev-parse output as
-        # the canonical full SHA, not echoed verbatim.
-        full = "b" * 40
-        monkeypatch.setattr(_evidence.git, "run_strict", lambda *, repo=".", args: full)
-        monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
-        resolved = _evidence.resolve_and_validate_commit(commit="bbbbbbb", repo=".")
-        assert resolved == full
-
-    def test_build_body_includes_video_only_when_given(self) -> None:
-        without = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.LOCAL,
-                commit="d" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-            ),
-        )
-        assert "Video" not in without
-        assert "environment: **LOCAL**" in without
-        with_video = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.LOCAL,
-                commit="d" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-                video_md="![video](v)",
-            ),
-        )
-        # The video is embedded inline (full-width <video>), never in a one-cell row.
-        assert "### Video" in with_video
-        assert "![video](v)" in with_video
-        assert "| Video |" not in with_video
-
-    def test_build_body_places_video_above_before_after_table(self) -> None:
-        """The user's standard: the clip sits ABOVE the Before/After stills."""
-        body = _evidence.build_evidence_body(
-            _evidence.EvidenceComment(
-                env=EvidenceEnv.LOCAL,
-                commit="d" * 40,
-                before_md="![b](b)",
-                after_md="![a](a)",
-                assertion="claim",
-                video_md="![video](v)",
-            ),
-        )
-        assert body.index("### Video") < body.index("| Before | After |")
+        found = _evidence.find_existing_note(comments, ticket_id="8521")
+        assert found is not None
+        assert found.comment_id == 3
+        assert found.state["ticket"] == "8521"
+        assert _evidence.find_existing_note([], ticket_id="8521") is None

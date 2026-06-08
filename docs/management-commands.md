@@ -127,7 +127,7 @@ End-to-end test execution.
 | `trigger-ci` | `branch` | dict | Triggers E2E tests on a remote CI pipeline via the overlay's E2E config |
 | `external` | `test_path`, `--headed`, `--update-snapshots` | string | Runs Playwright tests from the external test repo (`T3_PRIVATE_TESTS`). Auto-discovers frontend port and tenant variant. |
 | `project` | `test_path`, `--headed`, `--docker` | string | Runs E2E tests from the project's own test directory, via docker or directly |
-| `post-evidence` | `--ticket`, `--env`, `--commit`, `--before`, `--after`, `--video`, `--assertion` | dict | Posts ONE structured evidence comment on the ticket (not the MR). Validation-gated (env ∈ {dev, local}, before ≠ after, known + clean commit) and idempotent on `(ticket, env)` via a hidden marker — one comment per env, edited in place across commits with an `old -> new` delta. |
+| `post-evidence` | `--manifest`, `--ticket`, `--title`, `--mrs` | dict | Posts/updates the ticket's ONE structured evidence note (not the MR) from a manifest: a side-by-side Dev\|Local test-plan table per workflow, multi-repo MR links, per-env commit provenance, and a dev-gap reconciliation line. A hidden machine-readable state blob keyed on the ticket makes re-runs merge each env in place (dev-only run freezes local, and vice versa). Media embeds the relative `/uploads/<secret>/<file>` reference GitLab claims on save so it renders. |
 
 ## `tool`
 
