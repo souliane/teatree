@@ -210,6 +210,97 @@ class TestUpdateRepoSkips:
         assert result.is_error is False
 
 
+class TestPrimaryCloneOffDefaultBranchFailsLoud:
+    """The primary/running clone parked off its default branch must fail loud (#2134).
+
+    A non-default-branch (or no-upstream) primary clone must FAIL LOUD — non-zero
+    exit + a prominent warning naming the current branch and the one-line fix —
+    never a quiet ``SKIP`` folded into an otherwise-green summary. A stale dev
+    install silently diverges from main, so the running agent keeps executing
+    outdated code. Overlays keep the soft skip (they are not the editable ``t3``
+    being run).
+    """
+
+    def test_primary_feature_branch_fails_loud(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feature/wip")
+
+        result = update_repo("teatree", clone, is_primary=True)
+
+        assert result.status is UpdateStatus.FAILED
+        assert result.is_error is True
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "feature/wip" in out
+        assert "git switch" in out
+        # Never clobbered — the clone stays on its branch.
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "feature/wip"
+
+    def test_primary_non_default_branch_with_upstream_fails_loud(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feature/tracked")
+        _git(clone, "push", "-u", "origin", "feature/tracked")
+
+        result = update_repo("teatree (running)", clone, is_primary=True)
+
+        assert result.status is UpdateStatus.FAILED
+        assert result.is_error is True
+        assert "feature/tracked" in result.reason
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "feature/tracked" in out
+        assert "git switch" in out
+
+    def test_primary_no_upstream_fails_loud(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # A clone whose default branch has no upstream tracking branch (a
+        # detached/local-only checkout the dev forgot to push): for the
+        # primary clone this is fail-loud, not a quiet skip.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "review-branch")
+
+        result = update_repo("teatree", clone, is_primary=True)
+
+        assert result.status is UpdateStatus.FAILED
+        assert result.is_error is True
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "git switch" in out
+
+    def test_overlay_off_default_branch_still_soft_skips(self, tmp_path: Path) -> None:
+        # An overlay (not the running t3) parked off-branch keeps the soft
+        # SKIP — only the primary clone is the fail-loud currency hazard.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feature/wip")
+
+        result = update_repo("some-overlay", clone, is_primary=False)
+
+        assert result.status is UpdateStatus.SKIPPED
+        assert result.is_error is False
+
+    def test_run_update_exits_nonzero_when_primary_off_default_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end: _run_update collects the primary clone parked off its
+        # default branch and exits non-zero (fail-loud) — not the green
+        # success-shaped summary the bug produced.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feature/wip")
+
+        monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("teatree", clone)])
+        monkeypatch.setattr(update_mod, "_reinstall_and_resetup", lambda _r: None)
+        monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
+
+        with pytest.raises((SystemExit, click.exceptions.Exit)):
+            update_mod._run_update()
+
+
 class TestRepoUpdateSummary:
     def test_summary_line_shapes(self) -> None:
         updated = RepoUpdate("core", UpdateStatus.UPDATED, old_sha="aaaaaaa", new_sha="bbbbbbb")
@@ -230,7 +321,7 @@ class TestUpdateCommandExitCode:
 
     def _run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, results: list[RepoUpdate]) -> int:
         monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("core", tmp_path)])
-        monkeypatch.setattr(update_mod, "update_repo", lambda name, path: results.pop(0))
+        monkeypatch.setattr(update_mod, "update_repo", lambda name, path, *, is_primary=False: results.pop(0))
         monkeypatch.setattr(update_mod, "_reinstall_and_resetup", lambda repos: None)
         monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
 
