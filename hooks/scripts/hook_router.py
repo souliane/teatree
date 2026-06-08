@@ -723,6 +723,27 @@ def _teatree_active(session_id: str) -> bool:
     return _state_file(session_id, "teatree-active").is_file()
 
 
+def _loop_auto_load_active(session_id: str) -> bool:
+    """Whether this session may auto-arm the loop/statusline machinery (#256).
+
+    The single gate every session-start auto-load injection point shares —
+    the loop-registration nudge (:func:`handle_enforce_loop_on_prompt`,
+    :func:`_loop_registration_exempt`) and the tick-owner bootstrap
+    (:func:`handle_session_start_bootstrap`). Two conditions must BOTH hold:
+
+    - the session opted into teatree (:func:`_teatree_active` — a teatree
+        skill was loaded), AND
+    - the operator explicitly enabled auto-load (:func:`_loops_auto_load_enabled`).
+
+    The second condition defaults OFF so a colleague who merely clones the
+    repo (and even loads a teatree skill) is never nagged to register a cron
+    or shown the loop statusline. The loop owner opts in once via
+    ``[loops] auto_load = true`` in ``~/.teatree.toml`` (or
+    ``T3_LOOPS_AUTO_LOAD=1``) and keeps the existing behaviour intact.
+    """
+    return _teatree_active(session_id) and _loops_auto_load_enabled()
+
+
 def _is_teatree_skill(name: str) -> bool:
     normalized = normalize_skill_name(name)
     return normalized in {"t3:teatree", "teatree"}
@@ -972,6 +993,40 @@ def _loops_toml_enabled() -> bool:
     return loops.get("enabled") is not False
 
 
+_AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+
+def _loops_auto_load_enabled() -> bool:
+    """Whether the operator opted into session-start loop/statusline auto-load (#256).
+
+    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning
+    the repo is never nagged. Resolved env-first (``T3_LOOPS_AUTO_LOAD`` via
+    :func:`_resolve_loop_env`, so the ``~/.teatree`` bash env file the
+    unsourced hook misses is still honoured), then ``[loops] auto_load`` in
+    ``~/.teatree.toml``. Unlike :func:`_loops_toml_enabled` (a fail-OPEN
+    kill-switch), this fails CLOSED (OFF) on a missing/broken config: a fresh
+    clone has neither the env var nor the flag, so it stays silent.
+    """
+    import tomllib  # noqa: PLC0415
+
+    env = _resolve_loop_env("T3_LOOPS_AUTO_LOAD").strip().lower()
+    if env:
+        return env in _AUTO_LOAD_TRUTHY
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    loops = config.get("loops") if isinstance(config, dict) else None
+    if not isinstance(loops, dict):
+        return False
+    return loops.get("auto_load") is True
+
+
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -1084,7 +1139,7 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    if not _teatree_active(session_id):
+    if not _loop_auto_load_active(session_id):
         return
     _claim_loop_ownership(session_id)
     _ensure_state_dir()
@@ -1155,6 +1210,11 @@ def _loop_registration_exempt(data: dict) -> bool:
     Groups the side-effect-free NEVER-LOCKOUT exemptions so the handler stays a
     single decision. A call is exempt when any of these holds:
 
+    - the session has not opted into session-start loop auto-load
+        (``_loop_auto_load_active`` False — no teatree marker OR auto-load not
+        enabled, #256), so a colleague who merely cloned the repo is never
+        nagged to register a cron; default OFF until the owner opts in via
+        ``[loops] auto_load = true``;
     - the tool is a cron-management / skill tool the agent uses to register the
         loop (no point blocking the very tools that satisfy the gate);
     - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
@@ -1171,7 +1231,7 @@ def _loop_registration_exempt(data: dict) -> bool:
         live owner, the next eligible session — see ``_session_drives_loop``)
         still gets nagged, so the loop is never left unregistered.
     """
-    if not _teatree_active(data.get("session_id", "")):
+    if not _loop_auto_load_active(data.get("session_id", "")):
         return True
     if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
         return True
@@ -5354,11 +5414,16 @@ def handle_session_start_bootstrap(data: dict) -> None:
 
     The read → decide → write stays one flock-guarded transaction so two
     fresh sessions in the same window cannot both claim (TOCTOU).
+
+    Gated on :func:`_loop_auto_load_active` (#256): a session only claims the
+    tick-owner record / emits the bootstrap directive when it both opted into
+    teatree AND the operator enabled session-start auto-load. Default OFF, so a
+    colleague cloning the repo never silently becomes the loop owner.
     """
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    if not _teatree_active(session_id):
+    if not _loop_auto_load_active(session_id):
         return
     agent_id = data.get("agent_id", "")
 
