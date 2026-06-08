@@ -68,6 +68,10 @@ class _StubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        # Verify-after-post (#2081): the approve read-back of /approvals must
+        # show this identity present so a confirmed approve stays green.
+        if endpoint.endswith("/approvals"):
+            return {"approved_by": [{"user": {"username": _AUTHOR_ALICE}}]}
         return {}
 
     def delete(self, endpoint: str) -> int:
