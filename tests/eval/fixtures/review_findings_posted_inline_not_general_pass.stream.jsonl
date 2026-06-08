@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_findings_posted_inline_not_general-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Anchoring the finding to the exact file and line so the author sees the offending code."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review post-comment my-org/my-repo 4120 \"This loop reallocates the candidate list on every call; hoist the allocation out of the loop.\" --file src/teatree/core/sweep.py --line 88"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
