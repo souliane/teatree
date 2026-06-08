@@ -3,7 +3,6 @@
 import json as _json
 import logging
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.speed import register_speed_commands
 from teatree.cli.teatree_gate import register_gate_commands
+from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import run_streamed, spawn
 from teatree.utils.singleton import AlreadyRunningError, singleton
 
@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 # ``teatree.cli.django_groups`` but ``overlay`` stays its public home.
 __all__ = ["DJANGO_GROUPS", "OVERLAY_PROXY_COMMANDS", "DjangoGroup", "OverlayAppBuilder", "managepy", "managepy_core"]
 
+
+def _managepy_cmd(project_path: Path, *args: str) -> list[str]:
+    """Build the ``manage.py`` invocation for *project_path* via the shared prefix.
+
+    Routes through :func:`teatree.utils.django_db.runner_prefix` — the single
+    site that emits the interpreter prefix — so the overlay ``db_worker`` /
+    ``managepy`` paths inherit the pipenv-vs-uv detection instead of an
+    unconditional ``uv --directory`` (souliane/teatree#1976, #1973).
+    """
+    return [*runner_prefix(project_path), *args]
+
+
 OVERLAY_PROXY_COMMANDS: dict[str, tuple[str, str]] = {}
 """Maps proxy callback ``__name__`` -> ``(django_group, django_sub)``.
 
@@ -32,12 +44,6 @@ CLI reference generator to swap the proxy's stub help for the underlying
 reassigned per-leaf (``_run_{group}_{sub}``); object identity is not stable
 across Typer's ``get_command`` conversion.
 """
-
-
-def uv_cmd(project_path: Path, *args: str) -> list[str]:
-    """Build a ``uv --directory <path> run ...`` command list."""
-    uv = shutil.which("uv") or "uv"
-    return [uv, "--directory", str(project_path), "run", *args]
 
 
 def _base_env() -> dict[str, str]:
@@ -58,7 +64,7 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
     processes = [
         spawn(
             [
-                *uv_cmd(project_path, "python", manage_py, "db_worker"),
+                *_managepy_cmd(project_path, manage_py, "db_worker"),
                 "--interval",
                 str(interval),
                 "--no-startup-delay",
@@ -97,7 +103,7 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         env["T3_OVERLAY_NAME"] = overlay_name
 
     if project_path and (project_path / "manage.py").is_file():
-        cmd = uv_cmd(project_path, "python", "manage.py", *args)
+        cmd = _managepy_cmd(project_path, "manage.py", *args)
         run_streamed(cmd, cwd=project_path, env=env)
     else:
         env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
