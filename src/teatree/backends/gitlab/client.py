@@ -274,12 +274,11 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _uploads.upload_file(self._client, project=self._resolve_project(repo), repo=repo, filepath=filepath)
 
     def verify_upload(self, *, repo: str, upload: RawAPIDict) -> UploadVerification:
-        """Confirm an uploaded artifact resolves + renders, and return its embed URL.
+        """Existence-check an upload; the embed is the relative claimable ref (#2165).
 
-        Delegates to :func:`teatree.backends.gitlab.uploads.verify_upload` with
-        the resolved project so the upload's own project id can be cross-checked
-        — the render-verification machinery lives there as the post-evidence
-        media concern, keeping this host class on the cross-host Protocol surface.
+        Delegates to :func:`teatree.backends.gitlab.uploads.verify_upload` (which
+        cross-checks the project id and returns the relative ``/uploads/...``
+        reference GitLab claims on save), keeping this host on the Protocol surface.
         """
         return _uploads.verify_upload(self._client, project=self._resolve_project(repo), upload=upload)
 

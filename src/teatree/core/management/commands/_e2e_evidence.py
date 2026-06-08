@@ -1,33 +1,38 @@
-"""Validators and comment builder for ``e2e post-evidence``.
+"""Host-facing orchestration for ``e2e post-evidence`` (teatree #272, #2165).
 
-Split out of ``e2e.py`` (mirroring the ``_e2e_discovery`` split) so the
-validation logic — env enum, artifact-presence, anti-fake before≠after,
-commit known-and-clean — is independently unit-testable as pure functions.
+The ORM + code-host side of the one-note-per-ticket evidence model. The pure
+string/JSON layer — the manifest parse, the persisted :class:`EvidenceState`,
+the merge, and the side-by-side render — lives in :mod:`._e2e_evidence_render`;
+this module resolves the ticket, uploads the artifacts (embedding the relative
+``/uploads/<secret>/<file>`` reference GitLab claims on save; #2165), merges
+this run's side(s) over the prior state, and creates-or-updates the single note.
 
-The command method in ``e2e.py`` orchestrates: it calls these validators
-in order (env → artifacts → before≠after → commit → ticket-resolvable),
-catches the typed errors they raise, writes the message to stderr and
-exits non-zero. None of these functions know about Typer or the CLI.
-
-The evidence comment is posted on the **ticket** (work item / bug), never
-on an MR — the deployed-environment proof belongs to the issue the work
-closes, and stays attached even after the MR merges. Idempotency is keyed
-on a hidden HTML-comment marker carrying the **environment** alone, so a
-ticket carries **one** evidence comment per environment: a re-run on the
-same environment — for any commit — edits that comment in place instead of
-appending a new one. When the commit moves, the updated body opens with a
-terse ``old -> new`` delta line so the reader sees what changed without a
-wall of duplicate per-commit comments.
+The note is posted on the **ticket** (work item / bug), never on an MR — the
+deployed-environment proof belongs to the issue the work closes and stays
+attached after the MR merges.
 """
 
-import hashlib
-import re
-from dataclasses import dataclass
-from enum import StrEnum
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.management.commands._e2e_evidence_render import (
+    EvidenceManifest,
+    EvidenceState,
+    EvidenceValidationError,
+    SideManifest,
+    WorkflowArtifacts,
+    WorkflowEmbed,
+    empty_state,
+    evidence_marker,
+    find_ticket_marker,
+    merge_state,
+    parse_manifest,
+    parse_state_blob,
+    render_body,
+    render_mrs_line,
+)
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
@@ -38,42 +43,31 @@ from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.types import RawAPIDict
-from teatree.utils import git
-from teatree.utils.media import MediaKind, media_kind
-from teatree.utils.run import CommandFailedError
+
+# Re-exports so callers/tests import the evidence surface from one module.
+__all__ = [
+    "EvidenceFlags",
+    "EvidenceManifest",
+    "EvidenceMediaError",
+    "EvidencePost",
+    "EvidenceResolutionError",
+    "EvidenceState",
+    "EvidenceValidationError",
+    "PostEvidenceResult",
+    "SideManifest",
+    "WorkflowArtifacts",
+    "build_validated_post",
+    "evidence_marker",
+    "find_existing_note",
+    "merge_state",
+    "parse_manifest",
+    "parse_state_blob",
+    "post_evidence_comment",
+    "render_body",
+    "render_mrs_line",
+]
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
-
-# The single source-of-truth regex matching the hidden idempotency marker
-# embedded at the top of every evidence comment. The marker keys on env
-# alone (one comment per ticket+env); the named group exposes it so the
-# idempotency lookup is a pure regex parse.
-_E2E_MARKER_RE = re.compile(r"<!--\s*t3-e2e-evidence\s+env=(?P<env>\S+)\s*-->")
-
-# The body line carrying the commit under test; parsed back to render the
-# old -> new delta when a later commit updates the same env's comment.
-_COMMIT_LINE_RE = re.compile(r"Commit tested:\s*`(?P<commit>[0-9a-fA-F]+)`")
-
-
-class EvidenceEnv(StrEnum):
-    """The only environments E2E evidence may come from.
-
-    The dev/local gate is machine-enforced here (it used to be a prose-only
-    rule in the e2e skill): a deployed dev environment or a teatree-managed
-    local stack. Staging/prod evidence is out of scope for this command.
-    """
-
-    DEV = "dev"
-    LOCAL = "local"
-
-
-class EvidenceValidationError(ValueError):
-    """A pre-post evidence validation failed — the comment must NOT be posted.
-
-    Raised by the pure validators below; the command method catches it,
-    writes ``str(error)`` to stderr and raises ``SystemExit(1)`` so no
-    upload or comment side effect ever runs on invalid evidence.
-    """
 
 
 class EvidenceResolutionError(EvidenceValidationError):
@@ -86,271 +80,74 @@ class EvidenceResolutionError(EvidenceValidationError):
 
 
 class EvidenceMediaError(EvidenceValidationError):
-    """An uploaded artifact would not render in the posted comment.
+    """An uploaded artifact would not render in the posted note.
 
-    Raised by the post-upload self-verification gate when an embedded media
-    URL does not resolve (non-200) or the fetched bytes are not the expected
-    medium — so "posted" can never mean "returned 201 but rendered as a
-    broken image / dead video player". A subclass of
-    :class:`EvidenceValidationError` so the command's existing arm surfaces
-    it as a non-zero exit; the gate runs before the post, so a failure burns
-    no on-behalf approval and writes no comment.
+    Raised by the post-upload existence gate when an embedded media URL does
+    not resolve (non-200) or the fetched bytes are not the expected medium —
+    so "posted" can never mean "returned 201 but referenced a missing upload".
+    A subclass of :class:`EvidenceValidationError` so the command's existing
+    arm surfaces it as a non-zero exit; the gate runs before the post, so a
+    failure burns no on-behalf approval and writes no note.
     """
-
-
-def coerce_env(env: str) -> EvidenceEnv:
-    """Coerce a ``--env`` string to :class:`EvidenceEnv` or raise.
-
-    Empty or anything outside ``{dev, local}`` fails — the command requires
-    an explicit, machine-checked environment.
-    """
-    try:
-        return EvidenceEnv(env.strip().lower())
-    except ValueError:
-        allowed = ", ".join(e.value for e in EvidenceEnv)
-        msg = f"--env must be one of {{{allowed}}}, got {env!r}."
-        raise EvidenceValidationError(msg) from None
-
-
-def validate_assertion(assertion: str) -> None:
-    """The feature-claim text is required — empty evidence proves nothing."""
-    if not assertion.strip():
-        msg = "--assertion is required (the feature claim the evidence proves)."
-        raise EvidenceValidationError(msg)
-
-
-def validate_artifacts_present(*, before: str, after: str) -> tuple[Path, Path]:
-    """Both before/after must be non-empty paths pointing at real files.
-
-    Separate messages per side so the user knows which artifact is missing.
-    Returns the resolved ``(before_path, after_path)`` for downstream checks.
-    """
-    if not before:
-        msg = "--before is required (path to the before screenshot/artifact)."
-        raise EvidenceValidationError(msg)
-    if not after:
-        msg = "--after is required (path to the after screenshot/artifact)."
-        raise EvidenceValidationError(msg)
-    before_path = Path(before)
-    after_path = Path(after)
-    if not before_path.is_file():
-        msg = f"--before is not a file: {before}"
-        raise EvidenceValidationError(msg)
-    if not after_path.is_file():
-        msg = f"--after is not a file: {after}"
-        raise EvidenceValidationError(msg)
-    return before_path, after_path
-
-
-def _file_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def validate_before_differs_from_after(*, before: Path, after: Path) -> None:
-    """Anti-fake gate: before and after must not be the same bytes.
-
-    Same path, or two distinct paths whose bytes hash identically, both
-    fail — a before/after pair that is byte-identical is not evidence of
-    any change. For images this is a byte-level (not perceptual) compare:
-    Pillow is intentionally not a dependency, so two visually-identical PNGs
-    re-encoded differently would pass here; the byte-hash catches the common
-    fake (the same file submitted twice).
-    """
-    if before.resolve() == after.resolve():
-        msg = "--before and --after point at the same file; evidence must show a change."
-        raise EvidenceValidationError(msg)
-    if _file_sha256(before) == _file_sha256(after):
-        msg = "--before and --after are byte-identical; evidence must show a change."
-        raise EvidenceValidationError(msg)
-
-
-def resolve_and_validate_commit(*, commit: str, repo: str) -> str:
-    """Resolve the code-under-test SHA and confirm it is known + the tree is clean.
-
-    Empty ``commit`` auto-detects via ``git.head_sha(repo)``; an empty result
-    (not a git repo / no HEAD) fails. A supplied SHA must resolve via
-    ``git rev-parse --verify <sha>^{commit}``. A dirty working tree
-    (``git status --porcelain`` non-empty) fails — uncommitted changes mean
-    the evidence is not reproducible from the recorded commit.
-
-    Returns the full resolved SHA.
-    """
-    resolved = commit.strip()
-    if not resolved:
-        try:
-            resolved = git.head_sha(repo=repo)
-        except CommandFailedError:
-            resolved = ""
-        if not resolved:
-            msg = f"Could not resolve a commit SHA (no --commit and git HEAD unavailable in {repo!r})."
-            raise EvidenceValidationError(msg)
-    else:
-        # Expand the supplied SHA (often a short prefix) to the canonical
-        # full 40-char form so the stored marker matches the auto-detect
-        # path's ``git.head_sha`` — without this, a short-then-default
-        # round trip would post a duplicate evidence comment because
-        # ``find_matching_comment`` does raw string equality on the SHA.
-        try:
-            resolved = git.run_strict(repo=repo, args=["rev-parse", "--verify", f"{resolved}^{{commit}}"])
-        except CommandFailedError:
-            msg = f"--commit {commit!r} is not a known commit in {repo!r}."
-            raise EvidenceValidationError(msg) from None
-
-    if git.status_porcelain(repo=repo).strip():
-        msg = f"Working tree in {repo!r} is dirty; commit or stash changes so the evidence is reproducible."
-        raise EvidenceValidationError(msg)
-    return resolved
-
-
-def evidence_marker(*, env: EvidenceEnv) -> str:
-    """The hidden HTML-comment idempotency marker for a ticket's env.
-
-    Renders invisibly in GitLab/GitHub markdown; matched by
-    :data:`_E2E_MARKER_RE` to find the env's existing evidence comment to
-    update. Keyed on env alone so one comment per ticket+env is maintained.
-    """
-    return f"<!-- t3-e2e-evidence env={env.value} -->"
 
 
 @dataclass(frozen=True, slots=True)
-class ExistingComment:
-    """THIS ticket's prior evidence comment for an env: its id + recorded commit."""
+class ExistingNote:
+    """THIS ticket's prior evidence note: its comment id and recovered state."""
 
     comment_id: int
-    prior_commit: str
+    state: EvidenceState
 
 
-def find_matching_comment(comments: list[RawAPIDict], *, env: EvidenceEnv) -> ExistingComment | None:
-    """Return THIS ticket's existing evidence comment for ``env``, or ``None``.
+def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> ExistingNote | None:
+    """Return THIS ticket's existing evidence note (matched on the ticket marker), or ``None``.
 
-    A comment whose marker carries a *different* env is left alone (the
-    caller posts a new comment for the new env). The single scan backs both
-    the create/update decision (``comment_id``) and the delta line
-    (``prior_commit``, parsed from the body's ``Commit tested:`` line) so the
-    two stay consistent.
+    There is one note per ticket, so the first comment whose marker carries
+    this ticket id wins. The recovered hidden-JSON state backs the merge.
     """
     for comment in comments:
         body = str(comment.get("body", ""))
-        match = _E2E_MARKER_RE.search(body)
-        if match is None or match.group("env") != env.value:
+        if not find_ticket_marker(body, ticket_id=ticket_id):
             continue
         comment_id = _comment_id(comment)
         if comment_id:
-            return ExistingComment(comment_id=comment_id, prior_commit=_prior_commit_from_body(body))
+            return ExistingNote(comment_id=comment_id, state=parse_state_blob(body))
     return None
 
 
-def _prior_commit_from_body(body: str) -> str:
-    """Parse the commit a prior evidence comment recorded, or ``""``.
-
-    Used to render the ``old -> new`` delta when a later commit updates the
-    same env's comment in place.
-    """
-    match = _COMMIT_LINE_RE.search(body)
-    return match.group("commit") if match else ""
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceComment:
-    """The data the evidence comment body is rendered from.
-
-    Bundles the rendering inputs so :func:`build_evidence_body` stays a
-    single-argument function (below the project's per-function arg cap) and
-    the call site reads as one named record rather than six positionals.
-    """
-
-    env: EvidenceEnv
-    commit: str
-    before_md: str
-    after_md: str
-    assertion: str
-    video_md: str = ""
-    prior_commit: str = ""
-
-
-def build_evidence_body(comment: EvidenceComment) -> str:
-    """Render the evidence comment body.
-
-    Order: hidden marker, environment banner, the ``old -> new`` commit
-    delta (only when a prior commit is given and it differs from the
-    current one), commit tested, the **video first** (the user's standard:
-    the clip sits above the stills), then the Before/After table, then the
-    feature-claim assertion text. The video is embedded inline (not in a
-    one-cell table) so GitLab renders it as a full-width ``<video>`` player.
-    """
-    lines = [
-        evidence_marker(env=comment.env),
-        f"## E2E Evidence — environment: **{comment.env.value.upper()}**",
-        "",
-    ]
-    if comment.prior_commit and comment.prior_commit != comment.commit:
-        lines.extend([f"Re-verified: `{comment.prior_commit[:8]}` -> `{comment.commit[:8]}`", ""])
-    lines.extend([f"Commit tested: `{comment.commit}`", ""])
-    if comment.video_md:
-        lines.extend(["### Video", comment.video_md, ""])
-    lines.extend(
-        [
-            "| Before | After |",
-            "|---|---|",
-            f"| {comment.before_md} | {comment.after_md} |",
-            "",
-            comment.assertion,
-        ]
-    )
-    return "\n".join(lines)
-
-
 class PostEvidenceResult(TypedDict):
-    """Return shape of ``e2e post-evidence`` — the posted evidence comment.
+    """Return shape of ``e2e post-evidence`` — the posted evidence note.
 
-    ``action`` is ``"created"`` when a new comment was posted and
-    ``"updated"`` when the env's existing comment (matched on the ``env``
-    marker) was edited in place.
+    ``action`` is ``"created"`` when a new note was posted and ``"updated"``
+    when the ticket's existing note was edited in place. ``envs`` lists the
+    environment column(s) this run wrote.
     """
 
     issue_url: str
     comment_id: int
-    env: str
-    commit: str
+    envs: list[str]
     action: str
 
 
 @dataclass(frozen=True, slots=True)
 class EvidencePost:
-    """Validated inputs for :func:`post_evidence_comment`.
-
-    Every field is a post-validation value: the resolved env enum, the
-    resolved-and-clean commit SHA, the issue URL the evidence lands on, the
-    on-disk artifact paths, and the feature-claim text. Bundled so the
-    posting function takes one record rather than eight positionals.
-    """
+    """Validated inputs for :func:`post_evidence_comment`."""
 
     issue_url: str
     repo: str
-    env: EvidenceEnv
-    commit: str
-    before_path: Path
-    after_path: Path
-    assertion: str
-    video: str = ""
+    ticket_id: str
+    title: str
+    manifest: EvidenceManifest
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceFlags:
-    """The raw CLI flags for ``e2e post-evidence``, before validation.
-
-    Mirrors the command's keyword-only parameters so the command method
-    forwards one record into :func:`build_validated_post` rather than
-    threading eight positionals through the validators.
-    """
+    """The raw CLI flags for ``e2e post-evidence``, before validation."""
 
     ticket: str = ""
-    env: str = ""
-    commit: str = ""
-    before: str = ""
-    after: str = ""
-    video: str = ""
-    assertion: str = ""
+    manifest: str = ""
+    title: str = ""
+    mrs: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _resolve_worktree_or_none() -> Worktree | None:
@@ -361,13 +158,13 @@ def _resolve_worktree_or_none() -> Worktree | None:
         return None
 
 
-def _resolve_issue_url(ticket: str, worktree: Worktree | None) -> str:
-    """Resolve the issue URL the evidence posts on, from ``--ticket`` or the worktree.
+def _resolve_ticket(ticket: str, worktree: Worktree | None) -> Ticket:
+    """Resolve the Ticket the evidence posts on, from ``--ticket`` or the worktree.
 
     ``--ticket`` (a pk, issue number, or full issue URL) wins; otherwise the
     resolved worktree's ticket supplies it. Raises
-    :class:`EvidenceResolutionError` when neither resolves to a ticket
-    carrying an ``issue_url``.
+    :class:`EvidenceResolutionError` when neither resolves to a ticket carrying
+    an ``issue_url``.
     """
     if ticket:
         try:
@@ -383,39 +180,44 @@ def _resolve_issue_url(ticket: str, worktree: Worktree | None) -> str:
     if not resolved.issue_url:
         msg = f"Ticket {resolved} has no issue_url to post evidence on."
         raise EvidenceResolutionError(msg)
-    return str(resolved.issue_url)
+    return resolved
 
 
 def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
     """Run every validator in order and return a fully-validated :class:`EvidencePost`.
 
-    Order: env → artifacts present → before≠after → commit known+clean →
-    assertion present → ticket resolvable. Any failure raises
-    :class:`EvidenceValidationError` (or its
+    Order: manifest parse + per-file existence/media-kind → ticket resolvable.
+    Any failure raises :class:`EvidenceValidationError` (or its
     :class:`EvidenceResolutionError` subclass) so the caller exits non-zero
     before any host side effect. The repo for artifact upload comes from the
-    overlay's CI project path; the commit repo comes from the resolved
-    worktree's on-disk path (cwd fallback).
+    overlay's CI project path; the marker id is the resolved ticket number; the
+    title falls back to the issue URL. ``--mrs`` supplements the manifest's MRs.
     """
     worktree = _resolve_worktree_or_none()
-    repo_dir = worktree.worktree_path if worktree is not None and worktree.worktree_path else "."
+    manifest = parse_manifest(flags.manifest)
+    ticket = _resolve_ticket(flags.ticket, worktree)
+    issue_url = str(ticket.issue_url)
 
-    env = coerce_env(flags.env)
-    before_path, after_path = validate_artifacts_present(before=flags.before, after=flags.after)
-    validate_before_differs_from_after(before=before_path, after=after_path)
-    commit = resolve_and_validate_commit(commit=flags.commit, repo=repo_dir)
-    validate_assertion(flags.assertion)
-
+    mrs = manifest.mrs or _normalize_mrs(list(flags.mrs))
+    merged = EvidenceManifest(ticket=manifest.ticket, mrs=tuple(mrs), dev=manifest.dev, local=manifest.local)
     return EvidencePost(
-        issue_url=_resolve_issue_url(flags.ticket, worktree),
+        issue_url=issue_url,
         repo=get_overlay().metadata.get_ci_project_path(),
-        env=env,
-        commit=commit,
-        before_path=before_path,
-        after_path=after_path,
-        assertion=flags.assertion,
-        video=flags.video,
+        ticket_id=ticket.ticket_number,
+        title=flags.title.strip() or issue_url,
+        manifest=merged,
     )
+
+
+def _normalize_mrs(raw_mrs: list[str]) -> list[str]:
+    """Flatten the repeatable/comma-separated ``--mrs`` fallback inputs to clean refs."""
+    refs: list[str] = []
+    for entry in raw_mrs:
+        for part in entry.split(","):
+            ref = part.strip()
+            if ref:
+                refs.append(ref)
+    return refs
 
 
 def _comment_id(result: RawAPIDict) -> int:
@@ -429,83 +231,81 @@ def _comment_id(result: RawAPIDict) -> int:
 
 
 def _verified_embed(host: CodeHostBackend, *, repo: str, filepath: str, label: str) -> str:
-    """Upload one artifact, self-verify it renders, and return its absolute embed.
+    """Upload one artifact, existence-check it, and return its relative-ref embed.
 
-    The self-verification gate (#2156): after uploading, the host fetches the
-    artifact back through its token-authenticated route and magic-byte-checks
-    the content. A non-200 fetch, wrong media bytes, or an unparsable upload
-    response raises :class:`EvidenceMediaError` naming the broken artifact —
-    so the comment is never posted with media that renders as a broken image
-    link or a dead video player. The returned markdown embeds the verified
-    **absolute** ``embed_url`` (GitLab's context-independent
-    ``/-/project/<id>/uploads/...`` form), never the relative ``/uploads/...``
-    path — the bug behind the broken stills AND the dead video player was that
-    relative path failing to resolve in the work-items UI, identical for both
-    media kinds (a ``<video src>`` that doesn't resolve renders the player
-    chrome stuck at 0:00). GitLab renders the same ``![label](url)`` syntax as
-    an ``<img>`` for an image extension and a ``<video controls>`` for a video
+    The existence gate (#2156): after uploading, the host fetches the artifact
+    back through its token-authenticated route and magic-byte-checks the
+    content. A non-200 fetch, wrong media bytes, or an unparsable upload
+    response raises :class:`EvidenceMediaError` naming the broken artifact — so
+    the note is never posted referencing a missing upload. The returned
+    markdown embeds the **relative** ``/uploads/<secret>/<file>`` reference
+    (#2165): GitLab's reference scanner recognises that relative form in the
+    saved note markdown and *claims* the upload, so it renders. The absolute
+    ``/-/project/<id>/uploads/...`` / ``https://`` form is NOT claimed and 404s
+    in a browser. GitLab renders the same ``![label](url)`` syntax as an
+    ``<img>`` for an image extension and a ``<video controls>`` for a video
     extension, so one embed form serves both; no re-encoding is involved (the
     recorded VP8/WebM plays natively in a Chromium browser).
     """
     upload = host.upload_file(repo=repo, filepath=filepath)
     verification = host.verify_upload(repo=repo, upload=upload)
     if not verification.ok:
-        msg = f"E2E evidence {label} ({Path(filepath).name}) would not render: {verification.detail}"
+        msg = f"E2E evidence {label} ({Path(filepath).name}) failed the upload check: {verification.detail}"
         raise EvidenceMediaError(msg)
     return f"![{label}]({verification.embed_url})"
 
 
-def _verified_video_embed(host: CodeHostBackend, *, repo: str, video: str) -> str:
-    """Upload + self-verify the evidence video, returning its verified embed.
+def _embed_side(host: CodeHostBackend, *, repo: str, side: SideManifest) -> dict[str, WorkflowEmbed]:
+    """Upload + existence-check every workflow's artifacts for one side, returning embeds.
 
-    A non-video file is rejected up front so the body never embeds a still as
-    a ``<video>``. The actual rendering fix is the absolute embed URL the
-    shared :func:`_verified_embed` builds — the same one that fixes the
-    stills.
+    Returns the per-workflow rendered embeds persisted into the state blob so a
+    later single-env run re-renders this side without re-uploading.
     """
-    src = Path(video)
-    if media_kind(src) is not MediaKind.VIDEO:
-        msg = f"E2E evidence video ({src.name}) is not a recognised video file."
-        raise EvidenceMediaError(msg)
-    return _verified_embed(host, repo=repo, filepath=str(src), label="video")
+    out: dict[str, WorkflowEmbed] = {}
+    for name, wf in side.workflows.items():
+        video_md = ""
+        if wf.video is not None:
+            video_md = _verified_embed(host, repo=repo, filepath=str(wf.video), label=f"{name} — video")
+        image_md = [
+            _verified_embed(host, repo=repo, filepath=str(img), label=f"{name} — {img.name}") for img in wf.images
+        ]
+        out[name] = {"video_md": video_md, "image_md": image_md}
+    return out
 
 
 def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvidenceResult:
-    """Gate, upload artifacts, build the body, then create-or-update the comment.
+    """Gate, upload artifacts, merge over prior state, then create-or-update the note.
 
     Runs only after every validator passed. The on-behalf gate is the last
     check before any side effect: a BLOCK with no recorded approval raises
-    :class:`OnBehalfPostBlockedError`, which the command surfaces as a
-    non-zero exit rather than publishing unattended. The non-consuming peek
-    raises *before* any artifact upload; the consume then happens atomically
-    with the comment post (#1879), so a failed post burns no approval and
-    writes no lying audit. Idempotency is keyed on the hidden ``env`` marker:
-    the env's existing comment (if any) is edited in place
-    (``action="updated"``) with an ``old -> new`` commit delta; otherwise a
-    new comment is created.
+    :class:`OnBehalfPostBlockedError`, which the command surfaces as a non-zero
+    exit rather than publishing unattended. The non-consuming peek raises
+    *before* any artifact upload; the consume then happens atomically with the
+    post (#1879), so a failed post burns no approval and writes no lying audit.
+
+    The merge model (teatree #272): the ticket's single note carries a hidden
+    state blob that is the source of truth. This run uploads only the side(s) it
+    carries, merges them over the recovered prior state (freezing the other
+    side), re-renders the full side-by-side body, and writes back both the
+    hidden blob and the rendered markdown — update in place, or create when
+    absent.
     """
     blocked = on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION)
     if blocked:
         raise OnBehalfPostBlockedError(post.issue_url, _ON_BEHALF_ACTION)
 
-    existing = find_matching_comment(host.list_issue_comments(issue_url=post.issue_url), env=post.env)
+    existing = find_existing_note(host.list_issue_comments(issue_url=post.issue_url), ticket_id=post.ticket_id)
+    prior = existing.state if existing else empty_state(ticket=post.ticket_id, title=post.title)
 
-    before_md = _verified_embed(host, repo=post.repo, filepath=str(post.before_path), label="before")
-    after_md = _verified_embed(host, repo=post.repo, filepath=str(post.after_path), label="after")
-    video_md = _verified_video_embed(host, repo=post.repo, video=post.video) if post.video else ""
+    embeds: dict[str, dict[str, WorkflowEmbed]] = {
+        "dev": _embed_side(host, repo=post.repo, side=post.manifest.dev) if post.manifest.dev.present else {},
+        "local": _embed_side(host, repo=post.repo, side=post.manifest.local) if post.manifest.local.present else {},
+    }
+    state = merge_state(prior, manifest=post.manifest, title=post.title, embeds=embeds)
+    state["ticket"] = post.ticket_id
+    body = render_body(state)
 
-    body = build_evidence_body(
-        EvidenceComment(
-            env=post.env,
-            commit=post.commit,
-            before_md=before_md,
-            after_md=after_md,
-            assertion=post.assertion,
-            video_md=video_md,
-            prior_commit=existing.prior_commit if existing else "",
-        ),
-    )
-
+    envs = [env for env, side in (("dev", post.manifest.dev), ("local", post.manifest.local)) if side.present]
     match_id = existing.comment_id if existing else None
     if match_id is not None:
         result = require_on_behalf_approval(
@@ -529,12 +329,6 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
         action=_ON_BEHALF_ACTION,
         destination=post.issue_url,
         artifact_url=str(result.get("web_url") or result.get("html_url") or post.issue_url),
-        summary=f"E2E evidence ({post.env.value}, {post.commit[:8]}) on {post.issue_url}",
+        summary=f"E2E evidence ({', '.join(envs)}) on {post.issue_url}",
     )
-    return PostEvidenceResult(
-        issue_url=post.issue_url,
-        comment_id=comment_id,
-        env=post.env.value,
-        commit=post.commit,
-        action=action,
-    )
+    return PostEvidenceResult(issue_url=post.issue_url, comment_id=comment_id, envs=envs, action=action)

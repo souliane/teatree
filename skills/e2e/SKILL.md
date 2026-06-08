@@ -148,62 +148,57 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 ## Post Testing Evidence on the Ticket
 
-**Use `t3 <overlay> e2e post-evidence` first.** It posts ONE structured comment on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
+**Use `t3 <overlay> e2e post-evidence --manifest <json>`.** It maintains ONE structured evidence note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
 
-The command refuses bad evidence before any upload or post:
+The note renders as a **test plan**: a header (the ticket title, multi-repo MR links, the per-env commit provenance, and a dev-gap reconciliation line) followed by one **side-by-side `Dev | Local` comparison table per workflow** — each workflow's video row first, then one row per screenshot pair (`—` where a side has no capture, e.g. dev not yet deployed).
 
-- missing `--before` / `--after` artifact
-- identical before == after (same path, or two paths with byte-identical contents)
-- `--env` outside `{dev, local}`
-- an unknown commit, or a dirty working tree (uncommitted changes ⇒ not reproducible)
+The note is keyed on a hidden ticket marker `<!-- t3-e2e-evidence ticket=<n> -->` and carries a hidden machine-readable state blob `<!-- t3-e2e-data {…} -->` that is the source of truth. Each run **merges** the env(s) its manifest carries over the prior state: a `local`-only manifest fills/refreshes the Local column and freezes Dev; after merge + deploy a `dev`-only manifest fills the Dev column (and clears the "⚠️ Not yet on dev" line) while freezing Local. You never hand-dedup; re-running is always safe.
+
+The command refuses bad evidence before any upload or post: invalid manifest JSON, a referenced artifact that does not exist, or a file whose extension is the wrong media kind (an image listed under a video slot, etc.).
 
 Flags (all keyword-only):
 
-| Flag | Required | Auto-detection |
+| Flag | Required | Notes |
 |---|---|---|
+| `--manifest` | yes | path to (or inline string of) the evidence manifest JSON |
 | `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
-| `--env` | yes | none — must be `dev` or `local` |
-| `--commit` | no | `git HEAD` of the resolved worktree |
-| `--before` | yes | none — path to the before artifact |
-| `--after` | yes | none — path to the after artifact |
-| `--video` | no | none — optional video artifact |
-| `--assertion` | yes | none — the feature claim the evidence proves |
+| `--title` | no | overrides the `## E2E Evidence — <title>` heading |
+| `--mrs` | no | MR/PR URL(s) (repeat or comma-separate) — supplements the manifest's `mrs` |
 
-After confirming a feature works, embed screenshot(s) and video(s) **directly in the evidence comment** — not as a separate comment.
+### Manifest shape
 
-### Visual Comparison Format
-
-Evidence screenshots must use a **side-by-side comparison table**:
-
-```markdown
-| Before (current UI) | After (this PR) |
-|---|---|
-| ![before](url) | ![after](url) |
+```json
+{
+  "ticket": "8521",
+  "mrs": ["https://gitlab.com/group/client/-/merge_requests/6331",
+          "https://gitlab.com/group/product/-/merge_requests/7585"],
+  "dev":   {"commits": {"client": "<deployed-sha>", "product": "<deployed-sha>"},
+            "missing_on_dev": ["client!6331 (unmerged)", "product!7585 (draft)"]},
+  "local": {"commits": {"client": "<branch-sha>", "product": "<branch-sha>"}},
+  "workflows": [
+    {"workflow": "<test name>",
+     "dev":   {"video": null, "images": []},
+     "local": {"video": "artifacts/8521/run.webm", "images": ["a.png", "b.png"]}}
+  ]
+}
 ```
 
-With a design mockup available, use 3 columns:
-
-```markdown
-| Before (current UI) | Design mockup | After (this PR) |
-|---|---|---|
-| ![before](url) | ![mockup](url) | ![after](url) |
-```
+- One object per workflow; each carries its `dev` and `local` captures. A side's captures may be empty (e.g. dev before deploy) → that column shows `—`.
+- `images` and the optional `video` are file paths; just paste what Playwright captured.
+- `dev.missing_on_dev` lists the MRs whose commits are not yet deployed — the note renders them as an expected gap so a dev column of `—` reads as normal, not a failure.
 
 ### Rules
 
-- **One screenshot per verified section** — not per checkbox.
-- **Cover ALL sections on first post.**
-- Screenshots go below the section they verify, not at the bottom.
-- Write in first person, casual tone ("Tested on local...", "Works as expected").
-- Evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
-- **Idempotent on `(ticket, env)` — one comment per environment.** Each comment carries a hidden marker `<!-- t3-e2e-evidence env=<env> -->` (renders invisibly). Re-running on the same env — for any commit — edits that comment in place and opens it with a terse `old -> new` commit delta; a different env posts a new comment. You never have to hand-dedup, and a moving HEAD never spams the ticket with one comment per commit — the marker does it.
+- **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none).
+- **One note per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same note.
+- Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
 
 ### Evidence Source Integrity (Non-Negotiable)
 
-Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging), never from local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
+Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging) or a teatree-managed local stack, never from stale local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
 
-The `dev`/`local` gate is now **machine-enforced** by `t3 <overlay> e2e post-evidence`: an `--env` outside `{dev, local}`, a missing/identical before-after pair, or an unknown/dirty commit is refused before any upload or post — so a fake or mislabelled evidence pair never reaches the ticket.
+`t3 <overlay> e2e post-evidence` **machine-enforces** that every referenced artifact exists and is the right media kind before any upload or post, and uploads each via the relative `/uploads/<secret>/<file>` reference GitLab claims on save (so the media actually renders — not a broken image or a dead video player).
 
 **Prohibited evidence sources:**
 

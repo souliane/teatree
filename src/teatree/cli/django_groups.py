@@ -88,7 +88,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("project", "Run E2E tests from the project's own test directory."),
             (
                 "post-evidence",
-                "Post structured E2E evidence on the ticket (validation-gated, idempotent on env+commit).",
+                "Post/update the ticket's single E2E evidence note (side-by-side Dev|Local test plan) from a manifest.",
             ),
         ],
     ),
