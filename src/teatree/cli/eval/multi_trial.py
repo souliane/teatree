@@ -11,8 +11,8 @@ import sys
 import typer
 
 from teatree.cli.eval.run_modes import (
+    RunGuards,
     gate_run_regressions,
-    guard_executed,
     persist_matrix_run,
     persist_pass_at_k_run,
     with_model,
@@ -76,7 +76,9 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
                 continue
             status = "PASS" if r.ok else "FAIL"
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
-    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
+    RunGuards.executed(
+        executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
+    )
     regressed = False
     if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
@@ -117,7 +119,9 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
         typer.echo(render_matrix_text(rows, model_list, specs))
-    guard_executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed)
+    RunGuards.executed(
+        executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed
+    )
     regressed = False
     if persist:
         record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)

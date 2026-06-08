@@ -1,9 +1,12 @@
 """Pluggable eval execution backends (SDK vs subscription-transcript)."""
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from teatree.eval.auth import OAUTH_TOKEN_ENV
 from teatree.eval.backends import (
     SDK_BACKEND,
     SUBSCRIPTION_BACKEND,
@@ -46,6 +49,29 @@ class TestMakeRunner:
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(UnknownBackendError):
             make_runner("magic")
+
+    def test_sdk_backend_resolves_oauth_token_from_pass_when_env_absent(self) -> None:
+        # The host sdk runner authenticates from CLAUDE_CODE_OAUTH_TOKEN via the
+        # isolated env copy; make_runner must export it from pass so the operator
+        # need not. (Local default: just works.)
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.eval.auth.read_pass", return_value="pass-token"),
+        ):
+            os.environ.pop(OAUTH_TOKEN_ENV, None)
+            make_runner(SDK_BACKEND)
+            assert os.environ.get(OAUTH_TOKEN_ENV) == "pass-token"
+
+    def test_subscription_backend_does_not_touch_pass(self) -> None:
+        # The free subscription lane never authenticates claude -p — it must not
+        # read the secret store at all.
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.eval.auth.read_pass") as read_pass,
+        ):
+            os.environ.pop(OAUTH_TOKEN_ENV, None)
+            make_runner(SUBSCRIPTION_BACKEND)
+            read_pass.assert_not_called()
 
 
 class TestSubscriptionTranscriptRunner:

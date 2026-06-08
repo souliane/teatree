@@ -19,19 +19,43 @@ from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
-from teatree.eval.skip_guard import AllSkippedError, assert_executed_when_required
+from teatree.eval.skip_guard import (
+    AllSkippedError,
+    UnmeteredSdkRunError,
+    assert_executed_when_required,
+    assert_sdk_run_was_metered,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
 
 
-def guard_executed(*, executed: int, collected: int, required: bool) -> None:
-    """Exit non-zero when a required run collected scenarios but executed none."""
-    try:
-        assert_executed_when_required(collected=collected, executed=executed, required=required)
-    except AllSkippedError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from None
+class RunGuards:
+    """Translate the no-coverage :mod:`teatree.eval.skip_guard` assertions into a CLI exit.
+
+    Both guards turn a vacuous-green run RED at the ``t3 eval run`` boundary: an
+    all-skipped required run, and an sdk run that executed scenarios but metered $0.
+    """
+
+    @staticmethod
+    def executed(*, executed: int, collected: int, required: bool) -> None:
+        try:
+            assert_executed_when_required(collected=collected, executed=executed, required=required)
+        except AllSkippedError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def sdk_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        try:
+            assert_sdk_run_was_metered(
+                backend=backend,
+                executed=executed,
+                total_cost_usd=sum(r.run.cost_usd for r in results),
+            )
+        except UnmeteredSdkRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
 
 
 def run_model_label(specs: list[EvalSpec]) -> str:
