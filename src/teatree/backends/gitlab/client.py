@@ -3,7 +3,10 @@ from pathlib import Path
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
+import httpx
+
 from teatree.backends import forge_merge_rpc as _forge_merge
+from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.gitlab import api as _gitlab_api
 from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
@@ -391,6 +394,12 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         Supports the canonical web format ``https://gitlab.example.com/<group>/<repo>/-/issues/<iid>``.
         Returns ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or when
         the project cannot be resolved.
+
+        Raises:
+            IssueNotFoundError: when the GitLab API returns HTTP 404 (issue
+                permanently deleted or never existed).  Any other HTTP error
+                (5xx) or network failure propagates as-is so the scanner keeps
+                retrying it.
         """
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
@@ -401,7 +410,12 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if project is None:
             return {"error": f"Could not resolve project: {match['path']}"}
 
-        issue = self._client.get_issue(project.project_id, int(match["iid"]))
+        try:
+            issue = self._client.get_issue(project.project_id, int(match["iid"]))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:  # noqa: PLR2004
+                raise IssueNotFoundError(issue_url) from exc
+            raise
         return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:

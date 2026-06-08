@@ -125,6 +125,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     context = models.TextField(blank=True, default="")
     short_description = models.CharField(max_length=80, blank=True, default="")
     redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
+    # Set to True when the remote forge returns HTTP 404; the disposition scanner
+    # then excludes this ticket from future fetches (#1875).
+    remote_missing = models.BooleanField(default=False)
 
     objects = TicketManager()
 
@@ -173,15 +176,14 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         return not (self.overlay and resolve_overlay_name(self.overlay) is None)
 
+    def mark_remote_missing(self) -> None:
+        """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
+        Ticket.objects.filter(pk=self.pk).update(remote_missing=True)
+        self.remote_missing = True
+
     @property
     def is_terminal(self) -> bool:
-        """True when the ticket is in a genuinely terminal/abandoned state.
-
-        The public read of the model-owned terminal set (SHIPPED/MERGED/
-        DELIVERED/IGNORED): a terminal ticket is past recovery, so the outage
-        recovery sweep (#1764) skips its FAILED tasks rather than re-queuing
-        work that has already shipped.
-        """
+        """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
 
     @property
