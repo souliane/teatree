@@ -16,6 +16,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import ShipExecutor
+from teatree.core.runners.base import RunnerResult
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -921,3 +922,63 @@ class TestOverlayPrLabels:
         mock.config.pr_auto_labels = 42
         with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": mock}):
             assert overlay_pr_labels() == []
+
+
+class TestShipPrUrlRepoMismatch(TestCase):
+    """#1120 (a): the PR URL must point at the expected repo.
+
+    ``host.create_pr`` returning a syntactically-valid URL for the *wrong*
+    repo (e.g. a cross-project CI mirror) must surface as ``ok=False`` and
+    must NOT advance the FSM to ``in_review`` or record a ``pr_urls`` entry.
+    """
+
+    _EXPECTED_SLUG = "expected-org/expected-repo"
+    _EXPECTED_URL = "https://github.com/expected-org/expected-repo/pull/42"
+    _WRONG_URL = "https://github.com/other-org/other-repo/pull/1"
+
+    def _ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/expected-repo",
+            branch="feat-y",
+            extra={"worktree_path": "/tmp/expected-repo"},
+        )
+        return ticket
+
+    def _run_ship(self, ticket: Ticket, pr_url: str) -> RunnerResult:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": pr_url}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: y", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=self._EXPECTED_SLUG),
+        ):
+            return ShipExecutor(ticket).run()
+
+    def test_returns_failure_when_pr_url_targets_wrong_repo(self) -> None:
+        """PR URL for a different repo → ``ok=False``, FSM does not advance."""
+        ticket = self._ticket_with_worktree()
+
+        result = self._run_ship(ticket, self._WRONG_URL)
+
+        assert result.ok is False
+        assert self._EXPECTED_SLUG in result.detail
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_returns_success_when_pr_url_matches_expected_repo(self) -> None:
+        """PR URL containing the expected slug → ``ok=True``, URL recorded."""
+        ticket = self._ticket_with_worktree()
+
+        result = self._run_ship(ticket, self._EXPECTED_URL)
+
+        assert result.ok is True
+        assert result.detail == self._EXPECTED_URL
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == [self._EXPECTED_URL]
