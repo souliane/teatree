@@ -1150,3 +1150,13 @@ def test_verify_upload_fails_on_cross_project_upload() -> None:
     result = host.verify_upload(repo="org/repo", upload=cross)
     assert result.ok is False
     assert "expected 42" in result.detail
+
+
+def test_repo_for_issue_url_returns_the_issues_own_project_slug() -> None:
+    host = GitLabCodeHost(client=MagicMock(spec=GitLabAPI))
+    # The note's own project — uploads must land here, not a manifest's 2nd repo.
+    assert host.repo_for_issue_url("https://gitlab.com/group/sub/client/-/issues/8521") == "group/sub/client"
+    # Work-item URLs serve the same iid/project.
+    assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/work_items/42") == "org/repo"
+    # A non-issue URL yields "" (the caller then resolves nothing / fails loud).
+    assert host.repo_for_issue_url("https://gitlab.com/org/repo/-/merge_requests/7") == ""
