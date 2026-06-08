@@ -29,6 +29,7 @@ from teatree.config.settings import (
     _parse_excluded_skills,
     _parse_user_identity_aliases,
 )
+from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
 from teatree.types import DEFAULT_MR_TITLE_REGEX
@@ -191,6 +192,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         clean_ignore=_parse_excluded_skills(teatree.get("clean_ignore", [])),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         speak=resolve_speak(teatree),
+        mr_reminder=resolve_mr_reminder(raw),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),

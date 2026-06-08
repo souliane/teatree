@@ -7,7 +7,9 @@ graph TD
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check
     teatree.config --> teatree.config_speak
+    teatree.config --> teatree.config_mr_reminder
     teatree.config_speak --> teatree.types
+    teatree.config_mr_reminder --> teatree.types
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
