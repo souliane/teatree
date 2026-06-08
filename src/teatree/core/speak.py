@@ -83,14 +83,15 @@ _SPEAKER_LOCK_FILENAME = "speaker.lock"
 
 # Bounded wait for the speaker lock (#2156). The lock is acquired NON-BLOCKING
 # in a short retry loop with a total budget: a read that cannot acquire it
-# within the budget is DROPPED as stale rather than queued. Local reads fan out
-# from many sources (every bot→user DM local-play leg + every Stop-hook
-# ``t3 speak`` read), so an unbounded blocking acquire builds a multi-minute
-# backlog under a flood — a message could play 15 min after it was printed. A
-# dropped read is strictly better than a 15-min-late one: mutual exclusion is
-# preserved and latency is capped at the budget. The budget is short relative to
-# a single read (a ``say`` of the capped excerpt is well under a second), so a
-# read only drops when the speaker is genuinely saturated.
+# within the budget falls through and plays without serialization rather than
+# being dropped. Local reads fan out from many sources (every bot→user DM
+# local-play leg + every Stop-hook ``t3 speak`` read), so an unbounded blocking
+# acquire builds a multi-minute backlog under a flood — a message could play
+# 15 min after it was printed. A brief overlap is strictly better than a
+# 15-min-late read: serialization holds in the common case and latency is capped
+# at the budget. The budget is short relative to a single read (a ``say`` of the
+# capped excerpt is well under a second), so a read only falls through when the
+# speaker is genuinely saturated.
 _SPEAKER_LOCK_WAIT_BUDGET_S = 2.0
 _SPEAKER_LOCK_RETRY_INTERVAL_S = 0.05
 
