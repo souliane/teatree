@@ -571,6 +571,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.CODED,
             State.TESTED,
             State.REVIEWED,
+            # #1431: DELIVERED self-transition (this transition's own target)
+            # makes a re-dispatched orphan's no-action path a no-op instead of
+            # a TransitionNotAllowed crash. SHIPPED/MERGED/IGNORED stay out —
+            # an IGNORED→DELIVERED move would resurrect; Gap B reaps those.
+            State.DELIVERED,
         ],
         target=State.DELIVERED,
         conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
@@ -578,26 +583,25 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def mark_review_no_action(self) -> None:
         """Reviewer-role terminal disposition for a no-postable-action review.
 
-        Sibling of :meth:`mark_reviewed_externally` for the case the
-        reviewer concludes an external review with nothing to post or
-        approve (e.g. a bot MR — Aikido/Dependabot — where there is no
-        diff worth commenting on and no approval to give). The reviewing
-        Task would otherwise never reach a terminal state — the only
-        terminal path is ``Task.complete()`` → ``mark_reviewed_externally``
-        which requires an APPROVED outcome — so ``pending-spawn``
-        re-dispatched the same task every Stop-hook pump forever (#1077).
+        Sibling of :meth:`mark_reviewed_externally` for the case the reviewer
+        concludes an external review with nothing to post or approve (e.g. a
+        bot MR — Aikido/Dependabot — no diff worth commenting on, no approval
+        to give). Without it the reviewing Task never reaches a terminal state
+        (the only other path, ``Task.complete()`` → ``mark_reviewed_externally``,
+        requires APPROVED), so ``pending-spawn`` re-dispatched it forever
+        (#1077).
 
         Unlike ``mark_reviewed_externally`` (fired *from* an
         already-COMPLETED task) this transition is driven directly via
         ``t3 teatree ticket transition <id> mark_review_no_action`` while the
         reviewing task is still PENDING, so it consumes that task itself.
-        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER
-        APPROVED): the dedup's APPROVED-only suppression therefore does not
-        hide a future *genuine* review, while ``_already_reviewed_at_head``
+        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER APPROVED):
+        the dedup's APPROVED-only suppression therefore does not hide a future
+        *genuine* review, while ``_already_reviewed_at_head``
         still treats a no-action observation at the current head SHA as
-        "already handled" so the task is not re-queued. A head-SHA move
-        drops ``last_review_state`` (the existing #959 reset) so a new
-        revision is still reviewed — no lost obligation.
+        "already handled" so the task is not re-queued. A head-SHA move drops
+        ``last_review_state`` (the existing #959 reset) so a new revision is
+        still reviewed — no lost obligation.
         """
         from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 

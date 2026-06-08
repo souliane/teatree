@@ -165,7 +165,7 @@ def _orphaned_task_signals(
     host: CodeHostBackend,
     overlay: str = "",
 ) -> list[ScanSignal]:
-    """Emit ``reviewer_pr.task_orphaned`` for genuinely merged/closed PRs (#1074).
+    """Emit ``reviewer_pr.task_orphaned`` for merged/closed PRs (#1074) or terminal-FSM tickets (#1431).
 
     Scenario the sweep handles: scanner sees an open MR on tick #1 →
     persistence creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
@@ -174,7 +174,19 @@ def _orphaned_task_signals(
     surfacing on every ``pending-spawn`` and dispatching a reviewer
     sub-agent for nothing (#998).
 
-    **The decision is state-authoritative, not absence-based (#1074).**
+    **The local FSM is authoritative for the user's own decision (#1431).**
+    A reviewer ticket whose ``state`` is already terminal
+    (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal FSM transition left for
+    its reviewing task: a re-dispatched orphan's "nothing to post"
+    disposition (``mark_review_no_action``) raises ``TransitionNotAllowed``
+    (no terminal state in its ``source=[...]``) and the task re-dispatches
+    forever. Such a ticket is reaped on terminal-state *proof* regardless
+    of the forge open-state — a self-authored MR the user already concluded
+    on legitimately stays OPEN, so a MERGED/CLOSED-only gate never reaches
+    it. This is terminal-LOCAL-FSM proof, not absence/UNKNOWN doubt; the
+    fail-open default below for non-terminal tickets is untouched.
+
+    **The forge-state decision is state-authoritative, not absence-based (#1074).**
     Absence from ``scanned_urls`` is NOT proof the PR closed:
     ``scanned_urls`` only holds PRs returned by
     ``list_review_requested_prs`` (a reviewer-*assignment* filter). A
@@ -213,6 +225,22 @@ def _orphaned_task_signals(
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
     signals: list[ScanSignal] = []
     for ticket in candidates:
+        # #1431: the LOCAL FSM is authoritative for the user's own
+        # decision. A reviewer ticket whose state is already terminal
+        # (DELIVERED/SHIPPED/MERGED/IGNORED) has no legal transition left
+        # for its reviewing task — re-dispatch wedges the loop. Reap it
+        # regardless of forge state (a self-authored MR with no review owed
+        # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
+        # absence/UNKNOWN doubt — the fail-open default below is untouched.
+        if ticket.is_terminal:
+            signals.append(
+                ScanSignal(
+                    kind="reviewer_pr.task_orphaned",
+                    summary=f"Reviewing task orphaned (ticket terminal: {ticket.state}): {ticket.issue_url}",
+                    payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
+                ),
+            )
+            continue
         try:
             state = host.get_pr_open_state(pr_url=ticket.issue_url)
         except Exception:
