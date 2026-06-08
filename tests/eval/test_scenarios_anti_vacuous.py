@@ -233,15 +233,22 @@ def test_fixtureless_behavioral_scenario_is_caught_by_the_gate(tmp_path: Path) -
 
 
 def _gate_flags(spec: EvalSpec) -> bool:
-    """Mirror the gate's offender predicate for a single spec.
+    """Whether the REAL gate predicate flags ``spec`` as an offender.
 
-    The gate (:func:`test_every_behavioral_scenario_ships_a_fail_fixture`)
-    flags a spec when it is behavioral AND ships no ``_fail`` fixture. This
-    helper applies that exact predicate to one synthetic spec so the
-    anti-vacuity proof can assert the gate catches a fixtureless behavioral
-    scenario without depending on the live catalog's contents.
+    This delegates to the production predicate
+    :func:`_fixtureless_behavioral_specs` — the same function the gate
+    (:func:`test_every_behavioral_scenario_ships_a_fail_fixture`) consumes —
+    rather than re-implementing it. There is therefore ONE source of truth:
+    the anti-vacuity proof exercises the real gate, so reverting the gate
+    predicate (e.g. to ``return []``) turns the proof RED too.
+
+    The synthetic spec is injected as the sole member of the discovered
+    catalog (``discover_specs`` is the predicate's only input), so the proof
+    stays independent of the live catalog's contents while still running the
+    production code path.
     """
-    return _is_behavioral(spec) and not (FIXTURES / f"{spec.name}_fail.stream.jsonl").is_file()
+    with patch(f"{__name__}.discover_specs", return_value=[spec]):
+        return spec in _fixtureless_behavioral_specs()
 
 
 _TRIVIAL_MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")
