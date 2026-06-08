@@ -185,7 +185,7 @@ class TestUserScopesExcludeBotOnly:
     def test_guard_raises_when_a_bot_only_scope_leaks_in(self) -> None:
         leaked = min(_BOT_ONLY_SCOPES)
         with (
-            patch("teatree.cli.slack_setup._USER_SCOPES", [*_USER_SCOPES, leaked]),
+            patch("teatree.cli.slack_manifest._USER_SCOPES", [*_USER_SCOPES, leaked]),
             pytest.raises(AssertionError, match=re.escape(leaked)),
         ):
             _user_scopes_carry_no_bot_only_scope()
@@ -584,7 +584,7 @@ class TestManifestsEquivalent:
 class TestExportUpdateRotate:
     def test_export_returns_manifest(self) -> None:
         with patch(
-            "teatree.cli.slack_setup._slack_app_api",
+            "teatree.cli.slack_manifest._slack_app_api",
             return_value={"ok": True, "manifest": {"display_information": {"name": "x"}}},
         ):
             manifest = export_manifest(app_id="A123456", config_token="xoxe.xoxp-1")
@@ -593,7 +593,7 @@ class TestExportUpdateRotate:
     def test_export_not_ok_raises_manifest_error(self) -> None:
         with (
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": False, "error": "invalid_auth"},
             ),
             pytest.raises(SlackManifestError, match="invalid_auth"),
@@ -609,7 +609,7 @@ class TestExportUpdateRotate:
             captured["token"] = token
             return {"ok": True, "permissions_updated": True}
 
-        with patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api):
+        with patch("teatree.cli.slack_manifest._slack_app_api", side_effect=fake_api):
             result = update_manifest(
                 app_id="A123456",
                 manifest={"display_information": {"name": "x"}},
@@ -623,7 +623,7 @@ class TestExportUpdateRotate:
     def test_update_not_ok_raises_manifest_error(self) -> None:
         with (
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": False, "error": "failed_constraint"},
             ),
             pytest.raises(SlackManifestError, match="failed_constraint"),
@@ -632,7 +632,7 @@ class TestExportUpdateRotate:
 
     def test_rotate_returns_access_and_refresh(self) -> None:
         with patch(
-            "teatree.cli.slack_setup._slack_app_api",
+            "teatree.cli.slack_manifest._slack_app_api",
             return_value={"ok": True, "token": "xoxe.xoxp-NEW", "refresh_token": "xoxe-NEWREFRESH"},
         ):
             access, refresh = rotate_config_token(refresh_token="xoxe-OLD")
@@ -642,7 +642,7 @@ class TestExportUpdateRotate:
     def test_rotate_not_ok_raises_manifest_error(self) -> None:
         with (
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": False, "error": "token_expired"},
             ),
             pytest.raises(SlackManifestError, match="token_expired"),
@@ -737,7 +737,7 @@ class TestUpdatePathModeResolution:
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
             ),
         ):
@@ -759,7 +759,7 @@ class TestUpdatePathModeResolution:
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
             ),
         ):
@@ -834,7 +834,7 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack_token_store.read_pass", return_value=""),
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True) as smoke,
-            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+            patch("teatree.cli.slack_manifest._slack_app_api", side_effect=fake_api),
         ):
             result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
 
@@ -862,7 +862,7 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack_token_store.read_pass", return_value=""),
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
-            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+            patch("teatree.cli.slack_manifest._slack_app_api", side_effect=fake_api),
         ):
             result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
 
@@ -903,7 +903,7 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
             patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
-            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+            patch("teatree.cli.slack_manifest._slack_app_api", side_effect=fake_api),
         ):
             result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
 
@@ -928,7 +928,7 @@ class TestUpdatePathBehavior:
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": False, "error": "token_expired"},
             ),
         ):
@@ -988,7 +988,7 @@ class TestSlackAppApi:
             captured["data"] = data
             return FakeResponse()
 
-        with patch("teatree.cli.slack_setup.httpx.post", side_effect=fake_post):
+        with patch("teatree.cli.slack_manifest.httpx.post", side_effect=fake_post):
             result = _slack_app_api("apps.manifest.export", {"app_id": "A1"}, token="xoxe.xoxp-1")
 
         assert captured["url"] == "https://slack.com/api/apps.manifest.export"
@@ -1011,7 +1011,7 @@ class TestUpdatePathSmokeFailure:
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=False),
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
             ),
         ):
@@ -1063,7 +1063,7 @@ class TestUpdatePathSmokeFailure:
             patch("teatree.cli.slack_token_store.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
             patch(
-                "teatree.cli.slack_setup._slack_app_api",
+                "teatree.cli.slack_manifest._slack_app_api",
                 return_value={"ok": False, "error": "ratelimited"},
             ),
         ):
@@ -1120,3 +1120,144 @@ class TestValidateOverlayKnownList:
         assert "teatree" in known  # t3-teatree contains the substring
         known_names = {n.strip() for n in known.split(",")}
         assert "teatree" not in known_names
+
+
+class TestTokenRefMigration:
+    """setup slack-bot must migrate tokens when rewriting slack_token_ref to canonical form.
+
+    Regression guard for #2047: when the TOML has a stale ``slack_token_ref``
+    (e.g. ``teatree/teatree/slack``) and the command computes a different
+    canonical ref (``teatree/t3-teatree/slack``), the tokens under the old ref
+    must be copied to the new ref slots before the TOML is rewritten.  Without
+    the migration the new canonical ref points at empty pass entries and the
+    smoke test immediately fails with a misleading "token may lack im:write"
+    error.
+    """
+
+    def _config_with_old_ref(self, tmp_path: Path, old_ref: str) -> Path:
+        config = tmp_path / "teatree.toml"
+        config.write_text(
+            f'[overlays.acme]\nslack_user_id = "U01ABCD1234"\nslack_token_ref = "{old_ref}"\n',
+            encoding="utf-8",
+        )
+        return config
+
+    def test_tokens_under_old_ref_are_migrated_to_canonical_ref(self, tmp_path: Path) -> None:
+        """After setup, the canonical ref's slots hold the tokens that lived under the old ref."""
+        old_ref = "teatree/old-acme/slack"
+        config = self._config_with_old_ref(tmp_path, old_ref)
+        store: dict[str, str] = {
+            f"{old_ref}-bot": "xoxb-1-oldbot",
+            f"{old_ref}-app": "xapp-1-oldapp",
+        }
+
+        def fake_read(key: str) -> str:
+            return store.get(key, "")
+
+        def fake_write(key: str, value: str) -> bool:
+            store[key] = value
+            return True
+
+        canonical_ref = "teatree/acme/slack"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_token_store.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_token_store.write_pass", side_effect=fake_write),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+        ):
+            result = _invoke_setup(
+                tmp_path,
+                inputs="",
+                args=["--overlay", "acme", "--skip-smoke-test"],
+                config=config,
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert store.get(f"{canonical_ref}-bot") == "xoxb-1-oldbot"
+        assert store.get(f"{canonical_ref}-app") == "xapp-1-oldapp"
+
+    def test_rewrite_refused_when_old_ref_is_empty(self, tmp_path: Path) -> None:
+        """When no token is stored under the old ref, setup refuses to rewrite to the canonical ref.
+
+        Rewriting to a canonical ref that would also be empty is never safe;
+        the user must store tokens first (or run the full create path).
+        """
+        old_ref = "teatree/old-acme/slack"
+        config = self._config_with_old_ref(tmp_path, old_ref)
+
+        def fake_read(_key: str) -> str:
+            return ""
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_token_store.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_token_store.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = _invoke_setup(
+                tmp_path,
+                inputs="",
+                args=["--overlay", "acme", "--skip-smoke-test"],
+                config=config,
+            )
+
+        assert result.exit_code == 1
+        assert "no token stored" in result.stdout.lower() or "cannot migrate" in result.stdout.lower()
+        document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
+        assert document["overlays"]["acme"]["slack_token_ref"] == old_ref
+
+    def test_no_migration_when_ref_already_canonical(self, tmp_path: Path) -> None:
+        """When the existing ref is already canonical, setup runs normally without migration.
+
+        A ``slack_app_id`` is present so the command takes the update path
+        (no interactive token prompts), making the assertion deterministic.
+        The key guard is that the store is NOT modified by migration: the bot
+        slot still holds its original value after setup completes.
+        """
+        canonical_ref = "teatree/acme/slack"
+        config = tmp_path / "teatree.toml"
+        config.write_text(
+            f'[overlays.acme]\nslack_user_id = "U01ABCD1234"\n'
+            f'slack_token_ref = "{canonical_ref}"\nslack_app_id = "A0123456789"\n',
+            encoding="utf-8",
+        )
+        store: dict[str, str] = {
+            f"{canonical_ref}-bot": "xoxb-1-existing",
+            f"{canonical_ref}-app": "xapp-1-existing",
+        }
+        writes: list[str] = []
+
+        def fake_read(key: str) -> str:
+            return store.get(key, "")
+
+        def fake_write(key: str, value: str) -> bool:
+            writes.append(key)
+            store[key] = value
+            return True
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_token_store.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_token_store.write_pass", side_effect=fake_write),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch("teatree.cli.slack_setup._run_update_path"),
+        ):
+            result = _invoke_setup(
+                tmp_path,
+                inputs="",
+                args=["--overlay", "acme", "--skip-smoke-test"],
+                config=config,
+            )
+
+        assert result.exit_code == 0, result.stdout
+        # Migration must not have written anything — the canonical ref was already correct.
+        assert not any(canonical_ref in w for w in writes), f"Unexpected migration write(s): {writes}"
+        assert store.get(f"{canonical_ref}-bot") == "xoxb-1-existing"
