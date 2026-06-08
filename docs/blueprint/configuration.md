@@ -179,6 +179,20 @@ playback when away. The away check is exception-safe — a resolution failure is
 treated as **not** away (local plays), so it can never spuriously mute audio or
 turn `slack` off.
 
+**Serial speaker queue (#2152).** Local playback fans out from two independent
+sources — each DM's local-read leg and the detached `t3 speak` Stop-hook read —
+each spawning its own `say`. To stop concurrent reads talking over each other,
+`_speak_local()` wraps the actual `say` call in a single cross-process
+`fcntl.flock` on a lockfile under the teatree state dir
+(`get_data_dir("speak")/speaker.lock`). The lock is **blocking**, so a queued
+read plays the instant the speaker frees up (ASAP, ≈arrival order); it
+serializes across both the in-process daemon threads and the separate detached
+subprocesses (a per-process queue would not serialize the subprocesses). The
+non-blocking daemon-thread dispatch is unchanged — the thread waits on the lock,
+never the caller's egress path — so a long queue never delays a DM or turn. The
+lock is best-effort: a lockfile that cannot be opened fails **open** (the read
+still plays) so a lock error never mutes audio.
+
 Callers read `get_effective_settings().speak`. Adding a new overridable key
 is a one-line registry change picked up via `dataclasses.replace`; `speak` is
 the one non-generic override (its overlay sub-table merges onto the base
