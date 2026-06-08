@@ -5,16 +5,17 @@ on-behalf publish path calls. It exposes the gate's four outcomes
 (see :func:`resolve_on_behalf_verdict`):
 
 *   ``IMMEDIATE`` mode → PROCEED verdict → proceed (no approval needed);
-*   ``DRAFT_OR_ASK`` mode + draft-form action → AUTO_DRAFT verdict →
-    record a ``BotPing`` and proceed (no ``OnBehalfApproval`` consumed,
-    no ``OnBehalfAudit`` written);
-*   ``ASK`` or ``DRAFT_OR_ASK`` (non-draft action) + recorded approval
-    → BLOCK verdict + approval present → consume + audit + proceed;
-*   ``ASK`` or ``DRAFT_OR_ASK`` (non-draft action) + no recorded approval
-    → raise :class:`OnBehalfPostBlockedError` so the caller surfaces the
-    blocked post to the user (never silently drop, never post
-    unattended). Default DRAFT_OR_ASK, fail-closed for every non-draft
-    colleague-visible mutation.
+*   ``ASK`` or ``DRAFT_OR_ASK`` mode + draft-form action → AUTO_DRAFT
+    verdict → record a ``BotPing`` and proceed (no ``OnBehalfApproval``
+    consumed, no ``OnBehalfAudit`` written). A draft is colleague-
+    invisible, so it is exempt from the gate under EVERY mode;
+*   ``ASK`` or ``DRAFT_OR_ASK`` (colleague-VISIBLE action) + recorded
+    approval → BLOCK verdict + approval present → consume + audit + proceed;
+*   ``ASK`` or ``DRAFT_OR_ASK`` (colleague-VISIBLE action) + no recorded
+    approval → raise :class:`OnBehalfPostBlockedError` so the caller
+    surfaces the blocked post to the user (never silently drop, never post
+    unattended). Default DRAFT_OR_ASK, fail-closed for every colleague-
+    visible mutation; drafts are the ungated safe-by-default.
 """
 
 from pathlib import Path
@@ -210,9 +211,15 @@ class TestNonConsumingPeek:
         # A peek never fires the autodraft DM — that is deferred to the atomic publish.
         assert BotPing.objects.count() == 0
 
+    def test_draft_action_peek_returns_empty_under_ask(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A draft is exempt under ASK too — the peek refuses nothing (no approval needed)."""
+        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        assert on_behalf_block_message("org/repo!7", "post_draft_note") == ""
+        assert BotPing.objects.count() == 0
+
 
 class TestAutoDraftVerdict:
-    """Under DRAFT_OR_ASK + draft-form action, the helper records a DM and returns."""
+    """A draft-form action auto-drafts (records a DM and proceeds) under EVERY blocking mode."""
 
     def test_post_draft_note_under_draft_or_ask_records_bot_ping(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -227,6 +234,22 @@ class TestAutoDraftVerdict:
         ping = BotPing.objects.get(idempotency_key="on_behalf_autodraft:org/repo!7:post_draft_note")
         assert ping.kind == BotPing.Kind.INFO
         # (iii) no OnBehalfAudit was written — AUTO_DRAFT doesn't consume an approval.
+        assert OnBehalfAudit.objects.count() == 0
+
+    def test_post_draft_note_under_ask_records_bot_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ANTI-VACUITY: even under strict ASK, a draft auto-drafts with no approval.
+
+        Pre-fix this raised :class:`OnBehalfPostBlockedError` (the bug).
+        The fix exempts drafts from the gate under ASK too.
+        """
+        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+
+        # Must NOT raise — a draft is exempt under ASK.
+        require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
+
+        assert OnBehalfApproval.objects.count() == 0
+        ping = BotPing.objects.get(idempotency_key="on_behalf_autodraft:org/repo!7:post_draft_note")
+        assert ping.kind == BotPing.Kind.INFO
         assert OnBehalfAudit.objects.count() == 0
 
     def test_double_call_is_idempotent_on_bot_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

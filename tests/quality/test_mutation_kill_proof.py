@@ -45,8 +45,9 @@ class TestManualMutantKilled:
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-        # The assertion that pins the fail-closed gate (mirrors
-        # test_on_behalf_gate.py::TestExplicitModes::test_explicit_ask_blocks_every_action).
+        # The assertion that pins the fail-closed gate for a colleague-VISIBLE
+        # action (mirrors test_on_behalf_gate.py::TestExplicitModes::
+        # test_explicit_ask_blocks_visible_posts_but_exempts_drafts).
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
     def test_same_assertion_goes_red_on_the_mutant(self) -> None:

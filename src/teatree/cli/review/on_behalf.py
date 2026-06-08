@@ -73,6 +73,10 @@ def check_on_behalf(repo: str, mr: int, action: str) -> str:
     atomically with the actual GitLab post via :func:`publish_on_behalf`, so
     a peek that passes here never burns the approval if a later check refuses
     or the post fails.
+
+    The gate covers colleague-VISIBLE actions only: a draft-form *action*
+    (``post_draft_note``) is exempt under every mode and always returns
+    ``""`` here — a draft is colleague-invisible and needs no approval.
     """
     from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
 
