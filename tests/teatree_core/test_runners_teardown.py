@@ -207,12 +207,16 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
         assert result.ok is True, result.detail
         assert not self.wt_path.exists()
 
-    def test_fail_closed_when_branch_unknown_to_git(self) -> None:
-        """#706 fail-closed when the data-loss probe cannot run.
+    def test_proceeds_when_db_slug_drifted_from_the_real_clean_branch(self) -> None:
+        """A drifted DB slug no longer hides the real (clean+pushed) worktree branch.
 
-        Here the Worktree row names a branch git doesn't know, so the probe
-        errors. Teardown must REFUSE — we cannot prove the commits are pushed,
-        so we must not destroy the worktree.
+        The Worktree row names a slug git never heard of, but the on-disk
+        worktree is on its real branch ``ac-myrepo-706-x`` (clean, nothing beyond
+        the pushed base). The teardown seam resolves the EFFECTIVE branch/HEAD
+        from the worktree dir rather than trusting the slug, so the data-loss
+        probe runs against the real HEAD, finds nothing to lose, and teardown
+        proceeds. Pre-fix the slug probe errored with "unknown revision" and the
+        teardown refused with a cryptic message naming a non-existent branch.
         """
         ticket = Ticket.objects.create(
             overlay="test",
@@ -229,19 +233,24 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         result = self._teardown(ticket)
 
-        assert result.ok is False
-        assert self.wt_path.exists(), "worktree destroyed despite an inconclusive data-loss probe"
-        assert Worktree.objects.filter(branch="branch-git-never-heard-of").exists()
+        assert result.ok is True, result.detail
+        assert "unknown revision" not in result.detail
+        assert not self.wt_path.exists()
+        assert not Worktree.objects.filter(branch="branch-git-never-heard-of").exists()
 
-    def test_force_with_inconclusive_probe_and_capture_failure_keeps_worktree(self) -> None:
-        """#1506 — force skips the *guard* but the recovery capture still protects.
+    def test_force_proceeds_when_db_slug_drifted_from_the_real_clean_branch(self) -> None:
+        """Force teardown of a drifted-slug, clean+pushed worktree proceeds cleanly.
 
-        Force bypasses the pre-remove data-loss guard, but the recovery capture
-        becomes the only safety net. When the branch is unknown to git the
-        capture (a ``git bundle`` of that branch) fails, and the post-failure
-        re-check cannot prove there is nothing to lose — so it fails closed and
-        the worktree is kept rather than hard-deleted. (Pre-#1506 this forced
-        teardown destroyed the worktree on a capture failure.)
+        The recovery capture probes the real HEAD (resolved from the worktree
+        dir), finds a clean+pushed worktree with nothing to lose, captures
+        nothing, and the hard-delete proceeds. Pre-fix the slug-keyed capture
+        probe errored and the post-failure re-check kept the worktree forever.
+
+        The fail-closed-on-inconclusive-probe guarantee (#706/#1506) that this
+        test formerly exercised via a phantom slug is now covered against the
+        real HEAD probe by
+        ``cleanup/test_drifted_branch.py::TestDetachedHeadForceCapturesTheRealCommits``
+        (a corrupt HEAD object makes the real probe inconclusive → still refuses).
         """
         ticket = Ticket.objects.create(
             overlay="test",
@@ -258,5 +267,6 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         result = self._teardown(ticket, force=True)
 
-        assert result.ok is False, result.detail
-        assert self.wt_path.exists(), "inconclusive capture must fail closed, not destroy the worktree"
+        assert result.ok is True, result.detail
+        assert not self.wt_path.exists()
+        assert not Worktree.objects.filter(branch="branch-git-never-heard-of").exists()

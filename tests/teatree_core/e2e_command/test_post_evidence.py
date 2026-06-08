@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import UploadVerification
 from teatree.core.management.commands import _e2e_evidence as _evidence
 from teatree.core.management.commands import _e2e_evidence_render as _render
 from teatree.core.management.commands import e2e as e2e_command
+from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -62,6 +63,7 @@ class TestRenderBody:
         dev: _render.SideState | None = None,
         local: _render.SideState | None = None,
         mrs: list[str] | None = None,
+        steps: dict[str, list[str]] | None = None,
     ) -> _render.EvidenceState:
         default_mrs = [
             "https://gitlab.com/org/client/-/merge_requests/6331",
@@ -73,6 +75,7 @@ class TestRenderBody:
             "mrs": default_mrs if mrs is None else mrs,
             "dev": dev if dev is not None else {"commits": {}, "missing_on_dev": [], "workflows": {}},
             "local": local if local is not None else {"commits": {}, "workflows": {}},
+            "steps": steps or {},
         }
 
     def test_header_has_marker_data_blob_title_and_mr_links(self) -> None:
@@ -86,8 +89,12 @@ class TestRenderBody:
         # Multi-repo MR links, terse repo!num labels.
         assert "Repos & MRs: [client!6331](" in body
         assert "[product!7585](" in body
-        # Per-repo commit provenance for the tested side.
-        assert "Local tested: client `aaaa`, product `bbbb`" in body
+        # Per-repo commit provenance for the tested side — each SHA a clickable
+        # commit link derived from the matching MR URL.
+        assert (
+            "Local tested: [client `aaaa`](https://gitlab.com/org/client/-/commit/aaaa), "
+            "[product `bbbb`](https://gitlab.com/org/product/-/commit/bbbb)" in body
+        )
 
     def test_side_by_side_table_pairs_dev_left_local_right(self) -> None:
         state = self._state(
@@ -112,7 +119,9 @@ class TestRenderBody:
         assert "| ![v](/uploads/s/dev.webm) | ![v](/uploads/s/loc.webm) |" in body
         # Screenshot pair row.
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in body
-        assert "Dev deployed: client `ddee`" in body
+        assert "Dev deployed: [client `ddee`](https://gitlab.com/org/client/-/commit/ddee)" in body
+        # Dev (ddee) and local (aabb) differ → the ± reconciliation says so.
+        assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
 
     def test_missing_side_renders_emdash_cells(self) -> None:
         # Local captured, dev not yet deployed → dev column is all em-dashes.
@@ -153,6 +162,83 @@ class TestRenderBody:
         body = _evidence.render_body(state)
         assert "Repos & MRs:" not in body
 
+    def test_test_plan_steps_render_numbered_above_the_table(self) -> None:
+        state = self._state(
+            local={"commits": {}, "workflows": {"Login": self._embedded(images=("![i](/uploads/s/l1.png)",))}},
+            steps={"Login": ["Open the app", "Click the Login button", "Expect the dashboard"]},
+        )
+        body = _evidence.render_body(state)
+        assert "**How to test:**" in body
+        assert "1. Open the app" in body
+        assert "2. Click the Login button" in body
+        assert "3. Expect the dashboard" in body
+        # The numbered plan renders ABOVE the comparison table for that workflow.
+        how_to = body.index("**How to test:**")
+        table = body.index("| Dev | Local |")
+        assert how_to < table, "the test plan must render above the Dev | Local table"
+        # And it sits under the workflow heading.
+        assert body.index("### Login") < how_to
+
+    def test_workflow_without_steps_omits_the_test_plan_block(self) -> None:
+        # Back-compat: a workflow with no steps renders no test-plan block.
+        state = self._state(
+            local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](u)",))}},
+            steps={},
+        )
+        body = _evidence.render_body(state)
+        assert "**How to test:**" not in body
+
+    def test_commit_shas_render_as_clickable_links_derived_from_mrs(self) -> None:
+        # The repo short-name (client) matches the MR URL .../org/client/...,
+        # so its SHA links to that project's commit page.
+        state = self._state(
+            local={"commits": {"client": "aabbcc"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Local tested: [client `aabbcc`](https://gitlab.com/org/client/-/commit/aabbcc)" in body
+
+    def test_commit_sha_without_matching_mr_falls_back_to_bare_codespan(self) -> None:
+        # 'backend' has no MR URL → no link, bare code-span (never a broken link).
+        state = self._state(
+            mrs=["https://gitlab.com/org/client/-/merge_requests/6331"],
+            local={"commits": {"backend": "ddeeff"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Local tested: backend `ddeeff`" in body
+        assert "](https://gitlab.com/org/backend/-/commit/" not in body
+
+    def test_github_commit_link_uses_commit_path_not_dash_commit(self) -> None:
+        state = self._state(
+            mrs=["https://github.com/owner/product/pull/7585"],
+            local={"commits": {"product": "c0ffee"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "[product `c0ffee`](https://github.com/owner/product/commit/c0ffee)" in body
+
+    def test_reconcile_line_shows_same_when_dev_and_local_match(self) -> None:
+        state = self._state(
+            dev={"commits": {"client": "aabb"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local: client: = same commit" in body
+
+    def test_reconcile_line_shows_differ_with_both_shas(self) -> None:
+        state = self._state(
+            dev={"commits": {"client": "ddee"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
+
+    def test_reconcile_line_omitted_when_no_repo_on_both_sides(self) -> None:
+        # Local only → no shared repo → no reconciliation line.
+        state = self._state(
+            local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
+        )
+        body = _evidence.render_body(state)
+        assert "Dev ± Local:" not in body
+
 
 class TestMergeState:
     """The merge over prior state freezes the side this run does not carry."""
@@ -183,6 +269,7 @@ class TestMergeState:
                 "commits": {"client": "aabb"},
                 "workflows": {"Login": {"video_md": "![v](/uploads/s/l.webm)", "image_md": []}},
             },
+            "steps": {},
         }
         merged = _evidence.merge_state(
             prior,
@@ -197,6 +284,38 @@ class TestMergeState:
         # Local frozen exactly as it was.
         assert merged["local"]["commits"] == {"client": "aabb"}
         assert merged["local"]["workflows"]["Login"]["video_md"] == "![v](/uploads/s/l.webm)"
+
+    def test_steps_less_rerun_preserves_prior_steps(self) -> None:
+        # A workflow's steps were recorded on a prior run; a later run that omits
+        # steps must NOT erase them (workflow-level, persisted across re-renders).
+        prior: _render.EvidenceState = {
+            "ticket": "8521",
+            "title": "t",
+            "mrs": [],
+            "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
+            "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "steps": {"Login": ["Open the app", "Click Login"]},
+        }
+        merged = _evidence.merge_state(
+            prior,
+            manifest=self._dev_manifest(),  # carries no steps
+            title="t",
+            embeds={"dev": {}, "local": {}},
+        )
+        assert merged["steps"]["Login"] == ["Open the app", "Click Login"]
+
+    def test_steps_in_this_run_overwrite_prior_steps_for_that_workflow(self) -> None:
+        prior = _render.empty_state(ticket="8521", title="t")
+        prior["steps"] = {"Login": ["old step"]}
+        manifest = _evidence.EvidenceManifest(
+            ticket="8521",
+            mrs=(),
+            dev=_evidence.SideManifest(present=False),
+            local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+            steps={"Login": ("new step 1", "new step 2")},
+        )
+        merged = _evidence.merge_state(prior, manifest=manifest, title="t", embeds={"dev": {}, "local": {}})
+        assert merged["steps"]["Login"] == ["new step 1", "new step 2"]
 
     def test_local_only_run_over_empty_prior_leaves_dev_empty(self) -> None:
         merged = _evidence.merge_state(
@@ -237,8 +356,8 @@ class TestMergeState:
         # Both columns are present and paired.
         assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in final
-        # Local survived the dev-only merge untouched.
-        assert "Local tested: client `aabb`" in final
+        # Local survived the dev-only merge untouched (rendered as a commit link).
+        assert "Local tested: [client `aabb`](https://gitlab.com/org/client/-/commit/aabb)" in final
 
 
 class TestParseManifest:
@@ -292,6 +411,26 @@ class TestParseManifest:
         )
         with pytest.raises(_evidence.EvidenceValidationError, match="no 'dev' or 'local'"):
             _evidence.parse_manifest(manifest)
+
+    def test_parses_workflow_level_steps(self, tmp_path: Path) -> None:
+        img = _write_png(tmp_path / "a.png", b"A")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [
+                    {
+                        "workflow": "Login",
+                        "steps": ["Open the app", "Click Login", "Expect the dashboard"],
+                        "local": {"images": [img]},
+                    },
+                    {"workflow": "Search", "local": {"images": [img]}},  # no steps → absent from the map
+                ],
+            },
+        )
+        parsed = _evidence.parse_manifest(manifest)
+        assert parsed.steps["Login"] == ("Open the app", "Click Login", "Expect the dashboard")
+        assert "Search" not in parsed.steps
 
 
 class TestMrLabel:
@@ -414,6 +553,81 @@ class TestCreateAndRelativeEmbed(_EvidenceTestBase):
         host.post_issue_comment.assert_not_called()
 
 
+class TestUploadLandsOnNoteProject(_EvidenceTestBase):
+    """Artifacts upload to the SAME project the note is created on (multi-repo manifest).
+
+    Live-run bug: the note was created on the ticket's project but every
+    artifact uploaded to the manifest's *second* repo (the CI/product project),
+    whose ``/uploads/<secret>/<file>`` namespace the ticket's note cannot serve
+    → every embedded image 404s. The fix uploads to the project that owns the
+    issue URL the note posts on, regardless of how many repos the manifest
+    references. The MR links in the body are just links; they must NOT influence
+    the upload target.
+    """
+
+    _NOTE_PROJECT = "org/repo"  # the project that owns _ISSUE_URL (the ticket's project)
+    _SECOND_REPO = "org/product"  # the manifest's second repo / overlay CI project
+
+    class _CiProjectMeta(OverlayMetadata):
+        """Metadata whose CI project path is the manifest's SECOND repo."""
+
+        def get_ci_project_path(self) -> str:
+            return "org/product"
+
+    class _CiProjectOverlay(CommandOverlay):
+        """Overlay whose CI project path is a DIFFERENT project from the note's.
+
+        Mirrors the live failure: ``get_ci_project_path`` resolves to the second
+        repo, so the pre-fix code uploads artifacts there even though the note is
+        created on the ticket's project — this test goes RED.
+        """
+
+        def __init__(self) -> None:
+            self.metadata = TestUploadLandsOnNoteProject._CiProjectMeta()
+
+    def _multi_repo_manifest(self) -> str:
+        """A manifest carrying TWO repos, the second matching the CI project."""
+        img = _write_png(self._tmp / "step1.png", b"A")
+        vid = _write_webm(self._tmp / "run.webm", b"V")
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "mrs": [
+                    f"https://gitlab.com/{self._NOTE_PROJECT}/-/merge_requests/6331",
+                    f"https://gitlab.com/{self._SECOND_REPO}/-/merge_requests/7585",
+                ],
+                "local": {"commits": {"repo": "aabb", "product": "ccdd"}},
+                "workflows": [{"workflow": "Login", "local": {"video": vid, "images": [img]}}],
+            },
+        )
+
+    def test_upload_project_is_the_notes_project_not_the_second_repo(self) -> None:
+        self._ticket()
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        host.post_issue_comment.return_value = {"id": 77, "web_url": "u"}
+        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
+        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
+        # The host resolves the note's own project slug from the issue URL.
+        host.repo_for_issue_url.return_value = self._NOTE_PROJECT
+        self._patch_host(host)
+
+        overlay = {"test": self._CiProjectOverlay()}
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlay):
+            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest=self._multi_repo_manifest())
+
+        # Every upload must target the project that owns the note, NEVER the
+        # manifest's second repo / CI project.
+        assert host.upload_file.call_count >= 1
+        for call in host.upload_file.call_args_list:
+            assert call.kwargs["repo"] == self._NOTE_PROJECT, (
+                f"upload landed on {call.kwargs['repo']!r}, expected the note's project {self._NOTE_PROJECT!r}"
+            )
+            assert call.kwargs["repo"] != self._SECOND_REPO
+        for call in host.verify_upload.call_args_list:
+            assert call.kwargs["repo"] == self._NOTE_PROJECT
+
+
 class TestMediaRenderGate(_EvidenceTestBase):
     """A non-rendering upload aborts the post — "posted" never means "broken media"."""
 
@@ -484,7 +698,6 @@ class TestOnBehalfGateConsulted(TestCase):
         host.list_issue_comments.return_value = comments
         post = _evidence.EvidencePost(
             issue_url=_ISSUE_URL,
-            repo="org/repo",
             ticket_id="8521",
             title="t",
             manifest=_evidence.EvidenceManifest(

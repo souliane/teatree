@@ -39,10 +39,10 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     Autouse so every test is isolated; returns nothing (the few tests that
     need the concrete paths request the ``registry_paths`` fixture).
 
-    The teatree opt-in marker is forced active: these tests exercise the
-    bootstrap ownership MECHANISM, not the per-session opt-in gate (covered by
-    ``test_teatree_opt_in.py``), so they run as if the session had loaded
-    teatree.
+    The teatree opt-in marker AND the #256 session-start auto-load opt-in are
+    forced active: these tests exercise the bootstrap ownership MECHANISM, not
+    the per-session opt-in gates (covered by ``test_teatree_opt_in.py``), so
+    they run as the opted-in loop owner.
     """
     reg_dir = tmp_path / "data"
     reg_dir.mkdir(parents=True, exist_ok=True)
@@ -50,6 +50,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Default: no controlling tty (OSC must NOT fire). Tests opt in explicitly.
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
+    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
 
 
 @pytest.fixture

@@ -3,9 +3,16 @@
 Shells out to the Claude CLI in ``--output-format stream-json`` mode with
 a per-scenario wall-clock watchdog (120s) and a per-invocation budget
 circuit breaker (``--max-budget-usd 0.10``). The child runs in a virgin
-environment (``--bare`` plus :func:`~teatree.eval.isolation.isolated_claude_env`)
-so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
-``CLAUDE.md`` never bias a result. When ``claude`` is not on PATH the runner
+environment via :func:`~teatree.eval.isolation.isolated_claude_env` (``HOME``
+redirected at a ``.claude``-free temp dir + neutral cwd) plus the explicit
+``--settings``, ``--strict-mcp-config``, ``--system-prompt`` and ``--add-dir``
+flags, so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
+``CLAUDE.md`` never bias a result. The command deliberately does NOT pass
+``--bare``: in claude-code 2.x that flag forces "Anthropic auth is strictly
+ANTHROPIC_API_KEY … OAuth and keychain are never read", which disables
+``CLAUDE_CODE_OAUTH_TOKEN`` auth — the metered lane's only auth (we have no
+``sk-ant-api03`` API key), so ``--bare`` silently regressed every metered run to
+``$0 / no tool calls``. When ``claude`` is not on PATH the runner
 returns a skip-shaped :class:`EvalRun` so the harness can print a clear ``SKIP``
 banner and exit 0 — that path is exercised on contributors who have not
 installed the CLI locally.
@@ -136,7 +143,6 @@ class ClaudePRunner:
         return [
             binary,
             "-p",
-            "--bare",
             "--output-format",
             "stream-json",
             "--verbose",

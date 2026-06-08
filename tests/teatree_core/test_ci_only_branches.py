@@ -121,24 +121,24 @@ class TestProbeHostCliEmptyResults:
     """``probe_host_cli`` short-circuits on empty / ``[]`` stdout — line 166."""
 
     def test_returns_empty_string_when_stdout_is_empty(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
 
     def test_returns_empty_string_when_stdout_is_bracket_pair(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
 
 
 class TestProbeHostCliTimeout:
@@ -152,17 +152,17 @@ class TestProbeHostCliTimeout:
     """
 
     def test_returns_empty_string_when_subprocess_times_out(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr"], timeout=30.0),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_returns_empty_string_when_real_subprocess_run_times_out(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         # Patch the actual subprocess.run reached through run_allowed_to_fail so
         # the fail-safe is exercised against the real probe + wrapper, not a
@@ -171,29 +171,29 @@ class TestProbeHostCliTimeout:
             "teatree.utils.run.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr"], timeout=5.0),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=5.0) == ""
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=5.0) == ""
 
     def test_forwards_timeout_to_run_allowed_to_fail(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
         ) as run_mock:
-            cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=12.5)
+            branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=12.5)
 
         assert run_mock.call_args.kwargs["timeout"] == pytest.approx(12.5)
 
     def test_defaults_timeout_to_thirty_seconds(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
         ) as run_mock:
-            cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"))
+            branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"))
 
         assert run_mock.call_args.kwargs["timeout"] == pytest.approx(30.0)
 
@@ -202,30 +202,30 @@ class TestProbeHostCliFailSafePaths:
     """The non-timeout failure/success paths still resolve correctly — #1580 regression guard."""
 
     def test_returns_empty_string_when_binary_is_missing(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
-        with patch.object(cleanup, "run_allowed_to_fail", side_effect=OSError("no gh")):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+        with patch.object(branch_classification, "run_allowed_to_fail", side_effect=OSError("no gh")):
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_returns_empty_string_on_malformed_json(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout="not json", stderr=""),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_extracts_value_on_happy_path(self) -> None:
-        from teatree.core import cleanup  # noqa: PLC0415
+        from teatree.core import branch_classification  # noqa: PLC0415
 
         with patch.object(
-            cleanup,
+            branch_classification,
             "run_allowed_to_fail",
             return_value=CompletedProcess(args=[], returncode=0, stdout='[{"oid": "abc123"}]', stderr=""),
         ):
-            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", lambda data: data[0]["oid"]) == "abc123"
+            assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", lambda data: data[0]["oid"]) == "abc123"
 
 
 class TestResolveCandidatePathsMacosSymlinks:

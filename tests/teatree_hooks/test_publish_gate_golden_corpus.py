@@ -9,7 +9,8 @@ out (legitimate internal/private and local-only work is allowed). The corpus
 is the regression guard for the five fixes:
 
 1. ALL-SEGMENTS skip (a chained public post behind an internal segment scans);
-2. fail-closed on substitution / transport / raw-REST api;
+2. fail-closed on substitution / transport / raw-REST api WRITE (a read-only
+    ``api`` GET posts no body and stays skip-safe);
 3. destination classification reuses the existing ``private_repos`` allowlist;
 4. file-based bodies (``--description-file``) are honoured;
 5. the commit gate resolves the real repo (``cd`` / walk-up) and fails OPEN on
@@ -215,6 +216,23 @@ class TestMustAllow:
         # ``--repo owner/name`` post (the gh pr create flag form).
         cmd = 'gh pr create --repo internalcorp/private-svc --title fix --body "acmecorp rollout"'
         assert _verdict(cmd, None, host_qualified_config) == "allow"
+
+    def test_internal_post_with_read_only_api_chain_allowed(self, config: Path) -> None:
+        # A read-only ``gh``/``glab api`` GET posts no body, so a leading internal
+        # post chained to a bare GET (even one whose URL names a PUBLIC repo) must
+        # NOT make the whole command scan -- the GET cannot leak. Pre-fix the bare
+        # ``api`` word fail-closed the skip and the internal body's domain word
+        # blocked (#1530 over-block).
+        cmd = 'gh pr create -R internalcorp/svc --body "acmecorp internal" && gh api repos/souliane/teatree/issues'
+        assert _verdict(cmd, None, config) == "allow"
+
+    def test_cross_repo_private_post_from_public_cwd_allowed(self, config: Path, tmp_path: Path) -> None:
+        # A post FROM a public clone TO a provably-private ``--repo`` target must
+        # downgrade on the TARGET slug, not the cwd: the carve-out and the
+        # destination skip both resolve the command's target (not the harness cwd).
+        public_cwd = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        cmd = 'gh issue create -R internalcorp/svc --title "feat: acmecorp" --body "acmecorp internal"'
+        assert _verdict(cmd, public_cwd, config) == "allow"
 
 
 class TestMustDeny:

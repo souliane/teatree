@@ -17,6 +17,8 @@ import os
 import shutil
 from pathlib import Path
 
+from teatree.eval.auth import ensure_oauth_token
+from teatree.eval.backends import SDK_BACKEND
 from teatree.utils.run import run_allowed_to_fail, run_streamed
 
 DOCKER_IMAGE = "teatree-test"
@@ -26,6 +28,10 @@ _AUTH_ENV_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 def _auth_passthrough_flags() -> list[str]:
     return [flag for var in _AUTH_ENV_VARS if os.environ.get(var) for flag in ("-e", var)]
+
+
+def _requests_sdk_lane(eval_args: list[str]) -> bool:
+    return SDK_BACKEND in eval_args
 
 
 class DockerUnavailableError(RuntimeError):
@@ -71,9 +77,19 @@ def _run_in_image(root: Path, eval_args: list[str]) -> int:
 
 
 def run_eval_in_docker(eval_args: list[str]) -> int:
-    """Build (if needed) and run the eval gate inside the CI image; return its exit code."""
+    """Build (if needed) and run the eval gate inside the CI image; return its exit code.
+
+    For the metered ``sdk`` lane, resolve ``CLAUDE_CODE_OAUTH_TOKEN`` first (env
+    wins, else exported from the ``pass`` store) so :func:`_auth_passthrough_flags`
+    forwards it with ``-e`` and ``claude -p`` authenticates in-container — local
+    ``--backend sdk --docker`` just works without a manual ``export``. The free /
+    subscription lanes never authenticate ``claude``, so the secret store is not
+    touched for them.
+    """
     if shutil.which("docker") is None:
         raise DockerUnavailableError
+    if _requests_sdk_lane(eval_args):
+        ensure_oauth_token()
     root = _repo_root()
     if not _image_present():
         build_code = _build_image(root)

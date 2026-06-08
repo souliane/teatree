@@ -481,6 +481,13 @@ class TestGitHubCodeHost:
         )
         assert "not supported" in result["error"]
 
+    def test_repo_for_issue_url_returns_owner_repo(self) -> None:
+        host = GitHubCodeHost(token="tok")
+        # The note's own repo — evidence uploads target this, not a 2nd repo.
+        assert host.repo_for_issue_url("https://github.com/owner/product/issues/42") == "owner/product"
+        # A non-issue URL yields "".
+        assert host.repo_for_issue_url("https://github.com/owner/product/pull/7") == ""
+
     def test_list_my_prs_searches_by_author_across_forge(self) -> None:
         items = [
             {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
