@@ -126,13 +126,14 @@ def _service_with_stub() -> tuple[ReviewService, _StubAPI]:
 
 
 class TestReviewServicePostCommentGated:
-    """``post_comment`` default-draft path: on-behalf gate applies only to ``--live`` (#1207).
+    """``post_comment`` default-draft path: drafts bypass the gate under EVERY mode (#draft-bypass).
 
-    The default (live=False) path routes through ``post_draft_note``, so its
-    draft-form on-behalf carve-out applies — under ``DRAFT_OR_ASK`` the draft
-    auto-publishes; under ``ASK`` it blocks on the ``post_draft_note`` action;
-    under ``IMMEDIATE`` it proceeds. The ``--live`` path stays gated on the
-    ``post_comment`` action.
+    The default (live=False) path routes through ``post_draft_note``,
+    which is colleague-INVISIBLE and therefore exempt from the on-behalf
+    gate under every mode — under ``DRAFT_OR_ASK`` AND ``ASK`` the draft
+    auto-publishes with a user DM, under ``IMMEDIATE`` it publishes with
+    no DM. No recorded approval is ever required for the draft path. The
+    ``--live`` path stays gated on the ``post_comment`` action.
     """
 
     @pytest.fixture(autouse=True)
@@ -140,17 +141,24 @@ class TestReviewServicePostCommentGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_post_comment_default_blocked_under_ask_no_approval(self) -> None:
-        """Under ASK the default draft path is refused without a ``post_draft_note`` approval."""
+    def test_post_comment_default_auto_drafts_under_ask_no_approval(self) -> None:
+        """ANTI-VACUITY: under ASK with NO approval the default draft path SUCCEEDS.
+
+        Pre-fix this BLOCKed (the bug: a colleague-invisible draft needed
+        approval under ASK). With the fix the draft auto-publishes without
+        any recorded approval — a draft is never colleague-visible.
+        """
         _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm")
 
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        # The HTTP call MUST NOT have happened.
-        assert stub.calls == []
+        assert code == 0, msg
+        # The draft-note publish DID happen, on ``/draft_notes``.
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any("draft_notes" in ep for ep in post_endpoints), f"expected draft_notes hit, got {post_endpoints!r}"
+        # No approval was recorded or consumed — the draft never needed one.
+        assert not OnBehalfApproval.objects.exists()
 
     def test_post_comment_default_auto_drafts_under_draft_or_ask(self) -> None:
         """Under DRAFT_OR_ASK the default draft path auto-publishes (the #1207 default flip)."""
@@ -164,10 +172,9 @@ class TestReviewServicePostCommentGated:
         post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
         assert any("draft_notes" in ep for ep in post_endpoints), f"expected draft_notes hit, got {post_endpoints!r}"
 
-    def test_post_comment_default_proceeds_under_ask_with_draft_approval(self) -> None:
-        """Recording a ``post_draft_note`` approval satisfies the default path under ASK."""
+    def test_post_comment_default_proceeds_under_ask_without_approval(self) -> None:
+        """No approval needed under ASK — the draft path is exempt, it just proceeds."""
         _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
-        OnBehalfApproval.record(target="org/repo!7", action="post_draft_note", approver_id="souliane")
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm")
@@ -254,30 +261,32 @@ class TestReviewServicePostCommentGated:
 
 
 class TestReviewServicePostDraftNoteGated:
-    """``post_draft_note`` is the draft-form action — special under DRAFT_OR_ASK."""
+    """``post_draft_note`` is the draft-form action — EXEMPT from the gate under every mode."""
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_post_draft_note_blocked_under_ask_no_approval(self) -> None:
+    def test_post_draft_note_auto_drafts_under_ask_no_approval(self) -> None:
+        """ANTI-VACUITY: under ASK with NO recorded approval the draft note SUCCEEDS.
+
+        Pre-fix this BLOCKed (the bug). With the fix a draft is exempt
+        from the gate under ASK exactly as under DRAFT_OR_ASK: it
+        auto-publishes and records the user-DM ``BotPing`` — no approval.
+        """
         _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
         service, stub = _service_with_stub()
 
         msg, code = service.post_draft_note("org/repo", 7, "nit")
 
-        assert code == 1
-        assert "approve-on-behalf" in msg
-        assert stub.calls == []
-
-    def test_post_draft_note_proceeds_under_ask_with_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
-        OnBehalfApproval.record(target="org/repo!7", action="post_draft_note", approver_id="souliane")
-        service, _stub = _service_with_stub()
-
-        _, code = service.post_draft_note("org/repo", 7, "nit")
-        assert code == 0
+        assert code == 0, msg
+        assert any(c[0] == "post_json" for c in stub.calls), "The draft note publish must fire"
+        # The autodraft user-DM receipt is recorded under ASK too.
+        ping = BotPing.objects.get(idempotency_key="on_behalf_autodraft:org/repo!7:post_draft_note")
+        assert ping.kind == BotPing.Kind.INFO
+        # No approval was recorded or consumed.
+        assert not OnBehalfApproval.objects.exists()
 
     def test_post_draft_note_auto_drafts_under_draft_or_ask(self) -> None:
         """Under DRAFT_OR_ASK, post_draft_note publishes autonomously + records a BotPing."""
@@ -565,25 +574,26 @@ class TestApproveOnBehalfCommand:
         assert "Refused" in result.output
         assert OnBehalfApproval.objects.count() == 0
 
-    def test_end_to_end_recorded_approval_satisfies_post_comment(self) -> None:
-        """Record an approval via the CLI; the next ``post_comment`` then proceeds.
+    def test_end_to_end_recorded_approval_satisfies_visible_post(self) -> None:
+        """Record an approval via the CLI; the next colleague-VISIBLE post then proceeds.
 
-        After the #1207 default-flip the default-draft path is gated on the
-        ``post_draft_note`` action (not ``post_comment``), so the recorded
-        approval names that action.
+        Uses ``reply_to_discussion`` (a colleague-visible, single-chokepoint
+        action) — drafts are exempt from the gate so they cannot exercise
+        the recorded-approval satisfier. The recorded approval is single-use:
+        the second visible post blocks again.
         """
         record = _runner.invoke(
             app,
-            ["review", "approve-on-behalf", "org/repo!7", "post_draft_note", "--approver", "souliane"],
+            ["review", "approve-on-behalf", "org/repo!7", "reply_to_discussion", "--approver", "souliane"],
         )
         assert record.exit_code == 0, record.output
 
         # Gate still in ASK mode — but the recorded approval now satisfies the next call.
         service, stub = _service_with_stub()
-        _, code = service.post_comment("org/repo", 7, "lgtm")
+        _, code = service.reply_to_discussion("org/repo", 7, "d1", "thanks")
 
         assert code == 0
         assert any(c[0] == "post_json" for c in stub.calls)
         # Single-use: the approval is now consumed; a second call fails.
-        _, code2 = service.post_comment("org/repo", 7, "lgtm")
+        _, code2 = service.reply_to_discussion("org/repo", 7, "d1", "thanks")
         assert code2 == 1

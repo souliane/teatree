@@ -50,8 +50,20 @@ class TestImmediateMode:
 
 
 class TestAskMode:
-    @pytest.mark.parametrize("action", [*_DRAFT_FORM_ACTIONS, *_NON_DRAFT_ACTIONS])
-    def test_ask_always_blocks(self, config_file: Path, action: str) -> None:
+    """ASK blocks colleague-VISIBLE posts but EXEMPTS drafts (#draft-bypass).
+
+    A draft is colleague-invisible, so it never needs approval — even
+    under strict ASK it resolves to AUTO_DRAFT, identical to DRAFT_OR_ASK.
+    Only colleague-visible actions BLOCK.
+    """
+
+    @pytest.mark.parametrize("action", _DRAFT_FORM_ACTIONS)
+    def test_ask_exempts_draft_form_actions(self, config_file: Path, action: str) -> None:
+        _write(config_file, '[teatree]\non_behalf_post_mode = "ask"\n')
+        assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.AUTO_DRAFT
+
+    @pytest.mark.parametrize("action", _NON_DRAFT_ACTIONS)
+    def test_ask_blocks_colleague_visible_actions(self, config_file: Path, action: str) -> None:
         _write(config_file, '[teatree]\non_behalf_post_mode = "ask"\n')
         assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.BLOCK
 
@@ -66,6 +78,21 @@ class TestDraftOrAskMode:
     def test_non_draft_action_blocks(self, config_file: Path, action: str) -> None:
         _write(config_file, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
         assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.BLOCK
+
+
+class TestDraftExemptUnderEveryBlockingMode:
+    """The draft carve-out is per-ACTION, not per-mode (#draft-bypass).
+
+    The bug: ``post_draft_note`` BLOCKed under ASK. The fix makes a
+    draft-form action exempt under BOTH blocking modes, so a draft post
+    never needs approval regardless of which strict mode the user picked.
+    """
+
+    @pytest.mark.parametrize("mode", ["ask", "draft_or_ask"])
+    @pytest.mark.parametrize("action", _DRAFT_FORM_ACTIONS)
+    def test_draft_auto_drafts_under_both_blocking_modes(self, config_file: Path, mode: str, action: str) -> None:
+        _write(config_file, f'[teatree]\non_behalf_post_mode = "{mode}"\n')
+        assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.AUTO_DRAFT
 
 
 class TestDefaults:
@@ -97,10 +124,10 @@ class TestBackwardCompatibilityAlias:
 
     def test_legacy_true_maps_to_ask(self, config_file: Path) -> None:
         _write(config_file, "[teatree]\nask_before_post_on_behalf = true\n")
-        # Every non-draft action blocks (same as ASK).
+        # Maps to ASK: colleague-visible actions block.
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
-        # A draft-form action also blocks (ASK, not DRAFT_OR_ASK).
-        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.BLOCK
+        # A draft-form action is exempt under ASK too — it auto-drafts.
+        assert resolve_on_behalf_verdict("post_draft_note") is OnBehalfVerdict.AUTO_DRAFT
 
     def test_legacy_false_maps_to_immediate(self, config_file: Path) -> None:
         _write(config_file, "[teatree]\nask_before_post_on_behalf = false\n")
