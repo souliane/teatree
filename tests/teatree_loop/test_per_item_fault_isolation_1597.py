@@ -259,27 +259,40 @@ class TestActiveTicketsIsolation(TestCase):
     """Sibling ticket still emits signal when processing the first ticket raises."""
 
     def test_failing_first_ticket_does_not_suppress_second_ticket_signal(self) -> None:
-        ticket_a = Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="started")
-        Ticket.objects.create(overlay="acme", issue_url="https://x/2", state="coded")
+        # A unique per-test overlay so the scanner only ever sees THIS test's two
+        # tickets. ``ActiveTicketsScanner`` filters on ``overlay_name``, so scoping
+        # the scan to a private overlay makes the test independent of any ticket
+        # row another test leaves visible in the DB under a shared overlay name
+        # (the order-dependent isolation flake #1924/#1961).
+        overlay = "fault-iso-active-tickets"
+        ticket_a = Ticket.objects.create(overlay=overlay, issue_url="https://x/1", state="started")
+        Ticket.objects.create(overlay=overlay, issue_url="https://x/2", state="coded")
 
-        # Make _enqueue_short_describe raise on ticket_a by giving it a cached
-        # title (triggering the enqueue path) and making Session.objects.create raise.
+        # Drive the failure on ticket_a deterministically: give it a cached title
+        # so ``_enqueue_short_describe`` runs and calls ``Session.objects.create``,
+        # then make that one ticket's session creation raise. Keying the fault on
+        # the specific ticket — not a call-count over the global iteration order —
+        # keeps the reproduction independent of how many sessions any other code
+        # path happens to create first.
         Ticket.objects.filter(pk=ticket_a.pk).update(
             extra={"issue_title": "something"},
         )
 
         original_create = Session.objects.create
-        call_count = [0]
 
         def _raising_create(**kwargs: Any) -> Any:
-            call_count[0] += 1
-            if call_count[0] == 1:
+            if kwargs.get("ticket") is not None and kwargs["ticket"].pk == ticket_a.pk:
                 msg = "simulated DB error on first ticket"
                 raise RuntimeError(msg)
             return original_create(**kwargs)
 
-        with patch("teatree.core.models.session.Session.objects.create", side_effect=_raising_create):
-            signals = ActiveTicketsScanner().scan()
+        # ``addCleanup`` (not a ``with`` block) guarantees the patch is torn down
+        # even if an assertion or an unexpected error fires before the block would
+        # exit — the patched ``create`` can never outlive this test.
+        patcher = patch("teatree.core.models.session.Session.objects.create", side_effect=_raising_create)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        signals = ActiveTicketsScanner(overlay_name=overlay).scan()
 
         assert len(signals) == 1, "second ticket must emit its signal even though first raised"
         assert signals[0].payload["state"] == "coded"
