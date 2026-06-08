@@ -47,7 +47,30 @@ url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
 e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
+# Cross-repo "my open MRs" Slack reminder — used by `t3 <overlay> mr_reminder`.
+# Routes each open MR/PR to a channel by its repo slug (most-specific match
+# wins; an org-namespace prefix like "acme-engineering" routes acme-engineering/*).
+[mr_reminder]
+default_channel = "C_FALLBACK"        # optional: channel for an MR matching no pattern (omit to drop unrouted)
+[mr_reminder.channels]
+"souliane/teatree" = "C_TEATREE"      # exact owner/repo → channel id (or #channel-name)
+"acme-engineering" = "C_ACME"         # org-namespace prefix → channel for every repo under it
+
 ```
+
+**Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
+personal one-off reminder into a reusable command. It lists every open MR/PR the
+user authors across all repos one code-host token can see (union-queried across
+`user_identity_aliases`, deduped by URL), routes each to a Slack channel via the
+`[mr_reminder]` repo→channel map, and assembles one mrkdwn message per channel.
+`preview` is read-only; `send` posts one message per routed channel. Routing reuses
+the same host-stripped leading-segment-prefix grammar as `private_repos`
+(`teatree.hooks._repo_visibility.slug_namespace_matches`): the most-specific
+configured pattern wins, and an unmatched MR falls back to `default_channel`
+(empty `default_channel` keeps it out of every channel rather than guessing). The
+assembly + routing are pure (`teatree.core.mr_reminder`); the per-channel post routes
+through the on-behalf egress chokepoint (`OnBehalfSlackEgress.post`), so a reminder
+channel (a colleague surface) is gated + audited like any on-behalf post.
 
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:
 

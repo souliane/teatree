@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode, Speed
+from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
 
@@ -481,6 +482,9 @@ class UserSettings:
     # #2060 The resolved [teatree.speak] sub-table — a local playback enum
     # (off/dm/all) + a slack bool. See :class:`SpeakConfig` + blueprint §10.1.1.
     speak: SpeakConfig = field(default_factory=SpeakConfig)
+    # The resolved [mr_reminder] slug→channel routing table for the
+    # cross-repo "my open MRs" reminder; empty default keeps it inert.
+    mr_reminder: MrReminderConfig = field(default_factory=MrReminderConfig)
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these
     # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
