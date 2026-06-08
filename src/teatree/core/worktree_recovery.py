@@ -30,7 +30,6 @@ from pathlib import Path
 
 from teatree.core.models import Worktree
 from teatree.core.worktree_snapshot import _has_unpushed_commits, capture_worktree_snapshot
-from teatree.utils import git
 
 __all__ = ["_has_unpushed_commits", "capture_recovery_artifact"]
 
@@ -50,13 +49,16 @@ def capture_recovery_artifact(
     written, or ``None`` when there was nothing to lose (clean working tree whose
     branch is fully pushed) — the clean+merged hard-delete path is unchanged.
 
-    ``branch`` overrides the bundled branch with the worktree's EFFECTIVE branch
+    ``branch`` overrides the bundled ref with the worktree's EFFECTIVE branch
     when the teardown seam has resolved one from git (it can drift from the DB
     ``Worktree.branch`` slug). When omitted, the DB slug is used. A
-    ``DETACHED_HEAD`` override means there is no named branch to bundle, so the
-    DB slug is used as the best-effort handle for the branch bundle.
+    ``DETACHED_HEAD`` override is passed straight through — it is NOT collapsed
+    to the slug: :func:`capture_worktree_snapshot` recognises ``HEAD`` and
+    bundles it from the worktree dir, where it resolves to the detached commit.
+    Collapsing it to the slug would bundle a different ref and lose the commits
+    reachable only from the detached HEAD (the #835/#1506 force-path guarantee).
     """
-    effective_branch = worktree.branch if branch in {None, git.DETACHED_HEAD} else branch
+    effective_branch = worktree.branch if branch is None else branch
     return capture_worktree_snapshot(
         repo_main,
         wt_path,
