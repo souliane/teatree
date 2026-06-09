@@ -44,6 +44,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Communication & references**
 
 14. [Clickable References](#clickable-references)
+14c. [Render the Title Inline, Never a Bare/Link-Only Id](#render-the-title-inline-never-a-barelink-only-id-non-negotiable)
 14b. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
@@ -214,6 +215,14 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
 This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+
+## Render the Title Inline, Never a Bare/Link-Only Id (Non-Negotiable)
+
+Every surface that _lists_ a ticket/MR/PR/issue id must render the human-readable title inline — `#N (short ≤6-word title)` (or `[#N (short title)](url)` where a link applies) — so the reader knows _what_ `#N` is without opening it. A bare `#N`, or a clickable number next to no title, is the anti-pattern: the reader cannot tell one row from another. The title and the URL are two halves of one contract — the clickable-link rule above resolves the URL; this rule supplies the title.
+
+- The single chokepoint is `teatree.core.ref_render.render_ref(label, *, title, url)` — every id-listing surface (loop-tick statusline, `/checking`, `/todos`, notify/standup recaps) formats through it so they read identically. Do not hand-roll the `#N (title)` shape per call site.
+- A row whose ticket has no known title degrades to the plain id (still clickable when a URL applies), never an empty `()`.
+- This is the _listing_ rule; the namespace-disambiguation rule below governs _which_ id token (`TODO-<n>` vs `<repo>#<n>`) the `label` is. They compose: a todo line is `task TODO-<id> (ticket #<n> (<title>) …)`.
 
 ## ID Namespace Disambiguation (Non-Negotiable)
 

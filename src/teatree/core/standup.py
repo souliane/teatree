@@ -23,6 +23,7 @@ from django.db.models import Count, Q
 from teatree.core.models.task import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
+from teatree.core.ref_render import render_ref
 from teatree.utils import git
 
 CommitCollector = Callable[[Ticket], list[str]]
@@ -35,12 +36,14 @@ class StandupLineDict(TypedDict):
     to_state: str
     attempt_count: int
     commits: list[str]
+    title: str
 
 
 class StandupBlockerDict(TypedDict):
     ticket_number: str
     ticket_state: str
     failure_count: int
+    title: str
 
 
 class StandupReportDict(TypedDict):
@@ -60,6 +63,7 @@ class StandupLine:
     to_state: str
     attempt_count: int
     commits: list[str] = field(default_factory=list)
+    title: str = ""
 
     def to_dict(self) -> StandupLineDict:
         return StandupLineDict(
@@ -69,10 +73,12 @@ class StandupLine:
             to_state=self.to_state,
             attempt_count=self.attempt_count,
             commits=list(self.commits),
+            title=self.title,
         )
 
     def render(self) -> str:
-        head = f"- TICKET-{self.ticket_number}: {self.from_state} → {self.to_state}"
+        ref = render_ref(f"TICKET-{self.ticket_number}", title=self.title)
+        head = f"- {ref}: {self.from_state} → {self.to_state}"
         meta = f" ({self.attempt_count} agent run{'s' if self.attempt_count != 1 else ''})"
         lines = [head + meta]
         lines.extend(f"  {commit}" for commit in self.commits)
@@ -86,16 +92,19 @@ class StandupBlocker:
     ticket_number: str
     ticket_state: str
     failure_count: int
+    title: str = ""
 
     def to_dict(self) -> StandupBlockerDict:
         return StandupBlockerDict(
             ticket_number=self.ticket_number,
             ticket_state=self.ticket_state,
             failure_count=self.failure_count,
+            title=self.title,
         )
 
     def render(self) -> str:
-        return f"- TICKET-{self.ticket_number}: {self.failure_count} failed agent run(s) in {self.ticket_state}"
+        ref = render_ref(f"TICKET-{self.ticket_number}", title=self.title)
+        return f"- {ref}: {self.failure_count} failed agent run(s) in {self.ticket_state}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +192,7 @@ def generate_standup(
                 to_state=tr.to_state,
                 attempt_count=counts[0],
                 commits=collector(ticket),
+                title=ticket.short_description,
             ),
         )
 
@@ -212,12 +222,13 @@ def _blockers(attempt_counts: dict[int, tuple[int, int]]) -> list[StandupBlocker
     # ``blocked_ids`` come from ``TaskAttempt`` rows; the FK + CASCADE
     # guarantees every id resolves to a live Ticket, so no missing-key
     # guard is needed.
-    tickets = Ticket.objects.filter(pk__in=blocked_ids).only("id", "state", "issue_url")
+    tickets = Ticket.objects.filter(pk__in=blocked_ids).only("id", "state", "issue_url", "short_description")
     return [
         StandupBlocker(
             ticket_number=ticket.ticket_number,
             ticket_state=ticket.state,
             failure_count=attempt_counts[ticket.pk][1],
+            title=ticket.short_description,
         )
         for ticket in tickets
     ]

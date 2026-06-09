@@ -189,6 +189,34 @@ class GenerateStandupTests(TestCase):
         blocker = StandupBlocker(ticket_number="9", ticket_state="started", failure_count=2)
         assert blocker.render() == "- TICKET-9: 2 failed agent run(s) in started"
 
+    def test_standup_line_renders_title_inline(self) -> None:
+        # #2092: the recap line carries the ticket title inline next to the id,
+        # never a bare ``TICKET-N``. Asserting the title text goes RED on the
+        # pre-fix renderer.
+        line = StandupLine(
+            ticket_number="1",
+            ticket_state="coded",
+            from_state="started",
+            to_state="coded",
+            attempt_count=1,
+            title="fix the broken widget",
+        )
+        assert "fix the broken widget" in line.render()
+        assert "TICKET-1 (fix the broken widget)" in line.render()
+
+    def test_standup_blocker_renders_title_inline(self) -> None:
+        blocker = StandupBlocker(ticket_number="9", ticket_state="started", failure_count=2, title="land the eval")
+        assert "TICKET-9 (land the eval)" in blocker.render()
+
+    def test_generated_standup_carries_ticket_title(self) -> None:
+        ticket = self._ticket()
+        ticket.short_description = "fix the broken widget"
+        ticket.save(update_fields=["short_description"])
+        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
+        assert report.yesterday[0].title == "fix the broken widget"
+        assert "fix the broken widget" in report.to_markdown()
+
     def test_default_git_collector_reads_real_log(self) -> None:
         from teatree.utils import git  # noqa: PLC0415
 
