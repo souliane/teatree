@@ -53,6 +53,44 @@ class TestIdleStackReaperScanner(TestCase):
     def test_name_is_stable(self) -> None:
         assert IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30).name == "idle_stack_reaper"
 
+    def test_cadence_blocks_a_recent_run(self) -> None:
+        from teatree.core.models import LocalStackReaperMarker  # noqa: PLC0415
+
+        LocalStackReaperMarker.load().stamp_run()  # last_run_at = now
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30, cadence_minutes=5)
+        with patch("teatree.loop.scanners.idle_stack_reaper.reapable_worktrees") as reapable:
+            assert scanner.scan() == []
+        reapable.assert_not_called()
+
+    def test_reapable_exception_returns_empty(self) -> None:
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
+        with patch(
+            "teatree.loop.scanners.idle_stack_reaper.reapable_worktrees",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert scanner.scan() == []
+
+    def test_marker_load_failure_returns_empty(self) -> None:
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
+        with patch(
+            "teatree.core.models.local_stack_reaper_marker.LocalStackReaperMarker.load",
+            side_effect=RuntimeError("db down"),
+        ):
+            assert scanner.scan() == []
+
+    def test_stamp_failure_still_emits_signals(self) -> None:
+        wt = _worktree(overlay="t3-heavy", ticket_number="603", state=Worktree.State.SERVICES_UP)
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
+        with (
+            patch("teatree.loop.scanners.idle_stack_reaper.reapable_worktrees", return_value=[wt]),
+            patch(
+                "teatree.core.models.local_stack_reaper_marker.LocalStackReaperMarker.stamp_run",
+                side_effect=RuntimeError("write failed"),
+            ),
+        ):
+            signals = scanner.scan()
+        assert len(signals) == 1
+
 
 class TestLocalStackQueueDrainerScanner(TestCase):
     def test_emits_acquire_signal_for_due_item(self) -> None:
@@ -82,3 +120,10 @@ class TestLocalStackQueueDrainerScanner(TestCase):
 
     def test_name_is_stable(self) -> None:
         assert LocalStackQueueDrainerScanner(overlay="t3-heavy").name == "local_stack_queue_drainer"
+
+    def test_db_error_returns_empty(self) -> None:
+        with patch(
+            "teatree.core.models.local_stack_queue.LocalStackQueueItem.objects.due_for_attempt",
+            side_effect=RuntimeError("db down"),
+        ):
+            assert LocalStackQueueDrainerScanner(overlay="t3-heavy").scan() == []

@@ -13,6 +13,7 @@ the suite — reverting the active-session / active-task / CWD guard must turn a
 
 from datetime import timedelta
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -161,3 +162,64 @@ class TestPartialStackReconcile(TestCase):
         wt = _running_worktree(ticket_number="401")
         with patch.object(idle_mod, "_running_container_count", return_value=0):
             assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+
+class TestRunningContainerCountHelper(TestCase):
+    """``_running_container_count`` maps docker output → count (advisory only)."""
+
+    @staticmethod
+    def _result(returncode: int, stdout: str) -> "CompletedProcess[str]":
+        return CompletedProcess(["docker", "ps"], returncode, stdout, "")
+
+    def test_blank_project_is_minus_one(self) -> None:
+        assert idle_mod._running_container_count("") == -1
+
+    def test_docker_failure_is_minus_one(self) -> None:
+        with patch.object(idle_mod, "run_allowed_to_fail", return_value=self._result(1, "")):
+            assert idle_mod._running_container_count("p") == -1
+
+    def test_counts_nonblank_names(self) -> None:
+        with patch.object(idle_mod, "run_allowed_to_fail", return_value=self._result(0, "c1\n\nc2\n")):
+            assert idle_mod._running_container_count("p") == 2
+
+
+class TestActiveWorktreePathHelper(TestCase):
+    """``_active_worktree_path`` returns the resolved CWD, ``None`` on OSError."""
+
+    def test_returns_none_on_oserror(self) -> None:
+        with patch.object(idle_mod.Path, "cwd", side_effect=OSError):
+            assert idle_mod._active_worktree_path() is None
+
+
+class TestIsCurrentlyActiveHelper(TestCase):
+    """``_is_currently_active`` matches a worktree's own dir or a child of it."""
+
+    def test_none_active_path_is_not_active(self) -> None:
+        wt = _running_worktree(ticket_number="900", worktree_path="/ws/900/backend")
+        assert idle_mod._is_currently_active(wt, None) is False
+
+    def test_blank_worktree_path_is_not_active(self) -> None:
+        wt = _running_worktree(ticket_number="901")  # no worktree_path
+        assert idle_mod._is_currently_active(wt, Path("/ws/901/backend")) is False
+
+    def test_child_of_worktree_is_active(self) -> None:
+        wt = _running_worktree(ticket_number="902", worktree_path="/ws/902/backend")
+        assert idle_mod._is_currently_active(wt, Path("/ws/902/backend/src/app")) is True
+
+
+class TestIsReapableFailSafeGuards(TestCase):
+    """``_is_reapable`` directly — the defensive fail-safe guards still hold."""
+
+    def _cutoff(self) -> object:
+        return timezone.now() - timedelta(minutes=30)
+
+    def test_non_running_state_cannot_proceed_is_kept(self) -> None:
+        """A PROVISIONED row can't ``stop_services`` → kept (the can_proceed guard)."""
+        wt = _running_worktree(ticket_number="910", state=Worktree.State.PROVISIONED)
+        assert idle_mod._is_reapable(wt, cutoff=self._cutoff(), active_path=None) is False
+
+    def test_null_last_used_at_is_kept(self) -> None:
+        wt = _running_worktree(ticket_number="911")
+        wt.last_used_at = None
+        with patch.object(idle_mod, "_running_container_count", return_value=1):
+            assert idle_mod._is_reapable(wt, cutoff=self._cutoff(), active_path=None) is False

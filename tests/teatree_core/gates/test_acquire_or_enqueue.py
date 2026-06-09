@@ -122,6 +122,60 @@ class TestEnqueueIsIdempotent(TestCase):
         assert LocalStackQueueItem.objects.filter(worktree=candidate).count() == 1
 
 
+class TestReapIdleStacksHelper(TestCase):
+    """``reap_idle_stacks`` demotes each reapable worktree and returns the count."""
+
+    def test_demotes_reapable_and_returns_count(self) -> None:
+        from teatree.core.gates.local_stack_gate import reap_idle_stacks  # noqa: PLC0415
+
+        wt = _worktree(ticket_number="550", state=Worktree.State.SERVICES_UP)
+        messages: list[str] = []
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=1),
+            patch(
+                "teatree.core.gates.idle_stack.reapable_worktrees",
+                return_value=[wt],
+            ),
+        ):
+            count = reap_idle_stacks(overlay="t3-heavy", write_out=messages.append)
+        wt.refresh_from_db()
+        assert count == 1
+        assert wt.state == Worktree.State.PROVISIONED
+        assert any("Reaped" in m for m in messages)
+
+    def test_returns_zero_when_nothing_reapable(self) -> None:
+        from teatree.core.gates.local_stack_gate import reap_idle_stacks  # noqa: PLC0415
+
+        with patch("teatree.core.gates.idle_stack.reapable_worktrees", return_value=[]):
+            assert reap_idle_stacks(overlay="t3-heavy") == 0
+
+    def test_reaps_without_write_out_callback(self) -> None:
+        """The default ``write_out=None`` path still demotes (no notice printed)."""
+        from teatree.core.gates.local_stack_gate import reap_idle_stacks  # noqa: PLC0415
+
+        wt = _worktree(ticket_number="570", state=Worktree.State.SERVICES_UP)
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=1),
+            patch("teatree.core.gates.idle_stack.reapable_worktrees", return_value=[wt]),
+        ):
+            assert reap_idle_stacks(overlay="t3-heavy") == 1
+        wt.refresh_from_db()
+        assert wt.state == Worktree.State.PROVISIONED
+
+    def test_skips_when_locked_row_cannot_stop(self) -> None:
+        """A reapable worktree whose locked row can't ``stop_services`` is skipped."""
+        from teatree.core.gates.local_stack_gate import reap_idle_stacks  # noqa: PLC0415
+
+        wt = _worktree(ticket_number="560", state=Worktree.State.SERVICES_UP)
+        with (
+            patch("teatree.core.gates.idle_stack.reapable_worktrees", return_value=[wt]),
+            patch.object(gate_mod, "can_proceed", return_value=False),
+        ):
+            assert reap_idle_stacks(overlay="t3-heavy") == 0
+        wt.refresh_from_db()
+        assert wt.state == Worktree.State.SERVICES_UP
+
+
 class TestCheckLimitUntouched(TestCase):
     """``check_local_stack_limit`` keeps its SystemExit-free refusal contract."""
 

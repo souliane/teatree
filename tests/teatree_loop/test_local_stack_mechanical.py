@@ -70,6 +70,26 @@ class TestReapIdleStackHandler(TestCase):
         with patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[]):
             reap_idle_stack({"worktree_id": 999_999, "overlay": "t3-heavy"})
 
+    def test_reapable_but_row_deleted_between_verify_and_lock(self) -> None:
+        """The worktree is reapable in the snapshot but its row is gone when locked."""
+
+        class _Ghost:
+            pk = 999_998
+
+        with patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[_Ghost()]):
+            # Must not raise — the locked get() raises DoesNotExist and the handler returns.
+            reap_idle_stack({"worktree_id": 999_998, "overlay": "t3-heavy"})
+
+    def test_kept_when_stop_not_allowed_after_lock(self) -> None:
+        wt = _worktree(ticket_number="805", state=Worktree.State.SERVICES_UP)
+        with (
+            patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[wt]),
+            patch("teatree.loop.mechanical_local_stack.can_proceed", return_value=False),
+        ):
+            reap_idle_stack({"worktree_id": wt.pk, "overlay": "t3-heavy"})
+        wt.refresh_from_db()
+        assert wt.state == Worktree.State.SERVICES_UP
+
 
 class TestNoStrayContainerAfterReap(TestCase):
     """The reap → stop path compose-downs the WHOLE project (wt595 leak class).
@@ -157,3 +177,43 @@ class TestDrainStackQueueItemHandler(TestCase):
 
     def test_missing_item_id_is_a_noop(self) -> None:
         drain_stack_queue_item({"overlay": "t3-heavy"})
+
+    def test_already_gone_item_is_a_noop(self) -> None:
+        # Must not raise — the locked get() raises DoesNotExist and the handler returns.
+        drain_stack_queue_item({"queue_item_id": 999_999, "worktree_id": 1, "overlay": "t3-heavy"})
+
+    def test_kept_when_start_not_allowed(self) -> None:
+        """A slot is free but the worktree can't start (e.g. CREATED) → no FSM advance."""
+        wt = _worktree(ticket_number="850", state=Worktree.State.CREATED)
+        item = LocalStackQueueItem.objects.create(overlay="t3-heavy", worktree=wt)
+        with patch("teatree.loop.mechanical_local_stack.check_local_stack_limit"):
+            drain_stack_queue_item({"queue_item_id": item.pk, "worktree_id": wt.pk, "overlay": "t3-heavy"})
+        wt.refresh_from_db()
+        item.refresh_from_db()
+        assert wt.state == Worktree.State.CREATED
+        assert item.status == LocalStackQueueItem.Status.QUEUED
+
+
+class TestRunCommandsHelper(TestCase):
+    """``_run_commands`` resolves the overlay's commands, ``None`` on any failure."""
+
+    def test_resolves_overlay_commands(self) -> None:
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.loop.mechanical_local_stack import _run_commands  # noqa: PLC0415
+
+        wt = _worktree(ticket_number="859", state=Worktree.State.PROVISIONED)
+        overlay = MagicMock()
+        overlay.get_run_commands.return_value = ["backend", "frontend"]
+        with patch("teatree.core.overlay_loader.get_overlay_for_worktree", return_value=overlay):
+            assert _run_commands(wt) == ["backend", "frontend"]
+
+    def test_unresolvable_overlay_returns_none(self) -> None:
+        from teatree.loop.mechanical_local_stack import _run_commands  # noqa: PLC0415
+
+        wt = _worktree(ticket_number="860", state=Worktree.State.PROVISIONED)
+        with patch(
+            "teatree.core.overlay_loader.get_overlay_for_worktree",
+            side_effect=RuntimeError("unknown overlay"),
+        ):
+            assert _run_commands(wt) is None

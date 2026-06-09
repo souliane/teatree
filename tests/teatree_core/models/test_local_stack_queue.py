@@ -189,3 +189,25 @@ class TestMarkReady(TestCase):
         item.mark_ready()
         item.refresh_from_db()
         assert item.status == LocalStackQueueItem.Status.READY
+
+
+class TestMarkDoneAndStr(TestCase):
+    """``mark_done`` settles the row; ``__str__`` is informative."""
+
+    def test_mark_done_sets_status(self) -> None:
+        wt = _worktree(ticket_number="9501")
+        item = LocalStackQueueItem.objects.create(
+            overlay=wt.overlay,
+            worktree=wt,
+            status=LocalStackQueueItem.Status.READY,
+        )
+        item.mark_done()
+        item.refresh_from_db()
+        assert item.status == LocalStackQueueItem.Status.DONE
+
+    def test_str_carries_worktree_status_and_attempt(self) -> None:
+        wt = _worktree(ticket_number="9502")
+        item = LocalStackQueueItem.objects.create(overlay=wt.overlay, worktree=wt)
+        rendered = str(item)
+        assert str(wt.pk) in rendered
+        assert "queued" in rendered
