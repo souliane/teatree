@@ -2,7 +2,6 @@
 
 import os
 import re
-import sys
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -23,6 +22,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     WorktreeReaper,
     _die,
     _fix_drift,
+    _is_interactive,
     _raise_on_cleanup_failures,
     drop_orphan_databases,
     drop_orphaned_stashes,
@@ -573,7 +573,7 @@ class Command(TyperCommand):
         """Prune merged worktrees, stale branches, stashes, orphan databases + docker, and old DSLR snapshots."""
         workspace = _workspace_dir()
         cleaned: list[str] = []
-        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        interactive = _is_interactive()
         in_use = _wh.dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
         reaper = WorktreeReaper(workspace)
         cleaned.extend(reaper.reap_squash_merged_worktrees(interactive=interactive))

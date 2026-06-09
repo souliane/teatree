@@ -6,6 +6,7 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
 import re
+import sys
 from contextlib import suppress
 from fnmatch import fnmatch
 from pathlib import Path
@@ -475,6 +476,24 @@ def drop_orphan_databases() -> list[str]:
         )
         cleaned.append(f"Dropped orphan database: {db_name}")
     return cleaned
+
+
+def _is_interactive() -> bool:
+    """Whether ``clean-all`` may prompt on stdin.
+
+    True only when both stdin and stdout are confirmed TTYs. Any non-TTY
+    context — a piped stdin, an autonomous loop tick, a daemonised worker
+    whose stdin is closed (``isatty`` raises ``ValueError``) or absent
+    (``sys.stdin is None``) — resolves to ``False`` so the caller takes the
+    safe documented non-interactive path and never blocks reading stdin.
+
+    Fails closed to non-interactive: an unknown/unreadable stdin is treated
+    as not-a-TTY, never as a TTY that may be prompted.
+    """
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (ValueError, AttributeError):
+        return False
 
 
 def resolve_unsynced_worktree(worktree: Worktree, exc: RuntimeError, *, interactive: bool) -> str:
