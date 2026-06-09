@@ -129,7 +129,7 @@ class GitLabApprovalsScanner:
 
         target_ref = _str_field(pr, "target_branch")
         title = _str_field(pr, "title")
-        guard = _overlay_loader.get_overlay().can_auto_merge(
+        guard = _overlay_loader.get_overlay_for_url(url).can_auto_merge(
             target_ref=target_ref or url,
             thread_ref=url,
         )

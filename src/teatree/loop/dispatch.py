@@ -382,9 +382,9 @@ def _review_target_is_dead(pr_url: str) -> bool:
 
     try:
         from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415
 
-        host = get_code_host_for_url(get_overlay(), pr_url)
+        host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)
         if host is None:
             return False
         state = host.get_pr_open_state(pr_url=pr_url)

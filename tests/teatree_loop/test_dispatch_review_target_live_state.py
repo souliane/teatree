@@ -11,9 +11,13 @@ the gate suppresses ONLY on a definite MERGED/CLOSED — OPEN and UNKNOWN still
 dispatch, so a transient lookup failure never silently drops a legitimate review.
 """
 
+import os
+from unittest.mock import patch
+
 import pytest
 
 from teatree.core.backend_protocols import PrOpenState
+from teatree.core.overlay import OverlayBase
 from teatree.loop import dispatch as dispatch_mod
 from teatree.loop.scanners.base import ScanSignal
 
@@ -119,3 +123,57 @@ class TestMentionReviewRequestSkipsMergedClosed:
         _bind_host(monkeypatch, _StubHost(PrOpenState.OPEN))
         actions = dispatch_mod.dispatch([_mention_signal()])
         assert any(a.kind == "agent" and a.zone == "t3:reviewer" for a in actions)
+
+
+class _RepoOverlay(OverlayBase):
+    def __init__(self, repos: list[str]) -> None:
+        self._repos = repos
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_workspace_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree: object) -> list:
+        _ = worktree
+        return []
+
+
+class TestReviewTargetMultiOverlay:
+    """Real ``get_overlay()`` ambiguity path — two overlays registered (TODO-282).
+
+    ``_review_target_is_dead`` resolved the overlay with a bare
+    ``get_overlay()`` to build the per-URL code host. With two overlays
+    registered and no ``T3_OVERLAY_NAME`` that raises ``Multiple overlays
+    found`` — caught by the function's own ``except Exception`` (fail-open),
+    so a genuinely MERGED/CLOSED MR is NEVER recognised as dead and a stale
+    reviewer is dispatched on every multi-overlay host. The fix resolves the
+    overlay from the MR URL, so the live MERGED state is read and the dead
+    target is correctly suppressed.
+
+    Only overlay discovery and the network host are stubbed; the URL→overlay
+    resolution is real.
+    """
+
+    def test_merged_target_recognised_dead_with_two_overlays(self) -> None:
+        url = "https://gitlab.com/acme/backend/-/merge_requests/55"
+        overlays = {
+            "acme": _RepoOverlay(["acme/backend"]),
+            "other": _RepoOverlay(["other/repo"]),
+        }
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch(
+                "teatree.backends.loader.get_code_host_for_url",
+                return_value=_StubHost(PrOpenState.MERGED),
+            ),
+        ):
+            result = dispatch_mod._review_target_is_dead(url)
+
+        assert result is True, (
+            "with two overlays registered, a MERGED MR must still be recognised dead — "
+            "a bare get_overlay() raises Multiple-overlays and the function fails open to False"
+        )

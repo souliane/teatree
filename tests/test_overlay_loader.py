@@ -1,5 +1,6 @@
 """Tests for teatree.core.overlay_loader — TOML-based overlay discovery."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
@@ -15,6 +17,7 @@ from teatree.core.overlay_loader import (
     _discover_toml_overlays,
     frontend_repos_for_overlay,
     get_overlay_for_repo,
+    get_overlay_for_url,
     infer_overlay_for_url,
     resolve_overlay_name,
 )
@@ -328,6 +331,77 @@ class TestGetOverlayForRepo:
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
             assert get_overlay_for_repo(str(repo)) is overlays["a"]
         assert "failed during repo resolution" in caplog.text
+
+
+class TestGetOverlayForUrl:
+    """``get_overlay_for_url`` resolves the owning overlay from a forge URL (TODO-282).
+
+    The URL-context counterpart of ``get_overlay_for_ticket`` — for loop-tick
+    call sites that hold a forge URL but no ticket/worktree row. With two
+    overlays registered and no ``T3_OVERLAY_NAME``, a bare ``get_overlay()``
+    raises ``Multiple overlays found``; resolving from the URL's repo-ownership
+    match is unambiguous when exactly one overlay owns it, and fails loud
+    naming the installed overlays when it cannot be resolved.
+    """
+
+    def _overlay(self, repos: list[str]) -> _RepoOverlay:
+        return _RepoOverlay(repos)
+
+    def _two_overlays_no_pin(self, overlays: dict):
+        """Register the given overlays with ``T3_OVERLAY_NAME`` unset.
+
+        Drives the real ``get_overlay()`` ambiguity path — the conftest pins
+        ``T3_OVERLAY_NAME=t3-teatree`` globally, which would short-circuit the
+        multi-overlay resolution under test.
+        """
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        return (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+        )
+
+    def test_url_owned_by_one_of_two_overlays_resolves_that_overlay(self):
+        overlays = {
+            "a": self._overlay(["acme/widgets"]),
+            "b": self._overlay(["other/repo"]),
+        }
+        url = "https://github.com/acme/widgets/pull/7"
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with env_patch, discover_patch:
+            resolved = get_overlay_for_url(url)
+        assert resolved is overlays["a"], (
+            "with two overlays registered, the URL's owner must win — not crash on ambiguity"
+        )
+
+    def test_ambiguous_url_fails_loud_naming_overlays(self):
+        """A URL no overlay uniquely claims, with two overlays registered, fails loud.
+
+        Inference returns ``""`` (no single owner), so resolution falls to
+        ``get_overlay(None)`` which raises the explicit ``Multiple overlays
+        found (...)`` error naming the installed overlays — never silently
+        picks one.
+        """
+        overlays = {
+            "alpha": self._overlay(["acme/widgets"]),
+            "beta": self._overlay(["acme/widgets"]),
+        }
+        url = "https://github.com/acme/widgets/pull/7"
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with env_patch, discover_patch, pytest.raises(ImproperlyConfigured, match=r"Multiple overlays found"):
+            get_overlay_for_url(url)
+
+    def test_single_overlay_resolves_without_url_match(self):
+        overlays = {"only": self._overlay(["other/repo"])}
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with env_patch, discover_patch:
+            resolved = get_overlay_for_url("https://github.com/acme/widgets/pull/7")
+        assert resolved is overlays["only"]
+
+    def test_empty_url_falls_back_to_ambient_default(self):
+        overlays = {"only": self._overlay(["other/repo"])}
+        env_patch, discover_patch = self._two_overlays_no_pin(overlays)
+        with env_patch, discover_patch:
+            assert get_overlay_for_url("") is overlays["only"]
 
 
 class TestResolveOverlayName:

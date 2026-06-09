@@ -38,6 +38,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _event_forge_url(event: "IncomingEvent") -> str:
+    """Best-effort forge URL/slug for *event*, for overlay resolution.
+
+    Prefers the merge request / pull request web URL carried in the webhook
+    payload (GitLab ``object_attributes.url``, GitHub ``pull_request.html_url``),
+    falling back to the ``owner/repo`` slug both receivers record as
+    ``channel_ref`` (GitLab ``project.path_with_namespace``, GitHub
+    ``repository.full_name``). Either shape is resolvable by
+    :func:`teatree.core.overlay_loader.infer_overlay_for_url`. Returns ``""``
+    when neither is present, so the caller falls back to the ambient
+    single-overlay default (and fails loud on genuine ambiguity).
+    """
+    payload = event.payload_json or {}
+    attrs = payload.get("object_attributes")
+    if isinstance(attrs, dict):
+        gitlab_url = attrs.get("url")
+        if isinstance(gitlab_url, str) and gitlab_url:
+            return gitlab_url
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict):
+        github_url = pr.get("html_url")
+        if isinstance(github_url, str) and github_url:
+            return github_url
+    return event.channel_ref or ""
+
+
 @dataclass(slots=True)
 class IncomingEventsScanner:
     limit: int = 25
@@ -119,8 +145,19 @@ class IncomingEventsScanner:
 
     @staticmethod
     def _handle_schedule_merge(event: "IncomingEvent", action: RoutedAction) -> ScanSignal:
-        """Apply the overlay merge guard and return the appropriate signal."""
-        guard = _overlay_loader.get_overlay().can_auto_merge(
+        """Apply the overlay merge guard and return the appropriate signal.
+
+        ``can_auto_merge`` is per-overlay policy (freeze windows, approval
+        gates), so the guard must run against the overlay that owns the merge
+        target — not a bare ``get_overlay()`` that raises ``Multiple overlays
+        found`` in a multi-overlay install (souliane/teatree#1814 class). The
+        owning overlay is resolved from the event's forge URL/slug
+        (:func:`_event_forge_url`) which both webhook receivers record as the
+        ``owner/repo`` ``channel_ref``; an unresolvable / ambiguous event
+        falls through to ``get_overlay_for_url("")`` → ``get_overlay(None)``,
+        which fails loud naming the installed overlays rather than picking one.
+        """
+        guard = _overlay_loader.get_overlay_for_url(_event_forge_url(event)).can_auto_merge(
             target_ref=action.target_ref,
             thread_ref=action.detail,
         )
