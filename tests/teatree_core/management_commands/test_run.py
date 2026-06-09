@@ -227,6 +227,82 @@ class TestRunTestsFailureExitCode(TestCase):
             assert exc_info.value.code == 1
 
 
+class TestRunLint(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_calls_overlay_lint_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
+                result = cast("str", call_command("run", "lint", path=str(wt_dir)))
+
+            mock_run.assert_called_once()
+            assert "completed" in result.lower()
+
+    @_patch_overlays(MINIMAL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_command_raises_system_exit(self) -> None:
+        """`run lint` with no configured lint command is a genuine failure.
+
+        The caller explicitly asked to lint; an overlay that cannot lint must
+        stop the caller (CI/loop), not exit 0.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("run", "lint", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failing_lint_raises_system_exit_1(self) -> None:
+        """A non-zero lint exit must surface as SystemExit(1) so CI/loop sees red."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            with (
+                patch.object(utils_run_mod, "Popen", _popen_mock(returncode=1)),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("run", "lint", path=str(wt_dir))
+
+            assert exc_info.value.code == 1
+
+
 class TestRunVerify(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

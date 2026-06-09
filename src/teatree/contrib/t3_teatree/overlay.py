@@ -12,7 +12,7 @@ from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.core.worktree_env import compose_project
 from teatree.docker.reap import reap_compose_project
-from teatree.types import ProvisionStep, RunCommands, SkillMetadata
+from teatree.types import ProvisionStep, SkillMetadata
 from teatree.utils.run import run_checked
 from teatree.visual_qa import matches_triggers
 
@@ -156,15 +156,12 @@ class TeatreeOverlay(OverlayBase):
         ]
 
     @override
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "test": ["uv", "run", "pytest"],
-            "lint": ["prek", "run", "--all-files"],
-        }
-
-    @override
     def get_test_command(self, worktree: Worktree) -> list[str]:
         return ["uv", "run", "pytest"]
+
+    @override
+    def get_lint_command(self, worktree: Worktree) -> list[str]:
+        return ["prek", "run", "--all-files"]
 
     @override
     def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:

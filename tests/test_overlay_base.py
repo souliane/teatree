@@ -84,6 +84,11 @@ def test_get_test_command_returns_empty_list():
     assert overlay.get_test_command(_make_worktree()) == []
 
 
+def test_get_lint_command_returns_empty_list():
+    overlay = _MinimalOverlay()
+    assert overlay.get_lint_command(_make_worktree()) == []
+
+
 def test_get_e2e_preflight_returns_empty_list_by_default():
     overlay = _MinimalOverlay()
     assert overlay.get_e2e_preflight(customer="acme", base_url="https://dev.example.com") == []
