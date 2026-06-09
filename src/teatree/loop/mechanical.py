@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from django_fsm import can_proceed
 
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources
 
 if TYPE_CHECKING:
@@ -323,4 +324,9 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "free_resources": free_resources,
     "todo_completion": todo_completion,
     "close_dead_issue": close_dead_issue,
+    # #2190 idle-stack reaper + acquisition-queue drainer. The scanners only
+    # flag candidates; the actual ``stop_services`` / ``start_services`` runs
+    # here (re-verifying live state first, never an agent).
+    "reap_idle_stack": reap_idle_stack,
+    "drain_stack_queue_item": drain_stack_queue_item,
 }

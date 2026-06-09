@@ -141,6 +141,10 @@ _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
+    # #2190 the idle reaper + queue drainer route to mechanical handlers; their
+    # bookkeeping signals must not flood the statusline (a slow drain emits a
+    # backoff signal per due item per tick).
+    "local_stack.",
 )
 
 
@@ -295,6 +299,11 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # closes it idempotently with an audit-trail comment. Never an agent: the
     # scanner can CLOSE noise but is physically unable to enqueue work.
     "issue_disposition.close_candidate": ("mechanical", "close_dead_issue"),
+    # #2190 idle-stack reaper → mechanical stop_services (reversible demotion);
+    # #44 acquisition-queue drainer → mechanical start_services / backoff. Both
+    # are mechanical-only (re-verify live state, never an agent).
+    "local_stack.reap_idle": ("mechanical", "reap_idle_stack"),
+    "local_stack.queue_acquire": ("mechanical", "drain_stack_queue_item"),
 }
 
 
@@ -573,6 +582,16 @@ def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
     conditional = _conditional_dispatch(signal)
     if conditional is not None:
         return conditional
+    # A registered mechanical handler always wins over a statusline drop: a
+    # signal whose prefix is in ``_STATUSLINE_DROP_PREFIXES`` (e.g. the #2190
+    # ``local_stack.*`` bookkeeping) must still reach its mechanical executor —
+    # the drop only suppresses the *statusline fallback* rendering, not the
+    # action. Checked before the drop so the reaper/drainer fire while their
+    # signals stay off the statusline.
+    mech = _MECHANICAL_BY_KIND.get(signal.kind)
+    if mech is not None:
+        kind, zone = mech
+        return [DispatchAction(kind=kind, zone=zone, detail=signal.summary, payload=signal.payload)]
     if _is_statusline_dropped(signal):
         return []
     agent = _AGENT_BY_KIND.get(signal.kind)
@@ -599,10 +618,6 @@ def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
         return [
             DispatchAction(kind="mechanical", zone="ticket_disposition", detail=signal.summary, payload=signal.payload),
         ]
-    mech = _MECHANICAL_BY_KIND.get(signal.kind)
-    if mech is not None:
-        kind, zone = mech
-        return [DispatchAction(kind=kind, zone=zone, detail=signal.summary, payload=signal.payload)]
     zone = _STATUSLINE_ZONE_BY_KIND.get(signal.kind, "in_flight")
     return [DispatchAction(kind="statusline", zone=zone, detail=signal.summary, payload=signal.payload)]
 

@@ -252,10 +252,15 @@ class TestLocalStackGateMultiRepoTicket(TestCase):
         del sibling
 
 
-class TestWorktreeStartCliRefusesWhenLimitExceeded(TestCase):
-    """End-to-end: ``t3 worktree start`` raises SystemExit(1) when the gate refuses."""
+class TestWorktreeStartCliEnqueuesWhenLimitExceeded(TestCase):
+    """End-to-end: at the cap ``t3 worktree start`` ENQUEUES — never SystemExit (#2190).
 
-    def test_start_refuses_when_another_stack_running(self) -> None:
+    The pre-#2190 behaviour was a hard ``SystemExit(1)``; #2190 replaces it
+    with reap → retry → enqueue. The CLI must leave a ``LocalStackQueueItem``
+    row, leave the candidate's FSM un-advanced (still PROVISIONED), and exit 0.
+    """
+
+    def test_start_enqueues_when_another_stack_running(self) -> None:
         from teatree.core.management.commands import worktree as worktree_cmd  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -288,18 +293,22 @@ class TestWorktreeStartCliRefusesWhenLimitExceeded(TestCase):
                 state=Worktree.State.PROVISIONED,
             )
 
-            # Exercise the real gate end-to-end: patch ``resolve_worktree``
-            # to return the candidate and the effective-limit resolver to
-            # return ``1``. The CLI must surface the refusal as SystemExit(1).
             from teatree.core.gates import local_stack_gate as gate_mod  # noqa: PLC0415
+            from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415
 
+            # Real gate end-to-end: limit=1, the blocker stays live, and no idle
+            # stack is reapable (the blocker has no last_used_at). The CLI must
+            # NOT raise SystemExit — it enqueues and returns.
             with (
                 patch.object(worktree_cmd, "resolve_worktree", return_value=candidate),
                 patch.object(gate_mod, "resolve_max_concurrent_local_stacks", return_value=1),
-                pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("worktree", "start", path=str(wt_dir))
-            assert exc_info.value.code == 1
+
+            candidate.refresh_from_db()
+            assert candidate.state == Worktree.State.PROVISIONED
+            item = LocalStackQueueItem.objects.get(worktree=candidate)
+            assert item.status == LocalStackQueueItem.Status.QUEUED
 
 
 class TestLocalStackGateDockerReconciliation(TestCase):

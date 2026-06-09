@@ -11,6 +11,7 @@ from teatree.core.runners.base import RunnerResult
 from teatree.core.worktree_tasks import (
     execute_worktree_provision,
     execute_worktree_start,
+    execute_worktree_stop,
     execute_worktree_teardown,
     execute_worktree_verify,
 )
@@ -135,3 +136,44 @@ class TestExecuteWorktreeTeardown(_WorktreeTaskTest):
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="docker stuck")
             result = execute_worktree_teardown.call(wt.pk, snapshot_db_name="db_old", snapshot_extra={})
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "docker stuck"}
+
+
+class TestExecuteWorktreeStop(_WorktreeTaskTest):
+    """``execute_worktree_stop`` brings the WHOLE compose project down (reversible)."""
+
+    def test_skips_when_state_is_not_provisioned(self) -> None:
+        """The transition demotes to PROVISIONED first; a non-PROVISIONED row is a stale read."""
+        wt = self._worktree(state=Worktree.State.SERVICES_UP)
+        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+            result = execute_worktree_stop.call(wt.pk)
+        assert result["skipped"] is True
+        down.assert_not_called()
+
+    def test_brings_the_whole_compose_project_down(self) -> None:
+        from teatree.core.worktree_env import compose_project  # noqa: PLC0415
+
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        expected_project = compose_project(wt)
+        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+            result = execute_worktree_stop.call(wt.pk)
+        assert result["worktree_id"] == wt.pk
+        assert result["ok"] is True
+        # The whole project (all containers incl db), never a single service.
+        down.assert_called_once()
+        assert down.call_args.args[0] == expected_project
+
+    def test_no_ops_when_worktree_row_already_gone(self) -> None:
+        with patch("teatree.core.worktree_tasks.docker_compose_down") as down:
+            result = execute_worktree_stop.call(999_999)
+        assert result == {"worktree_id": 999_999, "skipped": True}
+        down.assert_not_called()
+
+    def test_preserves_db_name(self) -> None:
+        """REVERSIBLE: the worker must not drop the DB (unlike teardown)."""
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        wt.db_name = "wt_keepme"
+        wt.save(update_fields=["db_name"])
+        with patch("teatree.core.worktree_tasks.docker_compose_down"):
+            execute_worktree_stop.call(wt.pk)
+        wt.refresh_from_db()
+        assert wt.db_name == "wt_keepme"

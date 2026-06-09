@@ -17,7 +17,7 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
-from teatree.core.gates.local_stack_gate import refuse_if_limit_exceeded
+from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
@@ -225,7 +225,11 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
-        refuse_if_limit_exceeded(worktree, write_err=self.stderr.write)
+        # #2190: at the cap, reap idle stacks → retry → ENQUEUE (no SystemExit).
+        # A queued request (acquire returns False) means the loop's drainer will
+        # re-fire ``start`` once a slot frees — so DO NOT advance the FSM here.
+        if not acquire_or_enqueue(worktree, write_out=self.stdout.write):
+            return worktree.state
 
         commands = list(resolved_overlay.get_run_commands(worktree))
         with transaction.atomic():

@@ -29,6 +29,8 @@ from teatree.core.models.live_post_approval import (
     LivePostApprovalError,
     canonical_mr_scope,
 )
+from teatree.core.models.local_stack_queue import LocalStackQueueItem
+from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
@@ -98,6 +100,8 @@ __all__ = [
     "InvalidTransitionError",
     "LivePostApproval",
     "LivePostApprovalError",
+    "LocalStackQueueItem",
+    "LocalStackReaperMarker",
     "LoopLease",
     "MatcherDetail",
     "MergeAudit",
