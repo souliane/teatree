@@ -244,6 +244,17 @@ class TestInFlightGroup(CheckingTestBase):
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.in_flight.items[0].url == ticket.issue_url
 
+    def test_title_is_rendered_inline(self) -> None:
+        # #2092: the in-flight row must carry the ticket title inline, not a
+        # bare/link-only ``#N``. Asserting the rendered line contains the title
+        # text goes RED on the pre-fix code (which only renders ``#N → state``).
+        ticket = self._ticket(state=Ticket.State.CODED)
+        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+        item = report.in_flight.items[0]
+        assert item.title == "ticket 42 work"
+        assert "ticket 42 work" in item.render()
+
     def test_transition_outside_window_excluded(self) -> None:
         ticket = self._ticket()
         self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=48)
@@ -290,6 +301,16 @@ class TestNeedsYouGroup(CheckingTestBase):
         assert item.label == "#42"
         assert item.url == ticket.issue_url
         assert item.detail == "failed agent run"
+
+    def test_failed_attempt_renders_title_inline(self) -> None:
+        # #2092: the needs-you row must carry the ticket title inline. The
+        # rendered line includes the title text next to the id.
+        ticket = self._ticket(state=Ticket.State.STARTED)
+        self._attempt(ticket, hours_ago=2, exit_code=1)
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+        item = report.needs_you.items[0]
+        assert item.title == "ticket 42 work"
+        assert "ticket 42 work" in item.render()
 
     def test_successful_attempt_does_not_block(self) -> None:
         ticket = self._ticket(state=Ticket.State.STARTED)
@@ -392,6 +413,12 @@ class TestPureRenderers:
     def test_check_item_renders_clickable_link(self) -> None:
         item = CheckItem(label="acme/x#3", url="https://github.com/acme/x/pull/3", detail="fix")
         assert item.render() == "  - [acme/x#3](https://github.com/acme/x/pull/3) — fix"
+
+    def test_check_item_renders_title_inside_clickable_text(self) -> None:
+        # #2092: with a title, the id AND title render inside one clickable span
+        # — never a bare number beside an unlinked title.
+        item = CheckItem(label="#42", url="https://h/42", title="fix the widget", detail="→ coded")
+        assert item.render() == "  - [#42 (fix the widget)](https://h/42) — → coded"
 
     def test_check_group_empty_renders_nothing(self) -> None:
         assert CheckGroup(title="Merged", items=[], total=0).render() == []
@@ -564,3 +591,28 @@ class TestAllOverlaysAggregation(CheckingTestBase):
         overlay_configs = {self.OVERLAY: ("github", [])}
         report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
         assert isinstance(report, AllOverlaysReport)
+
+    def test_multi_overlay_in_flight_and_failed_carry_title_inline(self) -> None:
+        # #2092: the multi-overlay in-flight and needs-you rows carry the ticket
+        # title inline next to the id — never a bare/link-only ``#N``.
+        moving = self._ticket(number=1, state=Ticket.State.CODED)
+        self._transition(moving, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        blocked = self._ticket_b(number=2, state=Ticket.State.STARTED)
+        self._attempt(blocked, hours_ago=1, exit_code=1)
+
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", ["acme/widgets"]),
+            self.OVERLAY_B: ("github", ["beta/core"]),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+
+        in_flight = report.in_flight.items[0]
+        assert in_flight.title == "ticket 1 work"
+        assert "ticket 1 work" in in_flight.render()
+        failed = next(item for item in report.needs_you.items if not item.label.startswith("Q"))
+        assert failed.title == "ticket 2 beta work"
+        assert "ticket 2 beta work" in failed.render()

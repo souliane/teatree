@@ -51,6 +51,7 @@ class CheckItemDict(TypedDict):
     label: str
     url: str
     detail: str
+    title: str
 
 
 class CheckGroupDict(TypedDict):
@@ -81,19 +82,25 @@ class CheckItem:
     """One line in a group — a clickable reference plus optional detail.
 
     ``url`` is the clickable target (a PR/issue/ticket URL, or an actionable
-    command for a deferred question); the renderer emits ``[label](url)`` so a
-    reader never sees a bare numeric id.
+    command for a deferred question). ``title`` is the human-readable
+    description rendered inline next to the id (#2092), so a reader never sees a
+    bare/link-only ``#N`` they can't interpret. The shared
+    :func:`teatree.core.ref_render.render_ref` chokepoint produces the
+    ``[#N (short title)](url)`` shape every listing surface uses.
     """
 
     label: str
     url: str
     detail: str = ""
+    title: str = ""
 
     def to_dict(self) -> CheckItemDict:
-        return CheckItemDict(label=self.label, url=self.url, detail=self.detail)
+        return CheckItemDict(label=self.label, url=self.url, detail=self.detail, title=self.title)
 
     def render(self) -> str:
-        ref = f"[{self.label}]({self.url})" if self.url else self.label
+        from teatree.core.ref_render import render_ref  # noqa: PLC0415
+
+        ref = render_ref(self.label, title=self.title, url=self.url)
         return f"  - {ref} — {self.detail}" if self.detail else f"  - {ref}"
 
 
@@ -372,6 +379,7 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
                 label=f"#{tick.ticket_number}",
                 url=ticket_url(tick),
                 detail=f"→ {tr.to_state}",
+                title=tick.short_description,
             ),
         )
     items.sort(key=lambda item: int(item.label.lstrip("#")) if item.label.lstrip("#").isdigit() else 0, reverse=True)
@@ -403,6 +411,7 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
                 label=f"#{tick.ticket_number}",
                 url=ticket_url(tick),
                 detail="failed agent run",
+                title=tick.short_description,
             ),
         )
 

@@ -19,10 +19,13 @@ from typing import IO, TypedDict
 
 from rich.console import Console
 
+from teatree.core.ref_render import render_ref
+
 
 class TaskRow(TypedDict):
     task_id: int
     ticket_id: int
+    ticket_title: str
     status: str
     execution_target: str
     phase: str
@@ -181,7 +184,8 @@ def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> N
         for row in group_rows:
             phase = f" {row['phase']}" if row["phase"] else ""
             reason = row["execution_reason"] or "-"
-            console.print(f"    task TODO-{row['task_id']} (ticket #{row['ticket_id']}{phase}): {reason}")
+            ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
+            console.print(f"    task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
 
 
 def _todo_group(status: str) -> str:

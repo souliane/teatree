@@ -21,6 +21,7 @@ from teatree.core.management.commands.tasks_session_view import (
 )
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.ref_render import short_title
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ class Command(TyperCommand):
         Task.objects.reap_stale_claims()
         if session:
             return self._list_session_todos(status=status, execution_target=execution_target)
-        qs = Task.objects.all().order_by("pk")
+        qs = Task.objects.select_related("ticket").order_by("pk")
         if status:
             qs = qs.filter(status=status)
         if execution_target:
@@ -293,7 +294,7 @@ class Command(TyperCommand):
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415
 
         session_id = current_session_id()
-        qs = Task.objects.for_claude_session(session_id)
+        qs = Task.objects.for_claude_session(session_id).select_related("ticket")
         if status:
             qs = qs.filter(status=status)
         if execution_target:
@@ -401,6 +402,7 @@ def _task_row(task: Task) -> TaskRow:
     return TaskRow(
         task_id=task.pk,
         ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_title=task.ticket.short_description,
         status=task.status,
         execution_target=task.execution_target,
         phase=task.phase,
@@ -409,8 +411,14 @@ def _task_row(task: Task) -> TaskRow:
     )
 
 
+# A redirected/captured stream has no terminal width; rich then defaults to 80
+# cols and crushes the Title column (#2092). Give piped output a generous fixed
+# width so every column renders untruncated; a real terminal keeps its own width.
+_TABLE_PIPE_WIDTH = 160
+
+
 def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -> None:
-    console = Console(file=stream) if stream is not None else Console()
+    console = Console(file=stream, width=_TABLE_PIPE_WIDTH) if stream is not None else Console()
     if not rows:
         console.print("[dim]No tasks.[/dim]")
         return
@@ -418,6 +426,7 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
     table = Table(title=f"teatree tasks ({len(rows)})", show_lines=False)
     table.add_column("ID", justify="right", style="bold")
     table.add_column("Ticket", justify="right")
+    table.add_column("Title", overflow="ellipsis", max_width=48)
     table.add_column("Status")
     table.add_column("Target")
     table.add_column("Phase")
@@ -430,6 +439,7 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
         table.add_row(
             str(row["task_id"]),
             str(row["ticket_id"]),
+            short_title(row["ticket_title"]) or "-",
             f"[{style}]{status}[/]" if style else status,
             row["execution_target"],
             row["phase"] or "-",
