@@ -80,7 +80,6 @@ class TestAssessRun:
             "lint": {"total": 0},
             "todos": {"total": 2},
             "complexity": {"violations": 1},
-            "coverage": {"available": True, "percent": 85.3},
             "dependencies": {"available": True, "outdated_count": 0},
             "suppressions": {"noqa": 3},
         }
@@ -89,12 +88,12 @@ class TestAssessRun:
             patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
             mock_run.return_value.stdout = json.dumps(metrics)
-            result = runner.invoke(app, ["assess", "run", "--no-save"])
+            result = runner.invoke(app, ["assess", "run", "--root", str(tmp_path), "--no-save"])
             assert result.exit_code == 0
             assert "Lint violations" in result.output
             assert "TODOs" in result.output
-            assert "85.3%" in result.output
 
     def test_saves_assessment(self, tmp_path):
         """Saves assessment JSON to .t3/assessments/."""
@@ -106,6 +105,7 @@ class TestAssessRun:
             patch.object(utils_run_mod.subprocess, "run") as mock_run,
         ):
             mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
             mock_run.return_value.stdout = json.dumps(metrics)
             result = runner.invoke(app, ["assess", "run", "--root", str(tmp_path)])
             assert result.exit_code == 0
@@ -113,7 +113,95 @@ class TestAssessRun:
             saved_files = list((tmp_path / ".t3" / "assessments").glob("*.json"))
             assert len(saved_files) == 1
             saved = json.loads(saved_files[0].read_text())
-            assert saved["metrics"] == metrics
+            # coverage is recomputed locally (#1873); tmp_path has no .coverage.
+            assert saved["metrics"] == {**metrics, "coverage": {"available": False}}
+
+
+class TestAssessCoverageExclusions:
+    """`assess run` recomputes coverage locally, excluding vendored code (#1873)."""
+
+    def _coverage_json(self) -> dict:
+        # repo file fully covered, vendored dep fully uncovered. Trusting the
+        # skill total (50%) skews the metric; excluding the vendored file → 100%.
+        return {
+            "files": {
+                "src/teatree/a.py": {"summary": {"covered_lines": 10, "num_statements": 10}},
+                ".venv/lib/site-packages/dep.py": {"summary": {"covered_lines": 0, "num_statements": 10}},
+            }
+        }
+
+    def test_overrides_skill_coverage_with_filtered_percent(self, tmp_path):
+        fake_cli = tmp_path / "cli.py"
+        fake_cli.touch()
+        (tmp_path / ".coverage").touch()
+        # The skill returns a skewed/unfiltered coverage value.
+        skill_metrics = {"coverage": {"available": True, "percent": 50.0}}
+        cov_json = self._coverage_json()
+
+        def fake_run(cmd, **kwargs):
+            class R:
+                returncode = 0
+                stderr = ""
+                stdout = ""
+
+            r = R()
+            if any("cli.py" in str(c) for c in cmd):
+                r.stdout = json.dumps(skill_metrics)
+            else:
+                # the local `coverage json -o <out>` call: write the JSON out.
+                out_idx = list(cmd).index("-o") + 1
+                Path(cmd[out_idx]).write_text(json.dumps(cov_json), encoding="utf-8")
+            return r
+
+        with (
+            patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
+            patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+        ):
+            result = runner.invoke(app, ["assess", "run", "--root", str(tmp_path), "--json", "--no-save"])
+            assert result.exit_code == 0
+            parsed = json.loads(result.output)
+            assert parsed["coverage"]["available"] is True
+            assert parsed["coverage"]["percent"] == pytest.approx(100.0)
+
+    def test_no_coverage_file_marks_unavailable(self, tmp_path):
+        fake_cli = tmp_path / "cli.py"
+        fake_cli.touch()
+        skill_metrics = {"coverage": {"available": True, "percent": 77.0}}
+        with (
+            patch.object(assess_mod, "_find_skill_cli", return_value=fake_cli),
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
+        ):
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stderr = ""
+            mock_run.return_value.stdout = json.dumps(skill_metrics)
+            result = runner.invoke(app, ["assess", "run", "--root", str(tmp_path), "--json", "--no-save"])
+            assert result.exit_code == 0
+            parsed = json.loads(result.output)
+            assert parsed["coverage"]["available"] is False
+
+
+class TestRepoCoverage:
+    """`_repo_coverage` degrades to unavailable, never a skewed total (#1873)."""
+
+    def test_no_coverage_data(self, tmp_path):
+        assert assess_mod._repo_coverage(tmp_path) == {"available": False}
+
+    def test_coverage_export_nonzero(self, tmp_path):
+        (tmp_path / ".coverage").touch()
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value.returncode = 1
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = "no data to report"
+            assert assess_mod._repo_coverage(tmp_path) == {"available": False}
+
+    def test_coverage_export_writes_no_file(self, tmp_path):
+        (tmp_path / ".coverage").touch()
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            # exit 0 but the export file is never written → unreadable.
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = ""
+            mock_run.return_value.stderr = ""
+            assert assess_mod._repo_coverage(tmp_path) == {"available": False}
 
 
 class TestAssessHistory:
