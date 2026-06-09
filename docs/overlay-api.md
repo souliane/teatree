@@ -150,6 +150,10 @@ Steps to run before starting a specific service (e.g., copy customer config, ref
 
 The command to run the project test suite. Used by `run tests`. Defaults to `[]`.
 
+#### `get_lint_command(worktree: Worktree) -> list[str] | RunCommand`
+
+The command to lint this worktree (usually the project's `prek`/`pre-commit` config). Used by `run lint`. Defaults to `[]`; when empty, `run lint` exits non-zero so a caller that asked to lint is not told green.
+
 #### `get_verify_endpoints(worktree: Worktree) -> dict[str, str]`
 
 Custom health-check URL paths per service. Keys match `worktree.ports` entries (e.g., `"backend"`, `"frontend"`). Values are URL paths (e.g., `"/admin/login/"`). Services not listed fall back to `/`. Defaults to `{}`.

@@ -402,26 +402,20 @@ class TestInstallOverlaysEditableStep:
         mock_run.assert_not_called()
 
 
-class TestGetRunCommands(TestCase):
-    def test_returns_test_and_lint(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree")
-        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
-        overlay = TeatreeOverlay()
-        commands = overlay.get_run_commands(worktree)
-
-        assert "test" in commands
-        assert "lint" in commands
-        test_cmd = commands["test"]
-        assert isinstance(test_cmd, list)
-        assert "pytest" in test_cmd[-1]
-
-
 class TestGetTestCommand(TestCase):
     def test_returns_pytest_command(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
         assert overlay.get_test_command(worktree) == ["uv", "run", "pytest"]
+
+
+class TestGetLintCommand(TestCase):
+    def test_returns_prek_command(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
+        overlay = TeatreeOverlay()
+        assert overlay.get_lint_command(worktree) == ["prek", "run", "--all-files"]
 
 
 class TestReapWorktreeExternalResources(TestCase):

@@ -3954,6 +3954,7 @@ Usage: t3 teatree run [OPTIONS] COMMAND [ARGS]...
 │ frontend        Start the frontend dev server.                               │
 │ build-frontend  Build the frontend for production/testing.                   │
 │ tests           Run the project test suite.                                  │
+│ lint            Run the overlay's lint pipeline on this worktree.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4027,6 +4028,22 @@ Usage: t3 teatree run tests [OPTIONS]
 
  Extra arguments after ``--`` are appended to the test command
  (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree run lint`
+
+```
+Usage: t3 teatree run lint [OPTIONS]
+
+ Run the overlay's lint pipeline on this worktree.
+
+ Extra arguments after ``--`` are appended to the lint command
+ (e.g. ``t3 <overlay> run lint -- --files src/foo.py``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │

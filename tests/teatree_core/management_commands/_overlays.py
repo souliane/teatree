@@ -112,6 +112,9 @@ class FullOverlay(OverlayBase):
     def get_test_command(self, worktree: Worktree) -> list[str]:
         return ["echo", "tests", worktree.repo_path]
 
+    def get_lint_command(self, worktree: Worktree) -> list[str]:
+        return ["echo", "lint", worktree.repo_path]
+
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
 

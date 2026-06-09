@@ -77,6 +77,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("frontend", "Start the frontend dev server."),
             ("build-frontend", "Build the frontend for production/testing."),
             ("tests", "Run the project test suite."),
+            ("lint", "Run the overlay's lint pipeline on this worktree."),
         ],
     ),
     "e2e": DjangoGroup(
