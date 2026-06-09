@@ -133,6 +133,43 @@ def _check_account_switch() -> bool:
     return False
 
 
+def _check_stale_uv_venv() -> bool:
+    """Detect + clean an empty uv-built ``.venv`` in a Pipfile-managed clone (#2005).
+
+    A clone carrying a ``Pipfile`` that also holds an in-project ``.venv`` built
+    by uv with nothing installed is a wrong-toolchain artifact — it shadows
+    pipenv's managed venvs and poisons both ``uv run`` and ``pipenv run``. Walks
+    every repo the other repo-scoped doctor gates audit (:func:`_collect_repos`),
+    removes each offending ``.venv``, and WARNs. Removal makes the next run a
+    no-op (idempotent). Crash-proof: any error degrades to a WARN so the doctor
+    run never aborts on this check.
+    """
+    import shutil  # noqa: PLC0415
+
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415
+    from teatree.utils.venv_artifacts import find_stale_uv_venv  # noqa: PLC0415
+
+    ok = True
+    for _name, repo in _collect_repos():
+        try:
+            stale = find_stale_uv_venv(repo)
+            if stale is None:
+                continue
+            shutil.rmtree(stale)
+            typer.echo(
+                f"WARN  Removed empty uv-built .venv shadowing pipenv in {repo} ({stale.name}). "
+                "It poisoned both `uv run` and `pipenv run`; pipenv will rebuild its own venv."
+            )
+            ok = False
+        except OSError as exc:
+            typer.echo(
+                f"WARN  Could not remove empty uv-built .venv in {repo}: {exc}. "
+                "Delete it manually (`rm -rf .venv`), then re-run `t3 doctor check`."
+            )
+            ok = False
+    return ok
+
+
 def _check_legacy_overlay_alias() -> None:
     """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
 
