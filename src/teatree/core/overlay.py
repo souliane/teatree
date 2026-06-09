@@ -506,6 +506,17 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 
+    def get_lint_command(self, worktree: "Worktree") -> list[str] | RunCommand:
+        """Return the argv (or ``RunCommand``) that lints this worktree.
+
+        Backs ``t3 <overlay> run lint`` — the single entry point for "lint
+        this worktree", mirroring :meth:`get_test_command` for ``run tests``.
+        The default is empty; an overlay that has a lint pipeline (usually its
+        ``prek``/``pre-commit`` config) returns it here. When empty, ``run
+        lint`` exits non-zero so a caller that asked to lint is not told green.
+        """
+        return []
+
     def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
         _ = env_cache
         return {}

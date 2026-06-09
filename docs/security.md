@@ -41,6 +41,7 @@ the `args` parameter to `subprocess.run()` or `subprocess.Popen()`
 |---|---|---|
 | `OverlayBase.get_run_commands()` | `dict[str, list[str]]` | `run backend`, `run build-frontend`, `run tests`, `worktree start` |
 | `OverlayBase.get_test_command()` | `list[str]` | `run tests` |
+| `OverlayBase.get_lint_command()` | `list[str]` | `run lint` |
 | `OverlayBase.get_services_config()` | `dict[str, ServiceSpec]` | `run backend`, `worktree start` (reads `start_command`) |
 | `OverlayBase.get_provision_steps()` | `list[ProvisionStep]` | `worktree provision` (calls `step.callable()`) |
 | `OverlayBase.get_post_db_steps()` | `list[ProvisionStep]` | `worktree provision` |

@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from teatree.core.models import Worktree
+
 import typer
 from django_typer.management import TyperCommand, command
 
@@ -117,24 +119,69 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
-        test_cmd = overlay.get_test_command(worktree)
-        if not test_cmd:
-            self.stderr.write("No test command configured in the overlay.")
+        return self._dispatch_task(
+            worktree,
+            overlay.get_test_command(worktree),
+            extra_args=ctx.args,
+            label="Tests",
+            missing_message="No test command configured in the overlay.",
+        )
+
+    @command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+    def lint(
+        self,
+        ctx: typer.Context,
+        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+    ) -> str:
+        """Run the overlay's lint pipeline on this worktree.
+
+        Extra arguments after ``--`` are appended to the lint command
+        (e.g. ``t3 <overlay> run lint -- --files src/foo.py``).
+        """
+        worktree = resolve_worktree(path)
+        overlay = get_overlay()
+        return self._dispatch_task(
+            worktree,
+            overlay.get_lint_command(worktree),
+            extra_args=ctx.args,
+            label="Lint",
+            missing_message="No lint command configured in the overlay.",
+        )
+
+    def _dispatch_task(
+        self,
+        worktree: "Worktree",
+        cmd: list[str] | RunCommand,
+        *,
+        extra_args: list[str],
+        label: str,
+        missing_message: str,
+    ) -> str:
+        """Stream a worktree task command, surfacing a non-zero exit as ``SystemExit(1)``.
+
+        Shared by ``run tests`` and ``run lint``: an overlay that cannot run
+        the task explicitly asked for must stop the caller (CI/loop), not
+        exit 0 (#932). The ``label`` names the task in the success/failure
+        message; ``missing_message`` is shown when the overlay declares no
+        command.
+        """
+        if not cmd:
+            self.stderr.write(missing_message)
             raise SystemExit(1)
 
-        if isinstance(test_cmd, RunCommand):
-            args = list(test_cmd.args)
-            cwd: Path | str | None = test_cmd.cwd
+        if isinstance(cmd, RunCommand):
+            args = list(cmd.args)
+            cwd: Path | str | None = cmd.cwd
         else:
-            args = list(test_cmd)
+            args = list(cmd)
             cwd = None
 
-        args.extend(ctx.args)
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        args.extend(extra_args)
+        env = {**os.environ, **get_overlay().get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         rc = run_streamed(args, cwd=cwd, env=env, check=False)
         if rc != 0:
-            self.stderr.write(f"Tests failed (exit {rc}).")
+            self.stderr.write(f"{label} failed (exit {rc}).")
             raise SystemExit(1)
-        return "Tests completed."
+        return f"{label} completed."
