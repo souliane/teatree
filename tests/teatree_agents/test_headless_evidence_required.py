@@ -14,23 +14,58 @@ evidence). No phase visit is recorded on a no-evidence success.
 
 import contextlib
 import json
-import shlex
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, Self
 from unittest.mock import patch
 
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from django.test import TestCase
 
 import teatree.agents.headless as headless_mod
-from teatree.agents.headless import run_headless
+from teatree.agents.headless import TaskUsage, run_headless
 from teatree.core.models import Session, Task, Ticket
 
 
+class _FakeSdkClient:
+    """Async-context SDK stand-in yielding a fixed assistant-text + result stream."""
+
+    def __init__(self, agent_text: str) -> None:
+        self._agent_text = agent_text
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def query(self, _prompt: str) -> None:
+        return None
+
+    async def receive_response(self) -> AsyncIterator[Any]:
+        yield AssistantMessage(content=[TextBlock(text=self._agent_text)], model="claude-opus-4-8[1m]")
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+        )
+
+    async def interrupt(self) -> None:
+        return None
+
+
 @contextlib.contextmanager
-def _fake_claude(stdout: str = "", stderr: str = "", exit_code: int = 0) -> Iterator[None]:
-    script = f"printf %s {shlex.quote(stdout)}; printf %s {shlex.quote(stderr)} >&2; exit {exit_code}"
+def _fake_sdk(agent_text: str) -> Iterator[None]:
+    def _make_client(**_: object) -> _FakeSdkClient:
+        return _FakeSdkClient(agent_text)
+
+    snapshot = TaskUsage(turns=0, cost_usd=0.0)
     with (
         patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-        patch.object(headless_mod, "_build_headless_command", return_value=["sh", "-c", script]),
+        patch.object(headless_mod, "ClaudeSDKClient", _make_client),
+        patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
         yield
 
@@ -49,7 +84,7 @@ class TestEvidenceRequiredOnPhaseCompletion(TestCase):
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
 
-        with _fake_claude(stdout=f"{bare_summary}\n"):
+        with _fake_sdk(bare_summary):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
@@ -80,7 +115,7 @@ class TestEvidenceRequiredOnPhaseCompletion(TestCase):
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
 
-        with _fake_claude(stdout=f"{good}\n"):
+        with _fake_sdk(good):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()

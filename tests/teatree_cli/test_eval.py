@@ -23,6 +23,20 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
+@pytest.fixture(autouse=True)
+def _stub_oauth_token() -> "Iterator[None]":
+    """Stop ``make_runner("sdk")`` from shelling ``pass``/``gpg`` for the token.
+
+    Every ``--backend sdk`` CLI test builds the runner through
+    ``teatree.eval.backends.make_runner``, which calls ``ensure_oauth_token()``
+    → ``read_pass("anthropic/oauth-token")`` → a ``pass`` subprocess that blocks
+    on ``gpg`` on a dev machine without ``CLAUDE_CODE_OAUTH_TOKEN`` set. The stub
+    keeps the suite hermetic — it never touches the host's secret store.
+    """
+    with patch("teatree.eval.backends.ensure_oauth_token", return_value="t"):
+        yield
+
+
 def _spec(name: str = "scenario_a") -> EvalSpec:
     return EvalSpec(
         name=name,

@@ -1,24 +1,28 @@
 """Headless agent runner — executes tasks without a terminal.
 
-Runs ``claude -p`` as a subprocess, captures structured output,
-and stores the result in ``TaskAttempt.result``. The runner is the
-swap point for an Anthropic SDK runtime: a future implementation
-that talks to the API directly need only provide a callable matching
-``run_headless(task, *, phase, overlay_skill_metadata) -> TaskAttempt``.
+Drives ``claude-agent-sdk`` in-process: builds a real-environment
+:class:`~claude_agent_sdk.ClaudeAgentOptions`, runs the agent via
+:class:`~claude_agent_sdk.ClaudeSDKClient`, captures the typed messages it
+yields, and stores the result in ``TaskAttempt.result``. Unlike the clean-room
+eval runner (``teatree.eval.sdk_runner``), this path runs a REAL task: it keeps
+the developer's environment, skills, and context — no isolation, no
+``setting_sources=[]``.
 
 Wires only to ``Task`` / ``TaskAttempt`` models — no dashboard, no
 process registry, no platform autostart.
 """
 
+import asyncio
 import json
 import logging
 import re
 import shutil
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
@@ -31,16 +35,18 @@ from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-from teatree.utils.run import PIPE, Popen, spawn
+
+if TYPE_CHECKING:
+    from teatree.agents.attempt_recorder import AttemptUsage
 
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL = 60  # seconds
 
 # Conservative documented default (#882): a generous wall-clock ceiling that
-# only trips on a genuinely runaway subprocess that never returns — the
-# canonical "Claude session spins on the same error" symptom. Absolute
-# turn/cost budget caps are #398-4's responsibility, so they default off here.
+# only trips on a genuinely runaway agent that never returns — the canonical
+# "Claude session spins on the same error" symptom. Absolute turn/cost budget
+# caps are #398-4's responsibility, so they default off here.
 _DEFAULT_WATCHDOG = {
     "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
     "max_turns": 0,  # 0 = disabled
@@ -56,14 +62,21 @@ _DEFAULT_TICKET_BUDGET = {
     "max_cost_usd": 0.0,  # 0 = disabled
 }
 
+# Headless agent default permission mode: a detached run has no human to grant
+# tool permissions, so it bypasses the per-tool prompt and runs unattended.
+_PERMISSION_MODE = "bypassPermissions"
+# The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
+# runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
+_MAX_TURNS = 0
+
 
 @dataclass(frozen=True)
 class TaskUsage:
     """Accumulated ``TaskAttempt`` deltas for one task.
 
-    Sampled once on the main thread before the subprocess starts:
-    ``num_turns`` / ``cost_usd`` only land in the DB *after* an attempt
-    completes, so prior-attempt totals are static for the current run.
+    Sampled once on the main thread before the agent starts: ``num_turns`` /
+    ``cost_usd`` only land in the DB *after* an attempt completes, so
+    prior-attempt totals are static for the current run.
     """
 
     turns: int
@@ -82,9 +95,9 @@ class LoopWatchdog:
 
     Evaluates the running task's wall-clock runtime plus the accumulated
     ``TaskAttempt.num_turns`` / ``cost_usd`` deltas. When a ceiling is
-    crossed the heartbeat loop terminates the subprocess and a
-    ``stuck_loop`` ``TaskAttempt`` failure is recorded with the observed
-    deltas. A ceiling of ``0`` disables that dimension.
+    crossed the heartbeat loop interrupts the agent and a ``stuck_loop``
+    ``TaskAttempt`` failure is recorded with the observed deltas. A ceiling
+    of ``0`` disables that dimension.
     """
 
     max_runtime_seconds: float
@@ -125,14 +138,14 @@ class LoopWatchdog:
 class TicketBudget:
     """Per-ticket cumulative cost cap consumer (#885 / #398-4).
 
-    Where ``LoopWatchdog`` bounds a *single in-flight subprocess* (it kills
-    a runaway mid-run from the heartbeat thread), this consumer bounds the
-    *whole ticket's lifetime spend* at dispatch time. Before a task's
-    subprocess is launched it sums ``TaskAttempt.cost_usd`` across every
-    task under the ticket; once the cumulative spend crosses the configured
-    ceiling no further attempt is dispatched and a ``budget_exceeded``
-    ``TaskAttempt`` failure is recorded (``task.fail()`` runs), surfacing
-    the breach on the failure record. A ceiling of ``0.0`` disables the cap.
+    Where ``LoopWatchdog`` bounds a *single in-flight run* (it interrupts a
+    runaway mid-run from the heartbeat thread), this consumer bounds the
+    *whole ticket's lifetime spend* at dispatch time. Before a task's agent is
+    launched it sums ``TaskAttempt.cost_usd`` across every task under the
+    ticket; once the cumulative spend crosses the configured ceiling no
+    further attempt is dispatched and a ``budget_exceeded`` ``TaskAttempt``
+    failure is recorded (``task.fail()`` runs), surfacing the breach on the
+    failure record. A ceiling of ``0.0`` disables the cap.
     """
 
     max_cost_usd: float
@@ -154,25 +167,71 @@ class TicketBudget:
         return None
 
 
-def _safe_int(value: str | None) -> int | None:
+def _safe_int(value: object) -> int | None:
     if value is None:
         return None
     try:
-        return int(float(value))
+        return int(float(value))  # ty: ignore[invalid-argument-type]
     except (ValueError, TypeError):
         return None
 
 
-def _safe_float(value: str | None) -> float | None:
+def _safe_float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        return float(value)  # ty: ignore[invalid-argument-type]
     except (ValueError, TypeError):
         return None
 
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+_STUCK_LOOP_PREFIX = "stuck_loop: "
+_USAGE_LIMIT_PREFIX = "usage_limit: "
+
+# Phrases the SDK surfaces on a subscription quota / weekly-limit exhaustion
+# (dogfood-surfaced). A ``ResultMessage(is_error=True)`` carrying any of these
+# is a limit condition the operator must wait out — not a generic crash and not
+# a silent success.
+_USAGE_LIMIT_PHRASES = (
+    "usage limit",
+    "weekly limit",
+    "rate limit",
+    "out of credits",
+    "quota exceeded",
+)
+
+
+def _limit_signature(message: ResultMessage | None) -> str:
+    """Return the matched usage-limit phrase, or ``""`` when not a limit error.
+
+    Keyed on ``is_error`` so a healthy result whose text merely discusses limits
+    is never flagged. The agent's final ``result`` string is the haystack — the
+    SDK puts the limit message there on a quota-exhausted run.
+    """
+    if message is None or not message.is_error:
+        return ""
+    haystack = str(message.result or "").casefold()
+    for phrase in _USAGE_LIMIT_PHRASES:
+        if phrase in haystack:
+            return phrase
+    return ""
+
+
+@dataclass(frozen=True)
+class _SdkOutcome:
+    """The captured result of one in-process Agent-SDK run.
+
+    Exactly one of *stuck_reason* / *result* is meaningful: a watchdog breach
+    sets *stuck_reason* and the run is recorded FAILED; otherwise the
+    :class:`~claude_agent_sdk.ResultMessage` and the agent's final text drive a
+    completed (or evidence-gated FAILED) attempt.
+    """
+
+    agent_text: str
+    result_message: ResultMessage | None
+    stuck_reason: str | None
 
 
 def run_headless(
@@ -181,13 +240,14 @@ def run_headless(
     phase: str,
     overlay_skill_metadata: SkillMetadata,
 ) -> TaskAttempt:
-    """Run a headless task using ``claude -p``."""
+    """Run a headless task in-process via ``claude-agent-sdk``."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
 
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
-    binary = shutil.which("claude")
-    if binary is None:
+    # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
+    # the ``claude -p`` runner used.
+    if shutil.which("claude") is None:
         return _record_failure(task, error="claude is not installed")
 
     budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
@@ -198,178 +258,200 @@ def run_headless(
     prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
-    resume_session_id = _get_resume_session_id(task)
-    model = resolve_phase_model(phase)
-    command = _build_headless_command(
-        binary,
-        prompt,
-        system_context,
-        resume_session_id=resume_session_id,
-        model=model,
-    )
+    options = _build_options(task, system_context, phase=phase)
 
+    outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options))
+
+    if outcome.stuck_reason is not None:
+        return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
+    limit = _limit_signature(outcome.result_message)
+    if limit:
+        reason = f"{_USAGE_LIMIT_PREFIX}{limit} — subscription quota exhausted; retry after the limit resets"
+        logger.warning("Task %s hit a usage limit: %s", task.pk, reason)
+        return _record_failure(task, error=reason)
+    return _record_success(task, outcome, phase=phase)
+
+
+def _build_options(task: Task, system_context: str, *, phase: str) -> ClaudeAgentOptions:
+    """Build the REAL-environment SDK options for a headless task.
+
+    Mirrors what the deleted ``_build_headless_command`` passed: the appended
+    system context, the resolved phase model (else the user's default), the
+    worktree as ``cwd`` / ``add_dirs``, and the parent session to resume. NO
+    clean-room isolation — a headless run executes a real task and needs the
+    real environment, skills, and project context.
+    """
     cwd = _resolve_task_cwd(task)
-    stdout, stderr, returncode = _run_with_heartbeat(task, command, cwd=cwd)
-
-    if returncode != 0:
-        return _record_failure(task, exit_code=returncode, error=stderr[:2000])
-
-    envelope = _parse_cli_envelope(stdout)
-    return _record_success(task, envelope, phase=phase)
+    add_dirs = [cwd] if cwd else []
+    resume_session_id = _get_resume_session_id(task)
+    return ClaudeAgentOptions(
+        system_prompt=system_context,
+        model=resolve_phase_model(phase) or None,
+        cwd=cwd,
+        add_dirs=add_dirs,
+        permission_mode=_PERMISSION_MODE,
+        max_turns=_MAX_TURNS,
+        resume=resume_session_id or None,
+    )
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
     """Determine the working directory for a task from its ticket's worktrees."""
-    ticket = task.ticket
-    if ticket is None:
-        return None
-    worktree = Worktree.objects.filter(ticket=ticket).order_by("pk").first()
+    worktree = Worktree.objects.filter(ticket=task.ticket).order_by("pk").first()
     if worktree and Path(worktree.repo_path).is_dir():
         return str(worktree.repo_path)
     return None
 
 
-_STUCK_LOOP_EXIT_CODE = -9
-_STUCK_LOOP_PREFIX = "stuck_loop: "
-
-# Grace window between SIGTERM and SIGKILL when the watchdog terminates a
-# breached subprocess (#997). SIGTERM first lets an in-flight agent flush its
-# final status before the hard kill; SIGKILL escalates only if the process is
-# still alive after the window. The 30s default matches the issue's proposal.
-_WATCHDOG_TERM_GRACE_SECONDS = 30.0
-_WATCHDOG_TERM_POLL_INTERVAL = 0.1
-
-
-def _terminate_with_grace(proc: Popen[str], *, task_pk: object) -> None:
-    """Drain-before-kill: SIGTERM, grace window, then SIGKILL if still alive (#997).
-
-    A breached subprocess may have finished its work but not yet flushed its
-    final status. SIGTERM gives it a chance to checkpoint and exit on its own;
-    SIGKILL escalates only if the process ignores SIGTERM through the whole
-    grace window. The poll loop returns the moment the process exits, so a
-    cooperative agent is never hard-killed.
-    """
-    proc.terminate()
-    deadline = time.monotonic() + _WATCHDOG_TERM_GRACE_SECONDS
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            return
-        time.sleep(_WATCHDOG_TERM_POLL_INTERVAL)
-    if proc.poll() is None:
-        logger.warning("Watchdog grace window elapsed for task %s — escalating to SIGKILL", task_pk)
-        proc.kill()
-
-
-def _run_with_heartbeat(
+async def _drive_with_heartbeat(
     task: Task,
-    command: list[str],
+    prompt: str,
+    options: ClaudeAgentOptions,
     *,
-    cwd: str | None = None,
     watchdog: LoopWatchdog | None = None,
-) -> tuple[str, str, int]:
-    """Run *command* as a subprocess while sending lease heartbeats.
+) -> _SdkOutcome:
+    """Run the agent in-process while sending lease heartbeats (#882, #997).
 
-    The heartbeat loop doubles as a stuck-loop watchdog (#882): on each
-    tick it samples the task's runtime / accumulated turn+cost deltas and,
-    on a ceiling breach, terminates the subprocess via SIGTERM → grace
-    window → SIGKILL (#997), so an in-flight agent can flush its final
-    status before a hard kill. A watchdog kill returns a non-zero exit code
-    with ``stuck_loop: <reason>`` on stderr so the caller records a
-    ``stuck_loop`` ``TaskAttempt`` failure.
-
-    Returns ``(stdout, stderr, returncode)``.
+    A concurrent heartbeat coroutine renews the task lease each tick and, on a
+    turn/cost ceiling breach, interrupts the SDK client so the in-flight agent
+    can flush its final status before the run unwinds. The wall-clock ceiling
+    is enforced with :func:`asyncio.wait_for`; a timeout interrupts the client
+    and is reported as a runtime breach. DB reads/writes run in a worker thread
+    so the event loop is never blocked.
     """
     if watchdog is None:
         watchdog = LoopWatchdog.from_settings()
 
-    # Sample accumulated deltas once on the main thread: prior-attempt
-    # totals are static for this run and a threaded DB read would not see
-    # the caller's transaction.
-    usage = TaskUsage.for_task(task)
-
-    stop_event = threading.Event()
+    # Sample accumulated deltas once before the run: prior-attempt totals are
+    # static for this run.
+    usage = await asyncio.to_thread(TaskUsage.for_task, task)
     started_at = time.monotonic()
-    proc = spawn(command, cwd=cwd, stdout=PIPE, stderr=PIPE)
-    watchdog_reason: list[str] = []
+    breach: list[str] = []
 
-    def _heartbeat() -> None:
+    async with ClaudeSDKClient(options=options) as client:
+
+        async def _heartbeat() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(_HEARTBEAT_INTERVAL)
+                    try:
+                        await asyncio.to_thread(task.renew_lease)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("Heartbeat failed for task %s", task.pk)
+                    reason = watchdog.breach_reason(
+                        task,
+                        elapsed_seconds=time.monotonic() - started_at,
+                        usage=usage,
+                    )
+                    if reason and not breach:
+                        breach.append(reason)
+                        logger.warning("Watchdog interrupting stuck task %s: %s", task.pk, reason)
+                        await client.interrupt()
+                        return
+            finally:
+                # This coroutine's thread-offloaded DB work owns its own
+                # connection — close it so it is not leaked.
+                await asyncio.to_thread(close_old_connections)
+
+        heartbeat_task = asyncio.create_task(_heartbeat())
         try:
-            while not stop_event.wait(_HEARTBEAT_INTERVAL):
-                try:
-                    task.renew_lease()
-                except Exception:  # noqa: BLE001
-                    logger.warning("Heartbeat failed for task %s", task.pk)
-                reason = watchdog.breach_reason(
-                    task,
-                    elapsed_seconds=time.monotonic() - started_at,
-                    usage=usage,
-                )
-                if reason and not watchdog_reason:
-                    watchdog_reason.append(reason)
-                    logger.warning("Watchdog terminating stuck task %s: %s", task.pk, reason)
-                    _terminate_with_grace(proc, task_pk=task.pk)
+            timeout = watchdog.max_runtime_seconds or None
+            outcome = await asyncio.wait_for(_collect(client, prompt), timeout=timeout)
+        except TimeoutError:
+            await client.interrupt()
+            elapsed = time.monotonic() - started_at
+            reason = watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
+                f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"
+            )
+            return _SdkOutcome(agent_text="", result_message=None, stuck_reason=reason)
         finally:
-            # This thread owns its own DB connection — close it so the
-            # connection is not leaked when the thread exits.
-            close_old_connections()
+            heartbeat_task.cancel()
 
-    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
-    heartbeat_thread.start()
-    try:
-        # communicate() blocks until the process exits and reaps it; a
-        # watchdog kill from the heartbeat thread unblocks it here.
-        stdout, stderr = proc.communicate()
-    finally:
-        stop_event.set()
-        heartbeat_thread.join(timeout=5)
-
-    if watchdog_reason:
-        return stdout or "", f"{_STUCK_LOOP_PREFIX}{watchdog_reason[0]}", _STUCK_LOOP_EXIT_CODE
-    return stdout or "", stderr or "", proc.returncode
+    if breach:
+        return _SdkOutcome(agent_text=outcome.agent_text, result_message=outcome.result_message, stuck_reason=breach[0])
+    return outcome
 
 
-def _record_success(task: Task, envelope: dict[str, str], *, phase: str = "") -> TaskAttempt:
-    """Record a ``claude -p`` envelope via the shared recorder.
+async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
+    """Send *prompt* and collect the agent's text + terminal ``ResultMessage``."""
+    await client.query(prompt)
+    text_parts: list[str] = []
+    result_message: ResultMessage | None = None
+    async for message in client.receive_response():
+        if isinstance(message, AssistantMessage):
+            text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
+        elif isinstance(message, ResultMessage):
+            result_message = message
+    return _SdkOutcome(agent_text="\n".join(text_parts), result_message=result_message, stuck_reason=None)
+
+
+def _record_success(task: Task, outcome: _SdkOutcome, *, phase: str = "") -> TaskAttempt:
+    """Record a successful SDK run via the shared recorder.
 
     The schema-key check, the #1284 phase-evidence gate, and the
     complete/fail decision live once in ``attempt_recorder`` so the headless
-    subprocess path and the in-session ``record-attempt`` path can never
-    drift on the result-envelope contract.
+    SDK path and the in-session ``record-attempt`` path can never drift on the
+    result-envelope contract.
     """
-    from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope  # noqa: PLC0415
+    from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415
 
-    agent_text = envelope.get("agent_text", "")
-    result = _parse_result(agent_text)
+    result = _parse_result(outcome.agent_text)
     if not result:
-        result = {"summary": agent_text[:1000]}
+        result = {"summary": outcome.agent_text[:1000]}
 
-    model = envelope.get("model", "")
-    usage = AttemptUsage(
-        agent_session_id=envelope.get("session_id", ""),
+    return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message))
+
+
+def _attempt_usage(message: ResultMessage | None) -> "AttemptUsage":
+    """Map a :class:`~claude_agent_sdk.ResultMessage` to ``AttemptUsage``.
+
+    Token counts come from the nested ``usage`` dict (``input_tokens`` /
+    ``output_tokens`` / ``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens``), the billed model from the single key of
+    ``model_usage`` (e.g. ``claude-opus-4-8[1m]``), the cost from
+    ``total_cost_usd`` (else the price-table estimate).
+    """
+    from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
+
+    if message is None:
+        return AttemptUsage()
+    usage = message.usage if isinstance(message.usage, dict) else {}
+    model = _billed_model(message.model_usage)
+    return AttemptUsage(
+        agent_session_id=message.session_id or "",
         model=model,
-        input_tokens=_safe_int(envelope.get("input_tokens")),
-        output_tokens=_safe_int(envelope.get("output_tokens")),
-        cache_read_tokens=_safe_int(envelope.get("cache_read_tokens")),
-        cache_write_tokens=_safe_int(envelope.get("cache_write_tokens")),
-        cost_usd=_resolve_cost_usd(envelope, model=model),
-        num_turns=_safe_int(envelope.get("num_turns")),
+        input_tokens=_safe_int(usage.get("input_tokens")),
+        output_tokens=_safe_int(usage.get("output_tokens")),
+        cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
+        cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
+        cost_usd=_resolve_cost_usd(message, usage=usage, model=model),
+        num_turns=message.num_turns,
     )
-    return record_result_envelope(task, result, phase=phase, usage=usage)
 
 
-def _resolve_cost_usd(envelope: dict[str, str], *, model: str) -> float | None:
-    """Persist the CLI-reported cost when present, else the price-table estimate.
+def _billed_model(model_usage: dict[str, Any] | None) -> str:
+    """Return the billed model id from ``model_usage`` (single-model run), or ``""``.
+
+    ``model_usage`` is the SDK's untyped ``ResultMessage.model_usage`` dict.
+    """
+    if isinstance(model_usage, dict) and model_usage:
+        return str(next(iter(model_usage)))
+    return ""
+
+
+def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: str) -> float | None:
+    """Persist the SDK-reported cost when present, else the price-table estimate.
 
     Persisting an estimate at capture time means a row's ``cost_usd`` is never
     NULL once any token count was captured — the ``t3 cost`` report and the
     watchdog both read a real number rather than re-deriving it each query.
     Returns ``None`` only when nothing at all was captured.
     """
-    reported = _safe_float(envelope.get("cost_usd"))
+    reported = _safe_float(message.total_cost_usd)
     if reported is not None:
         return reported
-    token_keys = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
-    if all(envelope.get(key) is None for key in token_keys):
+    token_keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    if all(usage.get(key) is None for key in token_keys):
         return None
     from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415
 
@@ -377,29 +459,12 @@ def _resolve_cost_usd(envelope: dict[str, str], *, model: str) -> float | None:
         AttemptUsage(
             model=model or None,
             reported_cost_usd=None,
-            input_tokens=_safe_int(envelope.get("input_tokens")) or 0,
-            output_tokens=_safe_int(envelope.get("output_tokens")) or 0,
-            cache_read_tokens=_safe_int(envelope.get("cache_read_tokens")) or 0,
-            cache_write_tokens=_safe_int(envelope.get("cache_write_tokens")) or 0,
+            input_tokens=_safe_int(usage.get("input_tokens")) or 0,
+            output_tokens=_safe_int(usage.get("output_tokens")) or 0,
+            cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")) or 0,
+            cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")) or 0,
         ),
     )
-
-
-def _build_headless_command(
-    binary: str,
-    prompt: str,
-    system_context: str,
-    *,
-    resume_session_id: str = "",
-    model: str | None = None,
-) -> list[str]:
-    cmd = [binary]
-    if resume_session_id:
-        cmd.extend(["--resume", resume_session_id])
-    if model:
-        cmd.extend(["--model", model])
-    cmd.extend(["-p", prompt, "--append-system-prompt", system_context, "--output-format", "json"])
-    return cmd
 
 
 def _get_resume_session_id(task: Task) -> str:
@@ -418,62 +483,6 @@ def _get_resume_session_id(task: Task) -> str:
             return agent_id
         current = current.parent_task
     return ""
-
-
-def _parse_cli_envelope(stdout: str) -> dict[str, str]:
-    """Parse the Claude CLI JSON envelope to extract session_id, text, and usage.
-
-    With ``--output-format json`` stdout is a single JSON object. ``session_id``
-    and ``result`` (the agent's text output) and ``num_turns`` sit at the top
-    level; the per-run cost is ``total_cost_usd`` (top level) and the token
-    counts live in the nested ``usage`` object as ``input_tokens`` /
-    ``output_tokens`` / ``cache_creation_input_tokens`` /
-    ``cache_read_input_tokens``. The model the run billed against is read from
-    the single key of ``modelUsage`` (e.g. ``claude-opus-4-8[1m]``).
-
-    Pre-2.x envelopes that put cost/tokens at the top level (``cost_usd`` and
-    flat ``input_tokens``) are still honoured as a fallback so older transcripts
-    parse. Falls back gracefully if stdout is not a CLI envelope.
-    """
-    try:
-        envelope = json.loads(stdout)
-    except (json.JSONDecodeError, ValueError):
-        return {"agent_text": stdout, "session_id": ""}
-    if not (isinstance(envelope, dict) and "session_id" in envelope):
-        return {"agent_text": stdout, "session_id": ""}
-
-    parsed: dict[str, str] = {
-        "session_id": str(envelope.get("session_id", "")),
-        "agent_text": str(envelope.get("result", "")),
-    }
-    if "num_turns" in envelope:
-        parsed["num_turns"] = str(envelope["num_turns"])
-
-    cost = envelope.get("total_cost_usd", envelope.get("cost_usd"))
-    if cost is not None:
-        parsed["cost_usd"] = str(cost)
-
-    raw_usage = envelope.get("usage")
-    usage = raw_usage if isinstance(raw_usage, dict) else {}
-    token_keys = {
-        "input_tokens": "input_tokens",
-        "output_tokens": "output_tokens",
-        "cache_read_tokens": "cache_read_input_tokens",
-        "cache_write_tokens": "cache_creation_input_tokens",
-    }
-    for out_key, source in token_keys.items():
-        if source in usage:
-            parsed[out_key] = str(usage[source])
-        elif source in envelope:  # pre-2.x flat fallback
-            parsed[out_key] = str(envelope[source])
-
-    # ``modelUsage`` is keyed by the billed model id (``claude-opus-4-8[1m]``);
-    # a single-model run has one key. Absent on older envelopes — the attempt's
-    # model stays unset and cost falls back to the reasoning tier.
-    model_usage = envelope.get("modelUsage")
-    if isinstance(model_usage, dict) and model_usage:
-        parsed["model"] = str(next(iter(model_usage)))
-    return parsed
 
 
 def _parse_result(agent_text: str) -> dict[str, object]:
@@ -519,7 +528,6 @@ def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskA
 def get_result_json_schema() -> dict[str, object]:
     """Return the JSON schema for structured agent output.
 
-    Agents should produce output matching this schema when invoked with
-    ``--output-format json``.
+    Agents produce output matching this schema as a final JSON object.
     """
     return RESULT_JSON_SCHEMA

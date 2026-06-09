@@ -18,6 +18,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
+from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -250,22 +251,14 @@ class TestProvisionTicketFlag(TestCase):
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:
-        import shlex  # noqa: PLC0415
-
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
         sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
 
-        envelope = '{"session_id": "test-session", "result": "```json\\n{\\"summary\\": \\"done\\"}\\n```"}'
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                headless_mod,
-                "_build_headless_command",
-                return_value=["sh", "-c", f"printf %s {shlex.quote(envelope)}"],
-            ),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            fake_sdk(success_stream({"summary": "done"}, session_id="test-session")),
         ):
             claimed_task_id = cast(
                 "int",
