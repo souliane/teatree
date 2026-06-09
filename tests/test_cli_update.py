@@ -68,15 +68,16 @@ def _clone(tmp_path: Path, bare: Path, name: str = "clone") -> Path:
     return clone
 
 
-def _advance_remote(tmp_path: Path, bare: Path) -> str:
-    """Push a new commit to the bare remote; return its short sha."""
+def _advance_remote(tmp_path: Path, bare: Path, commits: int = 1) -> str:
+    """Push *commits* new commits to the bare remote; return the head short sha."""
     work = tmp_path / "advance"
     _git(tmp_path, "clone", str(bare), str(work))
     _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
     _git(work, "config", "user.name", "Tester")
-    (work / "f.txt").write_text("v2\n")
-    _git(work, "add", "f.txt")
-    _git(work, "commit", "-m", "second")
+    for n in range(commits):
+        (work / "f.txt").write_text(f"v{n + 2}\n")
+        _git(work, "add", "f.txt")
+        _git(work, "commit", "-m", f"advance {n}")
     _git(work, "push", "origin", "main")
     return _git(work, "rev-parse", "--short", "HEAD")
 
@@ -101,7 +102,19 @@ class TestUpdateRepoCleanFastForward:
         assert result.status is UpdateStatus.UPDATED
         assert result.old_sha == old_sha
         assert result.new_sha == new_sha
+        assert result.advanced == 1
         assert _git(clone, "rev-parse", "--short", "HEAD") == new_sha
+
+    def test_records_count_of_commits_advanced(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare, commits=4)
+
+        result = update_repo("clone", clone)
+
+        assert result.status is UpdateStatus.UPDATED
+        assert result.advanced == 4
+        assert "+4 commits" in result.summary_line
 
 
 class TestUpdateRepoUpToDate:
@@ -303,7 +316,7 @@ class TestPrimaryCloneOffDefaultBranchFailsLoud:
 
 class TestRepoUpdateSummary:
     def test_summary_line_shapes(self) -> None:
-        updated = RepoUpdate("core", UpdateStatus.UPDATED, old_sha="aaaaaaa", new_sha="bbbbbbb")
+        updated = RepoUpdate("core", UpdateStatus.UPDATED, old_sha="aaaaaaa", new_sha="bbbbbbb", advanced=3)
         up = RepoUpdate("ovl", UpdateStatus.UP_TO_DATE)
         skipped = RepoUpdate("ovl2", UpdateStatus.SKIPPED, reason="dirty working tree")
 
@@ -314,6 +327,14 @@ class TestRepoUpdateSummary:
         assert "dirty working tree" in skipped.summary_line
         assert updated.is_error is False
         assert RepoUpdate("x", UpdateStatus.FAILED, reason="boom").is_error is True
+
+    def test_updated_summary_reports_commit_count(self) -> None:
+        one = RepoUpdate("core", UpdateStatus.UPDATED, old_sha="aaaaaaa", new_sha="bbbbbbb", advanced=1)
+        many = RepoUpdate("ovl", UpdateStatus.UPDATED, old_sha="ccccccc", new_sha="ddddddd", advanced=7)
+
+        assert "+1 commit " in one.summary_line
+        assert "+1 commits" not in one.summary_line
+        assert "+7 commits" in many.summary_line
 
 
 class TestUpdateCommandExitCode:
@@ -614,7 +635,23 @@ class TestRunUpdateEndToEnd:
         assert "Summary:" in out
         assert old_sha in out
         assert new_sha in out
+        assert "+1 commit " in out
         assert _git(clone, "rev-parse", "--short", "HEAD") == new_sha
+
+    def test_summary_reports_multi_commit_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare, commits=3)
+
+        monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("clone", clone)])
+        monkeypatch.setattr(update_mod, "_reinstall_and_resetup", lambda _r: None)
+        monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
+
+        update_mod._run_update()
+
+        assert "+3 commits" in capsys.readouterr().out
 
 
 if __name__ == "__main__":
