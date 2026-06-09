@@ -88,6 +88,7 @@ class RepoUpdate:
     old_sha: str = ""
     new_sha: str = ""
     reason: str = ""
+    advanced: int = 0
 
     @property
     def is_error(self) -> bool:
@@ -96,7 +97,8 @@ class RepoUpdate:
     @property
     def summary_line(self) -> str:
         if self.status is UpdateStatus.UPDATED:
-            return f"OK    {self.name}: updated {self.old_sha} -> {self.new_sha}"
+            plural = "commit" if self.advanced == 1 else "commits"
+            return f"OK    {self.name}: +{self.advanced} {plural} ({self.old_sha} -> {self.new_sha})"
         if self.status is UpdateStatus.UP_TO_DATE:
             return f"OK    {self.name}: up-to-date"
         if self.status is UpdateStatus.SKIPPED:
@@ -115,6 +117,16 @@ def _git(repo: Path, *args: str, expected_codes: tuple[int, ...] | None = (0,)) 
 
 def _short_sha(repo: Path) -> str:
     return _git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+
+
+def _commit_count(repo: Path, old_sha: str, new_sha: str) -> int:
+    """Count commits the ff-pull added (``git rev-list --count old..new``).
+
+    Both endpoints are SHAs this function's caller just resolved from the
+    repo's own HEAD before and after the fast-forward, so the range is always
+    valid and the audited ``git`` runs with the strict default exit code.
+    """
+    return int(_git(repo, "rev-list", "--count", f"{old_sha}..{new_sha}").stdout.strip())
 
 
 def _current_branch(repo: Path) -> str:
@@ -300,7 +312,8 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
     new_sha = _short_sha(repo)
     if new_sha == old_sha:
         return RepoUpdate(name, UpdateStatus.UP_TO_DATE)
-    return RepoUpdate(name, UpdateStatus.UPDATED, old_sha=old_sha, new_sha=new_sha)
+    advanced = _commit_count(repo, old_sha, new_sha)
+    return RepoUpdate(name, UpdateStatus.UPDATED, old_sha=old_sha, new_sha=new_sha, advanced=advanced)
 
 
 def _running_clone() -> Path | None:
