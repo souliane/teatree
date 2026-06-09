@@ -74,6 +74,19 @@ def _run(data: dict) -> tuple[bool, dict | None]:
     return blocked, payload
 
 
+def _py_fixture(tmp_path: Path) -> str:
+    """A code-work ``.py`` fixture path anchored under ``tmp_path``.
+
+    The skill-loading gate keys only on the source ``.py`` shape, so any ``.py``
+    path drives it. The path must live OUTSIDE any teatree-managed repo: a
+    repo-relative ``src/teatree/...`` literal would, on a checkout sitting on
+    ``main`` (the push-to-main CI ``test`` job's cwd), trip the higher-priority
+    ``handle_protect_default_branch`` SAFETY gate first and preempt the
+    skill-loading deny this suite drives (souliane/teatree#2003).
+    """
+    return str(tmp_path / "work" / "x.py")
+
+
 class TestScopePredicate:
     """``_skill_gate_targets_code_work`` separates code work from everything else."""
 
@@ -156,10 +169,10 @@ class TestGateNeverFiresOnNonCodeWork:
 class TestGateStillFiresOnCodeWork:
     """The narrowing must not defang the gate on genuine Python/Django work."""
 
-    def test_python_edit_still_blocks(self, gate: Path) -> None:
+    def test_python_edit_still_blocks(self, gate: Path, tmp_path: Path) -> None:
         _write_pending("sess-py", ["ac-python"])
         blocked, payload = _run(
-            {"session_id": "sess-py", "tool_name": "Edit", "tool_input": {"file_path": "src/teatree/core/x.py"}}
+            {"session_id": "sess-py", "tool_name": "Edit", "tool_input": {"file_path": _py_fixture(tmp_path)}}
         )
         assert blocked is True
         assert payload is not None
@@ -175,14 +188,14 @@ class TestGateStillFiresOnCodeWork:
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
 
-    def test_code_work_still_honors_skill_load_ok_escape(self, gate: Path) -> None:
+    def test_code_work_still_honors_skill_load_ok_escape(self, gate: Path, tmp_path: Path) -> None:
         _write_pending("sess-esc", ["ac-python"])
         blocked, payload = _run(
             {
                 "session_id": "sess-esc",
                 "tool_name": "Edit",
                 "tool_input": {
-                    "file_path": "src/teatree/core/x.py",
+                    "file_path": _py_fixture(tmp_path),
                     "new_string": "x = 1  # [skill-load-ok: false trigger]",
                 },
             }

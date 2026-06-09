@@ -1,0 +1,3 @@
+def test_python_edit_blocks(file_path):
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": file_path}}
+    run(payload)
