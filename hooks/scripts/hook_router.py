@@ -408,29 +408,44 @@ class _BreakerDecision:
     reason: str
 
 
-def _deny_circuit_breaker_enabled() -> bool:
-    """Whether the repeated-denial circuit breaker is enabled (default True).
+def _teatree_bool_setting(name: str, *, default: bool = True) -> bool:
+    """Best-effort read of a ``[teatree] <name>`` boolean flag from ``~/.teatree.toml``.
 
-    Best-effort read of ``[teatree] deny_circuit_breaker_enabled`` from
-    ``~/.teatree.toml``, mirroring :func:`_skill_loading_gate_enabled`'s
-    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
-    breaker keeps its protective default; an explicit ``false`` is the one-line
-    kill-switch that makes the breaker a pure pass-through (never a code edit).
+    The single shared shape behind every ``[teatree] <flag>_enabled`` reader:
+    fails to ``default`` on a missing/broken config, a missing ``[teatree]``
+    table, a missing key, or a non-boolean value, and returns the configured
+    value only when it is a bare TOML boolean. So only a bare boolean ``false``
+    disables a ``default=True`` flag and only a bare boolean ``true`` enables a
+    ``default=False`` one — a QUOTED ``"false"`` / ``"true"`` (a string, not a
+    bool) is ignored and the default stands. An explicit bare boolean is the
+    one-line kill-switch / opt-in, never a code edit (NEVER-LOCKOUT).
     """
     import tomllib  # noqa: PLC0415
 
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return True
+        return default
     try:
         with config_path.open("rb") as f:
             config = tomllib.load(f)
     except Exception:  # noqa: BLE001
-        return True
+        return default
     teatree = config.get("teatree") if isinstance(config, dict) else None
     if not isinstance(teatree, dict):
-        return True
-    return teatree.get("deny_circuit_breaker_enabled") is not False
+        return default
+    value = teatree.get(name)
+    return value if isinstance(value, bool) else default
+
+
+def _deny_circuit_breaker_enabled() -> bool:
+    """Whether the repeated-denial circuit breaker is enabled (default True).
+
+    Fails OPEN to enabled on a missing/broken config so the breaker keeps its
+    protective default; an explicit ``false`` is the one-line kill-switch that
+    makes the breaker a pure pass-through (never a code edit). See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
+    """
+    return _teatree_bool_setting("deny_circuit_breaker_enabled", default=True)
 
 
 def _deny_circuit_breaker_threshold() -> int:
@@ -1178,25 +1193,11 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
 def _loop_registration_gate_enabled() -> bool:
     """Whether the loop-registration PreToolUse gate is enabled (default True).
 
-    Best-effort read of ``[teatree] loop_registration_gate_enabled`` from
-    ``~/.teatree.toml`` (mirrors :func:`_deny_circuit_breaker_enabled`'s shape).
     Fails OPEN to enabled on a missing/broken config; an explicit ``false`` is
-    the one-line durable kill-switch — never a code edit (NEVER-LOCKOUT).
+    the one-line durable kill-switch — never a code edit (NEVER-LOCKOUT). See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("loop_registration_gate_enabled") is not False
+    return _teatree_bool_setting("loop_registration_gate_enabled", default=True)
 
 
 _LOOP_REGISTRATION_EXEMPT_TOOLS = frozenset(
@@ -1757,26 +1758,12 @@ _SKIP_SKILL_GATE_RE = re.compile(r"\[skip-skill-gate:\s*(\S[^\]]*?)\s*\]")
 def _skill_loading_gate_enabled() -> bool:
     """Whether the skill-loading-on-task-create gate is enabled (default True).
 
-    Best-effort read of ``[teatree] skill_loading_gate_enabled`` from
-    ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`'s
-    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
-    gate keeps its protective default; an explicit ``false`` is the
-    one-line kill-switch (never a code edit).
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit ``false`` is the one-line kill-switch
+    (never a code edit). See :func:`_teatree_bool_setting` for the shared
+    bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("skill_loading_gate_enabled") is not False
+    return _teatree_bool_setting("skill_loading_gate_enabled", default=True)
 
 
 def _task_text_skip_token(text: str) -> str | None:
@@ -2019,26 +2006,12 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
 def _plan_edit_gate_enabled() -> bool:
     """Whether the plan-edit gate is enabled (default True).
 
-    Best-effort read of ``[teatree] plan_edit_gate_enabled`` from
-    ``~/.teatree.toml``, mirroring :func:`_skill_loading_gate_enabled`'s
-    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
-    gate keeps its protective default; an explicit ``false`` is the one-line
-    kill-switch (``t3 <overlay> gate plan disable``, never a code edit).
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit ``false`` is the one-line kill-switch
+    (``t3 <overlay> gate plan disable``, never a code edit). See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("plan_edit_gate_enabled") is not False
+    return _teatree_bool_setting("plan_edit_gate_enabled", default=True)
 
 
 def handle_block_edit_before_planned(data: dict) -> bool:
@@ -2771,26 +2744,13 @@ def _mcp_privacy_gate_enabled() -> bool:
     quote-scanner and #1218 bare-reference gates (#171): until the Slack
     matcher was added to ``hooks.json`` these handlers never fired on a
     Slack MCP write, so this flag lets the operator disable that arm alone
-    without a code edit if the now-live gate misfires. Mirrors
-    :func:`_orchestrator_bash_gate_enabled`'s toml-read shape — fails OPEN
-    to enabled on a missing/broken config (the arm is the same risk class
-    as the already-live Bash arm of the same gate), an explicit ``false``
-    disables it. The Bash arm of both gates is unaffected by this flag.
+    without a code edit if the now-live gate misfires. Fails OPEN to enabled
+    on a missing/broken config (the arm is the same risk class as the
+    already-live Bash arm of the same gate), an explicit ``false`` disables
+    it. The Bash arm of both gates is unaffected by this flag. See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("mcp_privacy_gate_enabled") is not False
+    return _teatree_bool_setting("mcp_privacy_gate_enabled", default=True)
 
 
 def _is_slack_mcp_tool(tool_name: str) -> bool:
@@ -2948,20 +2908,13 @@ def _slack_tool_suffix(tool_name: str) -> str:
 
 
 def _self_dm_gate_enabled() -> bool:
-    import tomllib  # noqa: PLC0415
+    """Whether the self-DM gate is enabled (default True).
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("self_dm_gate_enabled") is not False
+    Fails OPEN to enabled on a missing/broken config; an explicit ``false``
+    is the one-line kill-switch. See :func:`_teatree_bool_setting` for the
+    shared bare-boolean semantics.
+    """
+    return _teatree_bool_setting("self_dm_gate_enabled", default=True)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -3196,22 +3149,10 @@ def _dispatch_quote_gate_on_task_create_enabled() -> bool:
     True only on an explicit ``true``. This deliberately DIFFERS from
     :func:`_mcp_privacy_gate_enabled` (which fails OPEN to enabled): the Slack-MCP
     arm is the same risk class as an already-live gate, whereas this fan-out
-    gate's enforcement semantics are not yet validated.
+    gate's enforcement semantics are not yet validated. See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return False
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return False
-    return teatree.get("dispatch_quote_gate_on_task_create_enabled") is True
+    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
 
 
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
@@ -3710,26 +3651,12 @@ def _is_orchestration_action(data: dict) -> bool:
 def _orchestrator_bash_gate_enabled() -> bool:
     """Whether the heavy-Bash boundary gate is enabled (default True).
 
-    Best-effort read of ``[teatree] orchestrator_bash_gate_enabled`` from
-    ``~/.teatree.toml``. Fails OPEN to enabled on a missing/broken config so
-    the gate keeps its protective default; an explicit ``false`` is the
-    kill-switch that lets the user disable it with one config line (never a
-    code edit).
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit ``false`` is the kill-switch that lets the
+    user disable it with one config line (never a code edit). See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get("orchestrator_bash_gate_enabled") is not False
+    return _teatree_bool_setting("orchestrator_bash_gate_enabled", default=True)
 
 
 def _orchestrator_boundary_agent_gate_enabled() -> bool:
@@ -3754,22 +3681,10 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     signal exists only on the Agent-matcher path, not the TaskCreated one.)
 
     Fails CLOSED to disabled (missing/broken config → False; only an explicit
-    ``true`` enables).
+    ``true`` enables). See :func:`_teatree_bool_setting` for the shared
+    bare-boolean semantics.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return False
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return False
-    return teatree.get("orchestrator_boundary_agent_gate_enabled") is True
+    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled", default=False)
 
 
 def _deny_foreground_agent_dispatch(data: dict) -> bool:
