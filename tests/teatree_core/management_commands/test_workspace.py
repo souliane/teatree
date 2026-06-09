@@ -1477,6 +1477,76 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_never_reads_stdin_when_not_a_tty(self) -> None:
+        """#279: clean-all must never block on a stdin prompt when not a TTY.
+
+        Anti-vacuous: ``builtins.input`` is patched to raise on any call, so a
+        single read of stdin fails the test. The EOFError fallback in
+        ``resolve_unsynced_worktree`` means a vacuous test (one that does not
+        assert ``input`` is uncalled) would pass even if the TTY guard were
+        removed — the input-raises patch is what makes this guard the fix.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            repo_main = workspace / "frontend"
+            repo_main.mkdir(parents=True)
+            (repo_main / ".git").mkdir()
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/279")
+            stuck_wt_dir = workspace / "ac-frontend-279-ticket" / "frontend"
+            stuck_wt_dir.mkdir(parents=True)
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="frontend",
+                branch="ac-frontend-279-ticket",
+                extra={"worktree_path": str(stuck_wt_dir)},
+            )
+
+            def _classify(_repo: str, branch: str, target: str = "origin/main") -> cleanup_mod.BranchClassification:
+                return cleanup_mod.BranchClassification(
+                    genuinely_ahead=[
+                        cleanup_mod.BranchCommit(sha="abc123", subject="chore: unpushed", is_merge=False),
+                    ],
+                )
+
+            stdin_read_msg = "clean-all read stdin in a non-interactive context (#279)"
+
+            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
+                raise AssertionError(stdin_read_msg)
+
+            non_tty = MagicMock()
+            non_tty.isatty.return_value = False
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = workspace
+            with (
+                patch.object(ws_cleanup_mod.sys, "stdin", non_tty),
+                patch.object(ws_cleanup_mod.sys, "stdout", non_tty),
+                patch("builtins.input", side_effect=_input_must_not_be_called),
+                patch.object(cleanup_mod, "load_config", return_value=mock_config),
+                patch.object(cleanup_mod, "git") as mock_git,
+                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
+            ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_git.status_porcelain.return_value = ""
+                mock_git.unsynced_commits.side_effect = lambda _repo, _branch: ["abc123 chore: unpushed"]
+                mock_git.commits_absent_from_all_remotes.return_value = []
+                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
+                mock_git.current_branch.side_effect = lambda _wt: "ac-frontend-279-ticket"
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert any("ac-frontend-279-ticket" in c and "unsynced" in c.lower() for c in cleaned)
+            assert Worktree.objects.filter(branch="ac-frontend-279-ticket").count() == 1
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_push_or_abandon_failure_raises_system_exit_1(self) -> None:
         """clean-all must exit 1 when a push/abandon attempt genuinely failed.
 
@@ -1566,6 +1636,51 @@ class TestReapOrphanWorktreeDocker(TestCase):
 
         assert lines == [str(result)]
         assert "backend-wt9" in lines[0]
+
+
+class TestIsInteractive(TestCase):
+    """#279: TTY detection that fails closed to non-interactive."""
+
+    def test_both_tty_is_interactive(self) -> None:
+        tty = MagicMock()
+        tty.isatty.return_value = True
+        with (
+            patch.object(ws_cleanup_mod.sys, "stdin", tty),
+            patch.object(ws_cleanup_mod.sys, "stdout", tty),
+        ):
+            assert ws_cleanup_mod._is_interactive() is True
+
+    def test_stdin_not_tty_is_not_interactive(self) -> None:
+        stdin, stdout = MagicMock(), MagicMock()
+        stdin.isatty.return_value = False
+        stdout.isatty.return_value = True
+        with (
+            patch.object(ws_cleanup_mod.sys, "stdin", stdin),
+            patch.object(ws_cleanup_mod.sys, "stdout", stdout),
+        ):
+            assert ws_cleanup_mod._is_interactive() is False
+
+    def test_stdout_not_tty_is_not_interactive(self) -> None:
+        stdin, stdout = MagicMock(), MagicMock()
+        stdin.isatty.return_value = True
+        stdout.isatty.return_value = False
+        with (
+            patch.object(ws_cleanup_mod.sys, "stdin", stdin),
+            patch.object(ws_cleanup_mod.sys, "stdout", stdout),
+        ):
+            assert ws_cleanup_mod._is_interactive() is False
+
+    def test_closed_stdin_value_error_fails_closed(self) -> None:
+        """A daemonised worker's closed stdin raises ValueError on isatty()."""
+        stdin = MagicMock()
+        stdin.isatty.side_effect = ValueError("I/O operation on closed file.")
+        with patch.object(ws_cleanup_mod.sys, "stdin", stdin):
+            assert ws_cleanup_mod._is_interactive() is False
+
+    def test_none_stdin_fails_closed(self) -> None:
+        """Some runners leave sys.stdin as None; .isatty raises AttributeError."""
+        with patch.object(ws_cleanup_mod.sys, "stdin", None):
+            assert ws_cleanup_mod._is_interactive() is False
 
 
 class TestResolveUnsyncedWorktree(TestCase):
