@@ -2582,7 +2582,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # `_branch_tree_matches_squash` (diff --quiet tip feature) is True
             # and the existing unsynced SKIP guard is bypassed.
             with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=tip):
-                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map, remote_ref_was_present=False)
 
             # DATA-LOSS ASSERTION: the unique commit must still exist.
             branches = _git(work, "branch", "--format=%(refname:short)")
@@ -2645,7 +2645,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # construction, so `_branch_tree_matches_squash` is True and the
             # branch is correctly classified squash-merged regardless of SHA.
             with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
-                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map, remote_ref_was_present=True)
 
             branches = _git(work, "branch", "--format=%(refname:short)").split()
             assert "feature" not in branches, f"squash-merged branch should be pruned, got: {result!r}"
@@ -2673,7 +2673,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # classified squash-merged via the tree match, not via an accidental
             # SHA collision — hermetic regardless of commit timestamps (#915).
             with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
-                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", {})
+                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", {}, remote_ref_was_present=True)
 
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
             assert result == "Pruned squash-merged branch: feature"
@@ -2704,7 +2704,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
                     side_effect=utils_run_mod.CommandFailedError(["git", "log"], 128, "", "fatal: bad revision"),
                 ),
             ):
-                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", wt_map, remote_ref_was_present=False)
 
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split(), (
                 f"DATA LOSS: branch deleted despite an inconclusive probe: {result!r}"
@@ -2843,12 +2843,12 @@ class TestPruneGoneRemoteWorktree(TestCase):
             assert any("feature" in c and "ahead of origin/main" in c for c in cleaned), cleaned
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
 
-    def test_origin_ref_exists_helper(self) -> None:
+    def test_remote_tracking_ref_exists_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             _remote, work = _init_repo_with_remote(tmp)
-            assert ws_cleanup_mod._origin_ref_exists(str(work), "main") is True
-            assert ws_cleanup_mod._origin_ref_exists(str(work), "never-existed") is False
+            assert cleanup_mod._remote_tracking_ref_exists(str(work), "main") is True
+            assert cleanup_mod._remote_tracking_ref_exists(str(work), "never-existed") is False
 
     def test_worktree_clean_helper_ignores_regenerable_and_missing_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -2880,6 +2880,123 @@ class TestPruneGoneRemoteWorktree(TestCase):
             # Removal failed → the working tree and branch ref both survive.
             assert Path(wt_path).is_dir()
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+
+class TestRefuseIfUnpushedAncestryFallback(TestCase):
+    """#2205 — ``_refuse_if_unpushed`` must pass when HEAD is ancestor of origin/main.
+
+    When a branch's remote tracking ref is deleted (squash-merge + branch deletion
+    + ``fetch --prune``), ``commits_absent_from_all_remotes`` returns non-empty:
+    the tracking ref is gone, and squash creates a distinct SHA on main so the
+    branch commits are not reachable from any remaining ``refs/remotes/*``.
+
+    The old code returned a refusal message ("SKIPPED … on NO remote"). After the
+    fix an ancestry check is applied: if every branch commit is reachable from
+    ``origin/<default>`` the work is already on main and deletion is safe —
+    ``_refuse_if_unpushed`` must return ``""`` (allow deletion).
+    """
+
+    def _squash_merge_remote_delete(self, tmp: Path, branch: str) -> tuple[Path, Path]:
+        """Return (work_repo, remote).  branch squash-merged → main, source ref deleted FORGE-side.
+
+        The source ref is deleted on the bare remote directly (``update-ref -d``),
+        modelling a forge squash-merge: the local clone keeps a STALE
+        ``origin/<branch>`` tracking ref until a later fetch/prune — the
+        forge-CLI-free squash-merge signal the caller samples before the prune.
+        """
+        remote, work = _init_repo_with_remote(tmp)
+        _git(work, "checkout", "-q", "-b", branch)
+        (work / f"{branch}.py").write_text("work\n", encoding="utf-8")
+        _git(work, "add", f"{branch}.py")
+        _git(work, "commit", "-q", "-m", f"feat: {branch}")
+        _git(work, "push", "-q", "origin", branch)
+        _git(work, "checkout", "-q", "main")
+        _git(work, "merge", "-q", "--squash", branch)
+        _git(work, "commit", "-q", "-m", f"feat: {branch} (#2205)")
+        _git(work, "push", "-q", "origin", "main")
+        _git(remote, "update-ref", "-d", f"refs/heads/{branch}")
+        return work, remote
+
+    def test_squash_merged_remote_deleted_branch_is_allowed(self) -> None:
+        """#2205 repro: ``_refuse_if_unpushed`` must not block a squash-merged branch."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            work, _remote = self._squash_merge_remote_delete(tmp, "feature")
+            # The caller samples the stale tracking ref before its fetch/prune.
+            present = cleanup_mod._remote_tracking_ref_exists(str(work), "feature")
+            _git(work, "fetch", "-q", "--prune", "origin")
+
+            result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature", remote_ref_was_present=present)
+
+        assert present is True, "Forge-side delete must leave a stale tracking ref to sample"
+        assert result == "", f"Expected '' (safe to delete), got refusal: {result!r}"
+
+    def test_genuinely_unpushed_branch_is_still_refused(self) -> None:
+        """No regression: a branch with commits on NO remote at all must still be refused."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("never pushed\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: genuinely unpushed")
+
+            result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature", remote_ref_was_present=False)
+
+        assert result != "", "Expected a refusal message for genuinely unpushed work"
+        assert "feature" in result
+
+    def _local_only_tree_matches_main(self, tmp: Path, branch: str) -> Path:
+        """Local-only branch with NEVER-pushed commits whose final tree == origin/main.
+
+        Mirrors the reviewer's data-loss repro: ``add feat`` then ``revert - back
+        to main tree``. The branch is never pushed to any remote, so its commits
+        live nowhere but locally, yet ``git diff --quiet branch origin/main`` exits
+        0 because the cumulative tree is identical to ``origin/main``.
+        """
+        _remote, work = _init_repo_with_remote(tmp)
+        _git(work, "checkout", "-q", "-b", branch)
+        (work / "feat.py").write_text("genuinely local work\n", encoding="utf-8")
+        _git(work, "add", "feat.py")
+        _git(work, "commit", "-q", "-m", "add feat")
+        _git(work, "rm", "-q", "feat.py")
+        _git(work, "commit", "-q", "-m", "revert - back to main tree")
+        return work
+
+    def test_local_only_commits_with_matching_tree_are_refused(self) -> None:
+        """Finding 1 (data loss): tree-equality alone must NOT allow deletion.
+
+        A branch whose commits were never pushed anywhere, but whose final tree
+        coincidentally equals ``origin/main`` (work added then reverted), passes
+        ``git diff --quiet`` yet has NO positive merged-evidence. Deleting it
+        destroys the only copy of those commits. Without a forge merged signal the
+        guard must KEEP the branch.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            work = self._local_only_tree_matches_main(tmp, "feature")
+
+            with patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False):
+                result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature", remote_ref_was_present=False)
+
+        assert result != "", "Expected a refusal: local-only commits whose tree matches main must be kept"
+        assert "feature" in result
+
+    def test_local_only_matching_tree_pruned_only_with_merged_evidence(self) -> None:
+        """Tree-equality IS accepted once the forge confirms the PR merged.
+
+        The secondary confirmation (tree matches) is gated behind positive
+        merged-evidence: with the forge reporting the PR merged, the same
+        tree-matching branch is safe to delete.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            work = self._local_only_tree_matches_main(tmp, "feature")
+
+            with patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=True):
+                result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature", remote_ref_was_present=False)
+
+        assert result == "", f"Expected '' (merged-evidence + tree match → safe), got: {result!r}"
 
 
 def _squash_merge_into_main(tmp: Path, *, subject: str) -> tuple[Path, str]:
