@@ -32,6 +32,9 @@ binary that cannot be queried also fails safe: the row stays counted.
 import logging
 from collections.abc import Callable
 
+from django.db import transaction
+from django_fsm import can_proceed
+
 from teatree.config import get_effective_settings
 from teatree.core.models import Worktree
 from teatree.core.worktree_env import compose_project
@@ -181,18 +184,70 @@ def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) ->
     raise LocalStackLimitExceededError(msg)
 
 
-def refuse_if_limit_exceeded(candidate: Worktree | None, *, write_err: Callable[[str], object]) -> None:
-    """CLI shim around ``check_local_stack_limit``.
+def reap_idle_stacks(*, overlay: str, write_out: Callable[[str], object] | None = None) -> int:
+    """Stop the idle running stacks of *overlay*, returning the count reaped (#2190).
 
-    Calls the gate, writes the refusal to ``write_err`` on
-    :class:`LocalStackLimitExceededError`, and raises ``SystemExit(1)``.
-    Accepts ``None`` (the empty-workspace case in
-    ``workspace start``) and no-ops so the caller stays a one-liner.
+    The root-cause action behind ``acquire_or_enqueue``: an idle
+    ``services_up``/``ready`` worktree (no live session/task, ``last_used_at``
+    past the threshold, not the active worktree) is demoted to ``provisioned``
+    via ``Worktree.stop_services`` — REVERSIBLE (DB + worktree preserved). Each
+    demotion is guarded by ``can_proceed`` so a stale read never raises, and
+    runs in its own transaction so one failing stop does not abort the rest.
+    Fail-safe: any uncertainty in ``reapable_worktrees`` keeps the stack
+    running.
+    """
+    from teatree.core.gates.idle_stack import reapable_worktrees  # noqa: PLC0415
+
+    idle_minutes = int(get_effective_settings().idle_stack_idle_minutes)
+    reaped = 0
+    for worktree in list(reapable_worktrees(overlay=overlay, idle_minutes=idle_minutes)):
+        with transaction.atomic():
+            locked = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree.pk)
+            if not can_proceed(locked.stop_services):
+                continue
+            locked.stop_services()
+            locked.save()
+        reaped += 1
+        if write_out is not None:
+            write_out(f"  Reaped idle stack {_blocker_label(worktree)} (demoted to provisioned).")
+    return reaped
+
+
+def acquire_or_enqueue(candidate: Worktree | None, *, write_out: Callable[[str], object]) -> bool:
+    """Acquire a local-stack slot for *candidate*, or enqueue when none is free (#2190, #44).
+
+    Replaces the old ``SystemExit(1)`` refusal. The sequence: (1) check the
+    cap — a free slot returns ``True`` immediately; (2) on a breach, reap idle
+    stacks and re-check — a freed slot returns ``True``; (3) if still full,
+    ENQUEUE a :class:`LocalStackQueueItem` (idempotently), print a "queued"
+    notice, and return ``False`` so the caller does NOT advance the FSM. The
+    loop's queue-drainer later re-fires ``start`` once a slot frees, with a
+    Fibonacci-minute backoff. ``None`` (the empty-workspace case) acquires
+    trivially.
+
+    Returns ``True`` when the caller may proceed to ``start_services``,
+    ``False`` when the request was queued (caller must stop). Never raises
+    ``SystemExit`` — that is the whole point of the change.
     """
     if candidate is None:
-        return
+        return True
+    try:
+        check_local_stack_limit(candidate)
+    except LocalStackLimitExceededError:
+        pass
+    else:
+        return True
+
+    reap_idle_stacks(overlay=candidate.overlay, write_out=write_out)
     try:
         check_local_stack_limit(candidate)
     except LocalStackLimitExceededError as exc:
-        write_err(str(exc))
-        raise SystemExit(1) from exc
+        from teatree.core.models import LocalStackQueueItem  # noqa: PLC0415
+
+        LocalStackQueueItem.objects.enqueue(candidate)
+        write_out(
+            f"  No free local-stack slot — queued {_blocker_label(candidate)} for retry "
+            f"(the loop will start it once a slot frees).\n{exc}",
+        )
+        return False
+    return True
