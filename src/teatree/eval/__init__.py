@@ -1,4 +1,4 @@
-"""Behavioral evals — runtime checks on agent behavior via ``claude -p``.
+"""Behavioral evals — runtime checks on agent behavior via the Agent SDK.
 
 Each scenario declares an agent definition (a ``SKILL.md``), a prompt, and a
 set of matchers over the resulting tool calls. The harness shells out to the

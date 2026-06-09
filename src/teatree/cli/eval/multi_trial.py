@@ -1,8 +1,9 @@
 """``t3 eval run`` multi-trial (pass@k) and model-matrix execution paths.
 
 Held apart from the single-trial ``run`` body in :mod:`teatree.cli.eval.app`: a
-multi-trial / matrix run always shells the metered sdk runner and aggregates
-across trials/models, a distinct concern from the default single-pass grade.
+multi-trial / matrix run always drives the metered in-process sdk runner and
+aggregates across trials/models, a distinct concern from the default
+single-pass grade.
 """
 
 import json
@@ -21,7 +22,7 @@ from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_tex
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import SdkInProcessRunner
 
 
 def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
@@ -42,7 +43,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
+    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=require_executed)
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
         return evaluate(spec, runner.run(spec), judge=grader)
@@ -109,7 +110,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     if not model_list:
         typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
         raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
+    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=require_executed)
     rows: list[MatrixRow] = []
     for model in model_list:
         for spec in specs:
@@ -131,7 +132,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
 
 
 def _matrix_trial(
-    runner: ClaudePRunner,
+    runner: SdkInProcessRunner,
     spec: EvalSpec,
     *,
     trials: int,

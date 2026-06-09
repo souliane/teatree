@@ -89,7 +89,7 @@ class EvalToolCall:
 
 @dataclasses.dataclass(frozen=True)
 class EvalRun:
-    """Captured output of one ``claude -p`` invocation against a spec."""
+    """Captured output of one eval-runner invocation against a spec."""
 
     spec_name: str
     tool_calls: tuple[EvalToolCall, ...]

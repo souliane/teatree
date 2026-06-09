@@ -1,7 +1,7 @@
 # Behavioral evals
 
 Behavioral evals are runtime checks on agent behavior. A scenario hands a
-`SKILL.md` to a one-shot `claude -p` session, watches the resulting
+`SKILL.md` to a one-shot in-process Agent-SDK query, watches the resulting
 `stream-json` transcript, and asserts the agent reached for the right
 tool calls (and avoided the wrong ones). The point is to convert "the
 agent knows this rule" into "the agent's compliance with this rule is
@@ -9,7 +9,7 @@ observable and gated", so regressions surface as a red test rather than
 as a recurring red-card moment.
 
 The harness is intentionally tiny — a YAML loader, a stream-json parser,
-and a subprocess wrapper around `claude -p`. There is no test framework
+and an in-process wrapper around the Claude Agent SDK. There is no test framework
 coupling: the runner returns an `EvalRun` dataclass and the matchers
 operate on plain captured tool calls.
 
@@ -36,7 +36,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 ### Tech stack
 
-Python 3.12+, typer (CLI), Django ORM (run-store only), `claude -p`
+Python 3.12+, typer (CLI), Django ORM (run-store only), `claude-agent-sdk`
 `stream-json` for the AI lane, PyYAML for specs. No PyPI package — teatree is
 installed editable from a clone; the eval harness ships inside it.
 
@@ -49,7 +49,7 @@ installed editable from a clone; the eval harness ships inside it.
   runs).** `t3 eval all --docker` / `t3 eval run --docker` run the gate inside
   `dev/Dockerfile.test` — the exact image the CI test job builds, which now ships
   the `claude` CLI — for environment parity when debugging a CI-only failure. The
-  metered AI lane (`--backend sdk`, which shells `claude -p`) is meant to run
+  metered AI lane (`--backend sdk`, which drives the in-process Agent SDK) is meant to run
   **in the container, never on the host**: the docker runner forwards the host's
   `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) into the container with
   docker's `-e VARNAME` pass-through, so the metered run authenticates inside a
@@ -71,7 +71,7 @@ installed editable from a clone; the eval harness ships inside it.
 - **CI manual.** The metered eval can be triggered on demand via the standalone
   workflow's manual `workflow_dispatch` button (GitHub) / `when: manual` job
   (GitLab). A manual run ALWAYS runs (the no-PR guard is bypassed).
-- **CI weekly.** The metered `claude -p` scenario run lives in a STANDALONE
+- **CI weekly.** The metered Agent-SDK scenario run lives in a STANDALONE
   workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
   run neither runs nor displays a metered-eval check. It fires on a weekly cron;
   the scheduled run skips cleanly when nothing new merged in the lookback window
@@ -88,7 +88,7 @@ t3 eval list                                # show available scenarios as a rich
 t3 eval all                                  # explicit alias of the bare-`t3 eval` default (all lanes) — kept for scripts/CI that spell it out
 t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane); bare `t3 eval --free-only` is identical
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; bare `t3 eval --docker` is identical
-t3 eval run --backend sdk --docker            # run the metered claude -p lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
+t3 eval run --backend sdk --docker            # run the metered Agent-SDK lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -106,7 +106,7 @@ t3 eval history --baseline                    # show the current baseline run(s)
 t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
 t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend subscription            # explicit subscription (the default)
-t3 eval run --backend sdk                       # metered claude -p path (CLAUDE_CODE_OAUTH_TOKEN; runs in-container via --docker / CI)
+t3 eval run --backend sdk                       # metered Agent-SDK path (CLAUDE_CODE_OAUTH_TOKEN; runs in-container via --docker / CI)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
@@ -141,7 +141,7 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
-| `sdk` | metered `claude -p` (`CLAUDE_CODE_OAUTH_TOKEN`) | CI (standalone `eval.yml`) + local `--docker` (explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live, in a container |
+| `sdk` | metered Agent SDK (`CLAUDE_CODE_OAUTH_TOKEN`) | CI (standalone `eval.yml`) + local `--docker` (explicit `--backend sdk`) | drives the in-process Agent SDK to produce + grade the run live, in a container |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -149,7 +149,7 @@ The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 ### Token cost — the per-scenario system prompt (`agent_sections`)
 
 The metered lane's dominant input cost is the system prompt: each scenario sends
-its whole `agent_path` SKILL.md to `claude -p`, resent fresh per scenario with no
+its whole `agent_path` SKILL.md to the Agent SDK, resent fresh per scenario with no
 cross-scenario cache. `skills/rules/SKILL.md` (77 KB / ~19 K tokens) is sent for
 ~40 scenarios — each pins ONE rule but resends all ~50.
 
@@ -168,7 +168,7 @@ a silently-empty (vacuous) prompt. Generated scenarios declare their sections in
 `scripts/eval/corpus_gen/all_scenarios.py::_AGENT_SECTIONS` (one auditable map,
 self-checked at generation).
 
-**Prompt caching across scenarios is NOT available on this path.** `claude -p`
+**Prompt caching across scenarios is NOT available on this path.** The Agent-SDK query
 exposes `--exclude-dynamic-system-prompt-sections` for cross-call cache reuse,
 but it is explicitly *ignored with `--system-prompt`* (the flag the runner uses
 to inject the SKILL.md). There is no honored prefix-cache knob for our path, so
@@ -176,7 +176,7 @@ no cross-scenario cache saving is claimed — the win is the smaller prompt itse
 
 ### Wall-clock — `--parallel N`
 
-Each `claude -p` is I/O-bound (network round-trips), so the suite runs scenarios
+Each Agent-SDK query is I/O-bound (network round-trips), so the suite runs scenarios
 sequentially by default and the wall-clock is N × per-scenario latency. `t3 eval
 run --parallel N` / `t3 eval --parallel N` runs N scenarios concurrently through
 a bounded thread pool (`teatree.eval.parallel.run_specs`, capped at 20), turning
@@ -224,7 +224,7 @@ metered notice on stderr.
 
 **CI stays on the API path explicitly.** The standalone eval jobs in
 `.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
-the budgeted `claude -p` path while LOCAL defaults to `subscription`. (CI also
+the budgeted Agent-SDK path while LOCAL defaults to `subscription`. (CI also
 passes `--trials 3`, which already forces the sdk runner; the explicit
 `--backend sdk` is the debuggable statement of that intent.) `--require-executed`
 is passed unconditionally so a missing CLI/key fails the job loud — never an
@@ -260,14 +260,14 @@ copies it to the grader's path. Capture and grade read on-disk files only — th
 subscription lane never meters. The `/t3:running-evals` skill drives the full
 chain: prepare → dispatch sub-agent → capture-subagent → grade.
 
-#### sdk backend (`claude -p`)
+#### sdk backend (in-process Agent SDK)
 
-Each scenario invocation shells out to `claude -p` in `--output-format
+Each scenario invocation drives `claude_agent_sdk.query` in-process, mapping the typed messages to the same `--output-format
 stream-json` mode with a 120-second wall-clock watchdog and a
 `--max-budget-usd 0.10` circuit breaker. When `claude` is not on `PATH` the
 runner emits `SKIP <scenario>: claude binary not on PATH` and exits 0.
 
-`claude -p` authenticates from `CLAUDE_CODE_OAUTH_TOKEN` — the OAuth token from
+The Agent-SDK child authenticates from `CLAUDE_CODE_OAUTH_TOKEN` — the OAuth token from
 `claude setup-token` — which works in every environment without seeded login
 state: a clean container or CI runner with the token as a pure env var (no
 `~/.claude.json`, no keychain, no `/login`) authenticates. This is the
@@ -383,7 +383,7 @@ code path still honors the invariant — then add the matching anti-vacuous test
   PR, and skill-triggers + the scenario anti-vacuous matchers are pinned by
   `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
   test_eval.py`. The deterministic, free layers therefore guard every PR
-  through pytest — only the paid `claude -p` scenario *run* is weekly.
+  through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
   scenario suite once a week on a cron — not on every push, not on every PR, and
   NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`
@@ -410,7 +410,7 @@ This table is the single source of truth for which lanes exist, how they run, an
 | negative-control | free | host | `t3 eval negative-control` | — | on demand |
 | transcript-replay | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
 | ai-eval subscription | free (subscription tokens) | host | `t3 eval run` (default backend) | — (subscription run is in-session, not a CI job) | manual / on demand |
-| ai-eval sdk-metered | metered (`claude -p`) | **docker** (`--docker` locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --docker` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| ai-eval sdk-metered | metered (Agent SDK) | **docker** (`--docker` locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --docker` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
 
 ## Failure-class coverage
 
@@ -692,7 +692,7 @@ form, so `args.run_in_background: ~ "(?i)true"` matches.
    matcher-toothless scenario is caught at test time, not in production.
 5. Run `t3 eval list` to confirm the scenario shows up in both core and
    overlay surfaces. Run `t3 eval run <name>` to invoke a live
-   `claude -p` session when you want to confirm the prompt fires the
+   Agent-SDK query when you want to confirm the prompt fires the
    intended behavior end-to-end.
 
 ## Overlay-contributed scenarios
@@ -728,7 +728,7 @@ Layer 1 cannot reach.
 
 ## Transcript-replay conformance (the other half)
 
-The scenario harness above runs a *fresh* `claude -p` session and watches the
+The scenario harness above runs a *fresh* in-process Agent-SDK query and watches the
 **stream-json** CLI output (`transcript.py`). The transcript-replay eval
 (`session_transcript.py` + `transcript_conformance.py`, `t3 eval
 transcript-replay`) instead replays the **on-disk session JSONL** that Claude
@@ -848,7 +848,7 @@ AC5/AC6) is the harness's own self-test: it plants a known rule violation (an
 agent editing the canonical clone without `git worktree add` first), drives it
 through the *public* report path, and exits 0 only when the harness reports the
 violation — naming the violated rule and the offending tool call. It is
-token-free and deterministic (it never shells `claude -p`), so it runs as one of
+token-free and deterministic (it never drives the Agent SDK), so it runs as one of
 the free lanes `t3 eval all --free-only` gates on. A non-zero
 exit means the harness went green on a genuine violation, i.e. the harness
 itself is broken.

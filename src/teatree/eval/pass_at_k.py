@@ -17,7 +17,7 @@ Two aggregation modes:
 
 The runner is injected (any callable mapping ``EvalSpec -> ScenarioResult``),
 so tests drive it with a deterministic stub and production passes a closure
-over :class:`~teatree.eval.runner.ClaudePRunner` + ``evaluate``.
+over :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` + ``evaluate``.
 """
 
 import dataclasses
