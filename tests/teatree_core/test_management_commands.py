@@ -370,12 +370,19 @@ class TestSessionTodoRendering(TestCase):
     """The session-scoped renderer prints two labeled sections, never merged."""
 
     @staticmethod
-    def _row(
-        task_id: int, *, status: str, ticket_id: int = 1, phase: str = "coding", reason: str = "do it"
+    def _row(  # noqa: PLR0913 — test-data builder mirroring the TaskRow TypedDict fields.
+        task_id: int,
+        *,
+        status: str,
+        ticket_id: int = 1,
+        phase: str = "coding",
+        reason: str = "do it",
+        ticket_title: str = "",
     ) -> session_view.TaskRow:
         return session_view.TaskRow(
             task_id=task_id,
             ticket_id=ticket_id,
+            ticket_title=ticket_title,
             status=status,
             execution_target="headless",
             phase=phase,
@@ -444,6 +451,35 @@ class TestSessionTodoRendering(TestCase):
         assert "TODO-7" in printed
         assert "(ticket #42" in printed
         assert "task #7" not in printed
+
+    def test_ticket_title_renders_inline(self) -> None:
+        # #2092: the ``ticket #N`` on a todo line must carry the ticket title
+        # inline, never a bare ``#N`` the reader can't interpret. Asserting the
+        # title text appears goes RED on the pre-fix renderer.
+        out = io.StringIO()
+        session_view.render_session_todos(
+            [self._row(7, status="pending", ticket_id=42, ticket_title="fix the broken widget", reason="do it")],
+            harness_todos=[],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "fix the broken widget" in printed
+        assert "ticket #42 (fix the broken widget)" in printed
+
+    def test_no_ticket_title_renders_plain_id(self) -> None:
+        # A todo whose ticket has no title degrades to the plain ``#N`` (no
+        # empty parens), still namespace-qualified.
+        out = io.StringIO()
+        session_view.render_session_todos(
+            [self._row(7, status="pending", ticket_id=42, ticket_title="", reason="do it")],
+            harness_todos=[],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "ticket #42 ()" not in printed
+        assert "(ticket #42" in printed
 
     def test_same_number_task_and_ticket_render_distinctly(self) -> None:
         out = io.StringIO()
@@ -1150,6 +1186,7 @@ class TestTasksListCommand(TestCase):
             TaskRow(
                 task_id=7,
                 ticket_id=42,
+                ticket_title="fix the broken widget",
                 status="pending",
                 execution_target="interactive",
                 phase="coding",
@@ -1167,6 +1204,9 @@ class TestTasksListCommand(TestCase):
         assert "interactive" in out
         assert "coding" in out
         assert "resume after" in out
+        # #2092: the table carries the ticket title, never a bare numeric id alone.
+        assert "Title" in out
+        assert "fix the broken widget" in out
 
     def test_render_tasks_table_handles_empty(self) -> None:
         from io import StringIO  # noqa: PLC0415
