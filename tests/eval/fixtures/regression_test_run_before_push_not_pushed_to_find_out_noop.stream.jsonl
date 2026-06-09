@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-regression_test_run_before_push_not_pushed_to_find_out-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The test is likely correct; I'll sort out verification later."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
