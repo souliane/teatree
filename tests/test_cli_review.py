@@ -298,7 +298,10 @@ class TestPostComment:
         diff = "@@ -0,0 +5,1 @@\n+added\n"
         mock_api = _inline_api(
             diff,
-            post_result={"id": "disc-abc", "notes": [{"type": "DiffNote", "id": 1}]},
+            post_result={
+                "id": "disc-abc",
+                "notes": [{"type": "DiffNote", "id": 1, "position": {"new_path": "a.py", "new_line": 5}}],
+            },
         )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
@@ -322,13 +325,14 @@ class TestPostComment:
             assert result.exit_code == 1
             assert "approve-live-post" in result.output
 
-    def test_inline_anchor_falls_back_to_discussion_note(self, monkeypatch):
-        """If GitLab downgrades to a non-DiffNote, the command succeeds (rc=0) with a warning.
+    def test_inline_anchor_downgrade_hard_fails(self, monkeypatch):
+        """If GitLab silently downgrades to an MR-level note (no position.new_path), rc=1 (#1161).
 
-        The comment is live on GitLab; returning rc=1 would cause callers to retry
-        and double-post.  The fix: record the claim and return rc=0 with a message
-        that names the downgraded type so the caller knows the note was not anchored
-        inline.
+        The comment IS live on GitLab, but it is NOT anchored on the diff. The
+        EXTREMELY RED CARD: a sub-agent must never report "inline POSTs
+        succeeded" while every post was MR-level. The claim is still recorded so
+        a retry is idempotent, but the non-zero exit code refuses the false
+        success.
         """
         from teatree.core.models import LivePostApproval  # noqa: PLC0415
 
@@ -337,15 +341,15 @@ class TestPostComment:
         diff = "@@ -0,0 +5,1 @@\n+added\n"
         mock_api = _inline_api(
             diff,
-            post_result={"id": "disc-xyz", "notes": [{"type": "DiscussionNote", "id": 2}]},
+            post_result={"id": "disc-xyz", "notes": [{"type": "DiscussionNote", "id": 2, "position": None}]},
         )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
                 ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
             )
-            assert result.exit_code == 0
-            assert "not anchored inline" in result.output
+            assert result.exit_code == 1
+            assert "MR-level" in result.output
 
     def test_inline_context_line_rejected(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")

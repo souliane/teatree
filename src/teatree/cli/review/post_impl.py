@@ -141,10 +141,12 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
     discussion_id = result_dict.get("id")
     notes = result_dict.get("notes")
     first_note = notes[0] if isinstance(notes, list) and notes else {}
-    note_type = first_note.get("type") if isinstance(first_note, dict) else None
     note_web_url = str(first_note.get("web_url", "")) if isinstance(first_note, dict) else ""
     first_note_id = first_note.get("id") if isinstance(first_note, dict) else None
     verify_note_landed(api, encoded, mr, first_note_id, endpoint="notes")
+    # Record the claim BEFORE the anchor verdict so a retry of a degraded post
+    # is a no-op against the ledger, not a double-post — the rc=1 below is what
+    # stops the caller from claiming an inline anchor that did not happen.
     record_note_claim(service._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
     notify_review_after_receipt(
         service._resolve_base_url,
@@ -156,11 +158,14 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
             note_web_url=note_web_url,
         ),
     )
-    if note_type != "DiffNote":
+    position = first_note.get("position") if isinstance(first_note, dict) else None
+    if not (isinstance(position, dict) and position.get("new_path")):
         return (
-            f"OK discussion_id={discussion_id} (posted but not anchored inline, type={note_type!r}; "
-            "the MR diff may have shifted since position was resolved)"
-        ), 0
+            f"REFUSED: GitLab silently downgraded the inline post on {file}:{line} to an MR-level "
+            f"note (response notes[0].position has no new_path; discussion_id={discussion_id}). The "
+            "comment is NOT anchored inline — this usually means the position did not fall on a "
+            "+-added or context line in the diff hunk. Re-anchor on a changed line and re-post."
+        ), 1
     return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
 
