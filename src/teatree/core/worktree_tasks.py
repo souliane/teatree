@@ -25,6 +25,8 @@ from teatree.core.runners import (
     WorktreeTeardownRunner,
     WorktreeVerifyRunner,
 )
+from teatree.core.runners.worktree_start import docker_compose_down
+from teatree.core.worktree_env import compose_project
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,46 @@ def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
             return {"worktree_id": worktree_id, "ok": False, "detail": result.detail}
 
     return {"worktree_id": worktree_id, "ok": True, "detail": result.detail}
+
+
+@task()
+def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
+    """Bring the WHOLE compose project down for one worktree (reversible).
+
+    Fired by ``Worktree.stop_services()``'s on_commit (the idle-stack reaper's
+    demotion path, souliane/teatree#2190). The transition has already advanced
+    the FSM to ``PROVISIONED``; this worker stops every container in the
+    compose project via ``docker compose -p <project> down --remove-orphans``
+    so NO stray container survives — a leaked ``db-1`` left running after the
+    app tier went down (the wt595 partial-stack class) is removed too.
+
+    Distinct from teardown: the DB is NOT dropped and the git worktree is NOT
+    removed, so a later ``start_services`` is a fast resume. State stays in
+    ``PROVISIONED`` whether the down succeeds or fails — ``docker_compose_down``
+    is itself best-effort and idempotent (a re-fire compose-downs an already
+    down project as a no-op).
+
+    The state guard re-reads PROVISIONED under a row lock: a row that is no
+    longer PROVISIONED (a concurrent ``start_services`` revived it between the
+    transition and this worker) is a stale read — skip rather than stop a
+    freshly-restarted stack (fail-CLOSED stale-read guard).
+    """
+    with transaction.atomic():
+        try:
+            worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
+        except Worktree.DoesNotExist:
+            logger.info("execute_worktree_stop skipped: worktree %s already gone", worktree_id)
+            return {"worktree_id": worktree_id, "skipped": True}
+        if worktree.state != Worktree.State.PROVISIONED:
+            logger.info(
+                "execute_worktree_stop skipped for worktree %s: state=%s (not PROVISIONED)",
+                worktree_id,
+                worktree.state,
+            )
+            return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+        project = compose_project(worktree)
+        docker_compose_down(project)
+    return {"worktree_id": worktree_id, "ok": True, "detail": f"stopped compose project {project}"}
 
 
 @task()
