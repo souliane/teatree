@@ -1,10 +1,14 @@
-"""Tests for ``WorktreeProvisionRunner._run_db_import`` skip semantics.
+"""Tests for ``WorktreeProvisionRunner`` DB-import gating.
 
 Regression guard for #484: when a worktree has no associated database (the
 common case for frontend-only repos), the runner used to call
 ``overlay.db_import()`` anyway and log a misleading
 ``WARNING ... DB import failed for <repo> — continuing``. The runner now
 skips ``_run_db_import`` entirely when ``worktree.db_name`` is empty.
+
+Also guards the fail-loud contract: when a DB import is needed and fails,
+the runner aborts the provision (``ok=False``) before any provision or
+post-db step runs — pytest must never get a worktree with no test DB.
 """
 
 from pathlib import Path
@@ -22,14 +26,22 @@ from teatree.core.runners import WorktreeProvisionRunner
 class _RecordingOverlay(OverlayBase):
     """Overlay that records db_import calls and always returns a strategy."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, db_import_result: bool = True) -> None:
         super().__init__()
         self.db_import_calls: int = 0
+        self.provision_steps_calls: int = 0
+        self.post_db_steps_calls: int = 0
+        self._db_import_result = db_import_result
 
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        self.provision_steps_calls += 1
+        return []
+
+    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        self.post_db_steps_calls += 1
         return []
 
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
@@ -45,7 +57,7 @@ class _RecordingOverlay(OverlayBase):
 
     def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
         self.db_import_calls += 1
-        return True
+        return self._db_import_result
 
 
 class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
@@ -93,3 +105,26 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
             WorktreeProvisionRunner(worktree, overlay=overlay).run()
 
         assert overlay.db_import_calls == 1
+
+    def test_failed_db_import_aborts_before_provision_steps(self) -> None:
+        """A failed DB import is a provision failure — abort before any post-db work.
+
+        Mirrors the fail-loud posture of the standalone ``t3 db import``
+        command: migrate/clone must not run against a worktree with no test DB.
+        """
+        worktree = self._make_worktree(db_name="wt_484")
+        overlay = _RecordingOverlay(db_import_result=False)
+
+        with (
+            patch(
+                "teatree.core.runners.worktree_provision._setup_worktree_dir",
+                return_value=None,
+            ),
+            patch("teatree.utils.db.db_exists", return_value=False),
+        ):
+            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+
+        assert result.ok is False
+        assert overlay.db_import_calls == 1
+        assert overlay.provision_steps_calls == 0
+        assert overlay.post_db_steps_calls == 0
