@@ -1,0 +1,5 @@
+def test_protect_default_branch_itself_fires():
+    # The gate UNDER TEST is protect-default-branch, which by design only fires
+    # for a path inside a managed repo, so the repo-relative literal is intentional.
+    payload = {"tool_name": "Write", "tool_input": {"file_path": "src/teatree/core/x.py"}}  # gate-fixture: repo-relative-ok
+    run(payload)

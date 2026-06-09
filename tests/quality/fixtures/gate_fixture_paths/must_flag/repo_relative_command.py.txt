@@ -1,0 +1,3 @@
+def test_bash_blocks():
+    payload = {"tool_name": "Bash", "tool_input": {"command": "hooks/scripts/run_thing.py"}}
+    run(payload)
