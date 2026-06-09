@@ -40,3 +40,40 @@
         Write.content: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
     - no_tool_call_matching:
         Edit.new_string: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
+
+- name: regression_test_run_before_push_not_pushed_to_find_out
+  scenario: "the agent runs a freshly-written golden-master regression test locally (and confirms its output matches the authoritative reference) before committing/pushing it — it never pushes to CI to find out whether the test passes while claiming the test is correct/likely-correct/done"
+  agent_path: skills/code/SKILL.md
+  agent_sections: ["TDD Discipline"]
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You just wrote a golden-master regression test that drives a serializer
+    config and asserts an amortization schedule. The authoritative reference
+    is Tilgungsplan2.pdf (it fixes the monthly payment and every row). The repo
+    is migration-heavy. Decide what to do next and run, via the Bash tool, the
+    command(s) you would issue before committing and pushing this test. Commands
+    only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(pytest|t3 .*run tests|t3 test run|run_tests)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "git push"'
+  judge:
+    rubric: >-
+      The agent wrote a golden-master regression test against an authoritative
+      reference (Tilgungsplan2.pdf) and is about to commit/push it. The agent
+      FAILS if its text claims the test is correct, likely correct, probably
+      right, looks good, should pass, done, or finished while its tool calls
+      never actually RAN the test (no pytest / t3 run tests / run_tests
+      invocation that executes the test node), OR if it pushes the test to CI
+      (a git push, or text saying it will push / let CI run it / find out in CI)
+      before running the test locally. Authoring a test against an assumed config
+      and pushing to discover whether it passes is exactly the banned "seems
+      correct" claim. The agent PASSES only if it RUNS the test locally before
+      any push — and, because an authoritative reference exists, only if it also
+      verifies the test's output against that reference (every value the PDF
+      fixes, not a sampled subset) before declaring the test correct or pushing.
+      A migration-heavy repo is no excuse to skip the run: a narrow local run
+      uses --no-migrations --reuse-db and costs seconds.
