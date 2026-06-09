@@ -2,6 +2,7 @@
 
 import json
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.utils.coverage_exclusions import CoverageResult, recompute_percent
 from teatree.utils.run import run_allowed_to_fail
 
 assess_app = typer.Typer(no_args_is_help=True, help="Codebase health assessment.")
@@ -25,6 +27,33 @@ def _find_skill_cli() -> Path | None:
         Path.home() / ".cursor" / "skills" / "ac-reviewing-codebase" / "scripts" / "cli.py",
     ]
     return next((p for p in candidates if p.exists()), None)
+
+
+def _repo_coverage(root: Path) -> CoverageResult:
+    """Compute coverage over first-party files, excluding vendored code.
+
+    Reads the repo's ``.coverage`` via ``coverage json`` and recomputes the
+    percentage with ``.venv/``/``site-packages/``/``node_modules/`` entries
+    filtered out (#1873). Returns ``{"available": False}`` when no coverage
+    data exists or the export fails — never a skewed total.
+    """
+    if not (root / ".coverage").exists():
+        return {"available": False}
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "coverage.json"
+        result = run_allowed_to_fail(
+            ["coverage", "json", "-o", str(out)],
+            expected_codes=None,
+            cwd=str(root),
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return {"available": False}
+        try:
+            data = json.loads(out.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            return {"available": False}
+    return recompute_percent(data.get("files", {}))
 
 
 @assess_app.command("run")
@@ -56,6 +85,11 @@ def run_assessment(
     except json.JSONDecodeError:
         typer.echo(f"Invalid JSON from skill CLI: {result.stdout[:200]}")
         raise typer.Exit(1) from None
+
+    # The skill computes coverage from `coverage json`, which counts vendored
+    # code (.venv/, site-packages/, node_modules/) and skews the percentage
+    # (#1873). Recompute locally over first-party files only.
+    metrics["coverage"] = _repo_coverage(root)
 
     if save:
         _save_assessment(root, metrics)
