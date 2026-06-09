@@ -540,16 +540,21 @@ def _workflow_table(state: EvidenceState, workflow: str) -> list[str]:
     """Render one workflow's block: heading, test-plan steps, then the ``| Dev | Local |`` table.
 
     The optional ``**How to test:**`` numbered step list (the written test plan)
-    renders above the table. Table row 1 = each side's video (``—`` when absent);
-    then one row per screenshot pair (dev capture left, local capture right; ``—``
-    where a side has fewer captures — e.g. dev not deployed yet, all ``—``).
+    renders above the table. The video row (each side's clip, ``—`` when absent)
+    renders only when at least one side carries a video — an all-em-dash video
+    row carries no information, so a screenshot-only workflow omits it entirely
+    (#272 standard). One screenshot-pair row follows per capture (dev capture
+    left, local capture right; ``—`` where a side has fewer captures — e.g. dev
+    not deployed yet).
     """
     dev_video, dev_images = _cells(state["dev"], workflow)
     local_video, local_images = _cells(state["local"], workflow)
 
     lines = [f"### {workflow}", ""]
     lines.extend(_test_plan_block(state, workflow))
-    lines.extend(["| Dev | Local |", "|---|---|", f"| {dev_video} | {local_video} |"])
+    lines.extend(["| Dev | Local |", "|---|---|"])
+    if dev_video != _EMPTY_CELL or local_video != _EMPTY_CELL:
+        lines.append(f"| {dev_video} | {local_video} |")
     for i in range(max(len(dev_images), len(local_images))):
         left = dev_images[i] if i < len(dev_images) else _EMPTY_CELL
         right = local_images[i] if i < len(local_images) else _EMPTY_CELL
