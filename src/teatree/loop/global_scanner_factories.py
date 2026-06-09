@@ -18,6 +18,8 @@ from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJ
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
     EvalLocalScanner,
+    IdleStackReaperScanner,
+    LocalStackQueueDrainerScanner,
     MyPrsScanner,
     NotionViewScanner,
     RedCardScanner,
@@ -180,6 +182,43 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
     )
 
 
+def _idle_stack_reaper_scanner() -> IdleStackReaperScanner | None:
+    """Build the global idle-stack reaper scanner from teatree-core config (#2190).
+
+    Returns ``None`` when ``idle_stack_reaper_disabled = true`` (the durable
+    kill-switch, mirroring ``resource_pressure_disabled``). The reaper is
+    per-overlay scoped — it stops idle stacks of the active overlay — so the
+    overlay anchor is resolved via :func:`discover_active_overlay`, falling
+    back to the canonical core overlay when none is registered (mirrors
+    :func:`_scanning_news_scanner`).
+    """
+    settings = load_config().user
+    if settings.idle_stack_reaper_disabled:
+        return None
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    return IdleStackReaperScanner(
+        overlay=overlay_name,
+        idle_minutes=settings.idle_stack_idle_minutes,
+        cadence_minutes=settings.idle_stack_reaper_cadence_minutes,
+    )
+
+
+def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:
+    """Build the global acquisition-queue drainer scanner from config (#2190, #44).
+
+    Returns ``None`` when ``local_stack_queue_disabled = true`` (the durable
+    kill-switch). Per-overlay scoped like the reaper; the per-item Fibonacci
+    backoff IS the cadence (carried on the row), so no marker is wired.
+    """
+    settings = load_config().user
+    if settings.local_stack_queue_disabled:
+        return None
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    return LocalStackQueueDrainerScanner(overlay=overlay_name)
+
+
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
@@ -281,6 +320,17 @@ def build_default_jobs(
     resource_pressure_scanner = _resource_pressure_scanner()
     if resource_pressure_scanner is not None:
         jobs.append(_ScannerJob(scanner=resource_pressure_scanner, overlay=""))
+    # #2190 idle-stack reaper + #44 acquisition-queue drainer — global
+    # (overlay="") mechanical scanners. The reaper stops idle stacks to free a
+    # ``max_concurrent_local_stacks`` slot; the drainer re-fires a queued
+    # ``start`` once a slot frees. Kill-switches: ``idle_stack_reaper_disabled``
+    # / ``local_stack_queue_disabled`` → builder returns None.
+    idle_stack_reaper_scanner = _idle_stack_reaper_scanner()
+    if idle_stack_reaper_scanner is not None:
+        jobs.append(_ScannerJob(scanner=idle_stack_reaper_scanner, overlay=""))
+    queue_drainer_scanner = _local_stack_queue_drainer_scanner()
+    if queue_drainer_scanner is not None:
+        jobs.append(_ScannerJob(scanner=queue_drainer_scanner, overlay=""))
 
     if backends:
         all_backends = tuple(backends)

@@ -15,7 +15,7 @@ from django_typer.management import TyperCommand, command
 from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
-from teatree.core.gates.local_stack_gate import refuse_if_limit_exceeded
+from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
@@ -332,7 +332,11 @@ class Command(TyperCommand):
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         started: list[Worktree] = []
         failures: list[str] = []
-        refuse_if_limit_exceeded(next(iter(worktrees), None), write_err=self.stderr.write)
+        # #2190: at the cap, reap idle stacks → retry → ENQUEUE (no SystemExit).
+        # A queued request means the loop's drainer re-fires ``start`` once a
+        # slot frees — DO NOT advance any worktree's FSM for this ticket.
+        if not acquire_or_enqueue(next(iter(worktrees), None), write_out=self.stdout.write):
+            return f"queued {len(worktrees)} worktree(s) — no free local-stack slot"
         for wt in worktrees:
             # The worktrees in one ticket can be in different FSM states
             # (e.g. a sibling repo whose provision has not run yet is still
