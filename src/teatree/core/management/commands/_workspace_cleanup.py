@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
+from teatree.core.cleanup import (
+    _branch_tree_matches_squash,
+    _ref_captured_by_merge,
+    _remote_tracking_ref_exists,
+    cleanup_worktree,
+)
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
@@ -98,26 +103,32 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     return not diff
 
 
-def _refuse_if_unpushed(repo: str, name: str) -> str:
-    """Return a refusal message when ``name`` has commits absent from all remotes (#706).
+def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
+    """Return a refusal message when branch ``name`` has commits absent from all remotes (#706).
 
-    Defense-in-depth for #710. ``_prune_squash_merged`` deletes a branch and its
-    worktree directly via ``git.worktree_remove`` / ``git.branch_delete``,
-    bypassing the guarded teardown seam (``cleanup._raise_if_unpushed``) that
-    every ``Worktree``-row-driven caller funnels through. That seam needs a
-    ``Worktree`` instance this name-only path does not have, so the same data-loss
-    primitive (``git.commits_absent_from_all_remotes``) is applied here directly.
+    Defense-in-depth for #710. ``_prune_squash_merged`` deletes a branch directly
+    via ``git.branch_delete`` / ``git.worktree_remove``, bypassing the guarded
+    teardown seam (``cleanup._raise_if_unpushed``) that ``Worktree``-row callers
+    funnel through; that seam needs a ``Worktree`` instance this name-only path
+    lacks, so the same primitive (``git.commits_absent_from_all_remotes``) is
+    applied here directly.
 
-    This intentionally does **not** false-block genuinely squash-merged branches:
-    once a branch's content is squash-merged and that squash is pushed, every
-    branch commit is reachable from ``refs/remotes/origin/<default>`` so
-    ``--not --remotes`` is empty. A non-empty result means the commits exist on
-    NO remote — deleting the worktree would destroy the only copy.
+    ``name`` is a local branch NAME resolvable in ``repo`` (the main clone), not
+    the literal ``HEAD`` the cleanup seam probes: the only caller
+    (``_prune_squash_merged`` via ``prune_branches``) enumerates names from
+    ``git branch`` in this same ``repo`` after ``git worktree prune``.
 
-    **Fails closed.** A failing probe (invalid/missing branch, corrupt repo)
-    raises ``CommandFailedError``; we translate that into a refusal rather than
-    proceeding, because an inconclusive probe cannot prove the work is pushed.
-    Returns ``""`` when the branch is safe to delete.
+    **Fetch precondition.** ``prune_branches`` runs ``git fetch --prune`` before
+    reaching here, and samples ``remote_ref_was_present`` BEFORE that prune (a
+    forge squash-merge leaves the source's tracking ref stale locally until the
+    prune); a caller that has not fetched compares against a stale ``origin``.
+
+    Genuinely squash-merged branches are not false-blocked: a positive merged
+    signal (the pre-prune tracking ref, or the forge) AND a matching tree lets
+    deletion proceed. A non-empty ``unpushed`` with NO merged-evidence means the
+    commits exist on NO remote, so the branch is kept (#2205: tree equality alone
+    is a false positive for a fully-reverted local branch). Fails closed: an
+    inconclusive probe (``CommandFailedError``) refuses. Returns ``""`` when safe.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(repo, name)
@@ -128,13 +139,15 @@ def _refuse_if_unpushed(repo: str, name: str) -> str:
         )
     if not unpushed:
         return ""
+    if _ref_captured_by_merge(repo, name, name, remote_ref_was_present=remote_ref_was_present):
+        return ""
     return (
         f"SKIPPED '{name}': {len(unpushed)} commit(s) on NO remote (data loss) — "
         f"refusing to delete. Push to a new branch to keep the work:\n  " + "\n  ".join(unpushed)
     )
 
 
-def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
+def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str], *, remote_ref_was_present: bool) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
     A branch whose tip tree matches the PR's merge commit is cleaned despite
@@ -143,15 +156,17 @@ def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
 
     Honors the #706 data-loss guard (#710): even when the squash-merge
     heuristics say "clean", a branch whose commits are absent from every remote
-    is kept and a warning is returned — the safe default is never to destroy the
-    only copy of work.
+    AND lacks merged-evidence is kept and a warning is returned — the safe
+    default is never to destroy the only copy of work. ``remote_ref_was_present``
+    is the caller's pre-prune sample of ``origin/<name>``'s tracking ref, the
+    forge-CLI-free squash-merge signal threaded into the guard.
     """
     unsynced = git.unsynced_commits(repo, name)
     if unsynced and not _branch_tree_matches_squash(repo, name):
         return f"SKIPPED '{name}': {len(unsynced)} unsynced commit(s) — push to a new branch:\n  " + "\n  ".join(
             unsynced
         )
-    refusal = _refuse_if_unpushed(repo, name)
+    refusal = _refuse_if_unpushed(repo, name, remote_ref_was_present=remote_ref_was_present)
     if refusal:
         return refusal
     wt_path = wt_map.get(name, "")
@@ -251,17 +266,6 @@ class WorktreeReaper:
         return removed
 
 
-def _origin_ref_exists(repo: str, branch: str) -> bool:
-    """Whether ``refs/remotes/origin/<branch>`` still exists after ``fetch --prune``.
-
-    A branch whose remote tracking ref is gone is "gone-remote" — the branch was
-    deleted on origin, the normal terminal state of a squash-merged PR (the merge
-    creates a new commit on the default branch and deletes the source ref). A
-    branch still on origin is open work and must be kept.
-    """
-    return git.check(repo=repo, args=["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"])
-
-
 def _worktree_clean(wt_path: str) -> bool:
     """Whether the worktree has no uncommitted changes (ignoring regenerable files).
 
@@ -330,7 +334,7 @@ def _prune_gone_remote_worktrees(repo: str, wt_map: dict[str, str], protected: s
     """
     cleaned: list[str] = []
     for name, wt_path in sorted(wt_map.items()):
-        if name in protected or _origin_ref_exists(repo, name):
+        if name in protected or _remote_tracking_ref_exists(repo, name):
             continue
         cleaned.append(_prune_gone_worktree(repo, name, wt_path))
         protected.add(name)
@@ -347,6 +351,15 @@ def prune_branches(repo: str) -> list[str]:
     pass re-checking the globs.
     """
     cleaned: list[str] = []
+    # Sample the remote tracking refs BEFORE the prune removes the stale ones: a
+    # branch's prior tracking-ref presence is the forge-CLI-free proof it was once
+    # pushed, threaded into the data-loss guard below.
+    pre_prune_remote = git.run(repo=repo, args=["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"])
+    pre_prune_remote_branches = {
+        line.removeprefix("origin/")
+        for line in pre_prune_remote.splitlines()
+        if line.strip() not in {"", "origin/HEAD"}
+    }
     git.run(repo=repo, args=["fetch", "--prune"])
     git.run(repo=repo, args=["worktree", "prune"])
 
@@ -388,7 +401,9 @@ def prune_branches(repo: str) -> list[str]:
     for name in sorted(all_branches - protected):
         if not is_squash_merged(repo, name, default):
             continue
-        cleaned.append(_prune_squash_merged(repo, name, wt_map))
+        cleaned.append(
+            _prune_squash_merged(repo, name, wt_map, remote_ref_was_present=name in pre_prune_remote_branches)
+        )
 
     remaining = {
         line.strip().removeprefix("* ").removeprefix("+ ")
