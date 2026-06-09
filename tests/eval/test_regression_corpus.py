@@ -22,7 +22,7 @@ from teatree.core import branch_currency, mr_metadata
 from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
 from teatree.core.runners import ship as ship_runner
-from teatree.eval import regression_corpus
+from teatree.eval import regression_corpus, regression_corpus_schema
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
 from teatree.hooks import _repo_visibility, banned_terms_scanner
 from teatree.utils import forge as forge_util
@@ -182,6 +182,45 @@ class TestRegressionCorpusAntiVacuous(TestCase):
         db_results = [r for r in report.results if r.check.needs_db]
         assert db_results
         assert all(r.skipped and r.ok for r in db_results)
+
+
+class TestRegressionCorpusRuntimeSchemaPreflight(TestCase):
+    """The corpus migrates the runtime self-DB current before its ORM checks (#2190).
+
+    The DB-backed checks (`Worktree`/`Ticket`/`MergeClear` create) run against
+    the runtime-resolved self-DB. A worktree's auto-isolated DB is seeded from a
+    snapshot of the canonical DB at its (possibly stale) schema and migrations
+    are never applied to it — so a PR adding a migration (e.g. the
+    ``last_used_at`` column) made the pinned-regressions pre-push lane red with
+    ``OperationalError: no such column``. The pre-flight applies pending
+    migrations in-process (idempotent, non-destructive) so the lane never breaks
+    on a migration-adding PR.
+    """
+
+    def test_preflight_migrates_runtime_schema_before_db_checks(self) -> None:
+        with patch.object(regression_corpus_schema, "migrate_self_db", return_value=[]) as migrate:
+            run_regression_corpus()
+        migrate.assert_called_once()
+
+    def test_preflight_runs_only_when_django_ready(self) -> None:
+        with (
+            patch.object(regression_corpus, "_django_ready", return_value=False),
+            patch.object(regression_corpus_schema, "migrate_self_db") as migrate,
+        ):
+            run_regression_corpus()
+        migrate.assert_not_called()
+
+    def test_a_failing_migrate_fails_the_corpus_loud(self) -> None:
+        from teatree.core.gates.schema_guard import SelfDbMigrationError  # noqa: PLC0415
+
+        with patch.object(
+            regression_corpus_schema,
+            "migrate_self_db",
+            side_effect=SelfDbMigrationError("migrate blew up"),
+        ):
+            report = run_regression_corpus()
+        assert not report.ok, "a failed runtime-schema migrate must fail the corpus, never pass silently"
+        assert any("runtime-schema" in r.check.failure_class for r in report.failures)
 
 
 class TestRegressionCheckRaisingPredicate(TestCase):

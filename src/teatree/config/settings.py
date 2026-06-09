@@ -138,6 +138,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "todo_sweep_disabled": bool,
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
+    "idle_stack_reaper_disabled": bool,
+    "idle_stack_idle_minutes": int,
+    "idle_stack_reaper_cadence_minutes": int,
+    "local_stack_queue_disabled": bool,
+    "local_stack_queue_max_attempts": int,
     "clean_ignore": _parse_excluded_skills,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
@@ -463,6 +468,27 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+    # #2190 Idle-stack reaper — a loop scanner that stops the docker stack of
+    # an IDLE locally-running worktree (``services_up``/``ready``) and demotes
+    # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the
+    # host's RAM and a ``max_concurrent_local_stacks`` slot. Idle = no active
+    # session/task on the ticket AND ``last_used_at`` older than
+    # ``idle_stack_idle_minutes`` AND not the currently-active worktree.
+    # Fail-safe: uncertainty ⇒ KEEP. On by default;
+    # ``idle_stack_reaper_disabled = true`` is the escape hatch. All knobs are
+    # per-overlay overridable.
+    idle_stack_reaper_disabled: bool = False
+    idle_stack_idle_minutes: int = 30
+    idle_stack_reaper_cadence_minutes: int = 5
+    # #2190/#44 Acquisition queue — when ``worktree start`` / ``workspace
+    # start`` hits the cap, it reaps idle, retries, then ENQUEUES (no
+    # SystemExit). A loop scanner drains the queue each tick with a
+    # Fibonacci-minute backoff, never tearing down another ticket's stack.
+    # On by default; ``local_stack_queue_disabled = true`` is the escape hatch.
+    # ``local_stack_queue_max_attempts`` caps the Fibonacci retries before a
+    # queued request is marked DEAD and surfaced.
+    local_stack_queue_disabled: bool = False
+    local_stack_queue_max_attempts: int = 13
     # fnmatch globs of branch names ``clean-all`` must NEVER reap even when the
     # squash-merge classifier says shipped — never-merge dev overrides, long-lived
     # spikes. Matched against the full branch name. Default empty: nothing

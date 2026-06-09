@@ -32,6 +32,13 @@ class Worktree(models.Model):
     state = FSMField(max_length=32, choices=State.choices, default=State.CREATED)
     db_name = models.CharField(max_length=255, blank=True)
     extra = models.JSONField(default=dict, blank=True)
+    # #2190 Activity-recency signal for the idle-stack reaper. Stamped on
+    # ``start_services``/``verify``/``db_refresh`` (the operator-driven
+    # lifecycle transitions that prove the stack is in use). A worktree whose
+    # ``last_used_at`` is older than ``idle_stack_idle_minutes`` AND has no
+    # active session/task is a reap candidate (its containers are stopped and
+    # it is demoted to ``provisioned``). Null = never started.
+    last_used_at = models.DateTimeField(null=True, blank=True)
 
     objects = WorktreeManager()
 
@@ -79,12 +86,15 @@ class Worktree(models.Model):
         actual ``docker compose up``. Source allows re-firing from
         SERVICES_UP / READY so a partially-failed boot can be retried.
         """
+        from django.utils import timezone  # noqa: PLC0415
+
         from teatree.core.worktree_tasks import execute_worktree_start  # noqa: PLC0415
 
         if services is not None:
             extra = self._extra()
             extra["services"] = services
             self.extra = extra
+        self.last_used_at = timezone.now()
         worktree_pk = int(self.pk)
         transaction.on_commit(lambda: execute_worktree_start.enqueue(worktree_pk))
 
@@ -97,12 +107,15 @@ class Worktree(models.Model):
         the overlay's health checks. Source allows re-firing from READY so
         verify can be re-run without bouncing through SERVICES_UP.
         """
+        from django.utils import timezone  # noqa: PLC0415
+
         from teatree.core.worktree_tasks import execute_worktree_verify  # noqa: PLC0415
 
         extra = self._extra()
         if urls:
             extra["urls"] = urls
         self.extra = extra
+        self.last_used_at = timezone.now()
         worktree_pk = int(self.pk)
         transaction.on_commit(lambda: execute_worktree_verify.enqueue(worktree_pk))
 
@@ -113,6 +126,29 @@ class Worktree(models.Model):
         extra = self._extra()
         extra["db_refreshed_at"] = timezone.now().isoformat()
         self.extra = extra
+        self.last_used_at = timezone.now()
+
+    @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.PROVISIONED)
+    def stop_services(self) -> None:
+        """Schedule a reversible docker-compose-down → demote to ``provisioned``.
+
+        Distinct from ``teardown`` (which destroys the DB + git worktree) and
+        from ``db_refresh`` (which re-imports the DB). ``stop_services`` only
+        brings the whole compose project DOWN — the DB, the git worktree, and
+        ``extra`` are all preserved, so a later ``start_services`` is a fast
+        resume, not a re-provision. The idle-stack reaper uses this to free the
+        host's RAM + a ``max_concurrent_local_stacks`` slot for an idle stack
+        without any data-loss risk.
+
+        Pure transition body (BLUEPRINT §4): the FSM advances to PROVISIONED
+        here, then ``execute_worktree_stop`` enqueued after commit drives the
+        actual ``docker compose down``. Source ``[SERVICES_UP, READY]`` — a
+        worktree must be running to be stopped.
+        """
+        from teatree.core.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
+
+        worktree_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_worktree_stop.enqueue(worktree_pk))
 
     @transition(field=state, source="*", target=State.CREATED)
     def teardown(self) -> None:

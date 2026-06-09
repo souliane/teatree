@@ -17,9 +17,11 @@ from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
 from teatree.loop.scanners.eval_local import EvalLocalScanner
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
+from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.loop.scanners.issue_disposition import IssueDispositionScanner
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
+from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
@@ -69,9 +71,11 @@ __all__ = [
     "GhPrApiClient",
     "GitLabApprovalsScanner",
     "GlabGhMrStateClassifier",
+    "IdleStackReaperScanner",
     "IncomingEventsScanner",
     "IssueDispositionScanner",
     "IssueImplementerScanner",
+    "LocalStackQueueDrainerScanner",
     "MyPrsScanner",
     "NotionViewScanner",
     "NullMergeNotifier",
