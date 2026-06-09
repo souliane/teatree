@@ -7,6 +7,7 @@ calls are stubbed by an in-memory ``FakeCodeHost`` that conforms to
 doctrine).
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
@@ -18,6 +19,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.backend_protocols import ApprovalState, ReviewState
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Ticket
+from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.types import RawAPIDict
@@ -505,6 +507,81 @@ class TestPerPrIsolation(TestCase):
 
         with pytest.raises(ScannerError):
             scanner.scan()
+
+
+class _MergeGuardOverlay(OverlayBase):
+    """Concrete overlay owning a repo and returning a fixed merge guard."""
+
+    def __init__(self, *, repos: list[str], guard: MergeGuard) -> None:
+        self._repos = repos
+        self._guard = guard
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_workspace_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree: Any) -> list:
+        _ = worktree
+        return []
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        _ = (target_ref, thread_ref)
+        return self._guard
+
+
+class TestGitLabApprovalsMultiOverlay(TestCase):
+    """Real ``get_overlay()`` ambiguity path — two overlays registered (TODO-282).
+
+    The scanner held the approved MR's ``url`` but called bare
+    ``_overlay_loader.get_overlay()`` to reach ``can_auto_merge``. With two
+    overlays registered and no ``T3_OVERLAY_NAME``, that raises
+    ``ImproperlyConfigured("Multiple overlays found ...")`` — swallowed by the
+    per-PR ``except Exception`` in ``scan()``, so the approved MR emits NOTHING
+    and the merge is silently dropped. The fix resolves the overlay from the MR
+    URL (``get_overlay_for_url``), so the URL-owning overlay's merge policy runs.
+
+    Nothing about overlay resolution is mocked; only the code host (a network
+    external) is. The owning overlay returns an ESCALATE guard so the emitted
+    signal proves *that specific overlay's* policy ran, not a permissive default.
+    """
+
+    def test_resolves_url_owning_overlay_with_two_registered(self) -> None:
+        url = "https://gitlab.com/acme/backend/-/merge_requests/77"
+        host = FakeCodeHost(
+            my_prs=[_gitlab_mr(iid=77, sha="multi-1", project="acme/backend")],
+            approvals={
+                ("acme/backend", 77): ApprovalState(
+                    approvals_left=0,
+                    approved_by=["bob"],
+                    unresolved_resolvable=0,
+                ),
+            },
+        )
+        owner = _MergeGuardOverlay(
+            repos=["acme/backend"],
+            guard=MergeGuard(allowed=False, reason="freeze window", escalate=True),
+        )
+        other = _MergeGuardOverlay(
+            repos=["other/repo"],
+            guard=MergeGuard(allowed=True),
+        )
+        overlays = {"acme": owner, "other": other}
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+        ):
+            signals = GitLabApprovalsScanner(host=host).scan()
+
+        assert len(signals) == 1, (
+            "with two overlays registered, the approved MR must still emit a signal — "
+            "a bare get_overlay() raises Multiple-overlays and the MR is silently dropped"
+        )
+        assert signals[0].kind == "incoming_event.merge_escalation"
+        assert signals[0].payload["reason"] == "freeze window"
+        assert signals[0].payload["thread_ref"] == url
 
 
 class TestHelperFunctions(TestCase):
