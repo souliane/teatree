@@ -148,14 +148,32 @@ class TestRenderBody:
         body = _evidence.render_body(state)
         assert "⚠️ Not yet on dev: client!6331 (unmerged), product!7585 (draft) — expected gap." in body
 
-    def test_workflow_with_no_video_omits_video_cell_content(self) -> None:
+    def test_empty_video_row_is_omitted_when_neither_side_has_a_video(self) -> None:
+        # Screenshots only on local, no video on either side (#272 standard): the
+        # all-em-dash video row carries no information, so it is omitted entirely
+        # rather than rendered as `| — | — |`.
         state = self._state(
             local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](/uploads/s/x.png)",))}},
         )
         body = _evidence.render_body(state)
-        # No local video → the video cell is the em-dash placeholder, not blank.
-        assert "| — | — |" in body  # dev side absent + local video absent
+        assert "| — | — |" not in body  # the empty video row is dropped, not rendered blank
+        # The screenshot pair row still renders (dev absent → em-dash left, local image right).
         assert "| — | ![i](/uploads/s/x.png) |" in body
+        # The comparison table itself still renders (heading + header + the image row).
+        assert "### Search" in body
+        assert "| Dev | Local |" in body
+
+    def test_video_row_renders_when_at_least_one_side_has_a_video(self) -> None:
+        # Local has a video, dev does not → the video row is kept (it carries the
+        # local clip), with the missing dev side as an em-dash.
+        state = self._state(
+            local={
+                "commits": {},
+                "workflows": {"Login": self._embedded(video="![v](/uploads/s/loc.webm)")},
+            },
+        )
+        body = _evidence.render_body(state)
+        assert "| — | ![v](/uploads/s/loc.webm) |" in body
 
     def test_mrs_line_omitted_when_no_mrs(self) -> None:
         state = self._state(mrs=[], local={"commits": {}, "workflows": {"Wf": self._embedded(images=("![i](u)",))}})
