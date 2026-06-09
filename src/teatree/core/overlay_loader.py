@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
+from teatree.core.overlay_url import get_overlay_for_url
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -21,6 +22,20 @@ if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "frontend_repos_for_overlay",
+    "get_all_overlay_names",
+    "get_all_overlays",
+    "get_overlay",
+    "get_overlay_for_repo",
+    "get_overlay_for_ticket",
+    "get_overlay_for_url",
+    "get_overlay_for_worktree",
+    "infer_overlay_for_url",
+    "reset_overlay_cache",
+    "resolve_overlay_name",
+]
 
 
 def get_overlay(name: str | None = None) -> "OverlayBase":
