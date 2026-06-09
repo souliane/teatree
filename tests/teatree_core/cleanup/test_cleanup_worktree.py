@@ -20,6 +20,10 @@ _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
 _patch_overlay = patch("teatree.core.cleanup.get_overlay")
 _patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
+# Pin the #2205 tree-diff fallback to False so tests that set
+# ``commits_absent_from_all_remotes`` to a non-empty list still hit the
+# data-loss guard rather than silently passing through the squash-merge bypass.
+_patch_ref_tree = patch("teatree.core.cleanup._ref_tree_captured_by_default", return_value=False)
 
 
 def _no_unpushed(mock_git: MagicMock) -> None:
@@ -460,6 +464,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -468,6 +473,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """#1578 — a branch flagged 'commits on NO remote' is reaped when its PR is MERGED.
 
@@ -490,6 +496,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -498,6 +505,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """#1578 fail-safe — an unpushed branch with no/uncertain merged PR is still refused.
 
@@ -542,6 +550,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -550,6 +559,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """#706 data-loss guard — branch with commits on no remote blocks teardown."""
         _mock_workspace(mock_config)
@@ -568,6 +578,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -576,6 +587,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """More than the preview limit of unpushed commits is summarised with an ellipsis."""
         _mock_workspace(mock_config)

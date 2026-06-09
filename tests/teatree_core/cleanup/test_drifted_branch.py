@@ -413,3 +413,114 @@ class TestPhantomSlugBranchNotAGitRef(TestCase):
         assert self.wt_path.exists()
         assert self.real_branch in self._branches()
         assert self.slug not in self._branches()
+
+
+class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
+    """#2205 — clean-all must prune a worktree whose branch was squash-merged and remote-deleted.
+
+    When a PR is squash-merged (new SHA on main) and the source branch deleted on
+    the remote, ``fetch --prune`` removes ``refs/remotes/origin/<branch>``.
+    ``git log <branch> --not --remotes`` then reports the branch commits as
+    "absent from all remotes" (the remote tracking ref is gone and the squash
+    creates a distinct SHA on main), so ``commits_absent_from_all_remotes``
+    returns non-empty even though the work is captured on ``origin/main``.
+
+    The old code refused teardown (``_branch_pr_is_merged`` requires a host CLI
+    absent in test/CI, so it silently skips). The fix adds an ancestry check:
+    if HEAD is reachable from ``origin/<default>`` the work is already on the
+    default branch and teardown is safe.
+    """
+
+    slug = "a-myrepo-8521-feat"
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.temp_root = tmp_path / "systmp"
+        self.temp_root.mkdir()
+        monkeypatch.setattr(
+            "teatree.core.worktree_snapshot.tempfile.gettempdir",
+            lambda: str(self.temp_root),
+        )
+
+        self.remote = tmp_path / "remote.git"
+        subprocess.run(
+            [_GIT, "init", "-q", "--bare", "-b", "main", str(self.remote)],
+            check=True,
+            capture_output=True,
+            env=_clean_env(),
+        )
+
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        (self.repo_main / "base.txt").write_text("base\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        # Create the feature branch, commit, push it (PR existed).
+        self.wt_path = self.workspace / self.slug / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.slug, str(self.wt_path), cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feat.txt").write_text("feature work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: ship the feature", cwd=self.wt_path)
+        _run_git("push", "-q", "origin", self.slug, cwd=self.wt_path)
+
+        # Squash-merge into main: a NEW sha on main captures the same tree,
+        # but the branch commits are NOT ancestors of main.
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", f"squash: {self.slug} (#2205)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+
+        # Delete the source branch on the remote and prune local tracking ref.
+        _run_git("push", "-q", "origin", "--delete", self.slug, cwd=self.repo_main)
+        _run_git("fetch", "-q", "--prune", "origin", cwd=self.repo_main)
+        # The local branch ref and its worktree still exist (they were NOT pruned
+        # locally — only the remote tracking ref is gone).
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/8521",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch=self.slug,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+    def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            return cleanup_worktree(worktree, force=False, strict_hygiene=False)
+
+    def test_squash_merged_remote_deleted_branch_is_pruned(self) -> None:
+        """The #2205 repro: teardown must proceed without forge CLI.
+
+        Before the fix ``commits_absent_from_all_remotes`` returns non-empty
+        (tracking ref gone, squash SHA differs), ``_branch_pr_is_merged`` returns
+        False (no forge CLI in test), and teardown is refused with a misleading
+        "on NO remote (data loss)" message even though the work IS on main.
+        After the fix the ancestry check (HEAD is ancestor of origin/main) lets
+        teardown proceed.
+        """
+        result = self._cleanup(self._make_worktree(), pr_merged=False)
+
+        assert result.clean is True, f"Expected teardown to proceed, got errors: {result.errors}"
+        assert not self.wt_path.exists(), "Worktree directory must be removed"

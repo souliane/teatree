@@ -2882,6 +2882,63 @@ class TestPruneGoneRemoteWorktree(TestCase):
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
 
 
+class TestRefuseIfUnpushedAncestryFallback(TestCase):
+    """#2205 — ``_refuse_if_unpushed`` must pass when HEAD is ancestor of origin/main.
+
+    When a branch's remote tracking ref is deleted (squash-merge + branch deletion
+    + ``fetch --prune``), ``commits_absent_from_all_remotes`` returns non-empty:
+    the tracking ref is gone, and squash creates a distinct SHA on main so the
+    branch commits are not reachable from any remaining ``refs/remotes/*``.
+
+    The old code returned a refusal message ("SKIPPED … on NO remote"). After the
+    fix an ancestry check is applied: if every branch commit is reachable from
+    ``origin/<default>`` the work is already on main and deletion is safe —
+    ``_refuse_if_unpushed`` must return ``""`` (allow deletion).
+    """
+
+    def _squash_merge_remote_delete(self, tmp: Path, branch: str) -> tuple[Path, str]:
+        """Return (work_repo, squash_sha).  branch commits squash-merged → main, remote ref pruned."""
+        _remote, work = _init_repo_with_remote(tmp)
+        _git(work, "checkout", "-q", "-b", branch)
+        (work / f"{branch}.py").write_text("work\n", encoding="utf-8")
+        _git(work, "add", f"{branch}.py")
+        _git(work, "commit", "-q", "-m", f"feat: {branch}")
+        _git(work, "push", "-q", "origin", branch)
+        _git(work, "checkout", "-q", "main")
+        _git(work, "merge", "-q", "--squash", branch)
+        _git(work, "commit", "-q", "-m", f"feat: {branch} (#2205)")
+        squash_sha = _git(work, "rev-parse", "main")
+        _git(work, "push", "-q", "origin", "main")
+        _git(work, "push", "-q", "origin", "--delete", branch)
+        _git(work, "fetch", "-q", "--prune", "origin")
+        return work, squash_sha
+
+    def test_squash_merged_remote_deleted_branch_is_allowed(self) -> None:
+        """#2205 repro: ``_refuse_if_unpushed`` must not block a squash-merged branch."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            work, _squash_sha = self._squash_merge_remote_delete(tmp, "feature")
+
+            result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature")
+
+        assert result == "", f"Expected '' (safe to delete), got refusal: {result!r}"
+
+    def test_genuinely_unpushed_branch_is_still_refused(self) -> None:
+        """No regression: a branch with commits on NO remote at all must still be refused."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("never pushed\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: genuinely unpushed")
+
+            result = ws_cleanup_mod._refuse_if_unpushed(str(work), "feature")
+
+        assert result != "", "Expected a refusal message for genuinely unpushed work"
+        assert "feature" in result
+
+
 def _squash_merge_into_main(tmp: Path, *, subject: str) -> tuple[Path, str]:
     """Build a repo whose ``feature`` branch is squash-merged into main under ``subject``.
 

@@ -195,6 +195,30 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     raise RuntimeError(msg)
 
 
+def _ref_tree_captured_by_default(repo: str, ref: str) -> bool:
+    """Return ``True`` when ``ref``'s tree is already captured on ``origin/<default>``.
+
+    Fallback for the data-loss guard (#2205): after a squash-merge and
+    ``fetch --prune``, the source branch's remote tracking ref is gone so
+    ``commits_absent_from_all_remotes`` (``--not --remotes``) returns non-empty
+    even though the content shipped.  A regular ancestry check
+    (``merge-base --is-ancestor``) also returns False because a squash-merge
+    creates a new SHA with a different parent chain.  The deterministic signal
+    is the tree: a squash-merge copies the source tree verbatim, so
+    ``git diff --quiet ref origin/<default>`` exits 0 when the content is
+    already there.
+
+    **Fails open.** Any error (invalid ``ref``, missing ``origin/<default>``,
+    corrupt repo) returns ``False`` so callers keep the fail-closed posture of
+    the data-loss guard: "we couldn't confirm it's merged" → keep the branch.
+    """
+    try:
+        remote_default = f"origin/{git.default_branch(repo)}"
+    except RuntimeError:
+        return False
+    return git.check(repo=repo, args=["diff", "--quiet", ref, remote_default])
+
+
 def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
     """Raise ``RuntimeError`` when the worktree's tip has commits on NO remote ref (#706).
 
@@ -239,6 +263,19 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
         )
         raise RuntimeError(msg) from exc
     if not unpushed:
+        return
+    # #2205 — squash-merge + remote-ref-deleted fallback. After a squash-merge
+    # and ``fetch --prune``, the source branch's remote tracking ref is gone so
+    # ``--not --remotes`` reports the branch commits as absent from all remotes,
+    # even though the content is captured on ``origin/<default>`` under a new
+    # squash SHA. A forge-CLI check (``_branch_pr_is_merged``) is the canonical
+    # signal but requires ``gh``/``glab`` in PATH — absent in CI/sandbox. An
+    # ancestry check is the deterministic fallback: if ``ref``'s tip is reachable
+    # from the fetched ``origin/<default>`` the content is already there and
+    # teardown is safe.  We fetch first so the ancestry check reflects the current
+    # remote state, not a stale local mirror.
+    git.fetch(repo_main, "origin")
+    if _ref_tree_captured_by_default(target.probe_repo, target.ref):
         return
     if target.branch_to_delete is not None and _branch_pr_is_merged(repo_main, target.branch_to_delete):
         return

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
+from teatree.core.cleanup import _branch_tree_matches_squash, _ref_tree_captured_by_default, cleanup_worktree
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
@@ -127,6 +127,13 @@ def _refuse_if_unpushed(repo: str, name: str) -> str:
             f"(git probe failed: {exc}) — refusing to delete. Push the branch to keep the work."
         )
     if not unpushed:
+        return ""
+    # #2205 — squash-merge + remote-ref-deleted fallback. The caller
+    # (``prune_branches``) already ran ``fetch --prune``, so the local mirror
+    # reflects the current remote state. If the branch tip is an ancestor of
+    # ``origin/<default>`` the content is already there (squash-merged) and
+    # deletion is safe despite the "absent from all remotes" signal.
+    if _ref_tree_captured_by_default(repo, name):
         return ""
     return (
         f"SKIPPED '{name}': {len(unpushed)} commit(s) on NO remote (data loss) — "
