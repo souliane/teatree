@@ -20,6 +20,10 @@ _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
 _patch_overlay = patch("teatree.core.cleanup.get_overlay")
 _patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
+# Pin the #2205 merged-evidence override to False so tests that set
+# ``commits_absent_from_all_remotes`` to a non-empty list still hit the
+# data-loss guard rather than silently passing through the squash-merge override.
+_patch_ref_tree = patch("teatree.core.cleanup._ref_captured_by_merge", return_value=False)
 
 
 def _no_unpushed(mock_git: MagicMock) -> None:
@@ -463,18 +467,18 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_reaps_unpushed_branch_when_forge_says_pr_merged(
+    def test_reaps_unpushed_branch_when_merged_evidence_confirms_capture(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
     ) -> None:
-        """#1578 — a branch flagged 'commits on NO remote' is reaped when its PR is MERGED.
+        """#1578/#2205 — a branch flagged 'commits on NO remote' is reaped when MERGED-evidence confirms it.
 
         Squash-merge creates a new SHA on main, so the branch's own SHAs are
-        absent from every remote ref — the #706 data-loss guard fires. But the
-        forge canonically reports the branch's PR merged, so the content shipped
-        and the worktree is safe to reap.
+        absent from every remote ref — the #706 data-loss guard fires. But
+        positive merged-evidence (forge PR merged / pre-prune tracking ref) AND a
+        matching tree confirm the content shipped, so the worktree is safe to reap.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
@@ -484,26 +488,28 @@ class TestCleanupWorktree(TestCase):
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: squashed onto main"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True):
+        with patch("teatree.core.cleanup._ref_captured_by_merge", return_value=True):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_refuses_unpushed_branch_when_forge_lookup_uncertain(
+    def test_refuses_unpushed_branch_when_merged_evidence_absent(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
-        """#1578 fail-safe — an unpushed branch with no/uncertain merged PR is still refused.
+        """#1578/#2205 fail-safe — an unpushed branch with no merged-evidence is still refused.
 
-        The forge lookup returning ``False`` (no merged PR found, CLI missing,
-        or any probe failure) leaves the #706 data-loss guard in force: ambiguity
-        never reaps.
+        With no positive merged-evidence (no merged PR, no pre-prune tracking ref,
+        tree match alone insufficient) the #706 data-loss guard stays in force:
+        ambiguity never reaps.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
@@ -512,10 +518,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: never pushed, no PR"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with (
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
-            pytest.raises(RuntimeError, match=r"on NO remote \(data loss\)"),
-        ):
+        with pytest.raises(RuntimeError, match=r"on NO remote \(data loss\)"):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_not_called()
@@ -542,6 +545,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -550,6 +554,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """#706 data-loss guard — branch with commits on no remote blocks teardown."""
         _mock_workspace(mock_config)
@@ -568,6 +573,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
 
+    @_patch_ref_tree
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -576,6 +582,7 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
+        mock_ref_tree: MagicMock,
     ) -> None:
         """More than the preview limit of unpushed commits is summarised with an ellipsis."""
         _mock_workspace(mock_config)
