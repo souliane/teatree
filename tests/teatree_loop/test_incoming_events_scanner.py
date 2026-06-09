@@ -1,5 +1,6 @@
 """Behaviour tests for IncomingEventsScanner (#669, #654)."""
 
+import os
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -7,6 +8,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 
 
@@ -279,3 +281,110 @@ class _StubOverlay:
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         return self._guard
+
+
+class _MergeGuardOverlay(OverlayBase):
+    """Concrete overlay owning a repo and returning a fixed merge guard."""
+
+    def __init__(self, *, repos: list[str], guard: MergeGuard) -> None:
+        self._repos = repos
+        self._guard = guard
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_workspace_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree: object) -> list:
+        _ = worktree
+        return []
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        _ = (target_ref, thread_ref)
+        return self._guard
+
+
+class TestEventForgeUrl:
+    """``_event_forge_url`` extracts the forge URL/slug from a webhook event (TODO-282)."""
+
+    def _event(self, **payload: object) -> IncomingEvent:
+        return IncomingEvent(channel_ref="acme/repo", payload_json=dict(payload))
+
+    def test_prefers_gitlab_object_attributes_url(self) -> None:
+        from teatree.loop.scanners.incoming_events import _event_forge_url  # noqa: PLC0415
+
+        url = "https://gitlab.com/acme/backend/-/merge_requests/9"
+        event = self._event(object_attributes={"url": url})
+        assert _event_forge_url(event) == url
+
+    def test_prefers_github_pull_request_html_url(self) -> None:
+        from teatree.loop.scanners.incoming_events import _event_forge_url  # noqa: PLC0415
+
+        url = "https://github.com/acme/backend/pull/9"
+        event = self._event(pull_request={"html_url": url})
+        assert _event_forge_url(event) == url
+
+    def test_falls_back_to_channel_ref_slug(self) -> None:
+        from teatree.loop.scanners.incoming_events import _event_forge_url  # noqa: PLC0415
+
+        event = self._event()
+        assert _event_forge_url(event) == "acme/repo"
+
+    def test_empty_when_no_url_and_no_channel_ref(self) -> None:
+        from teatree.loop.scanners.incoming_events import _event_forge_url  # noqa: PLC0415
+
+        event = IncomingEvent(channel_ref="", payload_json={})
+        assert _event_forge_url(event) == ""
+
+    def test_non_string_url_falls_through(self) -> None:
+        from teatree.loop.scanners.incoming_events import _event_forge_url  # noqa: PLC0415
+
+        event = self._event(object_attributes={"url": 123}, pull_request={"html_url": None})
+        assert _event_forge_url(event) == "acme/repo"
+
+
+class TestScheduleMergeMultiOverlay(TestCase):
+    """Real ``get_overlay()`` ambiguity path — two overlays registered (TODO-282).
+
+    ``_handle_schedule_merge`` applies a *per-overlay* merge policy
+    (``can_auto_merge``) but resolved it with a bare ``get_overlay()``. With
+    two overlays registered and no ``T3_OVERLAY_NAME`` that raises ``Multiple
+    overlays found`` — swallowed by ``scan()``'s per-event ``except Exception``,
+    which marks the event processed and drops the approved merge. The fix
+    resolves the overlay from the event's forge URL (carried in the GitLab
+    webhook ``object_attributes.url``), so the URL-owning overlay's policy runs.
+
+    Only overlay discovery is patched (the entry-point external); the URL→overlay
+    resolution itself is real. The owning overlay returns an ESCALATE guard so
+    the emitted signal proves *that overlay's* policy ran, not a permissive default.
+    """
+
+    def test_resolves_url_owning_overlay_with_two_registered(self) -> None:
+        url = "https://gitlab.com/acme/backend/-/merge_requests/88"
+        _event(
+            source=IncomingEvent.Source.GITLAB,
+            body="approved",
+            key="gitlab:multi-overlay",
+            object_kind="merge_request",
+            object_attributes={"action": "approved", "iid": 88, "url": url},
+        )
+        owner = _MergeGuardOverlay(
+            repos=["acme/backend"],
+            guard=MergeGuard(allowed=False, reason="freeze window", escalate=True),
+        )
+        other = _MergeGuardOverlay(repos=["other/repo"], guard=MergeGuard(allowed=True))
+        overlays = {"acme": owner, "other": other}
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+        ):
+            signals = IncomingEventsScanner().scan()
+
+        escalations = [s for s in signals if s.kind == "incoming_event.merge_escalation"]
+        assert len(escalations) == 1, (
+            "with two overlays registered, the approved merge must still resolve the URL-owning "
+            "overlay's policy — a bare get_overlay() raises Multiple-overlays and drops the merge"
+        )
+        assert escalations[0].payload["reason"] == "freeze window"
