@@ -1,4 +1,5 @@
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
+from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
@@ -98,6 +99,7 @@ __all__ = [
     "IncomingEvent",
     "IntentClassification",
     "InvalidTransitionError",
+    "InvariantOutcome",
     "LivePostApproval",
     "LivePostApprovalError",
     "LocalStackQueueItem",
@@ -137,6 +139,7 @@ __all__ = [
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
+    "SessionAuditRecord",
     "SessionHandover",
     "Severity",
     "Task",
