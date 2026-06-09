@@ -27,6 +27,7 @@ from teatree.cli._doctor_checks import (
     _check_single_db,
     _check_singletons,
     _check_skills,
+    _check_stale_uv_venv,
 )
 from teatree.cli._doctor_plugin_repair import (
     _do_ensure_plugin_registered,
@@ -65,6 +66,7 @@ __all__ = (
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
+    "_check_stale_uv_venv",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
     "_find_host_project_root",
@@ -523,6 +525,7 @@ def check() -> bool:
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
+    ok = _check_stale_uv_venv() and ok
 
     # ``check`` is a plain Typer command in the Django-free CLI group, so
     # Django is not configured by the time the self-DB schema guard runs.
