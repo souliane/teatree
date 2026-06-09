@@ -481,11 +481,15 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
         _run_git("commit", "-q", "-m", f"squash: {self.slug} (#2205)", cwd=self.repo_main)
         _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
 
-        # Delete the source branch on the remote and prune local tracking ref.
-        _run_git("push", "-q", "origin", "--delete", self.slug, cwd=self.repo_main)
-        _run_git("fetch", "-q", "--prune", "origin", cwd=self.repo_main)
-        # The local branch ref and its worktree still exist (they were NOT pruned
-        # locally — only the remote tracking ref is gone).
+        # A forge squash-merge deletes the source ref REMOTELY (not via a local
+        # push), so the local clone keeps a stale ``refs/remotes/origin/<slug>``
+        # tracking ref until a later fetch prunes it. Deleting it on the bare
+        # remote directly models that — the stale tracking ref is the
+        # forge-CLI-free proof the branch was once pushed (the #2205 signal),
+        # which ``cleanup._raise_if_unpushed`` samples before its own fetch.
+        _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.remote)
+        # The local branch ref, its worktree, and the stale remote tracking ref
+        # all still exist (the local clone has not fetched/pruned yet).
 
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
@@ -513,14 +517,113 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
     def test_squash_merged_remote_deleted_branch_is_pruned(self) -> None:
         """The #2205 repro: teardown must proceed without forge CLI.
 
-        Before the fix ``commits_absent_from_all_remotes`` returns non-empty
-        (tracking ref gone, squash SHA differs), ``_branch_pr_is_merged`` returns
-        False (no forge CLI in test), and teardown is refused with a misleading
-        "on NO remote (data loss)" message even though the work IS on main.
-        After the fix the ancestry check (HEAD is ancestor of origin/main) lets
-        teardown proceed.
+        ``commits_absent_from_all_remotes`` returns non-empty (the squash is a new
+        SHA on main; the source ref was deleted) and ``_branch_pr_is_merged``
+        returns False (no forge CLI in test). The teardown proceeds because the
+        stale pre-fetch tracking ref (the branch was once pushed, then deleted on
+        the forge) is positive merged-evidence AND the tree matches origin/main.
         """
         result = self._cleanup(self._make_worktree(), pr_merged=False)
 
         assert result.clean is True, f"Expected teardown to proceed, got errors: {result.errors}"
         assert not self.wt_path.exists(), "Worktree directory must be removed"
+
+
+class TestLocalOnlyMatchingTreeNotPruned(TestCase):
+    """#2205 Finding 1 (data loss): a never-pushed local-only branch whose tree matches main is KEPT.
+
+    The confirmed data-loss false positive: a branch with genuinely local-only
+    commits (never pushed to any remote) whose FINAL tree coincidentally equals
+    ``origin/main`` — e.g. work added then fully reverted — passes
+    ``git diff --quiet <ref> origin/main``. Tree equality alone was treated as
+    "captured", bypassing the #706 guard and destroying the only copy of those
+    commits (no ref, no reflog after worktree removal, nothing to ``fsck``).
+
+    The branch is never pushed, so there is NO ``origin/<slug>`` tracking ref at
+    any point and (absent a forge merged signal) NO positive merged-evidence.
+    The guard must KEEP the worktree.
+    """
+
+    slug = "a-myrepo-9001-localonly"
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.temp_root = tmp_path / "systmp"
+        self.temp_root.mkdir()
+        monkeypatch.setattr(
+            "teatree.core.worktree_snapshot.tempfile.gettempdir",
+            lambda: str(self.temp_root),
+        )
+
+        self.remote = tmp_path / "remote.git"
+        subprocess.run(
+            [_GIT, "init", "-q", "--bare", "-b", "main", str(self.remote)],
+            check=True,
+            capture_output=True,
+            env=_clean_env(),
+        )
+
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        (self.repo_main / "base.txt").write_text("base\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        # Local-only branch: add work then fully revert it, NEVER push. The final
+        # tree equals origin/main, but the two commits live nowhere but locally.
+        self.wt_path = self.workspace / self.slug / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.slug, str(self.wt_path), cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feat.txt").write_text("genuinely local work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "add feat", cwd=self.wt_path)
+        _run_git("rm", "-q", "feat.txt", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "revert - back to main tree", cwd=self.wt_path)
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/9001",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch=self.slug,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+
+    def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            return cleanup_worktree(worktree, force=False, strict_hygiene=False)
+
+    def test_local_only_matching_tree_branch_is_kept(self) -> None:
+        """Tree-equality alone must NOT allow deletion — no merged-evidence → keep."""
+        with pytest.raises(RuntimeError) as excinfo:
+            self._cleanup(self._make_worktree(), pr_merged=False)
+
+        message = str(excinfo.value)
+        assert "on NO remote (data loss)" in message
+        assert self.wt_path.exists(), "Local-only matching-tree branch must be kept, not destroyed"
+
+    def test_local_only_matching_tree_pruned_only_with_forge_merged_evidence(self) -> None:
+        """Tree-equality IS accepted once the forge confirms the PR merged."""
+        result = self._cleanup(self._make_worktree(), pr_merged=True)
+
+        assert result.clean is True, f"Expected teardown to proceed with merged-evidence, got: {result.errors}"
+        assert not self.wt_path.exists()

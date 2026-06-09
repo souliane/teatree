@@ -195,28 +195,65 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     raise RuntimeError(msg)
 
 
-def _ref_tree_captured_by_default(repo: str, ref: str) -> bool:
-    """Return ``True`` when ``ref``'s tree is already captured on ``origin/<default>``.
+def _remote_tracking_ref_exists(repo: str, branch: str) -> bool:
+    """Whether ``refs/remotes/origin/<branch>`` is present in ``repo``.
 
-    Fallback for the data-loss guard (#2205): after a squash-merge and
-    ``fetch --prune``, the source branch's remote tracking ref is gone so
-    ``commits_absent_from_all_remotes`` (``--not --remotes``) returns non-empty
-    even though the content shipped.  A regular ancestry check
-    (``merge-base --is-ancestor``) also returns False because a squash-merge
-    creates a new SHA with a different parent chain.  The deterministic signal
-    is the tree: a squash-merge copies the source tree verbatim, so
-    ``git diff --quiet ref origin/<default>`` exits 0 when the content is
-    already there.
+    A forge squash-merge deletes the source ref remotely but leaves a STALE local
+    tracking ref until ``fetch --prune`` removes it, so sampling this BEFORE the
+    fetch is the forge-CLI-free proof the branch was once pushed (#2205).
+    """
+    return git.check(repo=repo, args=["show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"])
+
+
+def _ref_tree_matches_default(repo: str, ref: str) -> bool:
+    """Return ``True`` when ``ref``'s tree is identical to ``origin/<default>``.
+
+    A squash-merge copies the source tree verbatim onto the default branch, so
+    ``git diff --quiet ref origin/<default>`` exits 0 when the content is already
+    there. This is a NECESSARY but NOT SUFFICIENT signal for "safe to delete":
+    a never-pushed local-only branch whose work was fully reverted in a later
+    commit has the same matching tree yet exists on no remote, so deleting it
+    would destroy the only copy. Tree equality must therefore be confirmed only
+    in conjunction with positive merged-evidence — see
+    :func:`_ref_captured_by_merge`.
 
     **Fails open.** Any error (invalid ``ref``, missing ``origin/<default>``,
-    corrupt repo) returns ``False`` so callers keep the fail-closed posture of
-    the data-loss guard: "we couldn't confirm it's merged" → keep the branch.
+    corrupt repo) returns ``False`` so the merged-evidence gate above it keeps
+    the fail-closed posture of the data-loss guard.
     """
     try:
         remote_default = f"origin/{git.default_branch(repo)}"
     except RuntimeError:
         return False
     return git.check(repo=repo, args=["diff", "--quiet", ref, remote_default])
+
+
+def _ref_captured_by_merge(repo: str, ref: str, branch: str | None, *, remote_ref_was_present: bool) -> bool:
+    """Whether ``ref`` is safe to delete because its work was MERGED (#2205, data-loss fix).
+
+    After a squash-merge the source branch's commits are absent from every
+    remote (the squash is a new SHA; the source ref was deleted), so
+    ``commits_absent_from_all_remotes`` reports the branch as "on NO remote"
+    even though the content shipped. Distinguishing that safe case from a
+    genuinely local-only branch (never pushed anywhere) requires POSITIVE
+    evidence the work was integrated — tree equality alone is a false positive,
+    because a fully-reverted local branch has the same matching tree.
+
+    Two positive merged signals are accepted, either of which AND a matching tree
+    permits deletion. ``remote_ref_was_present`` means the local
+    ``refs/remotes/origin/<branch>`` tracking ref existed before this run's
+    fetch/prune: a forge squash-merge deletes the source ref remotely but leaves a
+    stale tracking ref locally until the prune, so its prior presence proves the
+    branch was once pushed (the squash-merge scenario), which a never-pushed branch
+    never produces. :func:`_branch_pr_is_merged` is the forge's canonical report
+    that the branch's PR/MR merged.
+
+    With NO merged-evidence the branch is kept regardless of tree equality: a
+    local-only branch whose tree matches the default branch must never be deleted.
+    """
+    if not (remote_ref_was_present or (branch is not None and _branch_pr_is_merged(repo, branch))):
+        return False
+    return _ref_tree_matches_default(repo, ref)
 
 
 def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
@@ -245,13 +282,20 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     we translate that into a refusal rather than proceeding, because an
     inconclusive probe means we cannot prove the commits are pushed.
 
-    **Canonical merged override (#1578).** A squash-merge creates a new SHA on
-    the default branch and deletes the source ref, so the branch's own commits
-    are absent from every remote even though the work shipped. Before refusing,
-    the forge is asked (by the named branch) whether its PR is merged; a positive
-    answer is the ground truth that the content is safe on the default branch, so
-    teardown proceeds. The check fails safe to skip — only a positive merged
-    signal overrides; any uncertainty keeps the refusal.
+    **Merged override (#1578 / #2205).** A squash-merge creates a new SHA on the
+    default branch and deletes the source ref, so the branch's own commits are
+    absent from every remote even though the work shipped. Before refusing, two
+    positive merged signals are consulted via :func:`_ref_captured_by_merge`: the
+    forge is asked (by the named branch) whether its PR is merged, and the local
+    ``origin/<branch>`` tracking ref's presence is sampled BEFORE the fetch (a
+    forge squash-merge leaves a stale tracking ref locally until the fetch prunes
+    it). Either signal AND a matching tree lets teardown proceed.
+
+    **Data-loss safety (#2205).** Tree equality is NEVER a standalone override: a
+    never-pushed local-only branch whose work was reverted has the same matching
+    tree, so without one of the positive merged signals the branch is kept. The
+    check fails safe to skip — only positive merged-evidence overrides; any
+    uncertainty keeps the refusal.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
@@ -264,20 +308,18 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
         raise RuntimeError(msg) from exc
     if not unpushed:
         return
-    # #2205 — squash-merge + remote-ref-deleted fallback. After a squash-merge
-    # and ``fetch --prune``, the source branch's remote tracking ref is gone so
-    # ``--not --remotes`` reports the branch commits as absent from all remotes,
-    # even though the content is captured on ``origin/<default>`` under a new
-    # squash SHA. A forge-CLI check (``_branch_pr_is_merged``) is the canonical
-    # signal but requires ``gh``/``glab`` in PATH — absent in CI/sandbox. An
-    # ancestry check is the deterministic fallback: if ``ref``'s tip is reachable
-    # from the fetched ``origin/<default>`` the content is already there and
-    # teardown is safe.  We fetch first so the ancestry check reflects the current
-    # remote state, not a stale local mirror.
+    # Sample the stale tracking ref BEFORE the fetch prunes it; fetch after so the
+    # tree comparison reflects the current remote, not a stale local mirror.
+    remote_ref_was_present = target.branch_to_delete is not None and _remote_tracking_ref_exists(
+        repo_main, target.branch_to_delete
+    )
     git.fetch(repo_main, "origin")
-    if _ref_tree_captured_by_default(target.probe_repo, target.ref):
-        return
-    if target.branch_to_delete is not None and _branch_pr_is_merged(repo_main, target.branch_to_delete):
+    if _ref_captured_by_merge(
+        target.probe_repo,
+        target.ref,
+        target.branch_to_delete,
+        remote_ref_was_present=remote_ref_was_present,
+    ):
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
     shas = ", ".join(preview)
