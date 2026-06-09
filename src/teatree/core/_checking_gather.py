@@ -201,6 +201,7 @@ def motion_for_overlay(
                 label=f"#{tick.ticket_number}",
                 url=ticket_url(tick),
                 detail=f"→ {tr.to_state} {overlay_tag}",
+                title=tick.short_description,
             )
         )
 
@@ -221,6 +222,7 @@ def motion_for_overlay(
                 label=f"#{tick.ticket_number}",
                 url=ticket_url(tick),
                 detail=f"failed agent run {overlay_tag}",
+                title=tick.short_description,
             )
         )
 
