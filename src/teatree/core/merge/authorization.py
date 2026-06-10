@@ -223,3 +223,26 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
         check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
     except AntiVacuityAttestationError as exc:
         raise MergePreconditionError(str(exc)) from exc
+
+
+def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
+    """Refuse a merge whose CLEAR ticket's rubric is not fully PASS at ``head_sha`` (#2241).
+
+    NO-OP when ``require_rubric_verification`` is off (opt-in default) or the CLEAR
+    carries no ticket (the rubric is FK'd to the ticket). The
+    :class:`RubricNotSatisfiedError` raised on a block is re-wrapped as a
+    :class:`MergePreconditionError` so the merge command's single re-escalation
+    path surfaces it (the loop never self-issues a replacement CLEAR). Sibling of
+    :func:`_assert_anti_vacuity`; called immediately after it, bound to the same
+    just-verified live head SHA so a force-push invalidates the CLEAR, the
+    attestation, and the rubric grade together.
+    """
+    from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied  # noqa: PLC0415
+
+    ticket = clear.ticket
+    if ticket is None:
+        return
+    try:
+        check_rubric_satisfied(ticket, head_sha, transition="merge")
+    except RubricNotSatisfiedError as exc:
+        raise MergePreconditionError(str(exc)) from exc
