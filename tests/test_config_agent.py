@@ -155,6 +155,12 @@ class TestMalformedAndMissing:
         _write(cfg, "[agent\nsession_model = not valid toml")
         assert resolve_agent_config(config_path=cfg) == AgentConfig()
 
+    def test_non_table_agent_returns_defaults(self, tmp_path: Path) -> None:
+        # ``agent`` declared as a scalar (not a table) is ignored, defaults stand.
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, 'agent = "oops"\n')
+        assert resolve_agent_config(config_path=cfg) == AgentConfig()
+
     def test_default_config_path_used_when_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / ".teatree.toml"
         _write(cfg, '[agent]\nsession_model = "fable"\n')
