@@ -27,10 +27,14 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # Raised 109 -> 110 KB (#2217): the filesystem-evidence double-dispatch guard
 # (`core.worktree_collision` + the `workspace ticket` chokepoint) is a new
 # module and a new defense distinct from the DB lease — legit architecture.
-# Raised 110 -> 112 KB (#2216): documenting the per-skill model floor +
+# Raised 110 -> 111 KB (#2220): the provisioning time-box + loud-alert is a new
+# module (`core.provision_timebox`) and a new lifecycle invariant (a long step
+# aborts+alerts, never hangs) — legit architecture, not prose bloat.
+# Raised 111 -> 113 KB (#2216): documenting the per-skill model floor +
 # spawn-model merge chokepoint and the session-level effort/model pins is
-# legit architectural growth, stacking on #2218's same-cap raise after merge.
-_THRESHOLD_BYTES = 112 * 1024
+# legit architectural growth, stacking on #2220's provisioning time-box section
+# after merging origin/main into the #2216 branch.
+_THRESHOLD_BYTES = 113 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 
