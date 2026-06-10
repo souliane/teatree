@@ -1,5 +1,6 @@
 """Outbound bridge: notify_user → backend → chat.postMessage."""
 
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
@@ -10,17 +11,37 @@ from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core import notify as core_notify
+from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from teatree.core.models import BotPing
 from teatree.notify import NotifyKind, notify_user
+from teatree.types import SpeakConfig
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 
+@pytest.fixture
+def _text_only_speak() -> Iterator[None]:
+    """Pin the speak config inert so the DM rides the ``chat.postMessage`` path.
+
+    ``deliver_user_dm`` consults ``resolve_speak``: when the developer's real
+    ``~/.teatree.toml`` has ``[teatree.speak] slack = true`` AND ``say`` is on
+    the host (macOS), the bot→user DM goes out as a ``files.completeUploadExternal``
+    audio attach, NOT ``chat.postMessage`` — so the ``chat.postMessage`` guards
+    in this module never fire and ``notify_user`` reports no ``ts``. These tests
+    assert the ``chat.postMessage`` text path specifically, so they pin the
+    config to inert (``local = off``, ``slack = false``) to exercise it
+    deterministically regardless of the host config / TTS availability.
+    """
+    with patch.object(core_speak, "resolve_speak", return_value=SpeakConfig()):
+        yield
+
+
 class TestOutboundBridgeEndToEnd:
     """``notify_user`` → real backend → ``chat.postMessage`` over the fake transport."""
 
+    @pytest.mark.usefixtures("_text_only_speak")
     def test_notify_user_posts_to_chat_post_message(self, transport: FakeSlackTransport) -> None:
         """RED if ``notify_user`` stops calling ``backend.post_message``.
 
@@ -137,6 +158,7 @@ class TestOutboundBridgeEndToEnd:
         assert toml_backend.messaging is not None
         assert isinstance(toml_backend.messaging, SlackBotBackend)
 
+    @pytest.mark.usefixtures("_text_only_speak")
     def test_idempotency_dedup_by_key(self, transport: FakeSlackTransport) -> None:
         """RED if the early-return on existing ``BotPing`` is removed.
 
@@ -177,6 +199,7 @@ class TestNotifyUserThroughOverlayFactory:
     ``backend=`` (the common case).
     """
 
+    @pytest.mark.usefixtures("_text_only_speak")
     def test_resolves_backend_via_messaging_from_overlay(self, transport: FakeSlackTransport) -> None:
         """RED if ``notify_user`` stops falling back to ``messaging_from_overlay``.
 

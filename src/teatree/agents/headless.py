@@ -303,6 +303,26 @@ def _resolve_task_cwd(task: Task) -> str | None:
     return None
 
 
+def _sample_usage_closing_connection(task: Task) -> TaskUsage:
+    """Sample :meth:`TaskUsage.for_task` and close THIS thread's DB connection.
+
+    Run as an :func:`asyncio.to_thread` worker: the aggregate query opens a
+    Django connection bound to the worker thread, which never closes itself.
+    ``close_old_connections`` would NOT reap a fresh, healthy connection (it
+    only closes ones past ``CONN_MAX_AGE`` / marked unusable), so close the
+    thread-local connection explicitly — otherwise it outlives the thread and
+    surfaces as a ``ResourceWarning: unclosed database`` when the thread is
+    GC'd (an order-dependent test flake, and a real connection leak in
+    production).
+    """
+    from django.db import connection  # noqa: PLC0415
+
+    try:
+        return TaskUsage.for_task(task)
+    finally:
+        connection.close()
+
+
 async def _drive_with_heartbeat(
     task: Task,
     prompt: str,
@@ -323,8 +343,12 @@ async def _drive_with_heartbeat(
         watchdog = LoopWatchdog.from_settings()
 
     # Sample accumulated deltas once before the run: prior-attempt totals are
-    # static for this run.
-    usage = await asyncio.to_thread(TaskUsage.for_task, task)
+    # static for this run. The read runs in a worker thread (so the event loop
+    # is never blocked) that gets its OWN Django DB connection; close it in the
+    # same thread or the connection outlives the thread and surfaces as a
+    # ``ResourceWarning: unclosed database`` when the thread is GC'd (an
+    # order-dependent test flake, and a real connection leak in production).
+    usage = await asyncio.to_thread(_sample_usage_closing_connection, task)
     started_at = time.monotonic()
     breach: list[str] = []
 

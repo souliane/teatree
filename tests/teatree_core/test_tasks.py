@@ -56,6 +56,33 @@ class TestSyncFollowup(TestCase):
         assert "No code host token for" in errors[0]
 
 
+def _stub_headless_runner(testcase: TestCase) -> None:
+    """Stub the registered headless runner for the duration of *testcase*.
+
+    The drain/dispatch tests run under ``IMMEDIATE_BACKEND``, so a
+    ``execute_headless_task.enqueue(...)`` runs the worker *synchronously*,
+    which — with ``claude`` on the dev host's PATH — would drive the REAL
+    ``run_headless`` → ``_drive_with_heartbeat``. That path samples usage in
+    an ``asyncio.to_thread`` worker whose connection, under ``TestCase``'s
+    shared in-memory SQLite, the test harness keeps alive — surfacing as an
+    order-dependent ``unclosed database`` ``ResourceWarning`` on GC (the
+    flake this isolates). These tests only assert the *dispatch decision*, not
+    agent execution, so the runner is stubbed to a recorded attempt — the same
+    "don't run a real threaded DB read under TestCase" isolation
+    ``tests/teatree_agents/_sdk_fake.py`` documents.
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from teatree.core import headless_dispatch  # noqa: PLC0415
+
+    def _runner(task: Task, *, phase: str = "", overlay_skill_metadata: object = None) -> TaskAttempt:
+        return task.complete_with_attempt(exit_code=0, result={"summary": "stubbed"})
+
+    patcher = patch.object(headless_dispatch, "_runner", _runner)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+
+
 class TestDrainHeadlessQueue(TestCase):
     """Drain is a safety net for tasks that missed the post_save auto-enqueue."""
 
@@ -71,6 +98,7 @@ class TestDrainHeadlessQueue(TestCase):
             sender=Task,
             dispatch_uid="auto_enqueue_headless",
         )
+        _stub_headless_runner(self)
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_enqueues_pending_headless_tasks(self) -> None:

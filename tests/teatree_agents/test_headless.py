@@ -625,6 +625,38 @@ class TestDriveWithHeartbeat(TestCase):
         assert mock_logger.warning.call_count >= 1
 
 
+class TestUsageSampleClosesWorkerConnection(TestCase):
+    """The pre-run usage sample must close its worker-thread DB connection.
+
+    ``_drive_with_heartbeat`` samples ``TaskUsage.for_task`` in an
+    ``asyncio.to_thread`` worker. That worker opens its OWN Django connection
+    (a thread-local), which — pre-fix — was never closed, so a file-backed
+    sqlite connection (the production config) surfaced as a
+    ``ResourceWarning: unclosed database`` when the thread was GC'd — the
+    order-dependent ``test_tasks.py`` flake. The in-memory test DB cannot
+    reproduce the GC warning (its connection is deliberately persistent), so
+    the guard asserts the fix's contract directly: the sampler closes the
+    thread-local connection it used. RED before the fix: ``close`` is never
+    called.
+    """
+
+    def test_sampler_closes_its_thread_connection(self) -> None:
+        from django.db import connection  # noqa: PLC0415
+
+        from teatree.agents.headless import _sample_usage_closing_connection  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(task=task, num_turns=3, cost_usd=1.0)
+
+        with patch.object(connection, "close", wraps=connection.close) as close_spy:
+            usage = _sample_usage_closing_connection(task)
+
+        assert usage.turns == 3
+        close_spy.assert_called_once()
+
+
 class TestRunHeadlessRecordsStuckLoop(TestCase):
     """run_headless records a stuck_loop TaskAttempt failure when the watchdog fires."""
 
