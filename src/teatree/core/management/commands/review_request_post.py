@@ -91,8 +91,13 @@ class Command(TyperCommand):
 
         target = resolve_guard_target()
         if target is None:
+            # The review channel is unpostable (e.g. a Slack Connect channel
+            # that requires a user xoxp token the bot doesn't hold — #2231).
+            # Fall back to a bot→user DM draft so the user can forward the
+            # review request manually. Never silently suppress.
+            self._draft_dm_fallback(mr_url=mr_url, title=title)
             self._emit(
-                {"action": "suppress", "reason": "no_review_channel_or_token", "mr_url": mr_url},
+                {"action": "draft", "reason": "no_review_channel_or_token", "mr_url": mr_url},
                 exit_code=0,
             )
 
@@ -179,6 +184,30 @@ class Command(TyperCommand):
         self._emit(
             {"action": "post", "permalink": permalink, "mr_url": canonical},
             exit_code=0,
+        )
+
+    @staticmethod
+    def _draft_dm_fallback(*, mr_url: str, title: str) -> None:
+        """DM the user a draft review-request when the review channel is unpostable.
+
+        Called when ``resolve_guard_target`` returns ``None`` — the review
+        channel is configured but unpostable (e.g. a Slack Connect channel that
+        requires a user xoxp token the bot doesn't hold; #2231). A bot→user DM
+        gives the user the full text they can forward manually, so the human
+        review is never silently lost.
+        """
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+
+        subject = title or _DEFAULT_TITLE
+        text = (
+            f"The review channel is unpostable (no token — Slack Connect channel?). "
+            f"Please forward this review request manually:\n\n"
+            f"{subject} {mr_url}"
+        )
+        notify_user(
+            text,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"review_request_draft:{mr_url}",
         )
 
     @staticmethod

@@ -149,12 +149,27 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
 
 
 class TestReviewRequestPostDedup(TestCase):
-    def test_no_review_channel_or_token_suppresses(self) -> None:
-        with patch(f"{_CMD}.resolve_guard_target", return_value=None):
+    def test_no_review_channel_or_token_falls_back_to_draft_dm(self) -> None:
+        """#2231: unpostable Connect channel → draft DM, not silent suppress."""
+        notified: list[dict[str, str]] = []
+
+        def _capture_notify(text: str, *, kind: object, idempotency_key: str, **_kw: object) -> bool:
+            notified.append({"text": text, "idempotency_key": idempotency_key})
+            return True
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=None),
+            patch("teatree.core.notify.notify_user", side_effect=_capture_notify),
+        ):
             code, payload = _run()
         assert code == 0
-        assert payload["action"] == "suppress"
+        assert payload["action"] == "draft"
         assert payload["reason"] == "no_review_channel_or_token"
+        assert payload["mr_url"] == _MR_URL
+        # The bot must DM the user with the review request text so they can
+        # forward it manually to the review channel.
+        assert len(notified) == 1
+        assert _MR_URL in notified[0]["text"]
 
     def test_dedup_suppress_does_not_post(self) -> None:
         backend = _FakeBackend()
