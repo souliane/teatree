@@ -120,8 +120,8 @@ def match_worktree_by_path(path: str) -> Worktree | None:
 def _ticket_number_from_branch(branch: str) -> str | None:
     """Return the ticket number a ``<number>-<slug>`` branch encodes, or None.
 
-    Mirrors ``workspace._build_branch_name``: the number is the leading
-    segment (optionally after a ``<scope>/`` prefix). Digits that appear
+    Mirrors ``_workspace_ticket_intake.build_branch_name``: the number is the
+    leading segment (optionally after a ``<scope>/`` prefix). Digits that appear
     later in the slug are not a ticket number and must not match.
     """
     match = _LEADING_TICKET_NUMBER.match(branch)
