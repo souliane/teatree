@@ -243,6 +243,56 @@ mode = "interactive"         # stay gated on client code (autonomy defaults to b
 privacy = "strict"
 ```
 
+### 10.1.2 Agent model tiering & session pins (`[agent]`)
+
+The `[agent]` table holds the model/effort settings for spawned sub-agents and
+the interactive main agent. It is read with a raw `tomllib` parse
+(`config_agent.resolve_agent_config` + `model_tiering._load_phase_model_overrides`),
+independent of the per-overlay `[teatree]` merge — these are session-scoped
+spawn inputs, not overridable `UserSettings`.
+
+```toml
+[agent]
+session_model = "fable"           # interactive main-agent --model pin (so you never run /model by hand)
+session_effort = "xhigh"          # interactive main-agent --effort pin (strict CLI scale)
+
+[agent.phase_models]              # per-PHASE model tier for the spawned sub-agent (model_tiering)
+planning = "fable"                # pin a phase up; "" / "default" / "inherit" opts out
+reviewing = "sonnet"
+testing = ""                      # explicit inherit (no --model)
+
+[agent.skill_models]              # per-COMPANION-SKILL model floor (MODEL only, no effort axis)
+code-review = "opus"              # a loaded skill RAISES the spawn model to at least this tier
+architecture-design = "fable"
+```
+
+**`session_model` / `session_effort` (interactive main agent only).** Injected
+as `--model` / `--effort` into the interactive `claude` spawn argv by
+`t3 loop start` (`cli/loop.py`'s `os.execv`), so the main agent runs at the
+pinned model/effort without a manual `/model`. **Effort is settable only
+session-wide** — never per-sub-agent (the Agent tool has no effort param) and
+never on `claude -p` headless (`--model` only). The effort scale is the strict
+CLI scale `low | medium | high | xhigh | max` (`max` > `xhigh`; there is **no**
+`off`); an off-scale value is a hard `ValueError` at parse and a `t3 doctor`
+FAIL. "ultracode" (xhigh + auto dynamic workflows) is a session/settings
+concept, not a value here. A model sentinel (`""` / `"default"` / `"inherit"`)
+means inherit the default (no flag).
+
+**`[agent.phase_models]` (per-phase sub-agent tier).** The shipped default pins
+`planning → opus` and downgrades mechanical phases (`reviewing`/`requesting_review`/`testing`/`shipping`
+→ `sonnet`, `retrospecting` → `haiku`); reasoning phases (`coding`, `debugging`)
+inherit. Override any phase here; a sentinel opts it out.
+
+**`[agent.skill_models]` (per-companion-skill MODEL floor).** Maps a companion
+skill name to a model floor. When a dispatch loads that skill,
+`model_tiering.resolve_spawn_model` raises the spawn model to the most capable
+of the phase tier and every loaded skill's floor (most-capable-wins via
+`cost.tier_rank`, capability order `haiku < sonnet < opus < fable`; a floor only
+RAISES, never downgrades). **MODEL only** — there is deliberately no per-skill
+effort axis. With this table absent the spawn model is byte-for-byte the
+per-phase tier. `t3 doctor` WARNs on a floor that names no known tier (likely a
+typo) since an unknown id ranks most-capable.
+
 ### 10.2 Django Settings (framework-level, in teatree's settings.py)
 
 | Setting | Type | Purpose |
