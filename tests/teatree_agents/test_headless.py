@@ -924,3 +924,65 @@ class TestRunHeadlessModelTiering(TestCase):
     def test_coding_inherits_user_default_model(self) -> None:
         command = self._run_capturing_command("coding")
         assert "--model" not in command
+
+
+class TestRunHeadlessSpawnModelFloor(TestCase):
+    """``run_headless`` routes through ``resolve_spawn_model`` (MODEL only, no --effort)."""
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _run_capturing_command(self, phase: str, *, skills: list[str], config_body: str) -> list[str]:
+        result_json = json.dumps({"summary": "Done"})
+        captured: dict[str, list[str]] = {}
+        real = headless_mod._build_headless_command
+
+        def spy_build(*args: object, **kwargs: object) -> list[str]:
+            captured["command"] = real(*args, **kwargs)
+            return ["sh", "-c", f"printf %s {shlex.quote(result_json)}"]
+
+        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
+        cfg.write_text(config_body, encoding="utf-8")
+        with (
+            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(headless_mod, "_build_headless_command", side_effect=spy_build),
+            patch.object(headless_mod, "resolve_skill_bundle", return_value=skills),
+            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
+            patch("teatree.config_agent.CONFIG_PATH", cfg),
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            run_headless(task, phase=phase, overlay_skill_metadata={})
+        return captured["command"]
+
+    def test_skill_floor_raises_the_headless_model(self) -> None:
+        command = self._run_capturing_command(
+            "coding",
+            skills=["architecture-design"],
+            config_body='[agent.skill_models]\narchitecture-design = "fable"\n',
+        )
+        assert "--model" in command
+        assert command[command.index("--model") + 1] == "fable"
+
+    def test_never_passes_effort_flag(self) -> None:
+        # Effort is session-wide only — claude -p must NEVER carry --effort,
+        # even when session_effort is configured.
+        command = self._run_capturing_command(
+            "reviewing",
+            skills=["code-review"],
+            config_body=(
+                '[agent]\nsession_effort = "xhigh"\nsession_model = "fable"\n'
+                '[agent.skill_models]\ncode-review = "opus"\n'
+            ),
+        )
+        assert "--effort" not in command
+
+    def test_sentinel_skill_floor_keeps_phase_model(self) -> None:
+        command = self._run_capturing_command(
+            "reviewing",
+            skills=["code-review"],
+            config_body='[agent.skill_models]\ncode-review = "inherit"\n',
+        )
+        # reviewing's sonnet phase default stands; the inherit floor is a no-op.
+        assert command[command.index("--model") + 1] == "sonnet"

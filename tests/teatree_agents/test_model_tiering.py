@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import teatree.agents.model_tiering as mt_mod
-from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, resolve_phase_model
+from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, resolve_phase_model, resolve_spawn_model
 
 
 def _write_toml(path: Path, content: str) -> None:
@@ -140,3 +140,101 @@ def test_default_config_path_used_when_none(monkeypatch: pytest.MonkeyPatch, tmp
     _write_toml(cfg, '[agent]\nphase_models.shipping = "opus"\n')
     monkeypatch.setattr(mt_mod, "CONFIG_PATH", cfg)
     assert resolve_phase_model("shipping") == "opus"
+
+
+class TestResolveSpawnModel:
+    """`resolve_spawn_model(phase, *, skills)` — most-capable-wins floor merge.
+
+    The phase model (`resolve_phase_model`) merged with the per-skill
+    `[agent.skill_models]` floors of the loaded skills. A floor only RAISES
+    capability (order-independent); `None` when everything inherits.
+    """
+
+    def test_no_skill_floors_equals_phase_model(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent]\nphase_models.reviewing = "sonnet"\n')
+        assert resolve_spawn_model("reviewing", skills=[], config_path=cfg) == "sonnet"
+
+    def test_absent_config_equals_phase_model_default(self) -> None:
+        # No config at all: byte-for-byte the phase-model default.
+        absent = Path("/nonexistent.toml")
+        for phase in ("reviewing", "testing", "shipping", "retrospecting", "planning"):
+            assert resolve_spawn_model(phase, skills=["code-review"], config_path=absent) == resolve_phase_model(
+                phase, config_path=absent
+            )
+
+    def test_none_when_phase_inherits_and_no_floor(self) -> None:
+        absent = Path("/nonexistent.toml")
+        assert resolve_spawn_model("coding", skills=["anything"], config_path=absent) is None
+
+    def test_skill_floor_raises_above_phase_model(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(
+            cfg,
+            '[agent]\nphase_models.reviewing = "sonnet"\n[agent.skill_models]\ncode-review = "fable"\n',
+        )
+        # sonnet phase floor + a fable skill floor → fable (most capable wins).
+        assert resolve_spawn_model("reviewing", skills=["code-review"], config_path=cfg) == "fable"
+
+    def test_skill_floor_below_phase_does_not_downgrade(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(
+            cfg,
+            '[agent]\nphase_models.planning = "fable"\n[agent.skill_models]\ncode-review = "haiku"\n',
+        )
+        # A weaker skill floor never downgrades the stronger phase model.
+        assert resolve_spawn_model("planning", skills=["code-review"], config_path=cfg) == "fable"
+
+    def test_floor_merge_is_order_independent(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(
+            cfg,
+            '[agent.skill_models]\na = "haiku"\nb = "fable"\nc = "sonnet"\n',
+        )
+        # Most-capable floor wins regardless of skill order; no phase model.
+        assert resolve_spawn_model("coding", skills=["a", "b", "c"], config_path=cfg) == "fable"
+        assert resolve_spawn_model("coding", skills=["c", "b", "a"], config_path=cfg) == "fable"
+
+    def test_skill_not_in_skill_models_contributes_nothing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.skill_models]\ncode-review = "fable"\n')
+        # A loaded skill with no floor entry does not raise capability.
+        assert resolve_spawn_model("coding", skills=["unlisted-skill"], config_path=cfg) is None
+
+    def test_sentinel_skill_floor_contributes_nothing(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(
+            cfg,
+            '[agent]\nphase_models.reviewing = "sonnet"\n[agent.skill_models]\ncode-review = "inherit"\n',
+        )
+        # An inherit-sentinel floor is a no-op; the phase model stands.
+        assert resolve_spawn_model("reviewing", skills=["code-review"], config_path=cfg) == "sonnet"
+
+    def test_skill_floor_raises_an_inheriting_phase(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.skill_models]\narchitecture-design = "fable"\n')
+        # coding inherits (phase model None) but a skill floor pins it up.
+        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=cfg) == "fable"
+
+    def test_inheriting_phase_floor_only_raises_when_stronger_than_assumed_opus(self, tmp_path: Path) -> None:
+        # An inheriting phase (coding) has phase model None, which tier_rank
+        # scores as the assumed-opus reasoning default. A per-skill floor only
+        # raises it when STRICTLY stronger than that default: an `opus` (or
+        # weaker) floor is silently dropped (still inherits → None), while a
+        # `fable` floor raises it to the floor.
+        opus_floor = tmp_path / "opus.toml"
+        _write_toml(opus_floor, '[agent.skill_models]\narchitecture-design = "opus"\n')
+        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=opus_floor) is None
+
+        fable_floor = tmp_path / "fable.toml"
+        _write_toml(fable_floor, '[agent.skill_models]\narchitecture-design = "fable"\n')
+        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=fable_floor) == "fable"
+
+    def test_default_config_path_used_when_none(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.skill_models]\ncode-review = "fable"\n')
+        monkeypatch.setattr(mt_mod, "CONFIG_PATH", cfg)
+        import teatree.config_agent as ca_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(ca_mod, "CONFIG_PATH", cfg)
+        assert resolve_spawn_model("coding", skills=["code-review"]) == "fable"
