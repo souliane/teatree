@@ -331,7 +331,7 @@ repos:
         always_run: true
         stages: [commit-msg]
       - id: check-blueprint-size
-        name: BLUEPRINT.md size cap (105KB)
+        name: BLUEPRINT.md size cap (111KB)
         language: system
         entry: uv run python scripts/hooks/check_blueprint_size.py
         files: ^BLUEPRINT\.md$

@@ -27,7 +27,10 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # Raised 109 -> 110 KB (#2217): the filesystem-evidence double-dispatch guard
 # (`core.worktree_collision` + the `workspace ticket` chokepoint) is a new
 # module and a new defense distinct from the DB lease — legit architecture.
-_THRESHOLD_BYTES = 110 * 1024
+# Raised 110 -> 111 KB (#2220): the provisioning time-box + loud-alert is a new
+# module (`core.provision_timebox`) and a new lifecycle invariant (a long step
+# aborts+alerts, never hangs) — legit architecture, not prose bloat.
+_THRESHOLD_BYTES = 111 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 
