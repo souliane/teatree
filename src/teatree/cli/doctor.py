@@ -21,6 +21,7 @@ import typer
 
 from teatree.cli._doctor_checks import (
     _check_account_switch,
+    _check_agent_session_pins,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
@@ -60,6 +61,7 @@ __all__ = (
     "IntrospectionHelpers",
     "PackageNotFoundError",
     "_check_account_switch",
+    "_check_agent_session_pins",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
@@ -526,6 +528,7 @@ def check() -> bool:
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
     ok = _check_stale_uv_venv() and ok
+    ok = _check_agent_session_pins() and ok
 
     # ``check`` is a plain Typer command in the Django-free CLI group, so
     # Django is not configured by the time the self-DB schema guard runs.

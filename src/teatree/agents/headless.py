@@ -24,7 +24,7 @@ from django.db import close_old_connections
 from django.db.models import Sum
 from django.utils import timezone
 
-from teatree.agents.model_tiering import resolve_phase_model
+from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt, Ticket
@@ -199,7 +199,10 @@ def run_headless(
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     resume_session_id = _get_resume_session_id(task)
-    model = resolve_phase_model(phase)
+    # Most-capable-wins floor merge of the phase model and the per-skill MODEL
+    # floors of the loaded skills. MODEL only — claude -p never carries
+    # --effort (effort is a session-wide pin on the interactive loop spawn).
+    model = resolve_spawn_model(phase, skills=skills)
     command = _build_headless_command(
         binary,
         prompt,

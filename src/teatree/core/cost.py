@@ -64,6 +64,7 @@ class ModelPrice:
 # model id to its tier (:func:`price_for_model`), so a future dated release of
 # the same tier prices correctly without a new entry.
 PRICE_TABLE: dict[str, ModelPrice] = {
+    "fable": ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0),
     "opus": ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
     "sonnet": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "haiku": ModelPrice(input_per_mtok=1.0, output_per_mtok=5.0),
@@ -72,6 +73,13 @@ PRICE_TABLE: dict[str, ModelPrice] = {
 # The reasoning tier is the conservative fallback for an unrecognised model id
 # (it never under-estimates the cost of an unknown model).
 _DEFAULT_TIER = "opus"
+
+# Capability order, weakest to strongest, for the per-skill model floor merge
+# (:func:`teatree.agents.model_tiering.resolve_spawn_model`). Distinct from
+# pricing: an unknown full id ranks ABOVE every known tier here (treated as
+# most-capable so a below-floor never silently downgrades a spawn), whereas
+# :func:`tier_of_model` prices an unknown id at the conservative reasoning tier.
+_CAPABILITY_ORDER: tuple[str, ...] = ("haiku", "sonnet", "opus", "fable")
 
 # Monthly Agent-SDK credit for a Max 20x subscription.
 DEFAULT_MONTHLY_CREDIT_USD = 200.0
@@ -97,6 +105,26 @@ def tier_of_model(model: str | None) -> str:
 def price_for_model(model: str | None) -> ModelPrice:
     """Return the :class:`ModelPrice` for a model id / tier name."""
     return PRICE_TABLE[tier_of_model(model)]
+
+
+def tier_rank(model: str | None) -> int:
+    """Capability rank of a model id / tier name, for the per-skill floor merge.
+
+    Ranks against :data:`_CAPABILITY_ORDER` (weakest 0 → strongest). ``None`` and
+    the inherit sentinels (empty string) rank as :data:`_DEFAULT_TIER` — the
+    reasoning tier — so a floor below the inherited default never silently
+    downgrades a phase. An unrecognised full id ranks ABOVE every known tier
+    (most-capable), the opposite of :func:`tier_of_model`'s conservative pricing
+    fallback: an unknown spawn target is assumed strong so a lower floor never
+    wins over it.
+    """
+    if not model:
+        return _CAPABILITY_ORDER.index(_DEFAULT_TIER)
+    lowered = model.lower()
+    for rank, tier in enumerate(_CAPABILITY_ORDER):
+        if tier in lowered:
+            return rank
+    return len(_CAPABILITY_ORDER)
 
 
 @dataclass(frozen=True, slots=True)
