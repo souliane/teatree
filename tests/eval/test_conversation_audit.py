@@ -11,6 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import EvalVerdict, SessionAuditRecord
+from teatree.eval.confusion_matrix import build_confusion_matrix
 from teatree.eval.conversation_audit import (
     AuditInput,
     BehaviorPattern,
@@ -190,6 +191,25 @@ class TestJudgeOracle(TestCase):
         assert record.judge_rationale == "hallucinated a change"
         assert record.nominated_for_label is True
 
+    def test_judge_oracle_without_a_judge_is_skip_not_a_vacuous_pass(self) -> None:
+        # The `t3 eval audit` CLI never injects a judge, so a judge-oracle entry
+        # graded with judge=None must SKIP — never a forced PASS that lands on
+        # the confusion-matrix diagonal and inflates accuracy.
+        label = _label("faithful_explanation")
+        events = parse_session_jsonl(_assistant(_text("I renamed compute to compute_total.")) + "\n")
+        record = audit_session(AuditInput(session_id="s-unjudged", events=events, label=label))
+        assert record.verdict == EvalVerdict.SKIP
+        assert record.predicted_outcome != label.expected_outcome
+        assert record.predicted_outcome == "unjudged"
+
+    def test_unjudged_judge_oracle_is_excluded_from_the_diagonal(self) -> None:
+        label = _label("faithful_explanation")
+        events = parse_session_jsonl(_assistant(_text("faithful prose")) + "\n")
+        record = audit_session(AuditInput(session_id="s-unjudged2", events=events, label=label))
+        matrix = build_confusion_matrix(record.outcome_axis, [(record.expected_outcome, record.predicted_outcome)])
+        assert matrix.diagonal_total == 0
+        assert matrix.accuracy == pytest.approx(0.0)
+
 
 class TestRunConversationAudit(TestCase):
     def test_persists_the_batch_and_stamps_sha(self) -> None:
@@ -212,6 +232,14 @@ class TestRunConversationAudit(TestCase):
         assert "background_ci_watch" in by_entry
         assert by_entry["background_ci_watch"].verdict == EvalVerdict.PASS
         assert all(r.pk is None for r in records)
+
+    def test_audit_corpus_skips_a_judge_oracle_with_no_judge(self) -> None:
+        # faithful_explanation ships as `oracle: judge`; audit_corpus injects no
+        # judge, so it must SKIP rather than grade a vacuous PASS on the diagonal.
+        records = audit_corpus(persist=False)
+        faithful = next(r for r in records if r.corpus_entry_id == "faithful_explanation")
+        assert faithful.verdict == EvalVerdict.SKIP
+        assert faithful.predicted_outcome == "unjudged"
 
 
 class TestPrivacy(TestCase):

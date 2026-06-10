@@ -56,6 +56,10 @@ from teatree.eval.transcript_conformance import AUDIT_REGISTRY, Invariant, Invar
 
 _CONFORMANCE_AXIS = "conformance"
 _CLEAN = "clean"
+#: Predicted-outcome sentinel for a judge-oracle entry graded with no judge: a
+#: value that is never an expected outcome, so it never lands on the
+#: confusion-matrix diagonal as a (vacuous) correct prediction.
+_UNJUDGED = "unjudged"
 
 
 class BehaviorPattern(StrEnum):
@@ -180,6 +184,8 @@ def _graded_record(
     judge: JudgeGrader | None,
 ) -> SessionAuditRecord:
     assert_independent_oracle(label)
+    if _needs_judge_but_absent(label, judge):
+        return _unjudged_record(audit_input, label, analysis)
     result = grade(label, audit_input.events, judge=judge)
     verdict = _verdict(result)
     nominated = verdict is EvalVerdict.FAIL or _has_conformance_signal(analysis)
@@ -195,6 +201,43 @@ def _graded_record(
         invariant_results=analysis.invariant_outcomes,
         gate_failure_slugs=analysis.gate_slugs,
         nominated_for_label=nominated,
+    )
+
+
+def _needs_judge_but_absent(label: CorpusLabel, judge: JudgeGrader | None) -> bool:
+    """True when grading *label* requires a judge that was not injected.
+
+    A ``judge`` oracle (and a ``both`` oracle with no matchers to fall back on)
+    can only be decided by the LLM judge. With ``judge=None`` — the audit CLI's
+    free-and-deterministic default — grading it would be vacuous (no matcher,
+    no judge → ``report.evaluate`` returns a forced PASS), so the entry must
+    SKIP rather than land a fake correct prediction on the diagonal. Mirrors the
+    ``cli/eval/corpus.py`` guard.
+    """
+    if judge is not None:
+        return False
+    return label.oracle == "judge" or (label.oracle == "both" and not label.matchers)
+
+
+def _unjudged_record(audit_input: AuditInput, label: CorpusLabel, analysis: _Analysis) -> SessionAuditRecord:
+    """A SKIP record for a judge-required entry graded with no judge.
+
+    ``predicted_outcome`` is the :data:`_UNJUDGED` sentinel — never the expected
+    value — so the row stays off the confusion-matrix diagonal and never inflates
+    accuracy. A judge-required entry is always nominated: it carries unresolved
+    ground truth a human (with a judge) should still grade.
+    """
+    return SessionAuditRecord(
+        session_id=audit_input.session_id,
+        corpus_entry_id=label.entry_id,
+        outcome_axis=label.outcome_axis,
+        expected_outcome=label.expected_outcome,
+        predicted_outcome=_UNJUDGED,
+        verdict=EvalVerdict.SKIP,
+        oracle=label.oracle,
+        invariant_results=analysis.invariant_outcomes,
+        gate_failure_slugs=analysis.gate_slugs,
+        nominated_for_label=True,
     )
 
 
