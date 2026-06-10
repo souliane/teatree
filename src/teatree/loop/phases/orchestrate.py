@@ -144,10 +144,15 @@ def _active_overlay_cap() -> int:
 
 
 def _dispatchable_filter() -> Q:
+    from teatree.core.models.external_delivery import not_under_external_delivery_q  # noqa: PLC0415
+
     q = Q(pk__in=[])
     for role, phase in SUBAGENT_BY_PHASE:
         q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-    return q
+    # #2217: a unit under a live #2104 external-delivery lease is being
+    # hand-delivered; exclude EVERY phase on it so the loop never claims a
+    # second coder/reviewer the directly-implementing owner will never consume.
+    return q & not_under_external_delivery_q()
 
 
 def _entry_for(task: "Task") -> ManifestEntry:
