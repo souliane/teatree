@@ -24,7 +24,10 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # Raised 108 -> 109 KB (#2217): documenting the third external-delivery
 # dispatch chokepoint + the lease-refresh-on-FSM-seam behaviour is legit
 # architectural growth (a new chokepoint + a new seam), not prose bloat.
-_THRESHOLD_BYTES = 109 * 1024
+# Raised 109 -> 110 KB (#2217): the filesystem-evidence double-dispatch guard
+# (`core.worktree_collision` + the `workspace ticket` chokepoint) is a new
+# module and a new defense distinct from the DB lease — legit architecture.
+_THRESHOLD_BYTES = 110 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 
