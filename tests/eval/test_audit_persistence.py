@@ -92,9 +92,18 @@ class TestAggregates(TestCase):
         assert list(SessionAuditRecord.objects.for_session("wanted").values_list("session_id", flat=True)) == ["wanted"]
 
     def test_confusion_pairs_returns_expected_predicted(self) -> None:
-        _record(outcome_axis="backgrounding", expected_outcome="backgrounded", predicted_outcome="backgrounded")
-        _record(outcome_axis="backgrounding", expected_outcome="backgrounded", predicted_outcome="blocking")
-        _record(outcome_axis="other_axis", expected_outcome="x", predicted_outcome="y")
+        # Distinct sessions: confusion_pairs is one pair per *session* (the
+        # most-recent row per session_id), so two pairs need two distinct ids.
+        _record(
+            session_id="s1",
+            outcome_axis="backgrounding",
+            expected_outcome="backgrounded",
+            predicted_outcome="backgrounded",
+        )
+        _record(
+            session_id="s2", outcome_axis="backgrounding", expected_outcome="backgrounded", predicted_outcome="blocking"
+        )
+        _record(session_id="s3", outcome_axis="other_axis", expected_outcome="x", predicted_outcome="y")
         pairs = SessionAuditRecord.objects.confusion_pairs("backgrounding")
         assert pairs == [("backgrounded", "backgrounded"), ("backgrounded", "blocking")]
 

@@ -171,3 +171,19 @@ class TestFromRecords(TestCase):
         self._record("a", "a", session="s1")
         matrix = from_records("backgrounding", SessionAuditRecord.objects.all())
         assert isinstance(matrix, ConfusionMatrix)
+
+    def test_re_audited_session_counts_once(self) -> None:
+        # Re-running the audit re-persists the same session; the matrix must not
+        # double-count it — only the most-recent row per session_id on the axis.
+        self._record("backgrounded", "backgrounded", session="s1")
+        self._record("backgrounded", "backgrounded", session="s1")
+        matrix = from_records("backgrounding", SessionAuditRecord.objects.all())
+        assert matrix.total == 1
+
+    def test_re_audit_uses_the_latest_verdict_not_a_blend(self) -> None:
+        self._record("backgrounded", "blocking", session="s1")
+        self._record("backgrounded", "backgrounded", session="s1")
+        matrix = from_records("backgrounding", SessionAuditRecord.objects.all())
+        assert matrix.total == 1
+        assert matrix.count("backgrounded", "backgrounded") == 1
+        assert matrix.count("backgrounded", "blocking") == 0

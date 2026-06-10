@@ -44,12 +44,20 @@ class SessionAuditQuerySet(models.QuerySet["SessionAuditRecord"]):
     def confusion_pairs(self, outcome_axis: str) -> list[tuple[str, str]]:
         """Return the ``(expected_outcome, predicted_outcome)`` pairs for one axis.
 
-        The substrate a confusion matrix is built from: one pair per audited
-        session on the axis, in audit order.
+        The substrate a confusion matrix is built from: ONE pair per *session* on
+        the axis — the most-recent audit of each session_id. Re-running the audit
+        re-persists a session's row, so deduping to the latest keeps the matrix
+        counting each session once (no ~Nx inflation after N runs) and reflects a
+        changed re-audit verdict instead of blending stale and fresh pairs.
         """
         rows = self.filter(outcome_axis=outcome_axis).order_by("audited_at", "pk")
-        pairs = rows.values_list("expected_outcome", "predicted_outcome")
-        return [(expected, predicted) for expected, predicted in pairs]
+        latest: dict[str, tuple[str, str]] = {
+            session_id: (expected, predicted)
+            for session_id, expected, predicted in rows.values_list(
+                "session_id", "expected_outcome", "predicted_outcome"
+            )
+        }
+        return list(latest.values())
 
 
 SessionAuditManager = models.Manager.from_queryset(SessionAuditQuerySet)

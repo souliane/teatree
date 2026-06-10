@@ -91,6 +91,20 @@ class TestEvalAudit:
         assert "axis=conformance" in result.output
         assert "accuracy:" in result.output
 
+    def test_re_auditing_a_session_does_not_inflate_the_matrix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        _write_session(tmp_path, "sess-force", _VIOLATING)
+        CliRunner().invoke(app, ["eval", "audit", "--session", "sess-force"])
+        result = CliRunner().invoke(
+            app, ["eval", "audit", "--session", "sess-force", "--confusion", "conformance", "--json"]
+        )
+        assert result.exit_code == 0, result.output
+        assert SessionAuditRecord.objects.count() == 2
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["total"] == 1
+
     def test_confusion_json_renders_machine_readable_matrix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
