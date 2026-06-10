@@ -50,6 +50,10 @@ def find_foreign_issue_worktrees(
     whose materialised ``worktree_path`` lives inside a ``<N>-*`` directory —
     corroborates the filesystem and catches a row whose on-disk dir was pruned
     but the claim still stands.
+
+    The ``<N>-*`` / ``Worktree`` keying is deliberately overlay-agnostic: it
+    keys purely on the issue number, so a cross-overlay clash on the same issue
+    number is a rare false-positive that ``--take-over`` covers.
     """
     own = own_path.resolve()
     foreign: dict[Path, None] = {}

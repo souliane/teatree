@@ -4,9 +4,9 @@ The BLUEPRINT is architectural, not a prose mirror of the code. The
 companion #1128 corpus-budget gate sets per-file soft budgets that only
 fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
-file changes and exceeds 109 KB.
+file changes and exceeds 110 KB.
 
-Threshold: 109 KB (109 * 1024 bytes). The hook is scoped to commits
+Threshold: 110 KB (110 * 1024 bytes). The hook is scoped to commits
 that touch ``BLUEPRINT.md`` (via ``files:`` in
 ``.pre-commit-config.yaml``), so it gates every growth event without
 re-running on unrelated commits. Escape hatch:

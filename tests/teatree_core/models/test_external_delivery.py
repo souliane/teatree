@@ -84,6 +84,17 @@ class TestLiveExternalDeliveryQ(TestCase):
     def _malformed(self) -> Ticket:
         return Ticket.objects.create(overlay="test", extra={"external_delivery": {"expires_at": "not-a-date"}})
 
+    def _digit_leading_malformed(self) -> Ticket:
+        # A digit-leading non-ISO string ("3000-bogus-not-iso") sorts lexically
+        # between the now-string and an all-nines sentinel, so a bare string
+        # range would wrongly admit it as LIVE while ``fromisoformat`` rejects it.
+        return Ticket.objects.create(overlay="test", extra={"external_delivery": {"expires_at": "3000-bogus-not-iso"}})
+
+    def _tz_naive(self) -> Ticket:
+        # A tz-naive ISO string parses to a naive datetime; the predicate's
+        # ``expires_at > timezone.now()`` then crashes (offset-naive vs aware).
+        return Ticket.objects.create(overlay="test", extra={"external_delivery": {"expires_at": "3000-01-01T00:00:00"}})
+
     def _terminal_live_lease(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
         mark_external_delivery(ticket)
@@ -112,6 +123,8 @@ class TestLiveExternalDeliveryQ(TestCase):
             "expired": self._expired(),
             "absent": self._absent(),
             "malformed": self._malformed(),
+            "digit_leading_malformed": self._digit_leading_malformed(),
+            "tz_naive": self._tz_naive(),
             "terminal_live_lease": self._terminal_live_lease(),
         }
         selected_pks = set(

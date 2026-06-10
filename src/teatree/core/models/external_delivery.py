@@ -99,17 +99,27 @@ def under_external_delivery(ticket: "Ticket") -> bool:
         expires_at = datetime.fromisoformat(raw)
     except ValueError:
         return False
+    if expires_at.tzinfo is None:
+        # A tz-naive value cannot be compared against the aware ``timezone.now()``
+        # (``TypeError: can't compare offset-naive and offset-aware``). Our writer
+        # never produces one; treat it as malformed -> absent, mirroring the Q,
+        # the conservative direction (a dead/garbage lease never wedges the loop).
+        return False
     return expires_at > timezone.now()
 
 
-# A canonical UTC ISO timestamp our writers produce always begins with a 4-digit
-# year, so it sorts strictly below this all-nines sentinel. Bounding the
-# lexicographic ``expires_at`` comparison below the sentinel excludes
-# alpha-leading garbage ("not-a-date") that would otherwise sort *above* the
-# current-time string and be wrongly admitted as "future"; a real future expiry
-# stays inside the bound. This keeps the DB-layer ``Q`` in lockstep with the
-# Python predicate's malformed-lease handling.
-_MAX_ISO_EXPIRES = "9999-12-31T23:59:59.999999+00:00"
+# ``mark_external_delivery`` is the ONLY writer of ``expires_at`` and always emits
+# ``timezone.now().isoformat()`` — a UTC value whose canonical shape is
+# ``YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00`` (the fractional part is dropped only when
+# the microsecond component is exactly zero). Constraining the DB-layer match to
+# this exact shape is the parity-correct mirror of the predicate's
+# ``datetime.fromisoformat`` + aware-comparison semantics: a digit-leading
+# non-ISO value (``"3000-bogus-not-iso"``) that would otherwise sort *above* the
+# now-string under a bare lexicographic range, an alpha-leading value, and a
+# tz-naive value are all rejected here exactly as the predicate treats them as
+# absent. A plain string upper bound cannot do this (a digit-leading garbage
+# string sorts inside any all-nines sentinel), so the shape regex replaces it.
+_CANONICAL_EXPIRES_REGEX = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?\+00:00$"
 
 
 def live_external_delivery_q(*, field_prefix: str = "ticket__", now: datetime | None = None) -> "Q":
@@ -122,17 +132,20 @@ def live_external_delivery_q(*, field_prefix: str = "ticket__", now: datetime | 
     query, ``""`` for a ``Ticket`` query), so one source-of-truth builder serves
     both rootings.
 
-    Liveness is a lexicographic bound on the JSONField ``external_delivery
-    .expires_at`` string: ``now.isoformat() < expires_at < _MAX_ISO_EXPIRES``.
-    Valid because :func:`mark_external_delivery` always writes a fixed-format UTC
-    ``timezone.now().isoformat()`` (``+00:00``) string; the upper sentinel
-    excludes malformed alpha-leading values that sort above the now-string, so an
-    expired / absent / malformed lease is excluded exactly as the predicate
-    treats it as absent.
+    Liveness requires the JSONField ``external_delivery.expires_at`` string to
+    (1) match the canonical writer shape ``YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00``
+    AND (2) be lexicographically ``> now.isoformat()``. The shape constraint
+    mirrors the predicate's ``fromisoformat`` + aware-comparison semantics: a
+    well-formed canonical UTC value sorts lexically by time, so the ``__gt`` bound
+    is exact, while a digit-leading / alpha-leading / tz-naive malformed value
+    fails the shape and is excluded — exactly as :func:`under_external_delivery`
+    treats it as absent. The conservative direction is preserved: anything
+    ambiguous is NOT live (-> dispatchable), so a dead/garbage lease never wedges
+    the loop.
     """
     now_iso = (now or timezone.now()).isoformat()
     key = f"{field_prefix}extra__external_delivery__expires_at"
-    return Q(**{f"{key}__gt": now_iso, f"{key}__lt": _MAX_ISO_EXPIRES})
+    return Q(**{f"{key}__regex": _CANONICAL_EXPIRES_REGEX, f"{key}__gt": now_iso})
 
 
 def not_under_external_delivery_q(*, field_prefix: str = "ticket__", now: datetime | None = None) -> "Q":
