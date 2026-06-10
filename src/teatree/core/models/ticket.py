@@ -722,18 +722,18 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        """Reach DELIVERED (done).
+        """Reach DELIVERED (done) past two Definition-of-Done gates.
 
-        For a ``kind=fix`` ticket the Definition of Done requires a validated
-        FixRecord: ``check_fix_record_dod`` raises :class:`FixRecordDodError`
-        (an ``InvalidTransitionError`` subclass) so the loop's outer atomic
-        rolls the advance back and the ticket stays RETROSPECTED — merged on
-        the forge, but not yet *done*. A manifestation patch with no stated
-        root cause cannot reach DELIVERED. Feature tickets pass unconditionally.
+        ``check_fix_record_dod`` requires a validated FixRecord for a ``kind=fix``
+        ticket; ``check_spec_coverage`` requires every acceptance criterion to
+        have a backing test when ``require_spec_coverage`` is on — done is not a
+        partial subset of the spec (#289). A refusal keeps the FSM at RETROSPECTED.
         """
         from teatree.core.gates.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
+        from teatree.core.gates.spec_coverage_gate import check_spec_coverage  # noqa: PLC0415
 
         check_fix_record_dod(self)
+        check_spec_coverage(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:

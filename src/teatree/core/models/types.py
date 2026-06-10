@@ -92,6 +92,13 @@ class TicketExtra(TypedDict, total=False):
     # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
     # ``AntiVacuityAttestation`` below).
     anti_vacuity_attestation: "AntiVacuityAttestation"
+    # #289 per-ticket spec-coverage manifest mapping each acceptance criterion
+    # to its backing test(s); read by ``spec_coverage_gate`` (see
+    # ``SpecCoverageManifest`` below) at ``mark_delivered`` when
+    # ``require_spec_coverage`` is on. ``spec_coverage_override`` is the audited
+    # escape hatch (a ``reason`` for an AC-less ticket).
+    spec_coverage: "SpecCoverageManifest"
+    spec_coverage_override: "SpecCoverageOverride"
     # #2104 delivery-ownership lease: stamped when a hand-dispatched delivery
     # agent (``workspace ticket``) takes the unit, so the loop's scheduling
     # chokepoints skip the auto-planner / duplicate review-arm / global dispatch
@@ -170,6 +177,46 @@ class AntiVacuityAttestation(TypedDict, total=False):
     proven_tests: list[str]
     no_new_tests: bool
     at: str
+
+
+class AcceptanceCriterion(TypedDict, total=False):
+    """One acceptance criterion and the test(s) that back it (#289).
+
+    ``id`` is the canonical label (e.g. ``"AC1"``); ``description`` is the
+    human-readable statement and the fallback label when ``id`` is absent.
+    ``tests`` lists the backing test references (``path::node`` ids). An AC with
+    an empty/absent ``tests`` list is *uncovered* — the spec-coverage gate
+    refuses delivery until every AC names at least one test.
+    """
+
+    id: str
+    description: str
+    tests: list[str]
+
+
+class SpecCoverageManifest(TypedDict, total=False):
+    """Per-ticket map of every acceptance criterion to its backing test(s) (#289).
+
+    Carried on ``Ticket.extra['spec_coverage']``. The spec-coverage DoD gate
+    (``teatree.core.gates.spec_coverage_gate``) consumes it at ``mark_delivered``
+    when ``require_spec_coverage`` is on: a ticket cannot reach DELIVERED unless
+    every entry in ``acceptance_criteria`` has a backing test — done cannot be
+    declared on a partial subset of the spec.
+    """
+
+    acceptance_criteria: list[AcceptanceCriterion]
+
+
+class SpecCoverageOverride(TypedDict, total=False):
+    """Audited escape hatch for an AC-less ticket (#289).
+
+    ``Ticket.extra['spec_coverage_override']`` with a non-empty ``reason`` makes
+    the spec-coverage gate pass-and-log — for a genuinely AC-less ticket (a pure
+    refactor, a docs-only change) the heuristic must not hard-trap a legitimate
+    delivery.
+    """
+
+    reason: str
 
 
 class ExternalDeliveryLease(TypedDict, total=False):
