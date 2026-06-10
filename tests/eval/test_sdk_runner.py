@@ -23,7 +23,7 @@ from teatree.eval.sdk_runner import (
     CleanRoomConfig,
     SdkInProcessRunner,
     build_sdk_options,
-    is_budget_exceeded_message,
+    classify_terminal_error,
 )
 
 
@@ -390,16 +390,6 @@ class TestBuildSdkOptionsBudget:
         assert build_sdk_options(config).max_budget_usd == pytest.approx(2.5)
 
 
-class TestBudgetExceededMessageDetection:
-    def test_recognizes_the_sdk_maximum_budget_message(self) -> None:
-        msg = "Claude Code returned an error result: Reached maximum budget ($0.1)"
-        assert is_budget_exceeded_message(msg) is True
-
-    def test_does_not_match_an_unrelated_error_message(self) -> None:
-        assert is_budget_exceeded_message("Claude Code returned an error result: error_during_execution") is False
-        assert is_budget_exceeded_message("some other RuntimeError about a socket") is False
-
-
 def _budget_raising_query(message: str):
     """A fake ``query`` that raises a bare Exception(message) like the SDK's budget path."""
 
@@ -475,3 +465,188 @@ class TestSdkInProcessRunnerBudgetExceeded:
         assert result.passed is False
         assert result.verdict == "fail"
         assert result.run.cost_usd == pytest.approx(0.1)
+
+
+def _yield_then_raise_query(messages: list[Any], message: str):
+    """A fake ``query`` that yields *messages*, THEN raises a bare ``Exception``.
+
+    Models the SDK's real terminal-result shape (``query.py`` ``receive_messages``
+    L852): every message gathered before the cap reaches the consumer's
+    ``async for`` loop, then the trailing error sentinel raises a bare
+    ``Exception``. The runner must keep the partial trajectory, not discard it.
+    """
+
+    async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+        await asyncio.sleep(0)
+        for item in messages:
+            yield item
+        raise Exception(message)  # noqa: TRY002 — the SDK raises a BARE Exception mid-stream for any error-result subtype (budget, max-turns); this fake must reproduce that exact class so the runner's message-based classifier is exercised.
+
+    return _query
+
+
+class TestClassifyTerminalError:
+    def test_classifies_the_sdk_max_budget_message(self) -> None:
+        msg = "Claude Code returned an error result: Reached maximum budget ($0.1)"
+        assert classify_terminal_error(msg) == "budget_exceeded"
+
+    def test_classifies_the_sdk_max_turns_message(self) -> None:
+        # The metered second-crash string: error_max_turns surfaces as
+        # "Reached maximum number of turns (3)".
+        msg = "Claude Code returned an error result: Reached maximum number of turns (3)"
+        assert classify_terminal_error(msg) == "max_turns"
+
+    def test_returns_none_for_a_genuine_error(self) -> None:
+        assert classify_terminal_error("Claude Code returned an error result: error_during_execution") is None
+        assert classify_terminal_error("some other RuntimeError about a socket") is None
+
+
+class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:
+    def _run_with_query(self, spec: EvalSpec, query, **kwargs: Any):
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+
+    def test_max_turns_cap_keeps_the_tool_call_emitted_before_the_cap(self, tmp_path: Path) -> None:
+        # The agent DID the expected tool call before turn 3, then hit the cap.
+        # The partial trajectory must survive the bare Exception — not be discarded.
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[
+                    TextBlock(text="Creating a worktree first."),
+                    ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"}),
+                ],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(
+            messages, "Claude Code returned an error result: Reached maximum number of turns (3)"
+        )
+        run = self._run_with_query(spec, query)
+        assert run.terminal_reason == "max_turns"
+        assert len(run.tool_calls) == 1
+        assert run.tool_calls[0].name == "Bash"
+        assert run.tool_calls[0].input["command"].startswith("git worktree add")
+        assert run.text_blocks == ("Creating a worktree first.",)
+
+    def test_max_turns_cap_with_satisfying_trajectory_grades_to_pass(self, tmp_path: Path) -> None:
+        # is_error decision: a capped run that captured a trajectory lets the
+        # matchers grade it. The agent satisfied the positive matcher before the
+        # cap, so the scenario PASSES — the cap is surfaced via terminal_reason,
+        # not forced into a FAIL.
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(
+            messages, "Claude Code returned an error result: Reached maximum number of turns (3)"
+        )
+        run = self._run_with_query(spec, query)
+        assert run.is_error is False
+        result = evaluate(spec, run)
+        assert result.skipped is False
+        assert result.passed is True
+        assert result.verdict == "pass"
+
+    def test_max_turns_cap_with_no_satisfying_call_grades_to_fail(self, tmp_path: Path) -> None:
+        # The matchers still decide: a capped trajectory that does NOT satisfy the
+        # positive matcher grades to FAIL — not a vacuous PASS.
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "echo no worktree here"})],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(
+            messages, "Claude Code returned an error result: Reached maximum number of turns (3)"
+        )
+        run = self._run_with_query(spec, query)
+        result = evaluate(spec, run)
+        assert result.verdict == "fail"
+
+    def test_max_turns_cap_with_no_captured_messages_falls_back_to_terminal_shape(self, tmp_path: Path) -> None:
+        # When nothing was captured before the cap, fall back to the empty
+        # terminal shape: is_error=True, terminal_reason=max_turns, no tool calls.
+        spec = _spec(tmp_path)
+        query = _yield_then_raise_query([], "Claude Code returned an error result: Reached maximum number of turns (3)")
+        run = self._run_with_query(spec, query)
+        assert run.terminal_reason == "max_turns"
+        assert run.is_error is True
+        assert run.tool_calls == ()
+
+    def test_max_turns_cap_recovers_cost_from_captured_result_message(self, tmp_path: Path) -> None:
+        # max-turns carries no "($X)" in the message; cost comes from a captured
+        # ResultMessage if the SDK emitted one before the cap.
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+            _result(total_cost_usd=0.0789),
+        ]
+        query = _yield_then_raise_query(
+            messages, "Claude Code returned an error result: Reached maximum number of turns (3)"
+        )
+        run = self._run_with_query(spec, query)
+        assert run.cost_usd == pytest.approx(0.0789)
+
+    def test_max_turns_cap_without_result_message_reports_zero_cost(self, tmp_path: Path) -> None:
+        # No captured ResultMessage and no amount in the max-turns message -> cost
+        # 0.0, with terminal_reason making the incompleteness visible.
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(
+            messages, "Claude Code returned an error result: Reached maximum number of turns (3)"
+        )
+        run = self._run_with_query(spec, query)
+        assert run.cost_usd == pytest.approx(0.0)
+
+    def test_budget_cap_with_captured_trajectory_keeps_the_tool_call(self, tmp_path: Path) -> None:
+        # Generalization regression: the budget path now ALSO captures a partial
+        # trajectory when one was emitted before the cap (was discarded before).
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(messages, "Claude Code returned an error result: Reached maximum budget ($0.1)")
+        run = self._run_with_query(spec, query)
+        assert run.terminal_reason == "budget_exceeded"
+        assert len(run.tool_calls) == 1
+        assert run.is_error is False
+        # The budget amount in the message is still the recovered cost floor.
+        assert run.cost_usd == pytest.approx(0.1)
+
+    def test_non_terminal_error_after_partial_messages_still_propagates(self, tmp_path: Path) -> None:
+        # Anti-vacuity for the partial path: a genuine error mid-stream (after some
+        # captured messages) is NOT classified as terminal, so it re-raises — a
+        # swallowed crash would grade a broken run as a real measurement.
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "ls"})],
+                model="haiku",
+            ),
+        ]
+        query = _yield_then_raise_query(messages, "Claude Code returned an error result: error_during_execution")
+        with pytest.raises(Exception, match="error_during_execution"):
+            self._run_with_query(spec, query)
