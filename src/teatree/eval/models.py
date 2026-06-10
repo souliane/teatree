@@ -4,6 +4,15 @@ import dataclasses
 from pathlib import Path
 from typing import Any
 
+#: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
+#: cost does NOT match the clean billed identity (it paid a partial-or-cap cost).
+#: A clean completion (``success``/``end_turn``/empty) is NOT in this set. The
+#: canonical home: both the benchmark's clean-cell fit (``benchmark.py``) and the
+#: pass@k aggregator (``pass_at_k.py``) classify against this one definition.
+CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {"budget_exceeded", "max_turns", "timeout", "error_max_turns", "error_max_budget_usd", "aborted"}
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:

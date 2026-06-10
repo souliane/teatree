@@ -414,9 +414,11 @@ summed per variant. The added columns:
   exclude errored / cap-truncated / fallback / zero-cost cells, and the fit
   degrades to`-` on too-few clean cells or an ill-conditioned normal matrix (a
   full 160-scenario suite is well-conditioned; the 8-cell smoke slice is usually
-  `-`). The fit lives in the pure, unit-tested`src/teatree/eval/cost_fit.py`
-  (no numpy — a hand-rolled 2x2 normal-equation solve with an explicit
-  condition-number guard).
+  `-`). Under`--trials k`a cell's cost/usage are summed across trials, so a cell
+  is cap-truncated (and excluded) when ANY of its trials hit a cap reason — one
+  capped trial taints the summed billed identity. The fit lives in the pure,
+  unit-tested`src/teatree/eval/cost_fit.py` (no numpy — a hand-rolled 2x2
+  normal-equation solve with an explicit condition-number guard).
 
 When any cell **fell back** to a different model (`fallback_model` kicked in, so
 the billed model ≠ the requested base model), a clearly-visible `!` note line is

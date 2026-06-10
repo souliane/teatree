@@ -179,6 +179,8 @@ def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
         model_usage = event.raw.get("model_usage")
         if not isinstance(model_usage, dict) or not model_usage:
             return None
+        # On a volume tie, max() keeps the first-seen key (Python's stable max) —
+        # harmless, since a real fallback is lopsided, not a near-even split.
         return max(model_usage, key=lambda key: _model_usage_volume(model_usage[key]))
     return None
 

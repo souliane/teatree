@@ -19,6 +19,7 @@ def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Matri
     errored: bool = False,
     usage: TokenUsage | None = None,
     fell_back: bool = False,
+    terminal_reason: str = "",
 ) -> MatrixRow:
     return MatrixRow(
         scenario=scenario,
@@ -31,6 +32,7 @@ def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Matri
         errored=errored,
         usage=usage if usage is not None else TokenUsage(),
         fell_back=fell_back,
+        terminal_reason=terminal_reason,
     )
 
 
@@ -171,6 +173,25 @@ class TestWarmEquivalent:
         rows.append(_row("zero", "m", cost_usd=0.0, usage=TokenUsage(input=100, output=50)))
         (summary,) = summarize_benchmark(rows, ["m"])
         assert summary.warm_equivalent_cost_usd is not None
+
+    def test_capped_cell_is_excluded_from_the_fit(self) -> None:
+        # The 4 clean cells alone recover a warm-equivalent. Add a 5th cell that
+        # is metered (cost_usd > 0) and NOT fell-back, but paid a cap cost wildly
+        # off the clean billed identity (a cap-truncated run keeps its tokens but
+        # is billed a partial/aborted amount). It carries a cap terminal_reason,
+        # so `_clean_cost_cells` must EXCLUDE it from BOTH the fit and the
+        # warm-equivalent sum — leaving the value byte-for-byte the clean-4 fit.
+        # Deleting the `terminal_reason not in CAP_TERMINAL_REASONS` branch in
+        # `_clean_cost_cells` lets this cell into the regressors and changes the
+        # recovered rates + the total, so this assertion goes RED (anti-vacuous).
+        clean = self._clean_rows()
+        (clean_only,) = summarize_benchmark(clean, ["m"])
+        biasing_usage = TokenUsage(input=2000, cache_creation=2000, cache_read=2000, output=2000)
+        capped = _row("capped", "m", cost_usd=9.99, usage=biasing_usage, terminal_reason="budget_exceeded")
+        (with_capped,) = summarize_benchmark([*clean, capped], ["m"])
+        assert clean_only.warm_equivalent_cost_usd is not None
+        assert with_capped.warm_equivalent_cost_usd is not None
+        assert with_capped.warm_equivalent_cost_usd == pytest.approx(clean_only.warm_equivalent_cost_usd)
 
 
 class TestRenderBenchmarkText:

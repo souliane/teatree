@@ -20,12 +20,20 @@ def _spec() -> EvalSpec:
     )
 
 
-def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False, cost_usd: float = 0.0) -> ScenarioResult:
+def _result(
+    spec: EvalSpec,
+    *,
+    passed: bool,
+    skipped: bool = False,
+    cost_usd: float = 0.0,
+    terminal_reason: str | None = None,
+) -> ScenarioResult:
+    reason = terminal_reason if terminal_reason is not None else ("skipped: x" if skipped else "success")
     run = EvalRun(
         spec_name=spec.name,
         tool_calls=(),
         text_blocks=(),
-        terminal_reason="skipped: x" if skipped else "success",
+        terminal_reason=reason,
         is_error=not passed and not skipped,
         raw_stdout="",
         raw_stderr="",
@@ -89,3 +97,20 @@ class TestRunPassAtK:
         spec = _spec()
         result = run_pass_at_k(spec, lambda s: _result(s, passed=True, cost_usd=0.25), k=3)
         assert result.cost_usd == pytest.approx(0.75)
+
+    def test_clean_when_every_trial_completed_cleanly(self) -> None:
+        # cost_usd/usage are SUMMED across trials, so the aggregated cell is
+        # "clean" (its billed identity holds) only when EVERY trial finished
+        # cleanly — terminal_reason then stays empty (not a cap reason).
+        spec = _spec()
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, terminal_reason="success"), k=3)
+        assert result.terminal_reason == ""
+
+    def test_capped_trial_marks_the_aggregated_cell_capped(self) -> None:
+        # If ANY trial hit a cap reason, the summed cost mixes a partial/aborted
+        # trial in — the aggregated cell must carry a cap terminal_reason so the
+        # benchmark's `_clean_cost_cells` excludes it from the rate fit.
+        spec = _spec()
+        it = iter(["success", "budget_exceeded", "success"])
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, terminal_reason=next(it)), k=3)
+        assert result.terminal_reason == "budget_exceeded"

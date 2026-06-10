@@ -15,15 +15,7 @@ import json
 
 from teatree.eval.cost_fit import CostCell, warm_equivalent_cost
 from teatree.eval.matrix import MatrixRow
-from teatree.eval.models import TokenUsage
-
-#: Terminal reasons that mark a cap-truncated / aborted run — a cell whose
-#: billed cost does NOT match the clean billed identity (it paid a partial-or-
-#: cap cost) and so must be excluded from the warm-equivalent fit. A clean
-#: completion (``success``/``end_turn``/empty) is NOT in this set.
-_CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
-    {"budget_exceeded", "max_turns", "timeout", "error_max_turns", "error_max_budget_usd", "aborted"}
-)
+from teatree.eval.models import CAP_TERMINAL_REASONS, TokenUsage
 
 
 @dataclasses.dataclass(frozen=True)
@@ -118,7 +110,7 @@ def _clean_cost_cells(executed: list[MatrixRow]) -> list[CostCell]:
     return [
         CostCell(usage=cell.usage, billed_usd=cell.cost_usd)
         for cell in executed
-        if cell.cost_usd > 0.0 and not cell.fell_back and cell.terminal_reason not in _CAP_TERMINAL_REASONS
+        if cell.cost_usd > 0.0 and not cell.fell_back and cell.terminal_reason not in CAP_TERMINAL_REASONS
     ]
 
 

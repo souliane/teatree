@@ -266,6 +266,7 @@ def _matrix_trial(
             cost_usd=result.cost_usd,
             usage=result.usage,
             fell_back=_fell_back(billed_model=result.billed_model, requested=spec.model),
+            terminal_reason=result.terminal_reason,
         )
     scenario_result = evaluate(spec, runner.run(spec), judge=grader)
     run = scenario_result.run

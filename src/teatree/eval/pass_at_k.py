@@ -23,7 +23,7 @@ over :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` + ``evaluate``.
 import dataclasses
 from collections.abc import Callable
 
-from teatree.eval.models import EvalSpec, TokenUsage
+from teatree.eval.models import CAP_TERMINAL_REASONS, EvalSpec, TokenUsage
 from teatree.eval.report import ScenarioResult
 
 TrialRunner = Callable[[EvalSpec], ScenarioResult]
@@ -46,6 +46,14 @@ class PassAtKResult:
     #: The billed model of the LAST trial (the model that actually ran;
     #: ``None`` for a non-metered run) — the fallback-detection signal.
     billed_model: str | None = None
+    #: A cap reason (from :data:`~teatree.eval.models.CAP_TERMINAL_REASONS`) if
+    #: ANY trial was cap-truncated, else ``""``. Because ``cost_usd``/``usage``
+    #: are SUMMED across trials, the aggregated cell's billed identity holds only
+    #: when EVERY trial finished cleanly — one capped trial taints the sum. The
+    #: benchmark threads this onto ``MatrixRow.terminal_reason`` so a multi-trial
+    #: cell with a capped trial is excluded from the warm-equivalent fit exactly
+    #: like the single-trial path.
+    terminal_reason: str = ""
 
     @property
     def pass_rate(self) -> float:
@@ -78,12 +86,15 @@ def run_pass_at_k(
     cost_usd = 0.0
     usage = TokenUsage()
     billed_model: str | None = None
+    cap_reason = ""
     for _ in range(k):
         result = runner(spec)
         cost_usd += result.run.cost_usd
         usage += result.run.usage
         if result.run.billed_model is not None:
             billed_model = result.run.billed_model
+        if not cap_reason and result.run.terminal_reason in CAP_TERMINAL_REASONS:
+            cap_reason = result.run.terminal_reason
         if result.skipped:
             continue
         skipped_all = False
@@ -98,4 +109,5 @@ def run_pass_at_k(
         cost_usd=cost_usd,
         usage=usage,
         billed_model=billed_model,
+        terminal_reason=cap_reason,
     )

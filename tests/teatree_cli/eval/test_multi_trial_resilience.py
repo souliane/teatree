@@ -96,6 +96,16 @@ class _RaisesTyperExitRunner:
         raise typer.Exit(code=2)
 
 
+class _RaisesBaseExceptionRunner:
+    """Raises a given ``BaseException`` (e.g. KeyboardInterrupt/SystemExit)."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        raise self._exc
+
+
 def _by_key(rows: list, scenario: str, model: str):
     return next(r for r in rows if r.scenario == scenario and r.model == model)
 
@@ -144,3 +154,12 @@ class TestPerCellErrorIsolation:
         specs = [_spec("alpha")]
         with pytest.raises(typer.Exit):
             collect_matrix_rows(specs, ["opus"], runner=_RaisesTyperExitRunner(), trials=1, require="any")
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(1)])
+    def test_base_exception_propagates_through_the_resilient_wrapper(self, exc: BaseException) -> None:
+        # KeyboardInterrupt/SystemExit are BaseExceptions, not Exceptions, so the
+        # `except Exception` cell-isolation never catches them — they propagate
+        # (a Ctrl-C must abort the whole run, never be retried/ERRORED).
+        specs = [_spec("alpha")]
+        with pytest.raises(type(exc)):
+            collect_matrix_rows(specs, ["opus"], runner=_RaisesBaseExceptionRunner(exc), trials=1, require="any")

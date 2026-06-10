@@ -10,6 +10,7 @@ contract is pinned without metering.
 from pathlib import Path
 
 from teatree.cli.eval.multi_trial import collect_matrix_rows
+from teatree.eval.benchmark import _clean_cost_cells
 from teatree.eval.models import EvalRun, EvalSpec, TokenUsage
 
 
@@ -86,6 +87,53 @@ class TestFellBack:
         runner = _FixedRunner(usage=TokenUsage(), billed_model=None)
         rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=1, require="any")
         assert _by_key(rows, "alpha", "claude-opus-4-8").fell_back is False
+
+
+def _run_with_reason(spec: EvalSpec, *, reason: str, cost: float = 0.02) -> EvalRun:
+    return EvalRun(
+        spec_name=spec.name,
+        tool_calls=(),
+        text_blocks=(),
+        terminal_reason=reason,
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+        cost_usd=cost,
+        usage=TokenUsage(input=10, cache_creation=20, cache_read=70, output=5),
+        billed_model="claude-opus-4-8",
+    )
+
+
+class _ReasonRunner:
+    """Yields runs whose terminal_reason walks a fixed sequence."""
+
+    def __init__(self, reasons: list[str]) -> None:
+        self._reasons = iter(reasons)
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run_with_reason(spec, reason=next(self._reasons))
+
+
+class TestMultiTrialCapTruncation:
+    def test_clean_multi_trial_cell_has_empty_terminal_reason(self) -> None:
+        runner = _ReasonRunner(["end_turn", "end_turn", "end_turn"])
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=3, require="any")
+        (row,) = rows
+        assert row.terminal_reason == ""
+        # A clean multi-trial cell is metered + not fell-back → it feeds the fit.
+        assert len(_clean_cost_cells(rows)) == 1
+
+    def test_capped_trial_marks_multi_trial_cell_and_excludes_it_from_the_fit(self) -> None:
+        # One of the 3 trials hit a cap reason. cost/usage are summed across all
+        # 3, so the aggregated cell's billed identity is tainted — it must carry a
+        # cap terminal_reason and be EXCLUDED from `_clean_cost_cells`. Before the
+        # fix the trials>1 branch left terminal_reason="" and the cell leaked into
+        # the fit (the exact fabrication this guards against).
+        runner = _ReasonRunner(["end_turn", "budget_exceeded", "end_turn"])
+        rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=3, require="any")
+        (row,) = rows
+        assert row.terminal_reason == "budget_exceeded"
+        assert _clean_cost_cells(rows) == []
 
 
 class _AlwaysRaisesRunner:
