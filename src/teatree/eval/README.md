@@ -23,7 +23,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `benchmark.py` per-variant cost/pass-rate comparison; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `benchmark.py` per-variant cost/pass-rate comparison; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation; `skill_command_lane.py` #550 Tier-1 command-validity lane; `skill_prose_lane.py` #550 Tier-3 advisory prose-judge lane) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
@@ -526,6 +526,50 @@ Add a check by appending a `RegressionCheck` to `_CHECKS` with its
 `invariant` it pins, and a `predicate` that returns `True` only when the real
 code path still honors the invariant — then add the matching anti-vacuous test.
 
+### Skill-command-validity (#550 Tier-1 — stale `t3 …` references)
+
+`t3 eval skill-command-validity` is a Layer-1 (deterministic, free, no `claude`
+run) eval — the third sibling of skill-triggers and pinned-regressions. It
+grades the skill *docs* themselves: every backticked `t3 …` command a
+`skills/<name>/SKILL.md` (and its nested `*.md` references) documents must
+resolve against the LIVE CLI registry. A SKILL.md that cites a `t3` command
+which no longer exists in the registry is drift — the exact "no stale
+references" rule in `CLAUDE.md` — and exits non-zero, catching a stale skill doc
+after a CLI rename.
+
+The engine (`eval/skill_command_validity.py`) is pure and dependency-inverted:
+it takes the registry as the `(valid_paths, group_paths)` argument pair (the
+`teatree.cli_reference.command_paths` / `command_groups` SSOT shape) rather than
+importing `teatree.cli` — `teatree.eval` must not reach up into the CLI layer.
+The thin lane (`cli/eval/skill_command_lane.py`) builds the live registry from
+the typer app (registering the `teatree` overlay so `t3 teatree …` invocations
+resolve) and injects it. The parse + token-walk logic is the single chokepoint
+the skill-prose static-invocation pytest gate (`tests/test_skill_t3_invocations.py`)
+also consumes, so the regex and placeholder rules live in exactly one place. A
+generic placeholder mention (`t3 …` / `t3 <overlay> …`) names no concrete
+command and is skipped — never drift. It runs as a free lane in every `t3 eval
+all` run.
+
+### Skill-prose-judge (#550 Tier-3 — model-judged, ADVISORY)
+
+`t3 eval skill-prose-judge` scores something a matcher cannot: is a skill's
+PROSE clear and actionable to the agent that reads it? It hands each
+`skills/<name>/SKILL.md` to the EXISTING `ClaudeJudge` seam (no hand-rolled
+judge — `cli/eval/skill_prose_lane.py` synthesises a throwaway judge-only
+`EvalSpec` / `EvalRun` and routes it through `ClaudeJudge.grade`), maps the
+binary PASS/FAIL verdict to a coarse score (PASS → 1.0, FAIL → 0.0,
+judge-skipped → none), ranks the skills worst-first, and nominates the weakest
+for a prose pass.
+
+Per the campaign's decided philosophy this lane is **ADVISORY**: it logs scores
+and nominates, but a low score NEVER raises or makes the lane exit non-zero. A
+judge-only signal is too soft to gate CI deterministically — the
+matcher/structural lanes do that. `skill_prose_judge_lane` always returns
+`passed=True`, so the lane joins the metered path of `t3 eval all` (it makes a
+judge call) without ever failing the suite; it SKIPs cleanly when `claude` is
+not on PATH. The live judge run is metered — the unit tests mock the judge
+boundary, the metered path drives it for real.
+
 ## Triggering
 
 - **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
@@ -565,8 +609,10 @@ This table is the single source of truth for which lanes exist, how they run, an
 | negative-control | free | host | `t3 eval negative-control` | — | on demand |
 | transcript-replay | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
 | corpus-grade | free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every `t3 eval all` run + on demand |
+| skill-command-validity | free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every `t3 eval all` run + on demand |
 | ai-eval subscription | free (subscription tokens) | host | `t3 eval run` (default backend) | — (subscription run is in-session, not a CI job) | manual / on demand |
 | ai-eval sdk-metered | metered (Agent SDK) | **docker** (the DEFAULT locally; `--local` for a host check; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| skill-prose-judge | metered (judge), **advisory** | host (judge via `ClaudeJudge`) | `t3 eval skill-prose-judge` | — (advisory — never gates CI) | metered path of `t3 eval all` + on demand |
 
 ## Failure-class coverage
 

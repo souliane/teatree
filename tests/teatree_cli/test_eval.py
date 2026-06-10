@@ -18,6 +18,8 @@ from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.persistence import persist_run
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
 from teatree.eval.report import MatcherResult, ScenarioResult, evaluate
+from teatree.eval.skill_command_validity import CommandValidityReport, CommandViolation
+from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 
@@ -1359,6 +1361,20 @@ def _coverage(*, gaps: tuple[str, ...] = ()) -> CoverageReport:
     return CoverageReport(rows=tuple(rows))
 
 
+def _command_validity(*, ok: bool = True) -> CommandValidityReport:
+    if ok:
+        return CommandValidityReport(violations=(), checked=3)
+    violation = CommandViolation(skill="stale", doc="stale/SKILL.md", command="t3 frobnicate")
+    return CommandValidityReport(violations=(violation,), checked=3)
+
+
+def _prose_report(*, weakest: str = "beta") -> ProseJudgeReport:
+    return ProseJudgeReport(
+        scores=(ProseScore(skill=weakest, score=0.2, rationale="advisory"), ProseScore("alpha", 0.9, "ok")),
+        skipped=0,
+    )
+
+
 @contextmanager
 def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval all` run patches; the list IS the lane set.
     specs: list[EvalSpec],
@@ -1368,6 +1384,7 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval a
     negative_caught: bool = True,
     replay_results: list[InvariantResult] | None = None,
     coverage_gaps: tuple[str, ...] = (),
+    command_validity_ok: bool = True,
 ) -> "Iterator[None]":
     """Patch every free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
@@ -1377,6 +1394,11 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval a
         patch("teatree.cli.eval.all.run_regression_corpus", return_value=_regression(ok=regression_ok)),
         patch("teatree.cli.eval.all.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
         patch("teatree.cli.eval.all.replay_transcript_for_all", return_value=replay_results),
+        patch(
+            "teatree.cli.eval.all.validate_shipped_skill_commands",
+            return_value=_command_validity(ok=command_validity_ok),
+        ),
+        patch("teatree.cli.eval.all.run_prose_judge", return_value=_prose_report()),
     ):
         yield
 
@@ -1508,7 +1530,9 @@ class TestEvalAll:
             "negative-control",
             "transcript-replay",
             "corpus-grade",
+            "skill-command-validity",
             "ai-eval",
+            "skill-prose-judge",
         )
         for lane in lanes:
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
@@ -1530,9 +1554,11 @@ class TestEvalAll:
             "negative-control",
             "transcript-replay",
             "corpus-grade",
+            "skill-command-validity",
         ):
             assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
         assert "ai-eval" not in result.output, result.output
+        assert "skill-prose-judge" not in result.output, result.output  # Tier-3 is metered, dropped by --free-only
 
     def test_free_only_never_discovers_specs_or_meters(self, tmp_path: Path) -> None:
         with (
@@ -1990,3 +2016,40 @@ class TestEvalAllCorpusGradeLane:
             result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "corpus-grade" in result.output
+
+
+class TestEvalAllSkillCommandValidityLane:
+    """Tier-1 (#550) runs as a free lane and FAILs on a stale `t3 …` reference."""
+
+    def test_command_validity_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "skill-command-validity" in result.output
+
+    def test_stale_command_reference_fails_the_suite(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], command_validity_ok=False):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "skill-command-validity" in result.output
+
+
+class TestEvalAllSkillProseJudgeLaneAdvisory:
+    """Tier-3 (#550) runs on the metered path but is ADVISORY — never fails the suite."""
+
+    def test_prose_judge_lane_runs_on_the_metered_path(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "skill-prose-judge" in result.output
+        assert "advisory" in result.output.lower()
+
+    def test_low_prose_score_does_not_fail_the_suite(self, tmp_path: Path) -> None:
+        # a weakest skill scored 0.2 is rendered + nominated but never fails the run
+        weak = ProseJudgeReport(scores=(ProseScore("worst", 0.0, "advisory"),), skipped=0)
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_prose_judge", return_value=weak),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output

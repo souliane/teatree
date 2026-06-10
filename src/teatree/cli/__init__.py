@@ -52,6 +52,7 @@ from teatree.cli.config import config_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.dogfood import dogfood_app
 from teatree.cli.eval import eval_app
+from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.infra import infra_app
 from teatree.cli.loop import loop_app
 from teatree.cli.mutation import mutation_app
@@ -218,6 +219,24 @@ def register_overlay_commands(allowlist: set[str] | None = None) -> None:
             settings_module = "teatree.settings"
         overlay_app = OverlayAppBuilder(entry.name, project_path, settings_module).build()
         app.add_typer(overlay_app, name=short_name)
+
+
+def _build_skill_command_registry() -> tuple[set[str], set[str]]:
+    """The live ``(valid_paths, group_paths)`` for the #550 Tier-1 lane.
+
+    Registers the ``teatree`` overlay's command group so the ``t3 teatree …``
+    invocations skill docs cite resolve, then introspects the assembled root app.
+    Lives here (the root CLI module) because the lane's dependency is inverted —
+    ``teatree.cli.eval`` cannot import ``teatree.cli`` (cycle), so the parent
+    injects this builder via ``register_command_registry_provider``.
+    """
+    from teatree.cli.command_tree import command_groups, command_paths  # noqa: PLC0415
+
+    register_overlay_commands(allowlist={"t3-teatree"})
+    return command_paths(app), command_groups(app)
+
+
+register_command_registry_provider(_build_skill_command_registry)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

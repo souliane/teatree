@@ -1215,36 +1215,40 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ negative-control      Self-test the harness: plant a known violation and     │
-│                       assert it is caught (token-free).                      │
-│ all                   Run every eval lane in sequence and render one unified │
-│                       summary table + verdict.                               │
-│ benchmark             Benchmark cost AND pass-rate of model@effort variants  │
-│                       against the eval suite.                                │
-│ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
-│                       scenario's transcript path.                            │
-│ transcript-replay     Replay a real session transcript against teatree       │
-│                       behavioural invariants.                                │
-│ skill-triggers        Validate every skill's trigger keywords against the    │
-│                       must-fire/must-not-fire corpus.                        │
-│ coverage              Report per-skill behavioral-eval coverage: every skill │
-│                       is covered or eval_exempt.                             │
-│ pinned-regressions    Run the deterministic regression corpus over the real  │
-│                       gate/checker code paths.                               │
-│ audit                 Audit captured sessions into the durable ledger and    │
-│                       print per-session verdicts.                            │
-│ list                  List discovered eval scenarios as a table (Name,       │
-│                       Scenario, Agent, File, Asserts).                       │
-│ run                   Run one scenario by name, or all scenarios when no     │
-│                       name is given.                                         │
-│ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
-│                       eval run.                                              │
-│ history               Show recent eval runs and per-scenario pass-rate over  │
-│                       time.                                                  │
-│ corpus                Ground-truth corpus curation: list, inspect, and grade │
-│                       captured sessions.                                     │
-│ label                 Corpus-label curation: list nominations, scaffold a    │
-│                       label, review the corpus.                              │
+│ negative-control        Self-test the harness: plant a known violation and   │
+│                         assert it is caught (token-free).                    │
+│ all                     Run every eval lane in sequence and render one       │
+│                         unified summary table + verdict.                     │
+│ benchmark               Benchmark cost AND pass-rate of model@effort         │
+│                         variants against the eval suite.                     │
+│ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
+│                         scenario's transcript path.                          │
+│ transcript-replay       Replay a real session transcript against teatree     │
+│                         behavioural invariants.                              │
+│ skill-triggers          Validate every skill's trigger keywords against the  │
+│                         must-fire/must-not-fire corpus.                      │
+│ coverage                Report per-skill behavioral-eval coverage: every     │
+│                         skill is covered or eval_exempt.                     │
+│ pinned-regressions      Run the deterministic regression corpus over the     │
+│                         real gate/checker code paths.                        │
+│ skill-command-validity  Validate every backticked ``t3 …`` in the skill docs │
+│                         against the live CLI registry.                       │
+│ skill-prose-judge       Score each skill's prose for clarity/actionability   │
+│                         via the LLM judge (ADVISORY).                        │
+│ audit                   Audit captured sessions into the durable ledger and  │
+│                         print per-session verdicts.                          │
+│ list                    List discovered eval scenarios as a table (Name,     │
+│                         Scenario, Agent, File, Asserts).                     │
+│ run                     Run one scenario by name, or all scenarios when no   │
+│                         name is given.                                       │
+│ prepare-subscription    Emit the per-scenario prompts for a LOCAL            │
+│                         subscription eval run.                               │
+│ history                 Show recent eval runs and per-scenario pass-rate     │
+│                         over time.                                           │
+│ corpus                  Ground-truth corpus curation: list, inspect, and     │
+│                         grade captured sessions.                             │
+│ label                   Corpus-label curation: list nominations, scaffold a  │
+│                         label, review the corpus.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1483,6 +1487,47 @@ Usage: t3 eval pinned-regressions [OPTIONS]
  bare-reference gate, the substrate-merge and maker≠checker floors, the
  pid-anchored loop lease, the migration-graph leaf count) on a must-block and
  a must-allow input. Any violated invariant exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval skill-command-validity`
+
+```
+Usage: t3 eval skill-command-validity [OPTIONS]
+
+ Validate every backticked ``t3 …`` in the skill docs against the live CLI
+ registry.
+
+ Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
+ backticked ``t3 …`` commands are token-walked against the live typer command
+ tree. A command that no longer resolves (a CLI rename left the doc stale) is a
+ violation — the "no stale references" rule — and exits non-zero. Generic
+ placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval skill-prose-judge`
+
+```
+Usage: t3 eval skill-prose-judge [OPTIONS]
+
+ Score each skill's prose for clarity/actionability via the LLM judge
+ (ADVISORY).
+
+ Tier-3 (model-judged): each ``skills/<name>/SKILL.md``'s prose is graded by
+ the existing ``ClaudeJudge`` seam and the verdict mapped to a coarse score.
+ ADVISORY by design — it ranks the skills worst-first and nominates the weakest
+ for a prose pass, but a low score NEVER exits non-zero (matcher / structural
+ lanes gate CI; this judge-only signal advises). The judge skips cleanly when
+ ``claude`` is not on PATH, so this never blocks a key-less contributor.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │

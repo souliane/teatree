@@ -1,13 +1,18 @@
 """``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
 
-The six free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
-negative-control, transcript-replay, corpus-grade) always run; skill-coverage is warn-first
-(reports a gap, never FAILs in Phase A), transcript-replay surfaces as a SKIP
-when no real session transcript is in scope (never a FAIL), and corpus-grade
-grades the ground-truth corpus deterministically (judge-oracle entries skip). The AI/trajectory lane grades
-subscription-produced transcripts when they exist on disk; with none it emits the
-subscription manifest plus the in-session recipe and NEVER silently shells the
-metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
+The seven free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
+negative-control, transcript-replay, corpus-grade, skill-command-validity) always run;
+skill-coverage is warn-first (reports a gap, never FAILs in Phase A), transcript-replay
+surfaces as a SKIP when no real session transcript is in scope (never a FAIL), corpus-grade
+grades the ground-truth corpus deterministically (judge-oracle entries skip), and
+skill-command-validity (#550 Tier-1) FAILs on a backticked ``t3 …`` in a SKILL.md that no
+longer resolves against the live CLI registry (the "no stale references" rule). The
+AI/trajectory lane grades subscription-produced transcripts when they exist on disk; with
+none it emits the subscription manifest plus the in-session recipe and NEVER silently shells
+the metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in. The
+metered path also runs the ADVISORY skill-prose-judge lane (#550 Tier-3) — it scores each
+SKILL.md's prose via the existing ``ClaudeJudge`` seam and nominates the weakest skill but
+NEVER fails the suite (judge-only is advisory; matcher/structural lanes gate CI).
 """
 
 import dataclasses
@@ -24,6 +29,8 @@ from rich.table import Table
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
+from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
+from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
 from teatree.cli.eval.verdict import LaneResult, print_verdict
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
@@ -206,9 +213,12 @@ def hint_missing_transcripts(runner: SubscriptionTranscriptRunner, missing: list
 
 def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
     table = Table(title="Eval suite — all lanes", show_lines=False)
-    table.add_column("Lane", style="bold")
-    table.add_column("Cost")
-    table.add_column("Status", justify="right")
+    # Lane / Cost / Status never wrap — the lane name is the identity a reader
+    # (and the lane-name assertions) keys on, so a long Detail must never squeeze
+    # it onto two lines. Only Detail wraps.
+    table.add_column("Lane", style="bold", no_wrap=True)
+    table.add_column("Cost", no_wrap=True)
+    table.add_column("Status", justify="right", no_wrap=True)
     table.add_column("Detail")
     for lane in lanes:
         color = "yellow" if lane.skipped else ("green" if lane.passed else "red")
@@ -264,13 +274,16 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
 
     Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
     call this so the no-arg path and the named path execute byte-for-byte the
-    same suite. The six free deterministic lanes (skill-triggers, skill-coverage,
-    pinned-regressions, negative-control, transcript-replay, corpus-grade) always
-    run; skill-coverage is warn-first, transcript-replay SKIPs when no real session
-    transcript is in scope (a missing run is not a violation), and corpus-grade
-    grades the ground-truth corpus deterministically (judge entries skip). The AI lane grades
-    subscription-produced transcripts when present and NEVER silently shells the
-    metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
+    same suite. The seven free deterministic lanes (skill-triggers, skill-coverage,
+    pinned-regressions, negative-control, transcript-replay, corpus-grade,
+    skill-command-validity) always run; skill-coverage is warn-first,
+    transcript-replay SKIPs when no real session transcript is in scope (a missing
+    run is not a violation), corpus-grade grades the ground-truth corpus
+    deterministically (judge entries skip), and skill-command-validity FAILs on a
+    stale ``t3 …`` reference in a SKILL.md. The AI lane grades subscription-produced
+    transcripts when present and NEVER silently shells the metered ``claude -p``
+    runner; ``--backend sdk`` is the explicit metered opt-in. The metered path also
+    runs the ADVISORY skill-prose-judge lane (never fails the suite).
     ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
     ``html_path`` writes a self-contained whole-suite HTML report (CI artifact).
 
@@ -300,10 +313,21 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         _timed(lambda: negative_control_lane(run_negative_control())),
         _timed(lambda: transcript_replay_lane(replay_transcript_for_all())),
         _timed(lambda: corpus_grade_lane(grade_shipped_corpus())),
+        _timed(lambda: skill_command_validity_lane(validate_shipped_skill_commands())),
     ]
     if not free_only:
-        lanes.append(
-            _timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
+        # The AI lane runs first, then the ADVISORY Tier-3 prose-judge lane (both
+        # model-metered, so off the --free-only path). skill_prose_judge_lane
+        # always returns passed=True, so a low prose score never fails the suite —
+        # only the deterministic lanes gate. _timed is eager and evaluated
+        # left-to-right, so order is preserved.
+        lanes.extend(
+            [
+                _timed(
+                    lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel)
+                ),
+                _timed(lambda: skill_prose_judge_lane(run_prose_judge())),
+            ]
         )
     Console().print(build_summary_table(lanes))
     print_verdict(lanes)

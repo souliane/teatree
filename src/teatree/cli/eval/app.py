@@ -28,6 +28,8 @@ from teatree.cli.eval.run_modes import (
     make_grader,
     render_subscription_text,
 )
+from teatree.cli.eval.skill_command_lane import skill_command_validity
+from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
 from teatree.eval.backends import (
     SDK_BACKEND,
@@ -57,6 +59,8 @@ eval_app.command("transcript-replay")(transcript_replay)
 eval_app.command("skill-triggers")(skill_triggers)
 eval_app.command("coverage")(coverage)
 eval_app.command("pinned-regressions")(pinned_regressions)
+eval_app.command("skill-command-validity")(skill_command_validity)
+eval_app.command("skill-prose-judge")(skill_prose_judge)
 eval_app.command("audit")(audit)
 eval_app.add_typer(corpus_app, name="corpus")
 eval_app.add_typer(label_app, name="label")
