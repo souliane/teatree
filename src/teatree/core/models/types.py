@@ -94,8 +94,9 @@ class TicketExtra(TypedDict, total=False):
     anti_vacuity_attestation: "AntiVacuityAttestation"
     # #2104 delivery-ownership lease: stamped when a hand-dispatched delivery
     # agent (``workspace ticket``) takes the unit, so the loop's scheduling
-    # chokepoints skip the auto-planner / duplicate review-arm a directly-
-    # implementing external owner never consumes (see ``ExternalDeliveryLease``).
+    # chokepoints skip the auto-planner / duplicate review-arm / global dispatch
+    # a directly-implementing external owner never consumes (#2217; see
+    # ``ExternalDeliveryLease``).
     external_delivery: "ExternalDeliveryLease"
     # Lightweight audited plan-gate carve-out: a per-ticket marker that this is a
     # trivial mechanical edit whose planning phase is skipped. Stamped via
