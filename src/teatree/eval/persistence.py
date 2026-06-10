@@ -25,11 +25,21 @@ from django.db import transaction
 
 from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 from teatree.eval.matrix import MatrixRow
-from teatree.eval.models import AnyOf, ExpectItem, Matcher
+from teatree.eval.models import AnyOf, ExpectItem, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+
+def _token_columns(usage: TokenUsage) -> dict[str, int]:
+    """Map a :class:`TokenUsage` onto the ``record_scenario`` token kwargs."""
+    return {
+        "input_tokens": usage.input,
+        "cache_creation_tokens": usage.cache_creation,
+        "cache_read_tokens": usage.cache_read,
+        "output_tokens": usage.output,
+    }
 
 
 def current_git_sha() -> str:
@@ -111,6 +121,7 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
                 matcher_details=_matcher_details(result),
                 judge_rationale=_judge_rationale(result),
                 cost_usd=result.run.cost_usd,
+                **_token_columns(result.run.usage),
             )
     return run
 
@@ -136,6 +147,7 @@ def persist_pass_at_k(
                 score=0.0 if result.skipped else result.pass_rate,
                 trials=result.trials,
                 cost_usd=result.cost_usd,
+                **_token_columns(result.usage),
             )
     return run
 
@@ -168,6 +180,7 @@ def persist_matrix(
                 score=0.0 if row.skipped else row.score,
                 trials=row.trials,
                 cost_usd=row.cost_usd,
+                **_token_columns(row.usage),
             )
     return run
 

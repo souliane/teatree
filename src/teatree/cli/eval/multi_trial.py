@@ -20,7 +20,7 @@ from teatree.cli.eval.run_modes import (
     with_model,
 )
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
-from teatree.eval.model_variant import ModelVariantError, parse_model_variants
+from teatree.eval.model_variant import ModelVariantError, parse_model_variant, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
@@ -264,8 +264,11 @@ def _matrix_trial(
             trials=result.trials,
             skipped=result.skipped,
             cost_usd=result.cost_usd,
+            usage=result.usage,
+            fell_back=_fell_back(billed_model=result.billed_model, requested=spec.model),
         )
     scenario_result = evaluate(spec, runner.run(spec), judge=grader)
+    run = scenario_result.run
     return MatrixRow(
         scenario=spec.name,
         model=spec.model,
@@ -273,5 +276,21 @@ def _matrix_trial(
         score=0.0 if scenario_result.skipped else (1.0 if scenario_result.passed else 0.0),
         trials=1,
         skipped=scenario_result.skipped,
-        cost_usd=scenario_result.run.cost_usd,
+        cost_usd=run.cost_usd,
+        usage=run.usage,
+        fell_back=_fell_back(billed_model=run.billed_model, requested=spec.model),
+        terminal_reason=run.terminal_reason,
     )
+
+
+def _fell_back(*, billed_model: str | None, requested: str) -> bool:
+    """``True`` when the cell's billed model differs from the requested variant's base model.
+
+    The requested tag is ``model[@effort]``; the comparison is on the BASE model
+    (effort is not a model). ``billed_model is None`` (a subscription/offline run
+    where the billed model is unobservable) is NOT a fallback — fallback is only
+    asserted when the billed model is known AND differs.
+    """
+    if billed_model is None:
+        return False
+    return billed_model != parse_model_variant(requested).model

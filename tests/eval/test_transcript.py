@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
+from teatree.eval.models import TokenUsage
+from teatree.eval.transcript import (
+    extract_billed_model,
+    extract_terminal_reason,
+    extract_text_blocks,
+    extract_tool_calls,
+    extract_usage,
+    parse_stream_json,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -84,6 +92,60 @@ class TestExtractTerminalReason:
         reason, is_error = extract_terminal_reason(events)
         assert reason == "error_max_turns"
         assert is_error is True
+
+
+class TestExtractUsage:
+    def test_full_usage_event_populates_token_usage(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","usage":{"input_tokens":120,'
+            '"cache_creation_input_tokens":340,"cache_read_input_tokens":6500,"output_tokens":80}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert extract_usage(events) == TokenUsage(input=120, cache_creation=340, cache_read=6500, output=80)
+
+    def test_missing_usage_yields_all_zero(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success"}\n')
+        assert extract_usage(events) == TokenUsage()
+
+    def test_no_result_event_yields_all_zero(self) -> None:
+        events = parse_stream_json(_load("aborted.stream.jsonl"))
+        assert extract_usage(events) == TokenUsage()
+
+    def test_partial_and_non_int_keys_default_to_zero(self) -> None:
+        stream = '{"type":"result","subtype":"success","usage":{"input_tokens":50,"output_tokens":"oops"}}\n'
+        events = parse_stream_json(stream)
+        assert extract_usage(events) == TokenUsage(input=50)
+
+    def test_non_dict_usage_yields_all_zero(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success","usage":"not a dict"}\n')
+        assert extract_usage(events) == TokenUsage()
+
+
+class TestExtractBilledModel:
+    def test_returns_dominant_model_usage_key(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-sonnet-4-6":{"input_tokens":10},"claude-opus-4-8":{"input_tokens":900}}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert extract_billed_model(events) == "claude-opus-4-8"
+
+    def test_returns_none_when_model_usage_absent(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success"}\n')
+        assert extract_billed_model(events) is None
+
+    def test_returns_none_when_no_result_event(self) -> None:
+        events = parse_stream_json(_load("aborted.stream.jsonl"))
+        assert extract_billed_model(events) is None
+
+    def test_single_model_usage_key_is_the_billed_model(self) -> None:
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-haiku-4-5":{"input_tokens":42}}}\n'
+        events = parse_stream_json(stream)
+        assert extract_billed_model(events) == "claude-haiku-4-5"
+
+    def test_non_dict_model_usage_yields_none(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success","model_usage":[1,2]}\n')
+        assert extract_billed_model(events) is None
 
 
 class TestMalformedStreams:

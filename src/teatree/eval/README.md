@@ -381,6 +381,54 @@ summary math/renderers live in `src/teatree/eval/benchmark.py`; the thin
 command in `src/teatree/cli/eval/benchmark.py` reuses the matrix lane's
 row collector.
 
+#### Cost reporting — billed headline + honest cache observability
+
+The benchmark's **billed `total cost` stays the headline** — it is the real
+spend the API metered, summing each cell's `total_cost_usd`. Re-pricing that at
+full input rates would be misleading: ~99% of input tokens are `cache_read` (the
+shared ~6.5k-token system prefix + intra-run multi-turn re-reads, near-identical
+across the variants compared), so charging that shared mass at full rate inflates
+cost 7–10x over real spend and amplifies a turn-count effect rather than removing
+the cache confound. So billed cost is the headline; the rest is honest
+observability around it.
+
+Each `ResultMessage.usage` is captured (`sdk_runner` → `transcript.extract_usage`
+→ `TokenUsage`, all-zero on a non-metered/subscription run, never raised) and
+summed per variant. The added columns:
+
+- **`cache-hit%`** — token-weighted (sum-then-divide, NOT mean-of-ratios) share
+  of input served from cache (`cache_read / total_input`).
+- **`cold-write%`** — share of input that did NOT benefit from cache
+  (`cache_creation / total_input`) — the price-table-free answer to "not all
+  turns benefit".
+- **`mean-out-tok`** — mean output tokens per executed cell, the
+  model-attributable cost axis.
+- **`warm-cost`** — the bounded **warm-equivalent** cost: what the variant would
+  pay if every cell fully benefited from the cache (cacheable input all priced at
+  the 0.10x read rate, removing the penalty cold cells paid). It is price-table-
+  free: per variant, `(base_in_rate, out_rate)` is recovered by least-squares over
+  that variant's OWN clean cells from the API's billed identity
+  (`billed = base_in * (input + 1.25*cache_creation + 0.10*cache_read) + out_rate
+  - output`; Anthropic's cache multipliers are fixed), then re-priced with the
+  cacheable mass at the read rate. **It never fabricates a number** — clean cells
+  exclude errored / cap-truncated / fallback / zero-cost cells, and the fit
+  degrades to`-` on too-few clean cells or an ill-conditioned normal matrix (a
+  full 160-scenario suite is well-conditioned; the 8-cell smoke slice is usually
+  `-`). The fit lives in the pure, unit-tested`src/teatree/eval/cost_fit.py`
+  (no numpy — a hand-rolled 2x2 normal-equation solve with an explicit
+  condition-number guard).
+
+When any cell **fell back** to a different model (`fallback_model` kicked in, so
+the billed model ≠ the requested base model), a clearly-visible `!` note line is
+appended — the billed cost mixes model rates, and a fallen-back cell is excluded
+from the warm-equivalent fit. `--format json` adds the per-variant `usage`
+breakdown (`input`/`cache_creation`/`cache_read`/`output`), `cache_hit_rate`,
+`cold_write_fraction`, `mean_output_tokens`, `warm_equivalent_cost_usd`, and
+`fell_back_cells`. The persisted run carries nullable per-scenario token columns
+(`input_tokens`/`cache_creation_tokens`/`cache_read_tokens`/`output_tokens` on
+`EvalScenarioResult`; NULL is distinct from a real metered 0 for
+legacy/subscription rows) for reproducibility.
+
 ### LLM-judge (opt-in, per scenario)
 
 Matcher grading is the default and stays so. A scenario whose pass/fail is not

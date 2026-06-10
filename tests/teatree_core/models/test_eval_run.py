@@ -41,6 +41,33 @@ class TestRecordScenario(TestCase):
         result = run.record_scenario(scenario_name="doc_update", verdict=EvalVerdict.FAIL)
         assert result.trial == 0
 
+    def test_persists_token_columns_when_given(self) -> None:
+        run = _record()
+        result = run.record_scenario(
+            scenario_name="worktree_first",
+            verdict=EvalVerdict.PASS,
+            input_tokens=120,
+            cache_creation_tokens=340,
+            cache_read_tokens=6500,
+            output_tokens=80,
+        )
+        result.refresh_from_db()
+        assert result.input_tokens == 120
+        assert result.cache_creation_tokens == 340
+        assert result.cache_read_tokens == 6500
+        assert result.output_tokens == 80
+
+    def test_token_columns_default_to_null_for_legacy_rows(self) -> None:
+        # NULL (not 0) distinguishes a legacy/subscription row with no usage
+        # signal from a real metered 0.
+        run = _record()
+        result = run.record_scenario(scenario_name="doc_update", verdict=EvalVerdict.FAIL)
+        result.refresh_from_db()
+        assert result.input_tokens is None
+        assert result.cache_creation_tokens is None
+        assert result.cache_read_tokens is None
+        assert result.output_tokens is None
+
 
 class TestRunCounts(TestCase):
     def test_counts_partition_by_verdict(self) -> None:

@@ -23,7 +23,7 @@ over :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` + ``evaluate``.
 import dataclasses
 from collections.abc import Callable
 
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import EvalSpec, TokenUsage
 from teatree.eval.report import ScenarioResult
 
 TrialRunner = Callable[[EvalSpec], ScenarioResult]
@@ -39,6 +39,13 @@ class PassAtKResult:
     #: Total metered cost across every trial (0.0 for a non-metered/subscription
     #: run) — the substrate the cost-regression gate reads in the pass@k lane.
     cost_usd: float = 0.0
+    #: Total token usage summed across every trial (all-zero for a non-metered
+    #: run), mirroring ``cost_usd`` — the substrate for the benchmark's cache
+    #: columns when a cell runs k trials.
+    usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: The billed model of the LAST trial (the model that actually ran;
+    #: ``None`` for a non-metered run) — the fallback-detection signal.
+    billed_model: str | None = None
 
     @property
     def pass_rate(self) -> float:
@@ -69,9 +76,14 @@ def run_pass_at_k(
     passes = 0
     skipped_all = True
     cost_usd = 0.0
+    usage = TokenUsage()
+    billed_model: str | None = None
     for _ in range(k):
         result = runner(spec)
         cost_usd += result.run.cost_usd
+        usage += result.run.usage
+        if result.run.billed_model is not None:
+            billed_model = result.run.billed_model
         if result.skipped:
             continue
         skipped_all = False
@@ -84,4 +96,6 @@ def run_pass_at_k(
         require=require,
         skipped=skipped_all,
         cost_usd=cost_usd,
+        usage=usage,
+        billed_model=billed_model,
     )

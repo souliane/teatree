@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
-from teatree.eval.models import EvalSpec, Matcher
+from teatree.eval.models import EvalSpec, Matcher, TokenUsage
 from teatree.eval.sdk_runner import (
     MAX_BUDGET_USD,
     BudgetExceededError,
@@ -25,6 +25,7 @@ from teatree.eval.sdk_runner import (
     build_sdk_options,
     classify_terminal_error,
 )
+from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
 
 def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
@@ -64,8 +65,14 @@ def _fake_query(messages: list[Any]):
     return _query, captured
 
 
-def _result(
-    *, subtype: str = "success", is_error: bool = False, total_cost_usd: float | None = 0.0123, num_turns: int = 2
+def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a ResultMessage field a case varies.
+    *,
+    subtype: str = "success",
+    is_error: bool = False,
+    total_cost_usd: float | None = 0.0123,
+    num_turns: int = 2,
+    usage: dict[str, Any] | None = None,
+    model_usage: dict[str, Any] | None = None,
 ) -> ResultMessage:
     return ResultMessage(
         subtype=subtype,
@@ -75,6 +82,8 @@ def _result(
         num_turns=num_turns,
         session_id="s1",
         total_cost_usd=total_cost_usd,
+        usage=usage,
+        model_usage=model_usage,
         result="ok",
     )
 
@@ -133,6 +142,30 @@ class TestSdkInProcessRunnerCapture:
         assert run.tool_calls[1].turn == 2
         assert run.text_blocks == ("Creating a worktree first.",)
         assert run.cost_usd == pytest.approx(0.0456)
+
+    def test_captures_usage_and_billed_model(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        messages = [
+            _result(
+                total_cost_usd=0.0456,
+                usage={
+                    "input_tokens": 120,
+                    "cache_creation_input_tokens": 340,
+                    "cache_read_input_tokens": 6500,
+                    "output_tokens": 80,
+                },
+                model_usage={"claude-opus-4-8": {"input_tokens": 6960, "output_tokens": 80}},
+            ),
+        ]
+        run, _ = self._run(spec, messages)
+        assert run.usage == TokenUsage(input=120, cache_creation=340, cache_read=6500, output=80)
+        assert run.billed_model == "claude-opus-4-8"
+
+    def test_run_without_usage_has_all_zero_usage_and_no_billed_model(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        run, _ = self._run(spec, [_result(total_cost_usd=None)])
+        assert run.usage == TokenUsage()
+        assert run.billed_model is None
 
     def test_error_result_marks_is_error(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
@@ -214,6 +247,38 @@ class TestSdkInProcessRunnerCapture:
             run = SdkInProcessRunner(workspace=tmp_path).run(spec)
         assert run.terminal_reason == "timeout"
         assert run.is_error is True
+
+
+class TestUsageSchemaConformance:
+    """Fail loud if the SDK ``ResultMessage.usage`` wire keys drift (#2192).
+
+    Cost observability is keyed on four ``usage`` keys. If a future SDK renames
+    or drops one, the round-trip below silently zeroes that token class — a
+    silent loss of the cache-cost signal. This pins the contract so the drift is
+    a RED test, not an invisible regression.
+    """
+
+    _WIRE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+    def test_extractor_mapping_names_exactly_the_four_wire_keys(self) -> None:
+        assert tuple(key for key, _ in _USAGE_KEY_TO_FIELD) == self._WIRE_KEYS
+
+    def test_result_message_carries_a_usage_field(self) -> None:
+        # The SDK type itself must keep a ``usage`` slot — the runner reads it.
+        message = _result(usage=dict.fromkeys(self._WIRE_KEYS, 1))
+        assert message.usage == dict.fromkeys(self._WIRE_KEYS, 1)
+
+    def test_representative_usage_round_trips_through_the_runner(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        usage = {key: i + 1 for i, key in enumerate(self._WIRE_KEYS)}
+        messages = [_result(usage=usage, model_usage={"claude-opus-4-8": usage})]
+        query, _ = _fake_query(messages)
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            run = SdkInProcessRunner().run(spec)
+        assert run.usage == TokenUsage(input=1, cache_creation=2, cache_read=3, output=4)
 
 
 class TestSdkInProcessRunnerAgentDefinition:

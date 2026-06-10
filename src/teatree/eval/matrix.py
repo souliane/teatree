@@ -11,7 +11,7 @@ touching ``claude -p`` or the DB.
 import dataclasses
 import json
 
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import EvalSpec, TokenUsage
 
 
 @dataclasses.dataclass(frozen=True)
@@ -34,6 +34,20 @@ class MatrixRow:
     #: is excluded from the pass-rate so a transient blip never lowers a model's
     #: measured score.
     errored: bool = False
+    #: This cell's token usage (summed across trials, mirroring ``cost_usd``;
+    #: all-zero for a non-metered/subscription run or an errored cell) — the
+    #: substrate for the benchmark's honest cache-cost columns.
+    usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: The cell's billed model differs from the requested variant's base model —
+    #: ``fallback_model`` kicked in, so the billed cost mixes model rates. The
+    #: benchmark surfaces this so a fallen-back cell's cost isn't read as the
+    #: requested model's. Unobservable (subscription/offline) cells are ``False``.
+    fell_back: bool = False
+    #: The run's terminal reason (``success``/``end_turn`` for a clean finish,
+    #: ``budget_exceeded``/``max_turns``/``timeout``/``error_*`` for a cap). The
+    #: warm-equivalent fit excludes cap-truncated cells, whose billed cost does
+    #: not match the clean identity and would bias the fit.
+    terminal_reason: str = ""
 
 
 def matrix_cell(row: MatrixRow | None) -> str:

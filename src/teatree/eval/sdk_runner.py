@@ -58,10 +58,12 @@ from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
+    extract_billed_model,
     extract_cost_usd,
     extract_terminal_reason,
     extract_text_blocks,
     extract_tool_calls,
+    extract_usage,
     parse_stream_json,
 )
 
@@ -401,6 +403,8 @@ def _eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
         raw_stdout=raw_stdout,
         raw_stderr="",
         cost_usd=extract_cost_usd(events),
+        usage=extract_usage(events),
+        billed_model=extract_billed_model(events),
     )
 
 
@@ -424,6 +428,8 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
             "subtype": message.subtype,
             "is_error": message.is_error,
             "total_cost_usd": message.total_cost_usd,
+            "usage": message.usage,
+            "model_usage": message.model_usage,
         }
     return None
 

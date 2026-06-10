@@ -15,7 +15,18 @@ import dataclasses
 import json
 from typing import Any
 
-from teatree.eval.models import EvalToolCall
+from teatree.eval.models import EvalToolCall, TokenUsage
+
+#: The four ``ResultMessage.usage`` keys the API bills on, mapped onto the
+#: :class:`TokenUsage` fields. The mapping is the single place a future SDK
+#: rename would have to be reflected; the conformance test pins these keys so a
+#: silent drop fails loud rather than zeroing cost observability.
+_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "input"),
+    ("cache_creation_input_tokens", "cache_creation"),
+    ("cache_read_input_tokens", "cache_read"),
+    ("output_tokens", "output"),
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,3 +143,57 @@ def extract_cost_usd(events: list[StreamJsonEvent]) -> float:
             return float(raw_cost)
         return 0.0
     return 0.0
+
+
+def extract_usage(events: list[StreamJsonEvent]) -> TokenUsage:
+    """Return the ``usage`` token split from the final ``result`` event, all-zero when absent.
+
+    Mirrors :func:`extract_cost_usd` defensively: a subscription / offline /
+    capped run omits ``usage`` (and a metered run that drops a key, or carries a
+    non-int value, must not crash cost observability) — every missing or
+    non-int key defaults to ``0``, so the worst case is an all-zero
+    :class:`TokenUsage`, never a raise.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        usage = event.raw.get("usage")
+        if not isinstance(usage, dict):
+            return TokenUsage()
+        return TokenUsage(**_token_fields(usage))
+    return TokenUsage()
+
+
+def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
+    """Return the model that actually ran — the dominant ``model_usage`` key — or ``None``.
+
+    ``model_usage`` is a per-model usage map; the model that billed the most
+    tokens is the one that ran (it differs from the requested model when
+    ``fallback_model`` kicked in). Returns ``None`` when no ``result`` event, no
+    ``model_usage``, or a malformed (non-dict / empty) map — the caller treats
+    ``None`` as "not observable", never as a fallback signal.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        model_usage = event.raw.get("model_usage")
+        if not isinstance(model_usage, dict) or not model_usage:
+            return None
+        return max(model_usage, key=lambda key: _model_usage_volume(model_usage[key]))
+    return None
+
+
+def _int_or_zero(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _token_fields(raw: dict[Any, Any]) -> dict[str, int]:
+    """Map the four wire keys of a ``usage``/``model_usage`` entry onto field ints."""
+    return {field: _int_or_zero(raw.get(key)) for key, field in _USAGE_KEY_TO_FIELD}
+
+
+def _model_usage_volume(per_model: object) -> int:
+    """Total token volume of one ``model_usage`` entry — the dominance key."""
+    if not isinstance(per_model, dict):
+        return 0
+    return sum(_token_fields(per_model).values())

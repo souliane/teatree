@@ -221,6 +221,10 @@ class EvalRunRecord(models.Model):
         matcher_details: list[MatcherDetail] | None = None,
         judge_rationale: str = "",
         cost_usd: float = 0.0,
+        input_tokens: int | None = None,
+        cache_creation_tokens: int | None = None,
+        cache_read_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> "EvalScenarioResult":
         return EvalScenarioResult.objects.create(
             run=self,
@@ -236,6 +240,10 @@ class EvalRunRecord(models.Model):
             matcher_details=matcher_details or [],
             judge_rationale=judge_rationale,
             cost_usd=cost_usd,
+            input_tokens=input_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+            output_tokens=output_tokens,
         )
 
     def pass_rates(self, *, model: str | None = None) -> list[ScenarioPassRate]:
@@ -376,6 +384,12 @@ class EvalScenarioResult(models.Model):
     matcher_details = models.JSONField(default=list, blank=True)
     judge_rationale = models.CharField(max_length=512, blank=True, default="")
     cost_usd = models.FloatField(default=0.0)
+    # Token usage split by cache class. NULLABLE so NULL (a legacy / subscription
+    # / offline row with no usage signal) is distinct from a real metered 0.
+    input_tokens = models.IntegerField(null=True, blank=True, default=None)
+    cache_creation_tokens = models.IntegerField(null=True, blank=True, default=None)
+    cache_read_tokens = models.IntegerField(null=True, blank=True, default=None)
+    output_tokens = models.IntegerField(null=True, blank=True, default=None)
 
     objects = EvalScenarioResultManager()
 

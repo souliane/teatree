@@ -13,7 +13,17 @@ the DB.
 import dataclasses
 import json
 
+from teatree.eval.cost_fit import CostCell, warm_equivalent_cost
 from teatree.eval.matrix import MatrixRow
+from teatree.eval.models import TokenUsage
+
+#: Terminal reasons that mark a cap-truncated / aborted run — a cell whose
+#: billed cost does NOT match the clean billed identity (it paid a partial-or-
+#: cap cost) and so must be excluded from the warm-equivalent fit. A clean
+#: completion (``success``/``end_turn``/empty) is NOT in this set.
+_CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {"budget_exceeded", "max_turns", "timeout", "error_max_turns", "error_max_budget_usd", "aborted"}
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,6 +40,15 @@ class VariantSummary:
     skipped: int
     errored: int
     total_cost_usd: float
+    #: Token usage summed across the executed cells (errored/skipped excluded) —
+    #: the substrate for the token-weighted cache columns below.
+    usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: Count of executed cells whose billed model fell back to a different model.
+    fell_back_cells: int = 0
+    #: The bounded "warm-equivalent" cost: what the variant would pay if every
+    #: cell fully benefited from the cache. ``None`` when the per-variant fit
+    #: degrades (too few clean cells / ill-conditioned) — never fabricated.
+    warm_equivalent_cost_usd: float | None = None
 
     @property
     def pass_rate(self) -> float:
@@ -44,6 +63,22 @@ class VariantSummary:
         """Total cost divided by passes — ``None`` when nothing passed (undefined)."""
         return self.total_cost_usd / self.passed if self.passed else None
 
+    @property
+    def cache_hit_rate(self) -> float:
+        """Token-weighted cache-hit rate (sum-then-divide, NOT a mean of per-cell ratios)."""
+        return self.usage.cache_hit_rate
+
+    @property
+    def cold_write_fraction(self) -> float:
+        """Share of input that did NOT benefit from cache (``cold_write_tokens / total_input``); 0.0 when no input."""
+        total = self.usage.total_input
+        return self.usage.cold_write_tokens / total if total else 0.0
+
+    @property
+    def mean_output_tokens(self) -> float:
+        """Mean output tokens per executed cell — the model-attributable cost axis; 0.0 when none executed."""
+        return self.usage.output / self.executed if self.executed else 0.0
+
 
 def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[VariantSummary]:
     """Fold matrix rows into one summary per variant, in the given variant order."""
@@ -55,6 +90,7 @@ def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[Vari
         # run_modes.py, which counts ``not skipped`` — an errored cell still
         # proves the suite ran something there.)
         executed = [cell for cell in cells if not cell.skipped and not cell.errored]
+        usage = sum((cell.usage for cell in executed), TokenUsage())
         summaries.append(
             VariantSummary(
                 variant=variant,
@@ -63,14 +99,50 @@ def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[Vari
                 skipped=sum(1 for cell in cells if cell.skipped),
                 errored=sum(1 for cell in cells if cell.errored),
                 total_cost_usd=sum(cell.cost_usd for cell in executed),
+                usage=usage,
+                fell_back_cells=sum(1 for cell in executed if cell.fell_back),
+                warm_equivalent_cost_usd=warm_equivalent_cost(_clean_cost_cells(executed)),
             )
         )
     return summaries
 
 
+def _clean_cost_cells(executed: list[MatrixRow]) -> list[CostCell]:
+    """The executed cells whose billed cost matches the clean identity — the fit's input.
+
+    EXCLUDES cap-truncated cells (a cap terminal reason), fallback cells (billed
+    cost mixes model rates), and zero-cost cells (a non-metered/subscription
+    row carries no usable billed number). Errored/skipped cells are already
+    excluded upstream (they are not in ``executed``).
+    """
+    return [
+        CostCell(usage=cell.usage, billed_usd=cell.cost_usd)
+        for cell in executed
+        if cell.cost_usd > 0.0 and not cell.fell_back and cell.terminal_reason not in _CAP_TERMINAL_REASONS
+    ]
+
+
 def render_benchmark_text(summaries: list[VariantSummary]) -> str:
-    """Render the per-variant comparison table (one line per variant)."""
-    headers = ("variant", "passed", "pass-rate", "errored", "total cost", "mean cost/scn", "cost/pass")
+    """Render the per-variant comparison table (one line per variant).
+
+    Billed ``total cost`` stays the headline; the added ``cache-hit%`` /
+    ``cold-write%`` / ``mean-out-tok`` / ``warm-cost`` columns are the honest
+    cache-cost diagnostics. ``warm-cost`` is ``-`` when the per-variant fit
+    degrades. Any variant with a fallen-back cell appends a clearly-visible note.
+    """
+    headers = (
+        "variant",
+        "passed",
+        "pass-rate",
+        "errored",
+        "total cost",
+        "mean cost/scn",
+        "cost/pass",
+        "cache-hit%",
+        "cold-write%",
+        "mean-out-tok",
+        "warm-cost",
+    )
     rows = [
         (
             summary.variant,
@@ -80,6 +152,10 @@ def render_benchmark_text(summaries: list[VariantSummary]) -> str:
             f"${summary.total_cost_usd:.4f}",
             f"${summary.mean_cost_usd:.4f}",
             "-" if summary.cost_per_pass_usd is None else f"${summary.cost_per_pass_usd:.4f}",
+            f"{summary.cache_hit_rate:.0%}",
+            f"{summary.cold_write_fraction:.0%}",
+            f"{summary.mean_output_tokens:.0f}",
+            "-" if summary.warm_equivalent_cost_usd is None else f"${summary.warm_equivalent_cost_usd:.4f}",
         )
         for summary in summaries
     ]
@@ -87,11 +163,17 @@ def render_benchmark_text(summaries: list[VariantSummary]) -> str:
     header_line = "  ".join(header.ljust(width) for header, width in zip(headers, widths, strict=True))
     lines = [header_line, "-" * len(header_line)]
     lines.extend("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)) for row in rows)
+    lines.extend(
+        f"! {summary.variant}: {summary.fell_back_cells} cell(s) fell back to a different model "
+        "— billed cost mixes model rates"
+        for summary in summaries
+        if summary.fell_back_cells > 0
+    )
     return "\n".join(lines)
 
 
 def render_benchmark_json(summaries: list[VariantSummary]) -> str:
-    """Render ``{"variants": [{variant, passed, executed, skipped, errored, rates, costs}]}``."""
+    """Render ``{"variants": [{variant, passed, …, usage, cache metrics, warm cost}]}``."""
     payload = {
         "variants": [
             {
@@ -104,6 +186,17 @@ def render_benchmark_json(summaries: list[VariantSummary]) -> str:
                 "total_cost_usd": summary.total_cost_usd,
                 "mean_cost_usd": summary.mean_cost_usd,
                 "cost_per_pass_usd": summary.cost_per_pass_usd,
+                "usage": {
+                    "input": summary.usage.input,
+                    "cache_creation": summary.usage.cache_creation,
+                    "cache_read": summary.usage.cache_read,
+                    "output": summary.usage.output,
+                },
+                "cache_hit_rate": summary.cache_hit_rate,
+                "cold_write_fraction": summary.cold_write_fraction,
+                "mean_output_tokens": summary.mean_output_tokens,
+                "warm_equivalent_cost_usd": summary.warm_equivalent_cost_usd,
+                "fell_back_cells": summary.fell_back_cells,
             }
             for summary in summaries
         ]
