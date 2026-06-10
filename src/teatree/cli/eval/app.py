@@ -9,7 +9,10 @@ from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import build_scenarios_table, hint_missing_transcripts, run_full_suite
+from teatree.cli.eval.audit import audit
 from teatree.cli.eval.capture_subagent import capture_subagent
+from teatree.cli.eval.corpus import corpus_app
+from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
@@ -55,6 +58,9 @@ eval_app.command("transcript-replay")(transcript_replay)
 eval_app.command("skill-triggers")(skill_triggers)
 eval_app.command("coverage")(coverage)
 eval_app.command("pinned-regressions")(pinned_regressions)
+eval_app.command("audit")(audit)
+eval_app.add_typer(corpus_app, name="corpus")
+eval_app.add_typer(label_app, name="label")
 
 
 @eval_app.command("list")

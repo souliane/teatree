@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
 from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
@@ -1006,7 +1007,14 @@ class TestEvalDefault:
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
-        for lane in ("skill-triggers", "skill-coverage", "pinned-regressions", "negative-control", "transcript-replay"):
+        for lane in (
+            "skill-triggers",
+            "skill-coverage",
+            "pinned-regressions",
+            "negative-control",
+            "transcript-replay",
+            "corpus-grade",
+        ):
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
 
     def test_bare_eval_with_no_args_at_all_runs_the_suite(self) -> None:
@@ -1113,6 +1121,7 @@ class TestEvalAll:
             "pinned-regressions",
             "negative-control",
             "transcript-replay",
+            "corpus-grade",
             "ai-eval",
         )
         for lane in lanes:
@@ -1128,7 +1137,14 @@ class TestEvalAll:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
-        for lane in ("skill-triggers", "skill-coverage", "pinned-regressions", "negative-control", "transcript-replay"):
+        for lane in (
+            "skill-triggers",
+            "skill-coverage",
+            "pinned-regressions",
+            "negative-control",
+            "transcript-replay",
+            "corpus-grade",
+        ):
             assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
         assert "ai-eval" not in result.output, result.output
 
@@ -1483,3 +1499,24 @@ class TestEvalCoverage:
             result = CliRunner().invoke(app, ["eval", "coverage", "--format", "yaml"])
         assert result.exit_code == 2
         assert "unknown --format" in result.output
+
+
+class TestEvalAllCorpusGradeLane:
+    """The deterministic corpus part runs as a free lane in the full suite."""
+
+    def test_corpus_grade_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "corpus-grade" in result.output
+        assert "judge-skipped" in result.output
+
+    def test_failing_corpus_grade_fails_the_suite(self, tmp_path: Path) -> None:
+        failing = [CorpusGradeRow(entry_id="x_entry", oracle="matcher", verdict="fail", detail="1/1 matchers failed")]
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=failing),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "corpus-grade" in result.output

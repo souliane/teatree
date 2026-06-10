@@ -1227,6 +1227,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       is covered or eval_exempt.                             │
 │ pinned-regressions    Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
+│ audit                 Audit captured sessions into the durable ledger and    │
+│                       print per-session verdicts.                            │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1237,6 +1239,10 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       time.                                                  │
 │ all                   Run every eval lane in sequence and render one unified │
 │                       summary table + verdict.                               │
+│ corpus                Ground-truth corpus curation: list, inspect, and grade │
+│                       captured sessions.                                     │
+│ label                 Corpus-label curation: list nominations, scaffold a    │
+│                       label, review the corpus.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1368,6 +1374,32 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval audit`
+
+```
+Usage: t3 eval audit [OPTIONS]
+
+ Audit captured sessions into the durable ledger and print per-session
+ verdicts.
+
+ Each audited session yields one persisted ``SessionAuditRecord`` (verdict,
+ categorical triple, nominated-for-label flag); the closing line counts the
+ nominations the labelling queue (``t3 eval label nominate``) picks up.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit            INTEGER  Audit this many most-recent sessions for the     │
+│                             cwd's project.                                   │
+│                             [default: 20]                                    │
+│ --session          TEXT     Audit one specific session id instead of the     │
+│                             recent batch.                                    │
+│ --confusion        TEXT     After auditing, render the confusion matrix for  │
+│                             this outcome axis from the persisted ledger.     │
+│ --json                      With --confusion: render the matrix as JSON      │
+│                             instead of text.                                 │
+│ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1647,6 +1679,165 @@ Usage: t3 eval all [OPTIONS]
 │ --html                  PATH     Write a self-contained whole-suite HTML     │
 │                                  report to this path (CI artifact).          │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval corpus`
+
+```
+Usage: t3 eval corpus [OPTIONS] COMMAND [ARGS]...
+
+ Ground-truth corpus curation: list, inspect, and grade captured sessions.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list   List corpus entries: id, oracle, confidence, axis, expected outcome,  │
+│        labeller (sorted by id).                                              │
+│ show   Show one label in full plus a privacy-safe session summary (counts    │
+│        only, never payloads).                                                │
+│ grade  Grade corpus entries against their ground-truth labels; any FAIL      │
+│        exits non-zero.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus list`
+
+```
+Usage: t3 eval corpus list [OPTIONS]
+
+ List corpus entries: id, oracle, confidence, axis, expected outcome, labeller
+ (sorted by id).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus show`
+
+```
+Usage: t3 eval corpus show [OPTIONS] ENTRY_ID
+
+ Show one label in full plus a privacy-safe session summary (counts only, never
+ payloads).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    entry_id      TEXT  Corpus entry id to inspect. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus grade`
+
+```
+Usage: t3 eval corpus grade [OPTIONS] [ENTRY_ID]
+
+ Grade corpus entries against their ground-truth labels; any FAIL exits
+ non-zero.
+
+ Every entry passes
+ :func:`~teatree.eval.corpus_grade.assert_independent_oracle`
+ first — a matcher entry whose labeller is its rule author grades as a FAIL
+ row rather than silently agreeing with itself.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   entry_id      [ENTRY_ID]  Corpus entry id to grade (omit to grade all).    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir                           PATH     Corpus directory (default: the      │
+│                                          shipped corpus).                    │
+│ --judge           --no-judge             Grade judge-oracle entries with the │
+│                                          LLM judge (metered). The --no-judge │
+│                                          default is free and deterministic:  │
+│                                          judge entries SKIP with a note;     │
+│                                          `both` entries grade their matcher  │
+│                                          part.                               │
+│                                          [default: no-judge]                 │
+│ --judge-budget                  INTEGER  Max LLM-judge calls per run (cost   │
+│                                          cap).                               │
+│                                          [default: 20]                       │
+│ --help                                   Show this message and exit.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval label`
+
+```
+Usage: t3 eval label [OPTIONS] COMMAND [ARGS]...
+
+ Corpus-label curation: list nominations, scaffold a label, review the corpus.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ nominate  List the audit records nominated for ground-truth labelling.       │
+│ add       Scaffold a corpus entry: copy the session capture and write a      │
+│           label template.                                                    │
+│ review    Validate every corpus label loads and every matcher oracle is      │
+│           independent.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label nominate`
+
+```
+Usage: t3 eval label nominate [OPTIONS]
+
+ List the audit records nominated for ground-truth labelling.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label add`
+
+```
+Usage: t3 eval label add [OPTIONS] SESSION_ID
+
+ Scaffold a corpus entry: copy the session capture and write a label template.
+
+ Refuses (exit 1, nothing written) when the publication privacy scanner finds
+ a hit in the capture — a real session log must be redacted before it can
+ live in the public corpus. The template pre-fills the categorical fields
+ from the session's audit record; ``labelled_by``, ``expected_behavior``, and
+ ``expect`` are left for the human labeller, and the printed label path is
+ the file to edit.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    session_id      TEXT  Session id of an audited session to scaffold into │
+│                            the corpus.                                       │
+│                            [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --entry-id        TEXT  Corpus entry id (default: derived from the session   │
+│                         id).                                                 │
+│ --dir             PATH  Corpus directory (default: the shipped corpus).      │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label review`
+
+```
+Usage: t3 eval label review [OPTIONS]
+
+ Validate every corpus label loads and every matcher oracle is independent.
+
+ Non-zero exit on any failure: a label that does not parse/validate
+ (``EvalSpecError``) or a matcher-oracle label whose labeller is the rule's
+ author (``CircularOracleError``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

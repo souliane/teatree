@@ -32,9 +32,19 @@ def resolve_transcript(*, latest: bool, session: str | None, file: Path | None) 
         match = None
     if match is None:
         return None
+    return find_session_file(match.session_id)
+
+
+def find_session_file(session_id: str) -> Path | None:
+    """Locate one session id's on-disk JSONL under ``~/.claude/projects``.
+
+    The single home of the projects-directory lookup, shared by
+    :func:`resolve_transcript` and the ``t3 eval audit`` / ``t3 eval label add``
+    curation commands. ``None`` when no project carries the session.
+    """
     projects_dir = Path.home() / ".claude" / "projects"
     for project_path in projects_dir.iterdir() if projects_dir.is_dir() else []:
-        candidate = project_path / f"{match.session_id}.jsonl"
+        candidate = project_path / f"{session_id}.jsonl"
         if candidate.is_file():
             return candidate
     return None

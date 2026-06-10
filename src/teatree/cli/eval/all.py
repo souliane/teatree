@@ -1,9 +1,10 @@
 """``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
 
-The five free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
-negative-control, transcript-replay) always run; skill-coverage is warn-first
-(reports a gap, never FAILs in Phase A) and transcript-replay surfaces as a SKIP
-when no real session transcript is in scope (never a FAIL). The AI/trajectory lane grades
+The six free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
+negative-control, transcript-replay, corpus-grade) always run; skill-coverage is warn-first
+(reports a gap, never FAILs in Phase A), transcript-replay surfaces as a SKIP
+when no real session transcript is in scope (never a FAIL), and corpus-grade
+grades the ground-truth corpus deterministically (judge-oracle entries skip). The AI/trajectory lane grades
 subscription-produced transcripts when they exist on disk; with none it emits the
 subscription manifest plus the in-session recipe and NEVER silently shells the
 metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
@@ -20,6 +21,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
@@ -253,10 +255,11 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
 
     Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
     call this so the no-arg path and the named path execute byte-for-byte the
-    same suite. The five free deterministic lanes (skill-triggers, skill-coverage,
-    pinned-regressions, negative-control, transcript-replay) always run;
-    skill-coverage is warn-first and transcript-replay SKIPs when no real session
-    transcript is in scope (a missing run is not a violation). The AI lane grades
+    same suite. The six free deterministic lanes (skill-triggers, skill-coverage,
+    pinned-regressions, negative-control, transcript-replay, corpus-grade) always
+    run; skill-coverage is warn-first, transcript-replay SKIPs when no real session
+    transcript is in scope (a missing run is not a violation), and corpus-grade
+    grades the ground-truth corpus deterministically (judge entries skip). The AI lane grades
     subscription-produced transcripts when present and NEVER silently shells the
     metered ``claude -p`` runner; ``--backend sdk`` is the explicit metered opt-in.
     ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
@@ -287,6 +290,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         _timed(lambda: regression_lane(run_regression_corpus())),
         _timed(lambda: negative_control_lane(run_negative_control())),
         _timed(lambda: transcript_replay_lane(replay_transcript_for_all())),
+        _timed(lambda: corpus_grade_lane(grade_shipped_corpus())),
     ]
     if not free_only:
         lanes.append(

@@ -23,7 +23,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
@@ -86,7 +86,7 @@ installed editable from a clone; the eval harness ships inside it.
 t3 eval                                      # THE DEFAULT: run the WHOLE suite (all lanes) in one summary table — no subcommand, no args
 t3 eval list                                # show available scenarios as a rich table
 t3 eval all                                  # explicit alias of the bare-`t3 eval` default (all lanes) — kept for scripts/CI that spell it out
-t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane); bare `t3 eval --free-only` is identical
+t3 eval all --free-only                       # the six free deterministic lanes only (no AI lane); bare `t3 eval --free-only` is identical
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; bare `t3 eval --docker` is identical
 t3 eval run --backend sdk --docker            # run the metered Agent-SDK lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
@@ -116,6 +116,15 @@ t3 eval pinned-regressions                    # deterministic real-code-path reg
 t3 eval pinned-regressions --format json      # JSON: per-class ok/skipped/origin/detail
 t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
 t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
+t3 eval corpus list                           # ground-truth corpus entries (id, oracle, confidence, axis, expected, labeller)
+t3 eval corpus show <entry_id>                # one label in full + a privacy-safe session summary (counts only)
+t3 eval corpus grade                          # grade every entry (--no-judge default: free; judge-oracle entries skip); FAIL exits non-zero
+t3 eval corpus grade <entry_id> --judge       # grade one entry incl. its LLM-judge oracle (metered)
+t3 eval audit                                 # conversation-audit the recent sessions into the ledger (--limit N, --session <id>)
+t3 eval audit --confusion <axis>              # …then render the confusion matrix for one outcome axis (--json for machine form)
+t3 eval label nominate                        # audit records nominated for ground-truth labelling
+t3 eval label add <session-id>                # scaffold a corpus entry from an audited session (redaction-guarded)
+t3 eval label review                          # validate every label loads + every matcher oracle is independent (non-zero on failure)
 ```
 
 The two deterministic lanes are wired into prek under their explicit names: the
@@ -210,9 +219,9 @@ still publishes its report).
 `t3 eval all` is the spelled-out form of the bare `t3 eval` default — both call
 the same `run_full_suite` chokepoint, so they run byte-for-byte the same suite,
 and `all` is kept for scripts/CI that prefer to name the full run explicitly. It
-runs every lane in one summary table: the five free deterministic lanes
+runs every lane in one summary table: the six free deterministic lanes
 (`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
-`transcript-replay`) plus the metered AI lane. The `skill-coverage` lane is
+`transcript-replay`, `corpus-grade`) plus the metered AI lane. The `skill-coverage` lane is
 warn-first (reports a gap, exit 0). The AI lane never meters silently — `--backend sdk` opts in.
 A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
 command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
@@ -409,6 +418,7 @@ This table is the single source of truth for which lanes exist, how they run, an
 | skill-coverage | free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
 | negative-control | free | host | `t3 eval negative-control` | — | on demand |
 | transcript-replay | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
+| corpus-grade | free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every `t3 eval all` run + on demand |
 | ai-eval subscription | free (subscription tokens) | host | `t3 eval run` (default backend) | — (subscription run is in-session, not a CI job) | manual / on demand |
 | ai-eval sdk-metered | metered (Agent SDK) | **docker** (`--docker` locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --docker` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
 
@@ -597,6 +607,45 @@ what proves the scenario is not vacuous: a spec made only of negative matchers
 so each scenario carries a positive `Skill` matcher that a no-op transcript
 fails. `tests/eval/test_scenarios_anti_vacuous.py` runs all three directions on
 every PR, so a toothless skill-routing matcher cannot merge.
+
+## Ground-truth corpus & conversation-audit curation (#2192, #1861)
+
+The corpus closes the circular-oracle gap (a scenario's author also wrote the
+rule it pins): `src/teatree/eval/corpus/` pairs a captured real session
+(`<entry_id>.session.jsonl`, synthetic/redacted) with an independently authored
+label (`<entry_id>.label.yaml`). The curation CLI is a set of thin
+readers/writers over the committed engine modules (`corpus_loader`,
+`corpus_grade`, `conversation_audit`, `confusion_matrix`):
+
+- `t3 eval corpus list` / `t3 eval corpus show <entry_id>` — inspect the corpus.
+  `show` prints the label's committed fields plus DERIVED session counts only
+  (event count, tool-call count) — never a raw payload.
+- `t3 eval corpus grade [<entry_id>]` — grade captured sessions against their
+  labels through `corpus_grade.grade`, with `assert_independent_oracle`
+  enforced (a circular matcher oracle is a FAIL row). The `--no-judge` default
+  is free and deterministic: judge-oracle entries SKIP with a note; `both`
+  entries grade their matcher part. Any FAIL exits non-zero. This deterministic
+  form also runs as the free `corpus-grade` lane inside `t3 eval all`.
+- `t3 eval audit` — run the #1861 conversation-audit engine over recent on-disk
+  sessions (`--limit N`, `--session <id>`), persist one `SessionAuditRecord`
+  per session, and print the per-session verdict table + nominated count.
+  A session whose id matches a label's `source_session_id` is graded against
+  that label. `--confusion <axis>` renders the confusion matrix from the
+  persisted ledger (`--json` for the machine form).
+- `t3 eval label nominate` — the labelling queue
+  (`SessionAuditRecord.objects.nominated()`): session id, axis, predicted
+  outcome, preventable gate slugs.
+- `t3 eval label add <session-id>` — scaffold a new corpus entry from an
+  audited session: the capture is copied ONLY when the pre-publish privacy
+  scanner (`core.gates.privacy_gate.scan_for_publication` — the same scanner
+  the conformance tests gate committed captures with) finds no hit; a
+  redact-anchor match refuses and writes nothing. The label template pre-fills
+  the categorical fields from the audit record and leaves `labelled_by` /
+  `expected_behavior` / `expect` for the human (the printed path is the file to
+  edit) — `review` stays red until they are filled.
+- `t3 eval label review` — validate all labels load (`discover_corpus`) and
+  every matcher-oracle label passes `assert_independent_oracle`; non-zero exit
+  on any failure.
 
 ## Run history and baselines
 

@@ -6,8 +6,10 @@ contracts keep that map honest as the code moves:
 -   every ``src/teatree/cli/eval/`` path the "Where the parts live" table
     names resolves to a real file (locks the table to the subpackage cutover);
 -   every ``t3 eval <subcommand>`` the README mentions is a registered command
-    on ``eval_app`` and vice versa (so a new command can't ship undocumented
-    and a deleted one can't linger in prose);
+    or sub-typer group on ``eval_app`` and vice versa (so a new command can't
+    ship undocumented and a deleted one can't linger in prose) — and the same
+    in both directions for every ``t3 eval <group> <subcommand>`` of a
+    registered group (``corpus``/``label``);
 -   the scenarios glob the table names resolves to a non-empty directory.
 """
 
@@ -38,7 +40,17 @@ def _parts_table_cli_row() -> str:
 
 
 def _registered_eval_commands() -> set[str]:
-    return {command.name for command in eval_app.registered_commands if command.name}
+    commands = {command.name for command in eval_app.registered_commands if command.name}
+    commands.update(group.name for group in eval_app.registered_groups if group.name)
+    return commands
+
+
+def _registered_group_subcommands() -> dict[str, set[str]]:
+    return {
+        group.name: {command.name for command in group.typer_instance.registered_commands if command.name}
+        for group in eval_app.registered_groups
+        if group.name and group.typer_instance is not None
+    }
 
 
 class TestPartsTablePathsResolve:
@@ -72,3 +84,22 @@ class TestEvalCommandSync:
         documented = set(_EVAL_COMMAND_RE.findall(_readme_text()))
         undocumented = _registered_eval_commands() - documented
         assert not undocumented, f"registered eval commands missing from README: {sorted(undocumented)}"
+
+
+class TestEvalGroupCommandSync:
+    def test_groups_exist_so_the_sync_is_not_vacuous(self) -> None:
+        assert _registered_group_subcommands(), "no sub-typer groups registered on eval_app"
+
+    def test_every_documented_group_subcommand_is_registered(self) -> None:
+        readme = _readme_text()
+        for group, registered in _registered_group_subcommands().items():
+            documented = set(re.findall(rf"\bt3 eval {group} ([a-z][a-z-]*)\b", readme))
+            unknown = documented - registered
+            assert not unknown, f"README names unregistered `t3 eval {group}` subcommands: {sorted(unknown)}"
+
+    def test_every_registered_group_subcommand_is_documented(self) -> None:
+        readme = _readme_text()
+        for group, registered in _registered_group_subcommands().items():
+            documented = set(re.findall(rf"\bt3 eval {group} ([a-z][a-z-]*)\b", readme))
+            undocumented = registered - documented
+            assert not undocumented, f"`t3 eval {group}` subcommands missing from README: {sorted(undocumented)}"
