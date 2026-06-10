@@ -214,6 +214,43 @@ class TestStartCommandSessionPins:
         assert len(argv) == 2
         assert argv[-1].startswith("/loop ")
 
+    def test_fable_session_model_downgrades_to_opus_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # teatree#2237: the kill-switch downgrades the session --model pin too.
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nsession_model = "fable"\n',
+        )
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_fable_full_id_session_model_downgrades_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nsession_model = "claude-fable-5"\n',
+        )
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_fable_session_model_downgrades_to_fallback_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nfable_fallback = "sonnet"\nsession_model = "fable"\n',
+        )
+        assert argv[argv.index("--model") + 1] == "sonnet"
+
+    def test_fable_session_model_kept_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Toggle ON (and absent): the Fable session pin is byte-identical to today.
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
+        assert argv[argv.index("--model") + 1] == "fable"
+
 
 class TestStopCommand:
     def test_stop_explains_unregister(self) -> None:

@@ -3747,6 +3747,11 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
  Idempotent: re-running over an already-started ticket merges new repos
  into ``ticket.repos`` so the next ``execute_provision`` picks them up.
 
+ Filesystem-evidence double-dispatch guard (#2217): before materialising a
+ worktree for issue ``N``, refuse when a *foreign* ``N-*`` worktree dir
+ already exists (someone may already be on it) unless ``--take-over`` is
+ passed. Re-provisioning the ticket's own existing dir is always allowed.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_url      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3754,6 +3759,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │ --variant            TEXT                                                    │
 │ --repos              TEXT                                                    │
 │ --description        TEXT                                                    │
+│ --take-over                Proceed even when another worktree dir for this   │
+│                            issue already exists (#2217).                     │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

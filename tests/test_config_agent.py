@@ -52,6 +52,61 @@ class TestAgentConfigDefaults:
         assert cfg.session_model is None
         assert cfg.session_effort is None
 
+    def test_default_fable_kill_switch_is_enabled_with_opus_fallback(self) -> None:
+        # Absent key == enabled, so existing Fable-pinned users keep Fable; the
+        # fallback baseline is opus (Opus 4.8) per teatree#2237.
+        cfg = AgentConfig()
+        assert cfg.fable_enabled is True
+        assert cfg.fable_fallback == "opus"
+
+
+class TestFableKillSwitchParse:
+    """``[agent] fable_enabled`` / ``fable_fallback`` parsing (teatree#2237)."""
+
+    def test_fable_enabled_false_parsed(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, "[agent]\nfable_enabled = false\n")
+        assert resolve_agent_config(config_path=cfg).fable_enabled is False
+
+    def test_fable_enabled_true_parsed(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, "[agent]\nfable_enabled = true\n")
+        assert resolve_agent_config(config_path=cfg).fable_enabled is True
+
+    def test_absent_fable_enabled_defaults_to_enabled(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        assert resolve_agent_config(config_path=cfg).fable_enabled is True
+
+    def test_fable_fallback_parsed(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nfable_fallback = "sonnet"\n')
+        assert resolve_agent_config(config_path=cfg).fable_fallback == "sonnet"
+
+    def test_fable_fallback_normalised_through_inherit_path(self, tmp_path: Path) -> None:
+        # The fallback is normalised through ``_normalize_model`` (whitespace
+        # stripped); it is a model id, so it shares that boundary.
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nfable_fallback = "  opus  "\n')
+        assert resolve_agent_config(config_path=cfg).fable_fallback == "opus"
+
+    def test_absent_fable_fallback_defaults_to_opus(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, "[agent]\nfable_enabled = false\n")
+        assert resolve_agent_config(config_path=cfg).fable_fallback == "opus"
+
+    def test_missing_file_keeps_enabled_with_opus_fallback(self, tmp_path: Path) -> None:
+        resolved = resolve_agent_config(config_path=tmp_path / "nope.toml")
+        assert resolved.fable_enabled is True
+        assert resolved.fable_fallback == "opus"
+
+    def test_missing_agent_section_keeps_enabled_with_opus_fallback(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[teatree]\nmode = "interactive"\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.fable_enabled is True
+        assert resolved.fable_fallback == "opus"
+
 
 class TestSkillModelsParse:
     def test_parsed_from_agent_subtable(self, tmp_path: Path) -> None:

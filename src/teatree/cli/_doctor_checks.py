@@ -176,7 +176,8 @@ def _check_agent_session_pins() -> bool:
     A ``session_effort`` off the strict CLI scale (``low|medium|high|xhigh|max``)
     is a hard FAIL — ``resolve_agent_config`` raises, and we surface the message
     rather than letting it reach the interactive spawn. An unrecognised model in
-    ``session_model`` or any ``[agent.skill_models]`` floor is a WARN (it ranks
+    ``session_model``, any ``[agent.skill_models]`` floor, or the Fable
+    kill-switch ``fable_fallback`` (teatree#2237) is a WARN (it ranks
     most-capable via ``cost.tier_rank``, so it still works, but it is most likely
     a typo). An absent or all-valid config is silently OK.
     """
@@ -204,6 +205,11 @@ def _check_agent_session_pins() -> bool:
                 f"WARN  [agent.skill_models] {skill} = {floor!r} matches no known tier "
                 f"({', '.join(PRICE_TABLE)}); it will be treated as most-capable. Likely a typo."
             )
+    if not cfg.fable_enabled and _unrecognised(cfg.fable_fallback):
+        typer.echo(
+            f"WARN  [agent] fable_fallback {cfg.fable_fallback!r} matches no known tier "
+            f"({', '.join(PRICE_TABLE)}); Fable will downgrade to an unknown model. Likely a typo."
+        )
     return True
 
 

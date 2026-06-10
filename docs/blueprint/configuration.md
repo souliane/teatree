@@ -257,6 +257,9 @@ spawn inputs, not overridable `UserSettings`.
 [agent]
 session_model = "fable"           # interactive main-agent --model pin (so you never run /model by hand)
 session_effort = "xhigh"          # interactive main-agent --effort pin (strict CLI scale)
+# fable_enabled = false           # the single Fable kill-switch: flip to false to revert EVERY
+                                  # Fable pin to the Opus 4.8 baseline (default true == keep Fable)
+# fable_fallback = "opus"         # the model Fable downgrades to when disabled (default "opus" = Opus 4.8)
 
 [agent.phase_models]              # per-PHASE model tier for the spawned sub-agent (model_tiering)
 planning = "fable"                # pin a phase up; "" / "default" / "inherit" opts out
@@ -298,6 +301,23 @@ than the assumed-opus inherited default — `tier_rank(None)` equals
 `tier_rank("opus")`, so an `opus`-or-weaker floor is silently dropped (the phase
 still inherits) and only a `fable` floor pins it up. `t3 doctor` WARNs on a floor
 that names no known tier (likely a typo) since an unknown id ranks most-capable.
+
+**`fable_enabled` / `fable_fallback` (the single Fable kill-switch, teatree#2237).**
+Fable can be wired through several independent pins above (`session_model`, any
+`phase_models.<phase>`, any `skill_models.<skill>`). If Fable becomes
+unavailable, reverting to the Opus 4.8 baseline is **one flip**:
+`fable_enabled = false`. With it off, every resolved model value that is Fable —
+recognised by tier (`cost.tier_of_model`), so both the short alias `fable` and
+the full id `claude-fable-5` match — transparently downgrades to `fable_fallback`
+at the single resolution chokepoint (`model_tiering._downgrade_fable`, applied at
+the end of `resolve_spawn_model` covering every sub-agent spawn, plus the
+`session_model` `--model` pin in `cli/loop.py`). `fable_fallback` defaults to
+`"opus"` (the tier/cost machinery maps it to `claude-opus-4-8`), so Opus 4.8
+compatibility is preserved by construction. **The default is enabled** — an
+absent `fable_enabled` key counts as `true`, so existing configs that pin Fable
+keep resolving to Fable, byte-for-byte unchanged; only the explicit
+`fable_enabled = false` flips the revert. Non-Fable pins (`sonnet`, `haiku`,
+`opus`) and inheriting phases (`None`) pass through untouched either way.
 
 ### 10.2 Django Settings (framework-level, in teatree's settings.py)
 
