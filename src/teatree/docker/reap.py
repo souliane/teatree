@@ -17,7 +17,9 @@ through it never break when there is no daemon to talk to.
 """
 
 import logging
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
@@ -108,6 +110,109 @@ def reap_orphan_compose_projects(live_projects: set[str]) -> list[ReapResult]:
     orphans = sorted(list_compose_projects() - live_projects)
     results: list[ReapResult] = []
     for project in orphans:
+        result = reap_compose_project(project)
+        if not result.is_noop:
+            results.append(result)
+    return results
+
+
+# ── Stale-stack reaping (age-keyed orphan teardown, #2207) ──────────────────
+#
+# A compose stack with NO live worktree row is not necessarily safe to tear
+# down at any moment: a parallel session may have hand-started it minutes ago
+# (a `docker compose -f docker-compose.test.yml` run mid-flight). The stale
+# reaper therefore keys on AGE: an unowned project is reaped only when its
+# newest container lifecycle event (created / started / finished) is older
+# than the threshold. Anything younger — or whose age cannot be determined —
+# is KEPT (fail-safe). This makes the orphan reap safe to invoke automatically
+# on provision/start, instead of only inside an explicit `clean-all`, so
+# abandoned stacks stop squatting host CPU/RAM for 8+ hours.
+
+# Docker reports a zero Time for "never happened" (e.g. FinishedAt of a
+# running container).
+_DOCKER_ZERO_TIME_PREFIX = "0001-01-01"
+
+
+def _parse_docker_timestamp(raw: str) -> "datetime | None":
+    """Parse one docker RFC3339 timestamp (nanosecond precision) to aware UTC.
+
+    Returns ``None`` for the docker zero value, an empty field, or an
+    unparsable string — the caller treats unknown as "cannot confirm stale"
+    and keeps the stack.
+    """
+    value = raw.strip()
+    if not value or value.startswith(_DOCKER_ZERO_TIME_PREFIX):
+        return None
+    # datetime.fromisoformat caps fractional seconds at 6 digits; docker emits 9.
+    value = re.sub(r"\.(\d{6})\d+", r".\1", value)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def project_last_activity(project: str) -> "datetime | None":
+    """The newest container lifecycle timestamp of *project*, or ``None``.
+
+    ``None`` means "could not determine" (no containers carry the label, or
+    docker is unavailable) — the caller must fail safe and keep the stack.
+    """
+    ids = _list_project_containers(project)
+    if not ids:
+        return None
+    lines = _docker_lines(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            "{{.Created}}|{{.State.StartedAt}}|{{.State.FinishedAt}}",
+            *ids,
+        ],
+        timeout=_LIST_TIMEOUT,
+    )
+    stamps = [
+        parsed for line in lines for field in line.split("|") if (parsed := _parse_docker_timestamp(field)) is not None
+    ]
+    return max(stamps) if stamps else None
+
+
+def stale_compose_projects(
+    live_projects: set[str],
+    *,
+    min_age_minutes: int,
+    now: "datetime | None" = None,
+) -> list[str]:
+    """The unowned compose projects whose newest activity is older than the threshold.
+
+    Pure selection (no teardown) so callers can dry-run. Fail-safe: a project
+    whose age cannot be determined, or with any activity younger than
+    ``min_age_minutes``, is never selected.
+    """
+    moment = now or datetime.now(tz=UTC)
+    cutoff = moment - timedelta(minutes=min_age_minutes)
+    stale: list[str] = []
+    for project in sorted(list_compose_projects() - live_projects):
+        last_activity = project_last_activity(project)
+        if last_activity is None:
+            logger.info("stale-stack reaper: keeping %r (age unknown — fail-safe)", project)
+            continue
+        if last_activity > cutoff:
+            logger.info("stale-stack reaper: keeping %r (active %s, younger than threshold)", project, last_activity)
+            continue
+        stale.append(project)
+    return stale
+
+
+def reap_stale_compose_projects(
+    live_projects: set[str],
+    *,
+    min_age_minutes: int,
+    now: "datetime | None" = None,
+) -> list[ReapResult]:
+    """Tear down the stale unowned compose projects (see :func:`stale_compose_projects`)."""
+    results: list[ReapResult] = []
+    for project in stale_compose_projects(live_projects, min_age_minutes=min_age_minutes, now=now):
         result = reap_compose_project(project)
         if not result.is_noop:
             results.append(result)

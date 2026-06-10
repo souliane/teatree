@@ -4036,6 +4036,11 @@ Usage: t3 teatree run tests [OPTIONS]
  Extra arguments after ``--`` are appended to the test command
  (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
 
+ The overlay's ``get_pre_run_steps(worktree, "tests")`` run first —
+ the same prerequisite seam every service launch uses — so an overlay
+ can keep its test environment fast and correct (e.g. clone/refresh a
+ reusable test DB) without every caller re-deciding the prerequisites.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
 │ --help              Show this message and exit.                              │
