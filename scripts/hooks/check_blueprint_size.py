@@ -4,9 +4,9 @@ The BLUEPRINT is architectural, not a prose mirror of the code. The
 companion #1128 corpus-budget gate sets per-file soft budgets that only
 fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
-file changes and exceeds 112 KB.
+file changes and exceeds 114 KB.
 
-Threshold: 112 KB (112 * 1024 bytes). The hook is scoped to commits
+Threshold: 114 KB (114 * 1024 bytes). The hook is scoped to commits
 that touch ``BLUEPRINT.md`` (via ``files:`` in
 ``.pre-commit-config.yaml``), so it gates every growth event without
 re-running on unrelated commits. Escape hatch:
@@ -34,7 +34,8 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # spawn-model merge chokepoint and the session-level effort/model pins is
 # legit architectural growth, stacking on #2220's provisioning time-box section
 # after merging origin/main into the #2216 branch.
-_THRESHOLD_BYTES = 113 * 1024
+# Raised 113 -> 114 KB (#2235): the SDK/API-portable §2 architecture principle.
+_THRESHOLD_BYTES = 114 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 
