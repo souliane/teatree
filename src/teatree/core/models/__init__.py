@@ -13,6 +13,7 @@ from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalE
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
 from teatree.core.models.eval_run import (
+    CostRegression,
     EvalRunRecord,
     EvalScenarioResult,
     EvalVerdict,
@@ -75,6 +76,7 @@ __all__ = [
     "ClearRequest",
     "CodexReviewMarker",
     "ConsolidatedMemory",
+    "CostRegression",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",

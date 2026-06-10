@@ -59,11 +59,13 @@ class RunDockerArgs:
             raise typer.Exit(code=2) from None
 
 
-def run_in_docker_or_exit(args: RunDockerArgs, *, baseline: bool, gate_regressions: bool) -> None:
-    if baseline or gate_regressions:
+def run_in_docker_or_exit(
+    args: RunDockerArgs, *, baseline: bool, gate_regressions: bool, gate_cost_regression: bool
+) -> None:
+    if baseline or gate_regressions or gate_cost_regression:
         typer.echo(
             "--docker runs in an ephemeral container, so it cannot update or compare the "
-            "durable baseline; drop --baseline/--gate-regressions or run on the host.",
+            "durable baseline; drop --baseline/--gate-regressions/--gate-cost-regression or run on the host.",
             err=True,
         )
         raise typer.Exit(code=2)

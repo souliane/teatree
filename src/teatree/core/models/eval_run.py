@@ -81,6 +81,35 @@ class ScenarioRegression:
         return self.candidate_pass_rate > self.baseline_pass_rate
 
 
+@dataclasses.dataclass(frozen=True)
+class CostRegression:
+    """Per-scenario baseline-vs-candidate cost drift.
+
+    The cost counterpart of :class:`ScenarioRegression`. ``delta`` is the
+    absolute USD change; ``pct_increase`` is the *relative* drift (``delta /
+    baseline``) and is ``None`` when the baseline cost is ``0.0`` (a
+    subscription/free baseline carries no metered cost, so a relative increase
+    is undefined — the gate no-ops that scenario rather than dividing by zero).
+    """
+
+    scenario_name: str
+    baseline_cost_usd: float
+    candidate_cost_usd: float
+    model: str = ""
+
+    @property
+    def delta(self) -> float:
+        return self.candidate_cost_usd - self.baseline_cost_usd
+
+    @property
+    def pct_increase(self) -> float | None:
+        # Cost is non-negative; a 0.0 baseline means no metered reference (a
+        # subscription/free baseline), so the relative drift is undefined.
+        if self.baseline_cost_usd <= 0.0:
+            return None
+        return self.delta / self.baseline_cost_usd
+
+
 class EvalRunQuerySet(models.QuerySet["EvalRunRecord"]):
     def baselines(self) -> "EvalRunQuerySet":
         return self.filter(is_baseline=True)
@@ -191,6 +220,7 @@ class EvalRunRecord(models.Model):
         tool_calls: list[TrajectoryToolCall] | None = None,
         matcher_details: list[MatcherDetail] | None = None,
         judge_rationale: str = "",
+        cost_usd: float = 0.0,
     ) -> "EvalScenarioResult":
         return EvalScenarioResult.objects.create(
             run=self,
@@ -205,6 +235,7 @@ class EvalRunRecord(models.Model):
             tool_calls=tool_calls or [],
             matcher_details=matcher_details or [],
             judge_rationale=judge_rationale,
+            cost_usd=cost_usd,
         )
 
     def pass_rates(self, *, model: str | None = None) -> list[ScenarioPassRate]:
@@ -237,6 +268,49 @@ class EvalRunRecord(models.Model):
             )
             for name in scenarios
         ]
+
+    @classmethod
+    def cost_regression_diff(
+        cls,
+        *,
+        baseline: "EvalRunRecord",
+        candidate: "EvalRunRecord",
+        model: str | None = None,
+    ) -> list[CostRegression]:
+        """Diff candidate against baseline per-scenario ``cost_usd``.
+
+        Mirrors :meth:`regression_diff` on the cost signal: the baseline run's
+        per-scenario cost is the reference (the same ``is_baseline`` run drives
+        both score and cost gating). ``model`` restricts both sides to one
+        model's rows for a model-matrix candidate. A scenario present on only
+        one side defaults the missing cost to ``0.0``.
+        """
+        baseline_costs = _costs_by_scenario(baseline, model=model)
+        candidate_costs = _costs_by_scenario(candidate, model=model)
+        scenarios = sorted(set(baseline_costs) | set(candidate_costs))
+        return [
+            CostRegression(
+                scenario_name=name,
+                model=model or "",
+                baseline_cost_usd=baseline_costs.get(name, 0.0),
+                candidate_cost_usd=candidate_costs.get(name, 0.0),
+            )
+            for name in scenarios
+        ]
+
+
+def _costs_by_scenario(run: "EvalRunRecord", *, model: str | None) -> dict[str, float]:
+    """Per-scenario total ``cost_usd`` for *run*, optionally filtered to one model.
+
+    Sums across rows sharing a scenario name (a pass@k aggregate is one row; a
+    model-matrix scenario spans one row per model) so a scenario compares as a
+    single number, matching :func:`_rates_by_scenario`.
+    """
+    rows = run.results if model is None else run.results.filter(model=model)
+    costs: dict[str, float] = {}
+    for name, cost in rows.values_list("scenario_name", "cost_usd"):
+        costs[name] = costs.get(name, 0.0) + cost
+    return costs
 
 
 def _default_score(verdict: str) -> float:
@@ -301,6 +375,7 @@ class EvalScenarioResult(models.Model):
     tool_calls = models.JSONField(default=list, blank=True)
     matcher_details = models.JSONField(default=list, blank=True)
     judge_rationale = models.CharField(max_length=512, blank=True, default="")
+    cost_usd = models.FloatField(default=0.0)
 
     objects: ClassVar[EvalScenarioResultManager] = EvalScenarioResultManager()  # type: ignore[valid-type]
 

@@ -1221,6 +1221,12 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       scenario's transcript path.                            │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
+│ skill-triggers        Validate every skill's trigger keywords against the    │
+│                       must-fire/must-not-fire corpus.                        │
+│ coverage              Report per-skill behavioral-eval coverage: every skill │
+│                       is covered or eval_exempt.                             │
+│ pinned-regressions    Run the deterministic regression corpus over the real  │
+│                       gate/checker code paths.                               │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1229,12 +1235,6 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       eval run.                                              │
 │ history               Show recent eval runs and per-scenario pass-rate over  │
 │                       time.                                                  │
-│ skill-triggers        Validate every skill's trigger keywords against the    │
-│                       must-fire/must-not-fire corpus.                        │
-│ coverage              Report per-skill behavioral-eval coverage: every skill │
-│                       is covered or eval_exempt.                             │
-│ pinned-regressions    Run the deterministic regression corpus over the real  │
-│                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
 │                       summary table + verdict.                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1311,6 +1311,66 @@ Usage: t3 eval transcript-replay [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval skill-triggers`
+
+```
+Usage: t3 eval skill-triggers [OPTIONS]
+
+ Validate every skill's trigger keywords against the must-fire/must-not-fire
+ corpus.
+
+ Deterministic and free — no ``claude -p`` invocation. An under-trigger
+ (in-scope prompt that does not fire) or over-trigger (control prompt that
+ does fire) exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval coverage`
+
+```
+Usage: t3 eval coverage [OPTIONS]
+
+ Report per-skill behavioral-eval coverage: every skill is covered or
+ eval_exempt.
+
+ A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
+ (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
+ frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
+ neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
+ Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
+ Phase-B enforcement that exits non-zero on any gap.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format             TEXT  Report format: text or json. [default: text]      │
+│ --fail-on-gap              Exit non-zero on any coverage gap (Phase B        │
+│                            enforcement); default is warn-first (exit 0).     │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval pinned-regressions`
+
+```
+Usage: t3 eval pinned-regressions [OPTIONS]
+
+ Run the deterministic regression corpus over the real gate/checker code paths.
+
+ Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+ function for a recurring failure class (branch-currency §940, the
+ bare-reference gate, the substrate-merge and maker≠checker floors, the
+ pid-anchored loop lease, the migration-graph leaf count) on a must-block and
+ a must-allow input. Any violated invariant exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval list`
 
 ```
@@ -1370,87 +1430,126 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                              TEXT     Report format: text, json, or │
-│                                                html (single-trial; html is a │
-│                                                self-contained file).         │
-│                                                [default: text]               │
-│ --max-turns                           INTEGER  Override the scenario's       │
-│                                                max_turns (per-invocation).   │
-│ --trials                              INTEGER  Re-run each scenario this     │
-│                                                many times (pass@k).          │
-│                                                [default: 1]                  │
-│ --require                             TEXT     With --trials > 1: 'any'      │
-│                                                (pass@k) or 'all' (pass^k     │
-│                                                regression gate).             │
-│                                                [default: any]                │
-│ --models                              TEXT     Comma-separated model matrix  │
-│                                                (e.g. opus,sonnet,haiku);     │
-│                                                runs the suite once per       │
-│                                                model.                        │
-│ --persist             --no-persist             Persist this run into the     │
-│                                                run-history ledger (read back │
-│                                                via `t3 eval history`).       │
-│                                                [default: persist]            │
-│ --baseline                                     Mark the persisted run as the │
-│                                                baseline for its model.       │
-│ --gate-regressions                             Diff this run against each    │
-│                                                model's current baseline; any │
-│                                                regression exits non-zero.    │
-│ --judge               --no-judge               Grade scenarios that opt in   │
-│                                                (a `judge:` block) with an    │
-│                                                LLM judge in addition to      │
-│                                                matchers.                     │
-│                                                [default: no-judge]           │
-│ --judge-budget                        INTEGER  Max number of LLM-judge calls │
-│                                                per run (cost cap).           │
-│                                                [default: 20]                 │
-│ --backend                             TEXT     Execution backend for a       │
-│                                                single-trial run:             │
-│                                                'subscription' (default —     │
-│                                                grade subscription-produced   │
-│                                                transcripts, no API spend;    │
-│                                                see `t3 eval                  │
-│                                                prepare-subscription`) or     │
-│                                                'sdk' (metered claude -p,     │
-│                                                authed by                     │
-│                                                CLAUDE_CODE_OAUTH_TOKEN; runs │
-│                                                in-container via --docker     │
-│                                                locally or in the standalone  │
-│                                                eval.yml CI job). --trials    │
-│                                                and --models always use the   │
-│                                                metered sdk runner regardless │
-│                                                of this flag.                 │
-│                                                [default: subscription]       │
-│ --transcript-dir                      PATH     Directory of <scenario>.jsonl │
-│                                                transcripts for the           │
-│                                                'subscription' backend        │
-│                                                (default: cwd).               │
-│ --require-executed                             Fail when the suite collected │
-│                                                scenarios but executed none   │
-│                                                (all skipped). AUTO-ON for    │
-│                                                the metered sdk backend and   │
-│                                                --trials/--models (a metered  │
-│                                                run that executes nothing     │
-│                                                always fails loud); the flag  │
-│                                                only matters for the          │
-│                                                subscription backend, whose   │
-│                                                pre-transcript all-skip is    │
-│                                                legitimate.                   │
-│ --docker                                       Run inside the CI image       │
-│                                                (dev/Dockerfile.test); the    │
-│                                                metered sdk lane runs         │
-│                                                in-container, authenticated   │
-│                                                by the host's                 │
-│                                                CLAUDE_CODE_OAUTH_TOKEN/ANTH… │
-│                                                (env pass-through).           │
-│ --parallel                            INTEGER  Run this many scenarios       │
-│                                                concurrently (each claude -p  │
-│                                                is I/O-bound; a bounded pool  │
-│                                                cuts wall-clock from          │
-│                                                Nxlatency to ~latency).       │
-│                                                Default 1 = sequential.       │
-│                                                [default: 1]                  │
-│ --help                                         Show this message and exit.   │
+│ --format                                   TEXT     Report format: text,     │
+│                                                     json, or html            │
+│                                                     (single-trial; html is a │
+│                                                     self-contained file).    │
+│                                                     [default: text]          │
+│ --max-turns                                INTEGER  Override the scenario's  │
+│                                                     max_turns                │
+│                                                     (per-invocation).        │
+│ --trials                                   INTEGER  Re-run each scenario     │
+│                                                     this many times          │
+│                                                     (pass@k).                │
+│                                                     [default: 1]             │
+│ --require                                  TEXT     With --trials > 1: 'any' │
+│                                                     (pass@k) or 'all'        │
+│                                                     (pass^k regression       │
+│                                                     gate).                   │
+│                                                     [default: any]           │
+│ --models                                   TEXT     Comma-separated model    │
+│                                                     matrix (e.g.             │
+│                                                     opus,sonnet,haiku); runs │
+│                                                     the suite once per       │
+│                                                     model.                   │
+│ --persist                  --no-persist             Persist this run into    │
+│                                                     the run-history ledger   │
+│                                                     (read back via `t3 eval  │
+│                                                     history`).               │
+│                                                     [default: persist]       │
+│ --baseline                                          Mark the persisted run   │
+│                                                     as the baseline for its  │
+│                                                     model.                   │
+│ --gate-regressions                                  Diff this run against    │
+│                                                     each model's current     │
+│                                                     baseline; any regression │
+│                                                     exits non-zero.          │
+│ --gate-cost-regression                              Diff this run's          │
+│                                                     per-scenario cost        │
+│                                                     against each model's     │
+│                                                     baseline cost; a         │
+│                                                     relative rise beyond     │
+│                                                     --cost-regression-toler… │
+│                                                     exits non-zero. Distinct │
+│                                                     from an absolute         │
+│                                                     ceiling: a zero-cost     │
+│                                                     (subscription/free)      │
+│                                                     baseline is skipped,     │
+│                                                     never divided by.        │
+│ --cost-regression-tole…                    FLOAT    Relative per-scenario    │
+│                                                     cost rise                │
+│                                                     --gate-cost-regression   │
+│                                                     tolerates before failing │
+│                                                     (default 0.20 = +20% vs  │
+│                                                     the baseline). A         │
+│                                                     scenario rising more     │
+│                                                     than this exits          │
+│                                                     non-zero.                │
+│                                                     [default: 0.2]           │
+│ --judge                    --no-judge               Grade scenarios that opt │
+│                                                     in (a `judge:` block)    │
+│                                                     with an LLM judge in     │
+│                                                     addition to matchers.    │
+│                                                     [default: no-judge]      │
+│ --judge-budget                             INTEGER  Max number of LLM-judge  │
+│                                                     calls per run (cost      │
+│                                                     cap).                    │
+│                                                     [default: 20]            │
+│ --backend                                  TEXT     Execution backend for a  │
+│                                                     single-trial run:        │
+│                                                     'subscription' (default  │
+│                                                     — grade                  │
+│                                                     subscription-produced    │
+│                                                     transcripts, no API      │
+│                                                     spend; see `t3 eval      │
+│                                                     prepare-subscription`)   │
+│                                                     or 'sdk' (metered claude │
+│                                                     -p, authed by            │
+│                                                     CLAUDE_CODE_OAUTH_TOKEN; │
+│                                                     runs in-container via    │
+│                                                     --docker locally or in   │
+│                                                     the standalone eval.yml  │
+│                                                     CI job). --trials and    │
+│                                                     --models always use the  │
+│                                                     metered sdk runner       │
+│                                                     regardless of this flag. │
+│                                                     [default: subscription]  │
+│ --transcript-dir                           PATH     Directory of             │
+│                                                     <scenario>.jsonl         │
+│                                                     transcripts for the      │
+│                                                     'subscription' backend   │
+│                                                     (default: cwd).          │
+│ --require-executed                                  Fail when the suite      │
+│                                                     collected scenarios but  │
+│                                                     executed none (all       │
+│                                                     skipped). AUTO-ON for    │
+│                                                     the metered sdk backend  │
+│                                                     and --trials/--models (a │
+│                                                     metered run that         │
+│                                                     executes nothing always  │
+│                                                     fails loud); the flag    │
+│                                                     only matters for the     │
+│                                                     subscription backend,    │
+│                                                     whose pre-transcript     │
+│                                                     all-skip is legitimate.  │
+│ --docker                                            Run inside the CI image  │
+│                                                     (dev/Dockerfile.test);   │
+│                                                     the metered sdk lane     │
+│                                                     runs in-container,       │
+│                                                     authenticated by the     │
+│                                                     host's                   │
+│                                                     CLAUDE_CODE_OAUTH_TOKEN… │
+│                                                     (env pass-through).      │
+│ --parallel                                 INTEGER  Run this many scenarios  │
+│                                                     concurrently (each       │
+│                                                     claude -p is I/O-bound;  │
+│                                                     a bounded pool cuts      │
+│                                                     wall-clock from          │
+│                                                     Nxlatency to ~latency).  │
+│                                                     Default 1 = sequential.  │
+│                                                     [default: 1]             │
+│ --help                                              Show this message and    │
+│                                                     exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1502,66 +1601,6 @@ Usage: t3 eval history [OPTIONS]
 │ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
 │                                 for its model, then show history.            │
 │ --help                          Show this message and exit.                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval skill-triggers`
-
-```
-Usage: t3 eval skill-triggers [OPTIONS]
-
- Validate every skill's trigger keywords against the must-fire/must-not-fire
- corpus.
-
- Deterministic and free — no ``claude -p`` invocation. An under-trigger
- (in-scope prompt that does not fire) or over-trigger (control prompt that
- does fire) exits non-zero.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format        TEXT  Report format: text or json. [default: text]           │
-│ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval coverage`
-
-```
-Usage: t3 eval coverage [OPTIONS]
-
- Report per-skill behavioral-eval coverage: every skill is covered or
- eval_exempt.
-
- A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
- (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
- frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
- neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
- Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
- Phase-B enforcement that exits non-zero on any gap.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format             TEXT  Report format: text or json. [default: text]      │
-│ --fail-on-gap              Exit non-zero on any coverage gap (Phase B        │
-│                            enforcement); default is warn-first (exit 0).     │
-│ --help                     Show this message and exit.                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval pinned-regressions`
-
-```
-Usage: t3 eval pinned-regressions [OPTIONS]
-
- Run the deterministic regression corpus over the real gate/checker code paths.
-
- Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
- function for a recurring failure class (branch-currency §940, the
- bare-reference gate, the substrate-merge and maker≠checker floors, the
- pid-anchored loop lease, the migration-graph leaf count) on a must-block and
- a must-allow input. Any violated invariant exits non-zero.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format        TEXT  Report format: text or json. [default: text]           │
-│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

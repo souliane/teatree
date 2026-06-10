@@ -143,6 +143,61 @@ class TestRegressionDiff(TestCase):
         assert diff["added"].regressed is False
 
 
+class TestScenarioCost(TestCase):
+    def test_cost_usd_round_trips_and_defaults_to_zero(self) -> None:
+        run = _record()
+        metered = run.record_scenario(scenario_name="metered", verdict=EvalVerdict.PASS, cost_usd=0.42)
+        free = run.record_scenario(scenario_name="free", verdict=EvalVerdict.PASS)
+
+        metered.refresh_from_db()
+        free.refresh_from_db()
+        assert metered.cost_usd == pytest.approx(0.42)
+        assert free.cost_usd == pytest.approx(0.0)
+
+
+class TestCostRegressionDiff(TestCase):
+    def test_flags_scenario_whose_cost_rose(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="cheap", verdict=EvalVerdict.PASS, cost_usd=0.10)
+        baseline.record_scenario(scenario_name="spiking", verdict=EvalVerdict.PASS, cost_usd=0.10)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="cheap", verdict=EvalVerdict.PASS, cost_usd=0.10)
+        candidate.record_scenario(scenario_name="spiking", verdict=EvalVerdict.PASS, cost_usd=0.30)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["cheap"].delta == pytest.approx(0.0)
+        assert diff["cheap"].pct_increase == pytest.approx(0.0)
+        assert diff["spiking"].delta == pytest.approx(0.20)
+        assert diff["spiking"].pct_increase == pytest.approx(2.0)
+
+    def test_cost_decrease_is_negative_pct_not_a_regression(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="cheaper", verdict=EvalVerdict.PASS, cost_usd=0.40)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="cheaper", verdict=EvalVerdict.PASS, cost_usd=0.20)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["cheaper"].delta == pytest.approx(-0.20)
+        assert diff["cheaper"].pct_increase == pytest.approx(-0.5)
+
+    def test_zero_baseline_cost_yields_undefined_pct_no_div_by_zero(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="free_baseline", verdict=EvalVerdict.PASS, cost_usd=0.0)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="free_baseline", verdict=EvalVerdict.PASS, cost_usd=0.25)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["free_baseline"].baseline_cost_usd == pytest.approx(0.0)
+        assert diff["free_baseline"].delta == pytest.approx(0.25)
+        assert diff["free_baseline"].pct_increase is None
+
+
 class TestStr(TestCase):
     def test_run_str_tags_baseline(self) -> None:
         assert "baseline" in str(_record(is_baseline=True))

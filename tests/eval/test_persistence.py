@@ -7,6 +7,7 @@ than crashing on attributes ``AnyOf`` does not carry.
 
 from pathlib import Path
 
+import pytest
 from django.test import TestCase
 
 from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, Matcher
@@ -28,7 +29,7 @@ def _spec(matchers: tuple[Matcher | AnyOf, ...]) -> EvalSpec:
     )
 
 
-def _run(tool_calls: tuple[EvalToolCall, ...]) -> EvalRun:
+def _run(tool_calls: tuple[EvalToolCall, ...], *, cost_usd: float = 0.0) -> EvalRun:
     return EvalRun(
         spec_name="background_long_operations_full_suite",
         tool_calls=tool_calls,
@@ -37,6 +38,7 @@ def _run(tool_calls: tuple[EvalToolCall, ...]) -> EvalRun:
         is_error=False,
         raw_stdout="",
         raw_stderr="",
+        cost_usd=cost_usd,
     )
 
 
@@ -70,3 +72,23 @@ class TestPersistAnyOf(TestCase):
         assert scenario.verdict == "fail"
         assert scenario.matcher_details[0]["kind"] == "any_of"
         assert scenario.matcher_details[0]["passed"] is False
+
+
+class TestPersistCost(TestCase):
+    def test_persist_run_stores_per_scenario_cost(self) -> None:
+        spec = _spec((_TASK_BRANCH,))
+        run = _run((EvalToolCall(name="Task", input={"prompt": "uv run pytest"}, turn=1),), cost_usd=0.17)
+        result = evaluate(spec, run)
+
+        record = persist_run([result], model="haiku")
+
+        assert record.scenario_results.get().cost_usd == pytest.approx(0.17)
+
+    def test_persist_run_defaults_unmetered_cost_to_zero(self) -> None:
+        spec = _spec((_TASK_BRANCH,))
+        run = _run((EvalToolCall(name="Task", input={"prompt": "uv run pytest"}, turn=1),))
+        result = evaluate(spec, run)
+
+        record = persist_run([result], model="haiku")
+
+        assert record.scenario_results.get().cost_usd == pytest.approx(0.0)

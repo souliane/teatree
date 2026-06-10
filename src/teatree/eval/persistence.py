@@ -110,6 +110,7 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
                 tool_calls=_trajectory(result),
                 matcher_details=_matcher_details(result),
                 judge_rationale=_judge_rationale(result),
+                cost_usd=result.run.cost_usd,
             )
     return run
 

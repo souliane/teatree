@@ -14,8 +14,9 @@ from teatree.cli.eval.docker import DockerUnavailableError
 from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
+from teatree.eval.persistence import persist_run
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
-from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.eval.report import MatcherResult, ScenarioResult, evaluate
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 
@@ -561,14 +562,14 @@ class TestEvalSkillTriggers:
 
     def test_reports_failure_and_exits_nonzero(self) -> None:
         bad = TriggerQAReport(checks=(TriggerCheck("debug", "no scope here", should_fire=True, fired=False),))
-        with patch("teatree.cli.eval.app.run_trigger_qa", return_value=bad):
+        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=bad):
             result = CliRunner().invoke(app, ["eval", "skill-triggers"])
         assert result.exit_code == 1
         assert "under-trigger" in result.output
 
     def test_json_format_emits_checks(self) -> None:
         good = TriggerQAReport(checks=(TriggerCheck("debug", "the build is broken", should_fire=True, fired=True),))
-        with patch("teatree.cli.eval.app.run_trigger_qa", return_value=good):
+        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=good):
             result = CliRunner().invoke(app, ["eval", "skill-triggers", "--format", "json"])
         assert result.exit_code == 0
         output = result.output
@@ -578,7 +579,7 @@ class TestEvalSkillTriggers:
 
     def test_over_trigger_message_for_unexpected_fire(self) -> None:
         bad = TriggerQAReport(checks=(TriggerCheck("debug", "open a PR", should_fire=False, fired=True),))
-        with patch("teatree.cli.eval.app.run_trigger_qa", return_value=bad):
+        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=bad):
             result = CliRunner().invoke(app, ["eval", "skill-triggers"])
         assert result.exit_code == 1
         assert "over-trigger" in result.output
@@ -728,6 +729,85 @@ class TestEvalPersistAndHistory:
 
         assert second.exit_code == 1, second.output
         assert "REGRESSED alpha" in second.output
+
+
+def _cost_runner(cost_usd: float) -> type:
+    class _CostRunner:
+        def __init__(self, *_: object, **__: object) -> None: ...
+
+        def run(self, spec: EvalSpec) -> EvalRun:
+            return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)
+
+    return _CostRunner
+
+
+@pytest.mark.django_db
+class TestEvalCostRegressionGate:
+    def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
+        # A zero-cost baseline is a subscription/free run (no metered cost) — persist it
+        # through the ledger directly, the way such a baseline really lands, rather than
+        # the metered sdk path (whose $0-fail guard would correctly reject it).
+        results = [evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)) for spec in specs]
+        record = persist_run(results, model="claude-sonnet-4-6", git_sha="")
+        record.mark_baseline()
+
+    def _run_candidate(self, specs: list[EvalSpec], *, cost_usd: float, extra: list[str]) -> object:
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _cost_runner(cost_usd)),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            return CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", *extra])
+
+    def test_cost_spike_beyond_tolerance_exits_non_zero(self) -> None:
+        specs = [_spec("alpha")]
+        self._record_baseline(specs, cost_usd=0.10)
+
+        result = self._run_candidate(specs, cost_usd=0.30, extra=["--gate-cost-regression"])
+
+        assert result.exit_code == 1, result.output
+        assert "COST REGRESSED alpha" in result.output
+
+    def test_cost_within_tolerance_passes(self) -> None:
+        specs = [_spec("alpha")]
+        self._record_baseline(specs, cost_usd=0.10)
+
+        result = self._run_candidate(specs, cost_usd=0.11, extra=["--gate-cost-regression"])
+
+        assert result.exit_code == 0, result.output
+        assert "COST REGRESSED" not in result.output
+
+    def test_explicit_tolerance_flag_raises_the_bar(self) -> None:
+        specs = [_spec("alpha")]
+        self._record_baseline(specs, cost_usd=0.10)
+
+        result = self._run_candidate(
+            specs, cost_usd=0.30, extra=["--gate-cost-regression", "--cost-regression-tolerance", "3.0"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "COST REGRESSED" not in result.output
+
+    def test_zero_baseline_cost_passes_without_div_by_zero(self) -> None:
+        # The baseline run EXISTS but its per-scenario cost is $0 (a subscription/free
+        # baseline). The relative drift is undefined, so the gate skips the scenario:
+        # exit 0, never a COST REGRESSED, never a divide-by-zero — and NOT the
+        # "no cost baseline" path (a baseline run is present, just zero-cost).
+        specs = [_spec("alpha")]
+        self._record_baseline(specs, cost_usd=0.0)
+
+        result = self._run_candidate(specs, cost_usd=0.50, extra=["--gate-cost-regression"])
+
+        assert result.exit_code == 0, result.output
+        assert "COST REGRESSED" not in result.output
+
+    def test_no_baseline_recorded_reports_and_passes(self) -> None:
+        specs = [_spec("alpha")]
+
+        result = self._run_candidate(specs, cost_usd=0.50, extra=["--gate-cost-regression"])
+
+        assert result.exit_code == 0, result.output
+        assert "no cost baseline" in result.output
 
 
 @pytest.mark.django_db
@@ -997,7 +1077,7 @@ class TestEvalSubcommandsStillWork:
             predicate=lambda: True,
         )
         good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
-        with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
+        with patch("teatree.cli.eval.lanes.run_regression_corpus", return_value=good):
             result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
         assert result.exit_code == 0, result.output
         assert "PASS synthetic" in result.output
@@ -1199,6 +1279,13 @@ class TestEvalRunDocker:
         run_docker.assert_not_called()
         assert "ephemeral container" in result.output
 
+    def test_rejects_cost_regression_gate_in_docker(self) -> None:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker:
+            result = CliRunner().invoke(app, ["eval", "run", "--gate-cost-regression", "--docker"])
+        assert result.exit_code == 2
+        run_docker.assert_not_called()
+        assert "ephemeral container" in result.output
+
     def test_docker_unavailable_exits_code_2(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=DockerUnavailableError):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
@@ -1279,7 +1366,7 @@ class TestEvalPinnedRegressions:
             predicate=lambda: True,
         )
         good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
-        with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
+        with patch("teatree.cli.eval.lanes.run_regression_corpus", return_value=good):
             result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
         assert result.exit_code == 0, result.output
         assert "0 failed" in result.output
@@ -1294,7 +1381,7 @@ class TestEvalPinnedRegressions:
         )
         result_row = CheckResult(check=check, ok=False, skipped=False, detail="invariant violated")
         bad = RegressionReport(results=(result_row,))
-        with patch("teatree.cli.eval.app.run_regression_corpus", return_value=bad):
+        with patch("teatree.cli.eval.lanes.run_regression_corpus", return_value=bad):
             result = CliRunner().invoke(app, ["eval", "pinned-regressions"])
         assert result.exit_code == 1
         assert "FAIL synthetic" in result.output
@@ -1307,7 +1394,7 @@ class TestEvalPinnedRegressions:
             predicate=lambda: True,
         )
         good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
-        with patch("teatree.cli.eval.app.run_regression_corpus", return_value=good):
+        with patch("teatree.cli.eval.lanes.run_regression_corpus", return_value=good):
             result = CliRunner().invoke(app, ["eval", "pinned-regressions", "--format", "json"])
         assert result.exit_code == 0
         output = result.output
@@ -1361,38 +1448,38 @@ class TestEvalNegativeControl:
 class TestEvalCoverage:
     def test_clean_corpus_exits_zero_and_renders_table(self) -> None:
         report = _coverage()
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=report):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=report):
             result = CliRunner().invoke(app, ["eval", "coverage"])
         assert result.exit_code == 0, result.output
         assert "ship" in result.output
         assert "0 gap(s)" in result.output
 
     def test_gap_is_warn_first_exit_zero_by_default(self) -> None:
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
             result = CliRunner().invoke(app, ["eval", "coverage"])
         assert result.exit_code == 0, result.output
         assert "loops" in result.output
         assert "1 gap(s)" in result.output
 
     def test_fail_on_gap_exits_nonzero(self) -> None:
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
             result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
         assert result.exit_code == 1, result.output
 
     def test_fail_on_gap_with_clean_corpus_exits_zero(self) -> None:
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage()):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage()):
             result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
         assert result.exit_code == 0, result.output
 
     def test_json_format_lists_gaps(self) -> None:
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
             result = CliRunner().invoke(app, ["eval", "coverage", "--format", "json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["gaps"] == ["loops"]
 
     def test_unknown_format_exits_with_code_2(self) -> None:
-        with patch("teatree.cli.eval.app.skill_eval_coverage", return_value=_coverage()):
+        with patch("teatree.cli.eval.lanes.skill_eval_coverage", return_value=_coverage()):
             result = CliRunner().invoke(app, ["eval", "coverage", "--format", "yaml"])
         assert result.exit_code == 2
         assert "unknown --format" in result.output
