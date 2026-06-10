@@ -13,6 +13,7 @@ proves that with no ``[agent.skill_models]`` / session config, the merged
 returned — so the chokepoint changes the wiring, never the no-config behaviour.
 """
 
+# test-path: cross-cutting
 import ast
 from pathlib import Path
 
