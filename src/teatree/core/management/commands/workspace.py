@@ -1,7 +1,6 @@
 """Workspace management: create ticket worktrees, finalize, clean stale branches."""
 
 import os
-import re
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -31,8 +30,12 @@ from teatree.core.management.commands._workspace_cleanup import (
     resolve_unsynced_worktree,
 )
 from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
+from teatree.core.management.commands._workspace_ticket_intake import (
+    ForeignIssueWorktreeRefusedError,
+    TicketIntake,
+    build_ticket,
+)
 from teatree.core.models import Ticket, Worktree
-from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
@@ -148,38 +151,6 @@ def _branch_prefix() -> str:
     return prefix or "dev"
 
 
-def _slugify(text: str, max_length: int = 40) -> str:
-    """Convert text to a URL-safe slug for branch names."""
-    return re.sub(r"[^a-z0-9]+", "-", text.strip().lower()).strip("-")[:max_length]
-
-
-def _locked_get_or_create_ticket(issue_url: str, variant: str, repo_names: list[str]) -> Ticket:
-    """Get-or-create the ticket and lock it for the provisioning RMW.
-
-    #800 N3: ``get_or_create`` does not lock the row; the subsequent
-    ``scope()`` + ``repos`` + ``extra`` + full ``save()`` is a
-    read-modify-write that a concurrent provisioner for the same
-    ``issue_url`` would lost-update. On an existing row we re-fetch it
-    ``select_for_update``-locked (the ``ensure_session()`` pattern,
-    ``ticket.py``); a freshly-created row is already exclusive to this
-    transaction. Caller must be inside ``transaction.atomic()``.
-    """
-    ticket, created = Ticket.objects.get_or_create(
-        issue_url=issue_url,
-        defaults={"variant": variant, "repos": repo_names},
-    )
-    if created:
-        return ticket
-    return Ticket.objects.select_for_update().get(pk=ticket.pk)
-
-
-def _build_branch_name(repo_names: list[str], ticket_number: str, description: str) -> str:
-    """Build the flat ``<number>-<slug>`` branch name; legacy initials/repo prefix dropped (#1323)."""
-    del repo_names
-    slug = _slugify(description) if description else "ticket"
-    return f"{ticket_number}-{slug}"
-
-
 class Command(TyperCommand):
     @command()
     def ticket(
@@ -188,6 +159,14 @@ class Command(TyperCommand):
         variant: str = "",
         repos: str = "",
         description: str = "",
+        *,
+        take_over: Annotated[
+            bool,
+            typer.Option(
+                "--take-over",
+                help="Proceed even when another worktree dir for this issue already exists (#2217).",
+            ),
+        ] = False,
     ) -> int:
         """Create or update a ticket and trigger worktree provisioning.
 
@@ -198,6 +177,11 @@ class Command(TyperCommand):
 
         Idempotent: re-running over an already-started ticket merges new repos
         into ``ticket.repos`` so the next ``execute_provision`` picks them up.
+
+        Filesystem-evidence double-dispatch guard (#2217): before materialising a
+        worktree for issue ``N``, refuse when a *foreign* ``N-*`` worktree dir
+        already exists (someone may already be on it) unless ``--take-over`` is
+        passed. Re-provisioning the ticket's own existing dir is always allowed.
         """
         _warn_orphans(self.stderr.write)
         # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
@@ -207,52 +191,25 @@ class Command(TyperCommand):
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
         repo_names = resolve_repo_names(overlay, issue_url, repos)
 
-        with transaction.atomic():
-            ticket = _locked_get_or_create_ticket(issue_url, variant, repo_names)
+        intake = TicketIntake(
+            issue_url=issue_url,
+            variant=variant,
+            repo_names=repo_names,
+            description=description,
+            take_over=take_over,
+        )
+        try:
+            ticket = build_ticket(self.stderr.write, overlay, intake, _workspace_dir())
+        except ForeignIssueWorktreeRefusedError:
+            return 0
 
-            # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).
-            _wh.reject_variant_mismatch(self.stderr.write, ticket, variant)
-
-            if ticket.state == Ticket.State.NOT_STARTED:
-                ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
-
-            ticket.repos = list(dict.fromkeys((ticket.repos or []) + repo_names))
-
-            if not description:
-                description = overlay.get_issue_title(issue_url)
-
-            extra = cast("TicketExtra", ticket.extra or {})
-            if not extra.get("branch"):
-                extra["branch"] = _build_branch_name(repo_names, ticket.ticket_number, description)
-            if description and not extra.get("description"):
-                extra["description"] = description
-            ticket.extra = extra
-            ticket.save()
-
-            # #2104: this CLI IS the hand-dispatched external-delivery entry — a
-            # directly-implementing delivery agent (per /teatree-batch) runs it,
-            # the loop's own FSM never does. Claim delivery ownership so the
-            # loop's scheduling chokepoints (execute_provision before
-            # schedule_planning; the pr_sweep review-arm) skip the auto-planner /
-            # duplicate review-arm the external owner will never consume.
-            mark_external_delivery(ticket)
-
-            if ticket.state == Ticket.State.SCOPED:
-                ticket.start()
-                ticket.save()
-
-            # #748: every entry point converges on a durable session so
-            # the shipping gate has a phase-attestation home regardless
-            # of which path created the ticket.
-            ticket.ensure_session()
+        branch = cast("TicketExtra", ticket.extra)["branch"]
+        ticket_dir = _workspace_dir() / branch
 
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it
         # finds the worktrees already in place. Single source of truth: the runner.
         result = WorktreeProvisioner(ticket).run()
-
-        branch = extra["branch"]
-        ticket_dir = _workspace_dir() / branch
         if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
             self.stderr.write(f"  Provisioning failed: {result.detail}")
             # #748: only discard the ticket if it carries NO phase

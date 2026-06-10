@@ -571,10 +571,10 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
 
 
 class TestTicketNumberFromBranch:
-    """Parse the ticket number that ``_build_branch_name`` encodes in a branch.
+    """Parse the ticket number that ``build_branch_name`` encodes in a branch.
 
     ``workspace ticket`` names branches ``<number>-<slug>`` (see
-    ``workspace._build_branch_name``). Older/manual branches also use a
+    ``_workspace_ticket_intake.build_branch_name``). Older/manual branches also use a
     ``<scope>/<number>-<slug>`` shape. The parser must recover ``<number>``
     from both so a manually-added worktree attaches to the right ticket.
     """

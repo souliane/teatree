@@ -22,6 +22,7 @@ from teatree.core.management.commands._plan_gate_commands import (
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.external_delivery import refresh_external_delivery_if_active
 
 
 class CompletionResult(TypedDict, total=False):
@@ -167,20 +168,20 @@ class Command(TyperCommand):
             with transaction.atomic():
                 method()
                 ticket.save()
+                # #2217: external-owner FSM seam — refresh a LIVE lease so a long
+                # hand delivery never lapses mid-delivery (no-op without one).
+                refresh_external_delivery_if_active(ticket)
         except TransitionNotAllowed:
             # Surface the deep-retrieval refusal reason when that blocked the
             # `review` transition, else the generic not-allowed message.
             context_refusal = _review_context_refusal(ticket, transition_name)
-            return {
-                "error": context_refusal or f"Transition '{transition_name}' not allowed from state '{ticket.state}'",
-            }
+            generic = f"Transition '{transition_name}' not allowed from state '{ticket.state}'"
+            return {"error": context_refusal or generic}
         except InvalidTransitionError as exc:
             # Dirty-worktree / missing-E2E DoD refusals: the FSM stays put
             # (the gate keeps blocking) and the refusal reason is surfaced
             # to the caller instead of a raw traceback.
-            return {
-                "error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}",
-            }
+            return {"error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}"}
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
 
@@ -256,6 +257,8 @@ class Command(TyperCommand):
         except PlanAdvanceError as exc:
             return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
 
+        # #2217: external-owner FSM seam — refresh a LIVE lease (no-op without one).
+        refresh_external_delivery_if_active(ticket)
         self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
 

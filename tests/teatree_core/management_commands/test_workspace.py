@@ -26,7 +26,8 @@ import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
-from teatree.core.management.commands.workspace import _branch_prefix, _build_branch_name, _workspace_dir
+from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
+from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
@@ -77,7 +78,7 @@ class TestBuildBranchName(TestCase):
     """
 
     def test_does_not_start_with_initials_or_repo(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["backend", "frontend"],
             ticket_number="1323",
             description="Fix workspace branch prefix",
@@ -90,7 +91,7 @@ class TestBuildBranchName(TestCase):
         assert not branch.startswith("backend/")
 
     def test_starts_with_ticket_number(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["backend"],
             ticket_number="7485",
             description="bot finding fix",
@@ -98,7 +99,7 @@ class TestBuildBranchName(TestCase):
         assert branch.startswith("7485-")
 
     def test_no_repo_segment_anywhere(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["api-service", "web-client"],
             ticket_number="8521",
             description="add purpose types",
@@ -111,7 +112,7 @@ class TestBuildBranchName(TestCase):
         assert "client" not in segments
 
     def test_only_lowercase_digits_and_dashes(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["backend"],
             ticket_number="1234",
             description="Add Login Page! With UPPERCASE & symbols",
@@ -121,7 +122,7 @@ class TestBuildBranchName(TestCase):
     def test_unaffected_by_branch_prefix_env(self) -> None:
         """T3_BRANCH_PREFIX must NOT bleed into the generated branch name (#1323)."""
         with patch.dict("os.environ", {"T3_BRANCH_PREFIX": "ac"}):
-            branch = _build_branch_name(
+            branch = build_branch_name(
                 repo_names=["backend"],
                 ticket_number="1323",
                 description="fix prefix",
@@ -131,7 +132,7 @@ class TestBuildBranchName(TestCase):
         assert branch.startswith("1323-")
 
     def test_description_becomes_slug_after_ticket_number(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["backend"],
             ticket_number="1322",
             description="worktree db link",
@@ -139,7 +140,7 @@ class TestBuildBranchName(TestCase):
         assert branch == "1322-worktree-db-link"
 
     def test_falls_back_when_description_empty(self) -> None:
-        branch = _build_branch_name(
+        branch = build_branch_name(
             repo_names=["backend"],
             ticket_number="1322",
             description="",
@@ -188,6 +189,55 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.state == Ticket.State.STARTED
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.worktrees.count() == 2
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_refuses_when_foreign_issue_worktree_dir_exists(self) -> None:
+        # #2217 filesystem-evidence guard: a `42-*` dir at a foreign path means
+        # someone may already be on the issue; refuse without provisioning.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "42-someone-else-already-here").mkdir()
+            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+                rc = call_command("workspace", "ticket", "https://example.com/issues/42")
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_take_over_proceeds_despite_foreign_issue_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "42-someone-else-already-here").mkdir()
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
+            ):
+                provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
+                rc = call_command("workspace", "ticket", "https://example.com/issues/42", take_over=True)
+        assert rc != 0
+        assert Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_idempotent_reprovision_of_own_dir_is_allowed(self) -> None:
+        # Re-provisioning the ticket's OWN existing worktree dir (same path the
+        # branch would use) is allowed — the guard only refuses FOREIGN dirs.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
+            ):
+                provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
+                first = call_command("workspace", "ticket", "https://example.com/issues/42")
+                # Materialise the ticket's OWN worktree dir on disk (the path the
+                # branch resolves to); a re-run must not treat it as a collision.
+                own_branch = Ticket.objects.get(pk=first).extra["branch"]
+                (workspace / own_branch).mkdir(exist_ok=True)
+                second = call_command("workspace", "ticket", "https://example.com/issues/42")
+        assert first == second
+        assert second != 0
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(
