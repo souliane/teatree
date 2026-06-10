@@ -10,7 +10,8 @@ from django.utils import timezone
 from teatree.config import Speed, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import Session, Task, Ticket
-from teatree.loop.phases.orchestrate import orchestrate_phase
+from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.loop.phases.orchestrate import _dispatchable_filter, orchestrate_phase
 
 _url_counter = itertools.count()
 
@@ -235,3 +236,73 @@ class TestPipelinedWIPStandingCap(django.test.TestCase):
         admitted = len(manifest.entries)
         in_flight_before = 1
         assert admitted + in_flight_before <= 2
+
+
+class TestDispatchExcludesLiveExternalDelivery(django.test.TestCase):
+    """A unit under a live #2104 delivery lease must never be dispatched (#2217).
+
+    Reproduces the double-dispatch incident: a hand-delivery owner advanced a
+    ticket STARTED -> PLANNED with the lease still live, the loop scheduled a
+    ``coding`` Task, and the dispatch chokepoint admitted it -> two coders on
+    one ticket. The chokepoint must exclude any phase on a hand-delivered ticket.
+    """
+
+    def _lease(self, ticket: Ticket, *, lease_seconds: int) -> None:
+        mark_external_delivery(ticket, lease_seconds=lease_seconds)
+        ticket.refresh_from_db()
+
+    def test_live_lease_coding_task_is_excluded_from_dispatchable_filter(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        self._lease(task.ticket, lease_seconds=3600)
+        dispatchable = Task.objects.filter(status=Task.Status.PENDING).filter(_dispatchable_filter())
+        assert task.pk not in set(dispatchable.values_list("pk", flat=True))
+
+    def test_live_lease_coding_task_is_not_claimed(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        self._lease(task.ticket, lease_seconds=3600)
+        claimed = Task.objects.claim_next_pending(claimed_by="loop", extra_filter=_dispatchable_filter())
+        assert claimed is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_live_lease_task_is_not_admitted_by_orchestrate(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        self._lease(task.ticket, lease_seconds=3600)
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=5)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=True)
+        assert manifest.entries == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_expired_lease_coding_task_dispatches(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        self._lease(task.ticket, lease_seconds=-1)
+        claimed = Task.objects.claim_next_pending(claimed_by="loop", extra_filter=_dispatchable_filter())
+        assert claimed is not None
+        assert claimed.pk == task.pk
+
+    def test_absent_lease_coding_task_dispatches(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        claimed = Task.objects.claim_next_pending(claimed_by="loop", extra_filter=_dispatchable_filter())
+        assert claimed is not None
+        assert claimed.pk == task.pk
+
+    def test_malformed_lease_coding_task_dispatches(self) -> None:
+        task = _dispatchable_task(phase="coding")
+        task.ticket.extra = {"external_delivery": {"expires_at": "not-a-date"}}
+        task.ticket.save(update_fields=["extra"])
+        claimed = Task.objects.claim_next_pending(claimed_by="loop", extra_filter=_dispatchable_filter())
+        assert claimed is not None
+        assert claimed.pk == task.pk
+
+    def test_terminal_ticket_with_live_lease_still_excluded(self) -> None:
+        # A terminal ticket carrying a live lease is still excluded — the
+        # exclusion is by lease liveness, not by FSM state. Such a task is not
+        # normally dispatched anyway, so excluding it is conservative and safe.
+        task = _dispatchable_task(phase="coding")
+        task.ticket.state = Ticket.State.MERGED
+        task.ticket.save(update_fields=["state"])
+        self._lease(task.ticket, lease_seconds=3600)
+        dispatchable = Task.objects.filter(status=Task.Status.PENDING).filter(_dispatchable_filter())
+        assert task.pk not in set(dispatchable.values_list("pk", flat=True))
