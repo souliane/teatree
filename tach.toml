@@ -146,6 +146,7 @@ layer = "interface"
 depends_on = [
   "teatree.paths",
   "teatree.config",
+  "teatree.config_agent",
   "teatree.core",
   "teatree.agents",
   "teatree.backends",

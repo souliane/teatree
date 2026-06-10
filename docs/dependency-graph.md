@@ -50,6 +50,7 @@ graph TD
     teatree.contrib --> teatree.visual_qa
     teatree.cli --> teatree.paths
     teatree.cli --> teatree.config
+    teatree.cli --> teatree.config_agent
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends
