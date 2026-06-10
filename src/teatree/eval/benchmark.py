@@ -22,8 +22,13 @@ class VariantSummary:
 
     variant: str
     passed: int
+    #: Cells that actually ran and were graded — the pass-rate/mean-cost
+    #: denominator. EXCLUDES both skipped (not provisioned) and errored (the
+    #: runner raised even after retries), so a transient infra blip never
+    #: unfairly lowers a variant's measured pass-rate.
     executed: int
     skipped: int
+    errored: int
     total_cost_usd: float
 
     @property
@@ -45,13 +50,18 @@ def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[Vari
     summaries: list[VariantSummary] = []
     for variant in variants:
         cells = [row for row in rows if row.model == variant]
-        executed = [cell for cell in cells if not cell.skipped]
+        # "executed" here is the pass-rate denominator: graded cells only, so it
+        # excludes BOTH skipped and errored. (Distinct from RunGuards.executed in
+        # run_modes.py, which counts ``not skipped`` — an errored cell still
+        # proves the suite ran something there.)
+        executed = [cell for cell in cells if not cell.skipped and not cell.errored]
         summaries.append(
             VariantSummary(
                 variant=variant,
                 passed=sum(1 for cell in executed if cell.passed),
                 executed=len(executed),
-                skipped=len(cells) - len(executed),
+                skipped=sum(1 for cell in cells if cell.skipped),
+                errored=sum(1 for cell in cells if cell.errored),
                 total_cost_usd=sum(cell.cost_usd for cell in executed),
             )
         )
@@ -60,12 +70,13 @@ def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[Vari
 
 def render_benchmark_text(summaries: list[VariantSummary]) -> str:
     """Render the per-variant comparison table (one line per variant)."""
-    headers = ("variant", "passed", "pass-rate", "total cost", "mean cost/scn", "cost/pass")
+    headers = ("variant", "passed", "pass-rate", "errored", "total cost", "mean cost/scn", "cost/pass")
     rows = [
         (
             summary.variant,
             f"{summary.passed}/{summary.executed}",
             f"{summary.pass_rate:.2f}",
+            str(summary.errored),
             f"${summary.total_cost_usd:.4f}",
             f"${summary.mean_cost_usd:.4f}",
             "-" if summary.cost_per_pass_usd is None else f"${summary.cost_per_pass_usd:.4f}",
@@ -80,7 +91,7 @@ def render_benchmark_text(summaries: list[VariantSummary]) -> str:
 
 
 def render_benchmark_json(summaries: list[VariantSummary]) -> str:
-    """Render ``{"variants": [{variant, passed, executed, skipped, rates, costs}]}``."""
+    """Render ``{"variants": [{variant, passed, executed, skipped, errored, rates, costs}]}``."""
     payload = {
         "variants": [
             {
@@ -88,6 +99,7 @@ def render_benchmark_json(summaries: list[VariantSummary]) -> str:
                 "passed": summary.passed,
                 "executed": summary.executed,
                 "skipped": summary.skipped,
+                "errored": summary.errored,
                 "pass_rate": summary.pass_rate,
                 "total_cost_usd": summary.total_cost_usd,
                 "mean_cost_usd": summary.mean_cost_usd,

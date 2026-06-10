@@ -10,8 +10,9 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
+from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, Matcher
-from teatree.eval.persistence import persist_run
+from teatree.eval.persistence import persist_matrix, persist_run
 from teatree.eval.report import evaluate
 
 _TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="pytest")
@@ -92,3 +93,21 @@ class TestPersistCost(TestCase):
         record = persist_run([result], model="haiku")
 
         assert record.scenario_results.get().cost_usd == pytest.approx(0.0)
+
+
+class TestPersistMatrixErroredCells(TestCase):
+    def test_errored_cell_is_not_persisted_as_a_fail_row(self) -> None:
+        rows = [
+            MatrixRow(scenario="alpha", model="m", passed=True, score=1.0, trials=1, skipped=False, cost_usd=0.10),
+            MatrixRow(scenario="beta", model="m", passed=False, score=0.0, trials=1, skipped=False, errored=True),
+        ]
+
+        record = persist_matrix(rows, models=["m"])
+
+        persisted = {(r.scenario_name, r.verdict) for r in record.scenario_results.all()}
+        # The errored cell is a transient infra blip, not a graded FAIL — it must
+        # not land in the ledger as a fail row that would lower the baseline pass-rate.
+        assert ("alpha", "pass") in persisted
+        assert not any(name == "beta" for name, _ in persisted)
+        assert record.failed == 0
+        assert record.passed == 1

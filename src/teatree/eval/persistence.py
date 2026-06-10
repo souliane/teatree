@@ -154,6 +154,13 @@ def persist_matrix(
             git_sha=current_git_sha() if git_sha is None else git_sha,
         )
         for row in rows:
+            if row.errored:
+                # An errored cell (the runner raised even after the matrix loop's
+                # bounded retries) is a transient infra blip, not a graded
+                # verdict. Persisting it as a `fail` row would unfairly lower the
+                # baseline pass-rate and the `--gate-regressions` diff — so it is
+                # excluded from the ledger entirely (no row written).
+                continue
             run.record_scenario(
                 scenario_name=row.scenario,
                 verdict=_matrix_verdict(row),

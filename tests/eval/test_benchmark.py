@@ -8,13 +8,14 @@ from teatree.eval.benchmark import VariantSummary, render_benchmark_json, render
 from teatree.eval.matrix import MatrixRow
 
 
-def _row(
+def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a MatrixRow field a case varies.
     scenario: str,
     model: str,
     *,
     passed: bool = True,
     skipped: bool = False,
     cost_usd: float = 0.0,
+    errored: bool = False,
 ) -> MatrixRow:
     return MatrixRow(
         scenario=scenario,
@@ -24,6 +25,7 @@ def _row(
         trials=1,
         skipped=skipped,
         cost_usd=cost_usd,
+        errored=errored,
     )
 
 
@@ -73,12 +75,30 @@ class TestSummarizeBenchmark:
         assert summary.mean_cost_usd == pytest.approx(0.0)
         assert summary.cost_per_pass_usd is None
 
+    def test_errored_rows_counted_as_errored_and_excluded_from_executed(self) -> None:
+        rows = [
+            _row("alpha", "m", passed=False, errored=True),
+            _row("beta", "m", passed=True, cost_usd=0.10),
+        ]
+        (summary,) = summarize_benchmark(rows, ["m"])
+        assert (summary.passed, summary.executed, summary.skipped, summary.errored) == (1, 1, 0, 1)
+        assert summary.pass_rate == pytest.approx(1.0)
+        assert summary.mean_cost_usd == pytest.approx(0.10)
+
+    def test_errored_cell_cost_excluded_from_total(self) -> None:
+        rows = [
+            _row("alpha", "m", passed=False, errored=True, cost_usd=0.30),
+            _row("beta", "m", passed=True, cost_usd=0.10),
+        ]
+        (summary,) = summarize_benchmark(rows, ["m"])
+        assert summary.total_cost_usd == pytest.approx(0.10)
+
 
 class TestRenderBenchmarkText:
     def test_table_shows_each_variant_with_its_metrics(self) -> None:
         summaries = [
-            VariantSummary(variant="opus@xhigh", passed=1, executed=2, skipped=0, total_cost_usd=0.40),
-            VariantSummary(variant="fable@medium", passed=2, executed=2, skipped=0, total_cost_usd=0.06),
+            VariantSummary(variant="opus@xhigh", passed=1, executed=2, skipped=0, errored=0, total_cost_usd=0.40),
+            VariantSummary(variant="fable@medium", passed=2, executed=2, skipped=0, errored=0, total_cost_usd=0.06),
         ]
         text = render_benchmark_text(summaries)
         assert "opus@xhigh" in text
@@ -88,8 +108,15 @@ class TestRenderBenchmarkText:
         assert "$0.4000" in text
         assert "$0.0300" in text
 
+    def test_errored_column_present(self) -> None:
+        summaries = [VariantSummary(variant="m", passed=1, executed=1, skipped=0, errored=2, total_cost_usd=0.10)]
+        text = render_benchmark_text(summaries)
+        header = text.splitlines()[0]
+        assert "errored" in header
+        assert "2" in text
+
     def test_zero_pass_variant_renders_a_dash_for_cost_per_pass(self) -> None:
-        summaries = [VariantSummary(variant="m", passed=0, executed=1, skipped=0, total_cost_usd=0.10)]
+        summaries = [VariantSummary(variant="m", passed=0, executed=1, skipped=0, errored=0, total_cost_usd=0.10)]
         text = render_benchmark_text(summaries)
         assert "-" in text
 
@@ -97,13 +124,14 @@ class TestRenderBenchmarkText:
         header, separator = render_benchmark_text([]).splitlines()
         assert header.startswith("variant")
         assert set(separator) == {"-"}
+        assert "errored" in header
 
 
 class TestRenderBenchmarkJson:
     def test_json_shape(self) -> None:
         summaries = [
-            VariantSummary(variant="opus@xhigh", passed=1, executed=2, skipped=0, total_cost_usd=0.40),
-            VariantSummary(variant="m", passed=0, executed=1, skipped=1, total_cost_usd=0.10),
+            VariantSummary(variant="opus@xhigh", passed=1, executed=2, skipped=0, errored=0, total_cost_usd=0.40),
+            VariantSummary(variant="m", passed=0, executed=1, skipped=1, errored=3, total_cost_usd=0.10),
         ]
         payload = json.loads(render_benchmark_json(summaries))
         assert [v["variant"] for v in payload["variants"]] == ["opus@xhigh", "m"]
@@ -113,9 +141,11 @@ class TestRenderBenchmarkJson:
             "passed": 1,
             "executed": 2,
             "skipped": 0,
+            "errored": 0,
             "pass_rate": 0.5,
             "total_cost_usd": 0.40,
             "mean_cost_usd": 0.20,
             "cost_per_pass_usd": 0.40,
         }
+        assert second["errored"] == 3
         assert second["cost_per_pass_usd"] is None

@@ -335,12 +335,24 @@ loud in the matrix/pass@k lanes too, not only the single-trial path.
 ### Model matrix
 
 `--models opus,sonnet,haiku` runs the suite once per model and renders a
-scenario-by-model table (`pass` / `FAIL` per cell, or the pass-rate under
-`--trials`), followed by a per-model tally. It persists one scenario-result row
-per `(scenario, model)` cell (unless `--no-persist`); combined with
-`--gate-regressions` it flags per-model drops against each model's baseline.
-`--format json` emits a
-`{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
+scenario-by-model table (`pass` / `FAIL` / `ERR` per cell, or the pass-rate
+under `--trials`), followed by a per-model `passed / failed / skipped / errored`
+tally. It persists one scenario-result row per `(scenario, model)` cell (unless
+`--no-persist`); combined with `--gate-regressions` it flags per-model drops
+against each model's baseline. `--format json` emits a
+`{models, scenarios:[{name, results:{model:{passed,score,errored,...}}}]}`
+payload.
+
+A single cell's *unexpected* runner exception (a transient CLI non-zero exit, not
+a deterministic bug) is isolated, not fatal: the cell is retried a bounded number
+of times, and if it still fails it is recorded as an `ERR` cell (logged loudly to
+stderr) so the rest of the comparison table is still produced. An `ERR` cell is
+DISTINCT from a graded `FAIL` (the agent did not satisfy the matchers) and from a
+`skip` (not provisioned) — it is excluded from both the "failed" tally and the
+pass-rate, so a transient infra blip never unfairly lowers a model's measured
+score. The lane still exits non-zero when anything errored (visibility). The
+single-scenario `t3 eval run` path is unchanged — it stays fail-loud; the
+resilience is a property of the multi-cell matrix/benchmark loop only.
 
 Each `--models` entry may carry a reasoning-effort variant as `model@effort`
 (e.g. `claude-opus-4-8@xhigh`; levels `low`/`medium`/`high`/`xhigh`/`max`,
@@ -357,8 +369,11 @@ answers "which variant is worth its cost": it runs the suite once per
 `model@effort` variant on the metered Agent-SDK runner (the all-skipped gate
 always armed), persists the matrix record into the run-history ledger, and
 renders one comparison line per variant — scenarios passed/executed,
-pass-rate, total metered cost, mean cost per scenario, and cost per pass
-(`-` when nothing passed). `--scenarios a,b` narrows the suite, `--trials k`
+pass-rate, errored-cell count, total metered cost, mean cost per scenario, and
+cost per pass (`-` when nothing passed). An errored cell (the runner raised even
+after the bounded retries — see "Model matrix" above) is excluded from `executed`
+so the pass-rate and mean-cost denominators stay fair; it is surfaced in its own
+`errored` column. `--scenarios a,b` narrows the suite, `--trials k`
 de-noises each cell's pass-rate, `--format json` emits the same metrics as a
 `{variants: [...]}` payload. A failing scenario is the measurement, not an
 error: the command exits non-zero only when the run itself is broken. The

@@ -26,6 +26,13 @@ from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 
+#: How many extra attempts a single matrix/benchmark cell gets after its first
+#: failure. A clean-room scenario is idempotent (re-running costs only extra
+#: metered $), so a bounded retry rides out a transient CLI non-zero exit —
+#: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
+#: ERRORED so the rest of the comparison table is still produced.
+MAX_MATRIX_CELL_RETRIES = 2
+
 
 def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
     specs: list[EvalSpec],
@@ -140,7 +147,12 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
-    if any(not row.passed and not row.skipped for row in rows) or regressed or cost_regressed:
+    # An errored cell is NOT a graded FAIL, but the lane still exits non-zero on
+    # it for visibility — a transient blip should be seen, just not counted as a
+    # model failure in the comparison.
+    failed = any(not row.passed and not row.skipped and not row.errored for row in rows)
+    errored = any(row.errored for row in rows)
+    if failed or errored or regressed or cost_regressed:
         sys.exit(1)
 
 
@@ -171,12 +183,67 @@ def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benc
     require: str,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> list[MatrixRow]:
-    """Run every scenario against every variant tag — the shared matrix/benchmark loop."""
+    """Run every scenario against every variant tag — the shared matrix/benchmark loop.
+
+    Each cell goes through :func:`_resilient_matrix_trial`, so one cell's
+    transient runner exception is isolated (retried, then recorded as an ERRORED
+    row) and never aborts the whole comparison — the full table is always
+    produced.
+    """
     return [
-        _matrix_trial(runner, with_model(spec, tag), trials=trials, require=require, grader=grader)
+        _resilient_matrix_trial(runner, with_model(spec, tag), trials=trials, require=require, grader=grader)
         for tag in model_tags
         for spec in specs
     ]
+
+
+def _resilient_matrix_trial(
+    runner: SdkInProcessRunner,
+    spec: EvalSpec,
+    *,
+    trials: int,
+    require: str,
+    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+) -> MatrixRow:
+    """Run one cell with bounded retries; on persistent failure, an ERRORED row.
+
+    Only an *unexpected* ``Exception`` from the runner is caught — a genuine SDK
+    error the single-scenario ``t3 eval run`` path re-raises (``run()`` keeps
+    that fail-loud). ``KeyboardInterrupt``/``SystemExit`` are ``BaseException``s
+    and propagate; ``typer.Exit`` subclasses ``RuntimeError`` (an ``Exception``)
+    but is a control-flow signal, so it is re-raised explicitly rather than
+    isolated. (``_TerminalResultError``/``TimeoutError`` are already handled
+    inside ``run()`` and never reach here.) After :data:`MAX_MATRIX_CELL_RETRIES`
+    retries still fail, the cell is logged loudly to stderr and recorded
+    ``errored=True`` so the rest of the matrix survives.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(MAX_MATRIX_CELL_RETRIES + 1):
+        try:
+            return _matrix_trial(runner, spec, trials=trials, require=require, grader=grader)
+        except typer.Exit:
+            raise
+        except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
+            last_exc = exc
+            print(  # noqa: T201 — loud per-attempt visibility on stderr, never swallowed.
+                f"WARNING cell {spec.name} @ {spec.model} attempt {attempt + 1}/"
+                f"{MAX_MATRIX_CELL_RETRIES + 1} raised: {exc}",
+                file=sys.stderr,
+            )
+    print(  # noqa: T201 — give-up record is loud; the cell becomes ERRORED, not lost.
+        f"ERROR cell {spec.name} @ {spec.model} failed after {MAX_MATRIX_CELL_RETRIES + 1} attempts: {last_exc}",
+        file=sys.stderr,
+    )
+    return MatrixRow(
+        scenario=spec.name,
+        model=spec.model,
+        passed=False,
+        score=0.0,
+        trials=1,
+        skipped=False,
+        cost_usd=0.0,
+        errored=True,
+    )
 
 
 def _matrix_trial(
