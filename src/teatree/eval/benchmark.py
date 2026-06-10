@@ -32,6 +32,14 @@ class VariantSummary:
     skipped: int
     errored: int
     total_cost_usd: float
+    #: Metered cost summed across the executed cells, split into the requested
+    #: MAIN model (the headline comparison number) and the AUXILIARY background
+    #: (Claude Code's ``claude-haiku-4-5``). ``main + aux`` need NOT equal
+    #: ``total_cost_usd`` exactly — the API's billed total can carry rounding /
+    #: per-call fees the per-model split doesn't — so the billed total stays the
+    #: headline and the split is the observability around it.
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
     #: Token usage summed across the executed cells (errored/skipped excluded) —
     #: the substrate for the token-weighted cache columns below.
     usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
@@ -71,6 +79,16 @@ class VariantSummary:
         """Mean output tokens per executed cell — the model-attributable cost axis; 0.0 when none executed."""
         return self.usage.output / self.executed if self.executed else 0.0
 
+    @property
+    def aux_cost_fraction(self) -> float:
+        """Share of metered cost spent on the AUXILIARY background; 0.0 when no metered cost.
+
+        The reader's "how much of the run is haiku vs the requested model" number.
+        Denominator is the billed ``total_cost_usd`` (the real spend), so a value
+        near 0 means the requested model dominates.
+        """
+        return self.aux_cost_usd / self.total_cost_usd if self.total_cost_usd else 0.0
+
 
 def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[VariantSummary]:
     """Fold matrix rows into one summary per variant, in the given variant order."""
@@ -91,6 +109,8 @@ def summarize_benchmark(rows: list[MatrixRow], variants: list[str]) -> list[Vari
                 skipped=sum(1 for cell in cells if cell.skipped),
                 errored=sum(1 for cell in cells if cell.errored),
                 total_cost_usd=sum(cell.cost_usd for cell in executed),
+                main_cost_usd=sum(cell.main_cost_usd for cell in executed),
+                aux_cost_usd=sum(cell.aux_cost_usd for cell in executed),
                 usage=usage,
                 fell_back_cells=sum(1 for cell in executed if cell.fell_back),
                 warm_equivalent_cost_usd=warm_equivalent_cost(_clean_cost_cells(executed)),
@@ -117,10 +137,12 @@ def _clean_cost_cells(executed: list[MatrixRow]) -> list[CostCell]:
 def render_benchmark_text(summaries: list[VariantSummary]) -> str:
     """Render the per-variant comparison table (one line per variant).
 
-    Billed ``total cost`` stays the headline; the added ``cache-hit%`` /
-    ``cold-write%`` / ``mean-out-tok`` / ``warm-cost`` columns are the honest
-    cache-cost diagnostics. ``warm-cost`` is ``-`` when the per-variant fit
-    degrades. Any variant with a fallen-back cell appends a clearly-visible note.
+    Billed ``total cost`` stays the headline; ``main cost`` / ``aux cost`` /
+    ``aux%`` split it into the requested model vs Claude Code's haiku background,
+    and the ``cache-hit%`` / ``cold-write%`` / ``mean-out-tok`` / ``warm-cost``
+    columns are the honest cache-cost diagnostics. ``warm-cost`` is ``-`` when the
+    per-variant fit degrades. Any variant with a fallen-back cell appends a
+    clearly-visible note.
     """
     headers = (
         "variant",
@@ -128,6 +150,9 @@ def render_benchmark_text(summaries: list[VariantSummary]) -> str:
         "pass-rate",
         "errored",
         "total cost",
+        "main cost",
+        "aux cost",
+        "aux%",
         "mean cost/scn",
         "cost/pass",
         "cache-hit%",
@@ -142,6 +167,9 @@ def render_benchmark_text(summaries: list[VariantSummary]) -> str:
             f"{summary.pass_rate:.2f}",
             str(summary.errored),
             f"${summary.total_cost_usd:.4f}",
+            f"${summary.main_cost_usd:.4f}",
+            f"${summary.aux_cost_usd:.4f}",
+            f"{summary.aux_cost_fraction:.0%}",
             f"${summary.mean_cost_usd:.4f}",
             "-" if summary.cost_per_pass_usd is None else f"${summary.cost_per_pass_usd:.4f}",
             f"{summary.cache_hit_rate:.0%}",
@@ -178,6 +206,9 @@ def render_benchmark_json(summaries: list[VariantSummary]) -> str:
                 "total_cost_usd": summary.total_cost_usd,
                 "mean_cost_usd": summary.mean_cost_usd,
                 "cost_per_pass_usd": summary.cost_per_pass_usd,
+                "main_cost_usd": summary.main_cost_usd,
+                "aux_cost_usd": summary.aux_cost_usd,
+                "aux_cost_fraction": summary.aux_cost_fraction,
                 "usage": {
                     "input": summary.usage.input,
                     "cache_creation": summary.usage.cache_creation,

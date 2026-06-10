@@ -34,8 +34,18 @@ def _stub_oauth_token() -> "Iterator[None]":
     → ``read_pass("anthropic/oauth-token")`` → a ``pass`` subprocess that blocks
     on ``gpg`` on a dev machine without ``CLAUDE_CODE_OAUTH_TOKEN`` set. The stub
     keeps the suite hermetic — it never touches the host's secret store.
+
+    It also sets ``T3_EVAL_IN_CONTAINER=1`` so the metered ``--backend sdk`` /
+    ``--trials`` / ``--models`` runs execute IN-PROCESS (Docker is the default for
+    the metered lane; the marker is exactly what the docker runner sets inside the
+    container to run the re-invoked command in-process — the faithful test of the
+    in-container behaviour). Tests that assert the docker-routing path itself
+    override the env explicitly.
     """
-    with patch("teatree.eval.backends.ensure_oauth_token", return_value="t"):
+    with (
+        patch("teatree.eval.backends.ensure_oauth_token", return_value="t"),
+        patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
+    ):
         yield
 
 
@@ -1003,12 +1013,14 @@ class _BudgetCapturingRunner:
 @pytest.mark.django_db
 class TestEvalBenchmark:
     def _invoke(self, args: list[str], *, specs: list[EvalSpec], runner: type = _BenchmarkRunner):
+        # The marker emulates running INSIDE the CI container, where the benchmark
+        # runs in-process (Docker is the default; the marker breaks the re-route).
         with (
             patch("teatree.cli.eval.benchmark.discover_specs", return_value=specs),
             patch("teatree.cli.eval.benchmark.SdkInProcessRunner", runner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            return CliRunner().invoke(app, ["eval", "benchmark", *args])
+            return CliRunner().invoke(app, ["eval", "benchmark", *args], env={"T3_EVAL_IN_CONTAINER": "1"})
 
     def test_renders_per_variant_comparison_table(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
@@ -1113,6 +1125,89 @@ class TestEvalBenchmark:
         history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
         assert payload["runs"][0]["model"] == "opus@xhigh,fable@medium"
+
+
+class TestBenchmarkDockerByDefault:
+    """``t3 eval benchmark`` is metered → it defaults to running IN the container.
+
+    The module-wide autouse fixture sets ``T3_EVAL_IN_CONTAINER=1``; these tests
+    clear it (``patch.dict(..., clear=True)``) to exercise the HOST-side routing
+    decision (whether to spawn docker), then re-route or not as the case under
+    test demands.
+    """
+
+    def test_default_routes_to_docker_and_threads_args(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.benchmark.run_eval_in_docker", return_value=0) as docker,
+        ):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "benchmark",
+                    "--models",
+                    "claude-opus-4-8@xhigh,claude-fable-5@medium",
+                    "--scenarios",
+                    "alpha,beta",
+                    "--trials",
+                    "3",
+                    "--max-turns",
+                    "5",
+                    "--max-budget-usd",
+                    "1.5",
+                    "--format",
+                    "json",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        (args,) = docker.call_args.args
+        assert args[0] == "benchmark"
+        flag_values = {args[i]: args[i + 1] for i in range(1, len(args) - 1) if args[i].startswith("--")}
+        assert flag_values["--models"] == "claude-opus-4-8@xhigh,claude-fable-5@medium"
+        assert flag_values["--scenarios"] == "alpha,beta"
+        assert flag_values["--trials"] == "3"
+        assert flag_values["--max-turns"] == "5"
+        assert flag_values["--max-budget-usd"] == "1.5"
+        assert flag_values["--format"] == "json"
+        # the re-routed in-container invocation must NOT re-route again
+        assert "--local" not in args
+
+    def test_local_escape_runs_in_process_without_docker(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.benchmark.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.benchmark.SdkInProcessRunner", _BenchmarkRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+            patch("teatree.cli.eval.benchmark.run_eval_in_docker") as docker,
+        ):
+            result = CliRunner().invoke(app, ["eval", "benchmark", "--models", "opus@xhigh", "--no-persist", "--local"])
+        assert result.exit_code == 0, result.output
+        docker.assert_not_called()
+        assert "WARNING" in result.output
+
+    def test_in_container_runs_in_process_without_docker(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.benchmark.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.benchmark.SdkInProcessRunner", _BenchmarkRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+            patch("teatree.cli.eval.benchmark.run_eval_in_docker") as docker,
+        ):
+            # The autouse fixture's T3_EVAL_IN_CONTAINER=1 is exactly this case.
+            result = CliRunner().invoke(app, ["eval", "benchmark", "--models", "opus@xhigh", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        docker.assert_not_called()
+
+    def test_docker_unavailable_without_local_exits_2(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.benchmark.run_eval_in_docker", side_effect=DockerUnavailableError),
+        ):
+            result = CliRunner().invoke(app, ["eval", "benchmark", "--models", "opus@xhigh"])
+        assert result.exit_code == 2
+        assert "docker" in result.output.lower()
 
 
 class _CostRunner:
@@ -1622,6 +1717,66 @@ class TestEvalRunDocker:
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output
+
+
+class TestEvalRunMeteredDockerByDefault:
+    """``t3 eval run --backend sdk`` is metered → it defaults to running IN the container.
+
+    The autouse fixture sets ``T3_EVAL_IN_CONTAINER=1``; these tests clear it
+    (``patch.dict(..., clear=True)``) to exercise the host-side routing decision.
+    """
+
+    def test_sdk_run_routes_to_docker_by_default(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.app.discover_specs", side_effect=AssertionError("must not run on the host")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_called_once()
+
+    def test_trials_route_to_docker_by_default(self) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker,
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_called_once()
+
+    def test_subscription_run_stays_host_default(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
+            patch("teatree.eval.backends.SubscriptionTranscriptRunner") as sub,
+        ):
+            sub.return_value.run.return_value = _run("alpha", terminal_reason="skipped: x")
+            sub.return_value.transcript_path.return_value = Path("/tmp/none.jsonl")
+            CliRunner().invoke(app, ["eval", "run", "--no-persist"])
+        run_docker.assert_not_called()
+
+    def test_local_escape_runs_sdk_in_process_with_warning(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _Stub:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _Stub),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist", "--local"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_not_called()
+        assert "WARNING" in result.output
 
     def test_transcript_replay_skips_not_fails_when_no_transcript(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], replay_results=None):

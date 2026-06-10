@@ -1324,6 +1324,10 @@ Usage: t3 eval benchmark [OPTIONS]
  executed, unknown variant/scenario). Pass-rate noise shrinks with
  ``--trials k`` (each cell's score becomes a k-trial pass-rate).
 
+ The benchmark is metered, so it defaults to running in the CI container; pass
+ ``--local`` for a quick host check (NOT the reproducible gate). The container
+ is ephemeral, so a Docker-routed run is forced ``--no-persist``.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --models                            TEXT     Comma-separated model@effort │
 │                                                 variants to compare, e.g.    │
@@ -1359,6 +1363,12 @@ Usage: t3 eval benchmark [OPTIONS]
 │                                                 run-history ledger (`t3 eval │
 │                                                 history`).                   │
 │                                                 [default: persist]           │
+│    --local                                      Run on the HOST instead of   │
+│                                                 the default CI container — a │
+│                                                 quick local check only. A    │
+│                                                 host run is NOT the          │
+│                                                 reproducible regression gate │
+│                                                 (use Docker/CI for that).    │
 │    --help                                       Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1690,14 +1700,23 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     subscription backend,    │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
-│ --docker                                            Run inside the CI image  │
-│                                                     (dev/Dockerfile.test);   │
-│                                                     the metered sdk lane     │
-│                                                     runs in-container,       │
-│                                                     authenticated by the     │
-│                                                     host's                   │
-│                                                     CLAUDE_CODE_OAUTH_TOKEN… │
-│                                                     (env pass-through).      │
+│ --docker                                            Force running inside the │
+│                                                     CI image                 │
+│                                                     (dev/Dockerfile.test)    │
+│                                                     for ANY backend. The     │
+│                                                     metered sdk lane ALREADY │
+│                                                     defaults to the          │
+│                                                     container; this forces   │
+│                                                     it for the subscription  │
+│                                                     lane too.                │
+│ --local                                             Run the metered sdk lane │
+│                                                     on the HOST instead of   │
+│                                                     the default CI container │
+│                                                     — a quick local check    │
+│                                                     only. A host run is NOT  │
+│                                                     the reproducible         │
+│                                                     regression gate (use     │
+│                                                     Docker/CI).              │
 │ --parallel                                 INTEGER  Run this many scenarios  │
 │                                                     concurrently (each SDK   │
 │                                                     scenario run is          │

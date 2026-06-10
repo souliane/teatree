@@ -13,6 +13,7 @@ as the agent issued them. ``turn`` is 1-indexed over the order of
 
 import dataclasses
 import json
+import re
 from typing import Any
 
 from teatree.eval.models import EvalToolCall, TokenUsage
@@ -27,6 +28,33 @@ _USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
     ("cache_read_input_tokens", "cache_read"),
     ("output_tokens", "output"),
 )
+
+#: A per-model ``model_usage`` entry uses the CLI's camelCase keys (distinct from
+#: the top-level ``usage`` snake_case above). The per-model ``costUSD`` is the key
+#: fact that makes the main-vs-auxiliary cost split possible.
+_MODEL_USAGE_KEY_TO_FIELD: tuple[tuple[str, str], ...] = (
+    ("inputTokens", "input"),
+    ("cacheCreationInputTokens", "cache_creation"),
+    ("cacheReadInputTokens", "cache_read"),
+    ("outputTokens", "output"),
+)
+_MODEL_COST_KEY = "costUSD"
+
+#: A model id may carry a trailing ``-YYYYMMDD`` date suffix (``model_usage`` keys
+#: are dated, the requested tag usually is not). The base id is the comparison key
+#: for fallback detection and the cost split.
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
+
+def _base_model_id(model: str) -> str:
+    """Normalize a model id to its base form: drop an ``@effort`` tag and a ``-YYYYMMDD`` date suffix.
+
+    The requested tag is ``model[@effort]`` (effort is not a model); a
+    ``model_usage`` key is the dated model id. Both sides normalize through here
+    so a dated ``model_usage`` key matches an undated requested model.
+    """
+    base = model.split("@", 1)[0]
+    return _DATE_SUFFIX_RE.sub("", base)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -183,6 +211,94 @@ def extract_billed_model(events: list[StreamJsonEvent]) -> str | None:
         # harmless, since a real fallback is lopsided, not a near-even split.
         return max(model_usage, key=lambda key: _model_usage_volume(model_usage[key]))
     return None
+
+
+def requested_model_present(events: list[StreamJsonEvent], requested: str) -> bool | None:
+    """Return whether the REQUESTED main model is present in ``model_usage`` — the fallback signal.
+
+    Claude Code ALWAYS runs ``claude-haiku-4-5`` as a cheap auxiliary model
+    alongside the requested main model, so an auxiliary key in ``model_usage`` is
+    NORMAL — it is not a fallback. A fallback is the requested main model being
+    SUBSTITUTED away: present here means absent from the ``model_usage`` keys.
+
+    Comparison is on the base model id (effort tag stripped from *requested*, a
+    ``-YYYYMMDD`` date suffix stripped from each ``model_usage`` key). Returns
+    ``True`` when the requested model is present (NOT a fallback), ``False`` when
+    it was substituted (a fallback), and ``None`` when ``model_usage`` is
+    unobservable (no ``result`` event / absent / malformed map) — the caller
+    treats ``None`` as "not observable", never as a fallback signal.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        model_usage = event.raw.get("model_usage")
+        if not isinstance(model_usage, dict) or not model_usage:
+            return None
+        base_keys = {_base_model_id(key) for key in model_usage if isinstance(key, str)}
+        return _base_model_id(requested) in base_keys
+    return None
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelCostSplit:
+    """The metered cost + token usage of one run, split into MAIN vs AUXILIARY model.
+
+    The MAIN model is the requested base model (the comparison number the
+    benchmark cares about); AUXILIARY is the sum of every other ``model_usage``
+    entry (Claude Code's background ``claude-haiku-4-5``). Both default to zero,
+    so a non-metered / unobservable run yields an all-zero split, never a raise.
+    """
+
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
+    main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+
+
+def extract_model_cost_split(events: list[StreamJsonEvent], requested: str) -> ModelCostSplit:
+    """Split the final ``result`` event's per-model cost/usage into MAIN vs AUXILIARY.
+
+    Each ``model_usage`` entry carries a per-model ``costUSD`` and camelCase token
+    counts. The requested base model's entry is the MAIN split; every other entry
+    sums into the AUXILIARY split (the background ``claude-haiku-4-5``). A missing
+    or malformed map yields an all-zero split — never a raise.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        model_usage = event.raw.get("model_usage")
+        if not isinstance(model_usage, dict):
+            return ModelCostSplit()
+        return _split_model_usage(model_usage, requested)
+    return ModelCostSplit()
+
+
+def _split_model_usage(model_usage: dict[Any, Any], requested: str) -> ModelCostSplit:
+    requested_base = _base_model_id(requested)
+    main_cost = aux_cost = 0.0
+    main_usage = aux_usage = TokenUsage()
+    for key, entry in model_usage.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        cost = _model_cost(entry)
+        usage = TokenUsage(**_model_token_fields(entry))
+        if _base_model_id(key) == requested_base:
+            main_cost += cost
+            main_usage += usage
+        else:
+            aux_cost += cost
+            aux_usage += usage
+    return ModelCostSplit(main_cost_usd=main_cost, aux_cost_usd=aux_cost, main_usage=main_usage, aux_usage=aux_usage)
+
+
+def _model_cost(entry: dict[Any, Any]) -> float:
+    raw = entry.get(_MODEL_COST_KEY)
+    return float(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0.0
+
+
+def _model_token_fields(entry: dict[Any, Any]) -> dict[str, int]:
+    """Map one ``model_usage`` entry's camelCase token keys onto :class:`TokenUsage` field ints."""
+    return {field: _int_or_zero(entry.get(key)) for key, field in _MODEL_USAGE_KEY_TO_FIELD}
 
 
 def _int_or_zero(value: object) -> int:

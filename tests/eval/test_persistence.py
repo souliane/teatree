@@ -30,7 +30,14 @@ def _spec(matchers: tuple[Matcher | AnyOf, ...]) -> EvalSpec:
     )
 
 
-def _run(tool_calls: tuple[EvalToolCall, ...], *, cost_usd: float = 0.0, usage: TokenUsage | None = None) -> EvalRun:
+def _run(
+    tool_calls: tuple[EvalToolCall, ...],
+    *,
+    cost_usd: float = 0.0,
+    usage: TokenUsage | None = None,
+    main_cost_usd: float = 0.0,
+    aux_cost_usd: float = 0.0,
+) -> EvalRun:
     return EvalRun(
         spec_name="background_long_operations_full_suite",
         tool_calls=tool_calls,
@@ -41,6 +48,8 @@ def _run(tool_calls: tuple[EvalToolCall, ...], *, cost_usd: float = 0.0, usage: 
         raw_stderr="",
         cost_usd=cost_usd,
         usage=usage if usage is not None else TokenUsage(),
+        main_cost_usd=main_cost_usd,
+        aux_cost_usd=aux_cost_usd,
     )
 
 
@@ -135,6 +144,42 @@ class TestPersistTokens(TestCase):
         assert scenario.cache_creation_tokens == 20
         assert scenario.cache_read_tokens == 70
         assert scenario.output_tokens == 5
+
+
+class TestPersistMainAuxCost(TestCase):
+    def test_persist_run_stores_main_and_aux_cost(self) -> None:
+        spec = _spec((_TASK_BRANCH,))
+        run = _run(
+            (EvalToolCall(name="Task", input={"prompt": "uv run pytest"}, turn=1),),
+            cost_usd=0.52,
+            main_cost_usd=0.5,
+            aux_cost_usd=0.02,
+        )
+        record = persist_run([evaluate(spec, run)], model="claude-opus-4-8")
+
+        scenario = record.scenario_results.get()
+        assert scenario.main_cost_usd == pytest.approx(0.5)
+        assert scenario.aux_cost_usd == pytest.approx(0.02)
+
+    def test_persist_matrix_stores_main_and_aux_cost_from_row(self) -> None:
+        rows = [
+            MatrixRow(
+                scenario="alpha",
+                model="m",
+                passed=True,
+                score=1.0,
+                trials=1,
+                skipped=False,
+                cost_usd=0.31,
+                main_cost_usd=0.3,
+                aux_cost_usd=0.01,
+            ),
+        ]
+        record = persist_matrix(rows, models=["m"])
+
+        scenario = record.scenario_results.get()
+        assert scenario.main_cost_usd == pytest.approx(0.3)
+        assert scenario.aux_cost_usd == pytest.approx(0.01)
 
 
 class TestPersistMatrixErroredCells(TestCase):

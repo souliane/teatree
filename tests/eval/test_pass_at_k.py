@@ -20,13 +20,16 @@ def _spec() -> EvalSpec:
     )
 
 
-def _result(
+def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an EvalRun field a case varies.
     spec: EvalSpec,
     *,
     passed: bool,
     skipped: bool = False,
     cost_usd: float = 0.0,
     terminal_reason: str | None = None,
+    fell_back: bool | None = None,
+    main_cost_usd: float = 0.0,
+    aux_cost_usd: float = 0.0,
 ) -> ScenarioResult:
     reason = terminal_reason if terminal_reason is not None else ("skipped: x" if skipped else "success")
     run = EvalRun(
@@ -38,6 +41,9 @@ def _result(
         raw_stdout="",
         raw_stderr="",
         cost_usd=cost_usd,
+        fell_back=fell_back,
+        main_cost_usd=main_cost_usd,
+        aux_cost_usd=aux_cost_usd,
     )
     return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=skipped)
 
@@ -114,3 +120,25 @@ class TestRunPassAtK:
         it = iter(["success", "budget_exceeded", "success"])
         result = run_pass_at_k(spec, lambda s: _result(s, passed=True, terminal_reason=next(it)), k=3)
         assert result.terminal_reason == "budget_exceeded"
+
+    def test_sums_main_and_aux_cost_across_trials(self) -> None:
+        spec = _spec()
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, main_cost_usd=0.5, aux_cost_usd=0.02), k=3)
+        assert result.main_cost_usd == pytest.approx(1.5)
+        assert result.aux_cost_usd == pytest.approx(0.06)
+
+    def test_any_fallback_trial_makes_the_aggregated_cell_fell_back(self) -> None:
+        spec = _spec()
+        it = iter([False, True, False])
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, fell_back=next(it)), k=3)
+        assert result.fell_back is True
+
+    def test_all_clean_trials_make_the_aggregated_cell_not_fell_back(self) -> None:
+        spec = _spec()
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, fell_back=False), k=3)
+        assert result.fell_back is False
+
+    def test_unobservable_trials_leave_fell_back_none(self) -> None:
+        spec = _spec()
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, fell_back=None), k=3)
+        assert result.fell_back is None

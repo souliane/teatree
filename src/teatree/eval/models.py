@@ -169,3 +169,17 @@ class EvalRun:
     cost_usd: float = 0.0
     usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
     billed_model: str | None = None
+    #: Whether the REQUESTED main model was substituted (a fallback). ``True`` =
+    #: the requested model is ABSENT from ``model_usage`` (Claude Code's haiku
+    #: auxiliary sitting beside the requested model is NORMAL, not a fallback);
+    #: ``False`` = present; ``None`` = unobservable (subscription/offline run).
+    fell_back: bool | None = None
+    #: Metered cost of the requested MAIN model (the comparison number) and the
+    #: AUXILIARY background (Claude Code's haiku), split from per-model
+    #: ``model_usage.costUSD``. ``0.0`` on a non-metered/unobservable run.
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
+    #: Token usage of the MAIN model vs the AUXILIARY background, split from the
+    #: per-model ``model_usage`` token counts (all-zero when unobservable).
+    main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)

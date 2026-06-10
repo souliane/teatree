@@ -20,7 +20,7 @@ from teatree.cli.eval.run_modes import (
     with_model,
 )
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
-from teatree.eval.model_variant import ModelVariantError, parse_model_variant, parse_model_variants
+from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
@@ -265,8 +265,12 @@ def _matrix_trial(
             skipped=result.skipped,
             cost_usd=result.cost_usd,
             usage=result.usage,
-            fell_back=_fell_back(billed_model=result.billed_model, requested=spec.model),
+            fell_back=_fell_back(signal=result.fell_back),
             terminal_reason=result.terminal_reason,
+            main_cost_usd=result.main_cost_usd,
+            aux_cost_usd=result.aux_cost_usd,
+            main_usage=result.main_usage,
+            aux_usage=result.aux_usage,
         )
     scenario_result = evaluate(spec, runner.run(spec), judge=grader)
     run = scenario_result.run
@@ -279,19 +283,21 @@ def _matrix_trial(
         skipped=scenario_result.skipped,
         cost_usd=run.cost_usd,
         usage=run.usage,
-        fell_back=_fell_back(billed_model=run.billed_model, requested=spec.model),
+        fell_back=_fell_back(signal=run.fell_back),
         terminal_reason=run.terminal_reason,
+        main_cost_usd=run.main_cost_usd,
+        aux_cost_usd=run.aux_cost_usd,
+        main_usage=run.main_usage,
+        aux_usage=run.aux_usage,
     )
 
 
-def _fell_back(*, billed_model: str | None, requested: str) -> bool:
-    """``True`` when the cell's billed model differs from the requested variant's base model.
+def _fell_back(*, signal: bool | None) -> bool:
+    """Collapse the run's requested-model-presence ``fell_back`` signal onto the cell.
 
-    The requested tag is ``model[@effort]``; the comparison is on the BASE model
-    (effort is not a model). ``billed_model is None`` (a subscription/offline run
-    where the billed model is unobservable) is NOT a fallback — fallback is only
-    asserted when the billed model is known AND differs.
+    The run carries ``True`` (the requested main model was substituted), ``False``
+    (it was present — a haiku auxiliary beside it is NORMAL, not a fallback), or
+    ``None`` (subscription/offline — unobservable). An unobservable cell is NOT a
+    fallback, so ``None`` collapses to ``False``.
     """
-    if billed_model is None:
-        return False
-    return billed_model != parse_model_variant(requested).model
+    return signal is True

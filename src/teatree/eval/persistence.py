@@ -121,6 +121,8 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
                 matcher_details=_matcher_details(result),
                 judge_rationale=_judge_rationale(result),
                 cost_usd=result.run.cost_usd,
+                main_cost_usd=result.run.main_cost_usd,
+                aux_cost_usd=result.run.aux_cost_usd,
                 **_token_columns(result.run.usage),
             )
     return run
@@ -147,6 +149,8 @@ def persist_pass_at_k(
                 score=0.0 if result.skipped else result.pass_rate,
                 trials=result.trials,
                 cost_usd=result.cost_usd,
+                main_cost_usd=result.main_cost_usd,
+                aux_cost_usd=result.aux_cost_usd,
                 **_token_columns(result.usage),
             )
     return run
@@ -180,6 +184,8 @@ def persist_matrix(
                 score=0.0 if row.skipped else row.score,
                 trials=row.trials,
                 cost_usd=row.cost_usd,
+                main_cost_usd=row.main_cost_usd,
+                aux_cost_usd=row.aux_cost_usd,
                 **_token_columns(row.usage),
             )
     return run

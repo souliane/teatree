@@ -221,6 +221,8 @@ class EvalRunRecord(models.Model):
         matcher_details: list[MatcherDetail] | None = None,
         judge_rationale: str = "",
         cost_usd: float = 0.0,
+        main_cost_usd: float = 0.0,
+        aux_cost_usd: float = 0.0,
         input_tokens: int | None = None,
         cache_creation_tokens: int | None = None,
         cache_read_tokens: int | None = None,
@@ -240,6 +242,8 @@ class EvalRunRecord(models.Model):
             matcher_details=matcher_details or [],
             judge_rationale=judge_rationale,
             cost_usd=cost_usd,
+            main_cost_usd=main_cost_usd,
+            aux_cost_usd=aux_cost_usd,
             input_tokens=input_tokens,
             cache_creation_tokens=cache_creation_tokens,
             cache_read_tokens=cache_read_tokens,
@@ -384,6 +388,11 @@ class EvalScenarioResult(models.Model):
     matcher_details = models.JSONField(default=list, blank=True)
     judge_rationale = models.CharField(max_length=512, blank=True, default="")
     cost_usd = models.FloatField(default=0.0)
+    # Metered cost split: the requested MAIN model vs the AUXILIARY background
+    # (Claude Code's claude-haiku-4-5), from per-model model_usage.costUSD. 0.0 on
+    # a non-metered/subscription row (cost_usd is also 0 there, so 0 is unambiguous).
+    main_cost_usd = models.FloatField(default=0.0)
+    aux_cost_usd = models.FloatField(default=0.0)
     # Token usage split by cache class. NULLABLE so NULL (a legacy / subscription
     # / offline row with no usage signal) is distinct from a real metered 0.
     input_tokens = models.IntegerField(null=True, blank=True, default=None)

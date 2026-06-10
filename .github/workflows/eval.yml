@@ -121,13 +121,17 @@ jobs:
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--backend` keeps CI on the metered claude -p path explicitly (sdk default;
+      # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
+      # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
+      # Docker, so the run builds (cached) and runs the suite in-container; the host's
+      # CLAUDE_CODE_OAUTH_TOKEN is forwarded in via docker's `-e` pass-through.
+      # `--backend` keeps CI on the metered in-process Agent-SDK path explicitly (sdk default;
       # a workflow_dispatch run may override it via the backend input). Auth is the
       # OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) — the June-15-safe everywhere path.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
-      - name: Metered behavioral eval suite (pass@k; --require-executed always armed)
+      - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@v4
         env:
@@ -137,7 +141,7 @@ jobs:
           timeout_minutes: 30
           max_attempts: 3
           retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --require-executed
+          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --require-executed --docker
       # Render a human-readable whole-suite HTML report and publish it as a job
       # artifact. `if: always()` so a red run still publishes its report (the
       # report is exactly what a maintainer reads to triage the failure). The

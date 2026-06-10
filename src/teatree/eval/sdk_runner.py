@@ -60,11 +60,13 @@ from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
+    extract_model_cost_split,
     extract_terminal_reason,
     extract_text_blocks,
     extract_tool_calls,
     extract_usage,
     parse_stream_json,
+    requested_model_present,
 )
 
 WATCHDOG_SECONDS = 120
@@ -394,6 +396,8 @@ def _eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
     raw_stdout = _synthesize_stream_json(messages)
     events = parse_stream_json(raw_stdout)
     terminal_reason, is_error = extract_terminal_reason(events)
+    present = requested_model_present(events, spec.model)
+    split = extract_model_cost_split(events, spec.model)
     return EvalRun(
         spec_name=spec.name,
         tool_calls=tuple(extract_tool_calls(events)),
@@ -405,6 +409,11 @@ def _eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
         cost_usd=extract_cost_usd(events),
         usage=extract_usage(events),
         billed_model=extract_billed_model(events),
+        fell_back=None if present is None else not present,
+        main_cost_usd=split.main_cost_usd,
+        aux_cost_usd=split.aux_cost_usd,
+        main_usage=split.main_usage,
+        aux_usage=split.aux_usage,
     )
 
 

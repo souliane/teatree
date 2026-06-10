@@ -167,6 +167,37 @@ class TestSdkInProcessRunnerCapture:
         assert run.usage == TokenUsage()
         assert run.billed_model is None
 
+    def test_haiku_aux_alongside_requested_model_is_not_a_fallback(self, tmp_path: Path) -> None:
+        # The PROVEN bug: Claude Code always runs claude-haiku-4-5 as a cheap aux
+        # model; haiku winning token volume must NOT flag fell_back.
+        spec = _spec(tmp_path, model="claude-opus-4-8")
+        messages = [
+            _result(
+                total_cost_usd=0.52,
+                model_usage={
+                    "claude-haiku-4-5-20251001": {"costUSD": 0.02, "inputTokens": 9000, "outputTokens": 40},
+                    "claude-opus-4-8": {"costUSD": 0.5, "inputTokens": 80, "outputTokens": 200},
+                },
+            ),
+        ]
+        run, _ = self._run(spec, messages)
+        assert run.fell_back is False
+        assert run.main_cost_usd == pytest.approx(0.5)
+        assert run.aux_cost_usd == pytest.approx(0.02)
+
+    def test_requested_model_substituted_is_a_fallback(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, model="claude-opus-4-8")
+        messages = [_result(total_cost_usd=0.3, model_usage={"claude-sonnet-4-6": {"costUSD": 0.3}})]
+        run, _ = self._run(spec, messages)
+        assert run.fell_back is True
+
+    def test_unobservable_model_usage_is_not_a_fallback(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, model="claude-opus-4-8")
+        run, _ = self._run(spec, [_result(total_cost_usd=None)])
+        assert run.fell_back is None
+        assert run.main_cost_usd == pytest.approx(0.0)
+        assert run.aux_cost_usd == pytest.approx(0.0)
+
     def test_error_result_marks_is_error(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         messages = [_result(subtype="error_max_turns", is_error=True, total_cost_usd=0.01)]

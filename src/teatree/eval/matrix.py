@@ -48,6 +48,15 @@ class MatrixRow:
     #: warm-equivalent fit excludes cap-truncated cells, whose billed cost does
     #: not match the clean identity and would bias the fit.
     terminal_reason: str = ""
+    #: This cell's metered cost split into the requested MAIN model vs the
+    #: AUXILIARY background (Claude Code's ``claude-haiku-4-5``), summed across
+    #: trials. ``0.0`` for a non-metered/errored/skipped cell. The benchmark
+    #: surfaces the main cost as the headline comparison and the aux separately.
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
+    #: This cell's MAIN-model and AUXILIARY token usage (summed across trials).
+    main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
 
 
 def matrix_cell(row: MatrixRow | None) -> str:

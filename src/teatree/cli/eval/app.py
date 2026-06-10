@@ -16,6 +16,7 @@ from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
+from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
@@ -180,8 +181,16 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         False,
         "--docker",
         help=(
-            "Run inside the CI image (dev/Dockerfile.test); the metered sdk lane runs in-container, "
-            "authenticated by the host's CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY (env pass-through)."
+            "Force running inside the CI image (dev/Dockerfile.test) for ANY backend. The metered "
+            "sdk lane ALREADY defaults to the container; this forces it for the subscription lane too."
+        ),
+    ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help=(
+            "Run the metered sdk lane on the HOST instead of the default CI container — a quick "
+            "local check only. A host run is NOT the reproducible regression gate (use Docker/CI)."
         ),
     ),
     parallel: int = typer.Option(
@@ -231,7 +240,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
     Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
     """
-    if docker:
+    # The metered sdk lane (and the always-metered --trials/--models lanes) bills
+    # the API, so it defaults to running IN the CI container — a metered run must
+    # never accidentally run on the host. --docker forces the container for any
+    # backend; --local is the explicit host escape (a quick check, not the gate);
+    # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
+    # re-invocation in-process (no re-route loop).
+    metered = backend == SDK_BACKEND or trials > 1 or models is not None
+    if docker or should_route_to_docker(metered=metered, local=local):
         run_in_docker_or_exit(
             RunDockerArgs(
                 name=name,
@@ -249,6 +265,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_regressions=gate_regressions,
             gate_cost_regression=gate_cost_regression,
         )
+    if local:
+        warn_local_metered(metered=metered)
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     if output_format == "html" and (trials > 1 or models is not None):

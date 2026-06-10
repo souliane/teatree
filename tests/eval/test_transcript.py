@@ -1,13 +1,17 @@
 from pathlib import Path
 
+import pytest
+
 from teatree.eval.models import TokenUsage
 from teatree.eval.transcript import (
     extract_billed_model,
+    extract_model_cost_split,
     extract_terminal_reason,
     extract_text_blocks,
     extract_tool_calls,
     extract_usage,
     parse_stream_json,
+    requested_model_present,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -146,6 +150,121 @@ class TestExtractBilledModel:
     def test_non_dict_model_usage_yields_none(self) -> None:
         events = parse_stream_json('{"type":"result","subtype":"success","model_usage":[1,2]}\n')
         assert extract_billed_model(events) is None
+
+
+class TestRequestedModelPresent:
+    """``fell_back`` is the REQUESTED main model being ABSENT from ``model_usage`` keys.
+
+    Claude Code always runs ``claude-haiku-4-5`` as a cheap auxiliary model
+    alongside the requested main model, so an auxiliary key sitting beside the
+    requested model is NORMAL — not a fallback. Fallback is the requested model
+    being substituted away entirely.
+    """
+
+    def test_requested_present_alongside_haiku_aux_is_not_fallback(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5-20251001":{"input_tokens":9000},"claude-opus-4-8":{"input_tokens":80}}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8") is True
+
+    def test_requested_substituted_by_sonnet_is_fallback(self) -> None:
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-sonnet-4-6":{"input_tokens":900}}}\n'
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8") is False
+
+    def test_requested_absent_with_only_haiku_and_sonnet_is_fallback(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5":{"input_tokens":9000},"claude-sonnet-4-6":{"input_tokens":900}}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8") is False
+
+    def test_dated_model_usage_key_matches_undated_request(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8-20251001":{"input_tokens":80}}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8") is True
+
+    def test_effort_variant_request_compares_on_base_model(self) -> None:
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8":{"input_tokens":80}}}\n'
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "claude-opus-4-8@xhigh") is True
+
+    def test_unobservable_model_usage_is_none_not_a_fallback(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success"}\n')
+        assert requested_model_present(events, "claude-opus-4-8") is None
+
+    def test_no_result_event_is_none(self) -> None:
+        events = parse_stream_json(_load("aborted.stream.jsonl"))
+        assert requested_model_present(events, "claude-opus-4-8") is None
+
+
+class TestExtractModelCostSplit:
+    """Split metered cost into the requested MAIN model vs the AUXILIARY background.
+
+    Each ``model_usage`` entry carries a per-model ``costUSD`` (the CLI's
+    camelCase key). The split keys the requested base model's cost as ``main``
+    and sums everything else as ``aux``.
+    """
+
+    def test_splits_main_from_haiku_aux(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5-20251001":{"costUSD":0.02,"inputTokens":9000,"outputTokens":40},'
+            '"claude-opus-4-8":{"costUSD":0.5,"inputTokens":80,"outputTokens":200}}}\n'
+        )
+        events = parse_stream_json(stream)
+        split = extract_model_cost_split(events, "claude-opus-4-8")
+        assert split.main_cost_usd == pytest.approx(0.5)
+        assert split.aux_cost_usd == pytest.approx(0.02)
+
+    def test_main_zero_when_requested_model_absent(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5":{"costUSD":0.02},"claude-sonnet-4-6":{"costUSD":0.3}}}\n'
+        )
+        events = parse_stream_json(stream)
+        split = extract_model_cost_split(events, "claude-opus-4-8")
+        assert split.main_cost_usd == pytest.approx(0.0)
+        assert split.aux_cost_usd == pytest.approx(0.32)
+
+    def test_dated_main_key_matches_undated_request(self) -> None:
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8-20251001":{"costUSD":0.5}}}\n'
+        events = parse_stream_json(stream)
+        split = extract_model_cost_split(events, "claude-opus-4-8@xhigh")
+        assert split.main_cost_usd == pytest.approx(0.5)
+        assert split.aux_cost_usd == pytest.approx(0.0)
+
+    def test_main_aux_token_split_captured(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5":{"costUSD":0.02,"inputTokens":9000,"outputTokens":40,'
+            '"cacheReadInputTokens":100,"cacheCreationInputTokens":5},'
+            '"claude-opus-4-8":{"costUSD":0.5,"inputTokens":80,"outputTokens":200,'
+            '"cacheReadInputTokens":7000,"cacheCreationInputTokens":50}}}\n'
+        )
+        events = parse_stream_json(stream)
+        split = extract_model_cost_split(events, "claude-opus-4-8")
+        assert split.main_usage == TokenUsage(input=80, output=200, cache_read=7000, cache_creation=50)
+        assert split.aux_usage == TokenUsage(input=9000, output=40, cache_read=100, cache_creation=5)
+
+    def test_no_model_usage_yields_zero_split(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success"}\n')
+        split = extract_model_cost_split(events, "claude-opus-4-8")
+        assert split.main_cost_usd == pytest.approx(0.0)
+        assert split.aux_cost_usd == pytest.approx(0.0)
+        assert split.main_usage == TokenUsage()
+        assert split.aux_usage == TokenUsage()
+
+    def test_non_dict_model_usage_yields_zero_split(self) -> None:
+        events = parse_stream_json('{"type":"result","subtype":"success","model_usage":[1,2]}\n')
+        split = extract_model_cost_split(events, "claude-opus-4-8")
+        assert split.main_cost_usd == pytest.approx(0.0)
+        assert split.aux_cost_usd == pytest.approx(0.0)
 
 
 class TestMalformedStreams:

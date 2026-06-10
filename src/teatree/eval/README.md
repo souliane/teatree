@@ -42,25 +42,36 @@ installed editable from a clone; the eval harness ships inside it.
 
 ### How it runs
 
-- **Local, on the host (the default).** `t3 eval all` / `t3 eval all
-  --free-only` run directly on the host — no container, no setup. This is the
-  default for every local invocation.
-- **Local, in the CI image (opt-in parity, and the only place the metered lane
-  runs).** `t3 eval all --docker` / `t3 eval run --docker` run the gate inside
-  `dev/Dockerfile.test` — the exact image the CI test job builds, which now ships
-  the `claude` CLI — for environment parity when debugging a CI-only failure. The
-  metered AI lane (`--backend sdk`, which drives the in-process Agent SDK) is meant to run
-  **in the container, never on the host**: the docker runner forwards the host's
+- **Free / deterministic lanes — host (the default).** `t3 eval all` / `t3 eval
+  all --free-only` run directly on the host — no container, no setup. The free
+  lanes spawn no agent, so they are host-default for every local invocation.
+- **Metered lane + benchmark — DOCKER is the default.** `t3 eval run --backend
+  sdk` and `t3 eval benchmark` run IN the CI image (`dev/Dockerfile.test`, the
+  exact image the CI test job builds, which ships the `claude` CLI) **by
+  default** — a metered run bills the API, so the reproducible gate must never
+  accidentally run on the host. The docker runner forwards the host's
   `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) into the container with
   docker's `-e VARNAME` pass-through, so the metered run authenticates inside a
-  clean container without touching the host's login state. The token value
-  travels through the container env, never the command line. Host-run stays the
-  default for the free lanes; `--docker` is the explicit opt-in. Run the metered
-  lane locally with:
+  clean container without touching the host's login state; the token value
+  travels through the container env, never the command line. To break the
+  re-route loop, the docker runner sets `T3_EVAL_IN_CONTAINER=1` on the
+  container — the metered command runs in-process when that marker is present.
+  Run the metered lane locally with:
 
   ```bash
-  CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --require-executed --docker
+  CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --require-executed
   ```
+
+  (no `--docker` needed — it is the default; `--docker` is still accepted to
+  force the container for the subscription lane too).
+- **`--local` — the explicit host escape (a quick check, NOT the gate).**
+  `t3 eval run --backend sdk --local` / `t3 eval benchmark --local` run the
+  metered lane on the host for a fast local check. It prints a loud WARNING: a
+  host run is not the reproducible regression gate (the host's login state biases
+  the result and isolation strips subscription auth) — use Docker / CI for
+  regression. Without `--local` and with docker missing, the run raises
+  `DockerUnavailableError` with guidance, so it is impossible to ACCIDENTALLY run
+  the metered lane on the host.
 
 - **Prek (deterministic gates).** The two deterministic lanes are wired into
   prek under their explicit names: the sub-second `eval-skill-triggers` hook
@@ -88,7 +99,9 @@ t3 eval list                                # show available scenarios as a rich
 t3 eval all                                  # explicit alias of the bare-`t3 eval` default (all lanes) — kept for scripts/CI that spell it out
 t3 eval all --free-only                       # the six free deterministic lanes only (no AI lane); bare `t3 eval --free-only` is identical
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; bare `t3 eval --docker` is identical
-t3 eval run --backend sdk --docker            # run the metered Agent-SDK lane IN-CONTAINER (auth via CLAUDE_CODE_OAUTH_TOKEN); never on the host
+t3 eval run --backend sdk                       # metered Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), auth via CLAUDE_CODE_OAUTH_TOKEN
+t3 eval run --backend sdk --local             # metered lane on the HOST (quick check, NOT the reproducible gate — prints a WARNING)
+t3 eval benchmark --models claude-opus-4-8@xhigh,claude-fable-5@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -105,8 +118,7 @@ t3 eval history                               # list past recorded runs (newest 
 t3 eval history --baseline                    # show the current baseline run(s)
 t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
 t3 eval history --model opus --format json    # filter + JSON
-t3 eval run --backend subscription            # explicit subscription (the default)
-t3 eval run --backend sdk                       # metered Agent-SDK path (CLAUDE_CODE_OAUTH_TOKEN; runs in-container via --docker / CI)
+t3 eval run --backend subscription            # explicit subscription (the default; host-default, no API spend)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
@@ -150,7 +162,7 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
-| `sdk` | metered Agent SDK (`CLAUDE_CODE_OAUTH_TOKEN`) | CI (standalone `eval.yml`) + local `--docker` (explicit `--backend sdk`) | drives the in-process Agent SDK to produce + grade the run live, in a container |
+| `sdk` | metered Agent SDK (`CLAUDE_CODE_OAUTH_TOKEN`) | CI (standalone `eval.yml`) + local `--backend sdk` (DEFAULTS to the container) | drives the in-process Agent SDK to produce + grade the run live, in a container by default (`--local` for a host check) |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -198,7 +210,7 @@ wall-clock lever only — it does not change token cost.
 **Bare `t3 eval` (no subcommand, no args) runs the ENTIRE suite in one go** and
 prints a single aggregated summary table — the command to reach for by default.
 Arguments and subcommands are the *targeted/special* path: `run` (a single AI
-scenario, the metered `--backend sdk --docker` path), `pinned-regressions` /
+scenario, the metered `--backend sdk` path — Docker-default), `pinned-regressions` /
 `negative-control` / `skill-triggers` / `coverage` (one free lane in isolation),
 `history` / `list` / `prepare-subscription` (introspection). The bare default
 accepts the same suite-shaping flags as `all` — `--free-only`, `--backend`,
@@ -370,7 +382,10 @@ answers "which variant is worth its cost": it runs the suite once per
 always armed), persists the matrix record into the run-history ledger, and
 renders one comparison line per variant — scenarios passed/executed,
 pass-rate, errored-cell count, total metered cost, mean cost per scenario, and
-cost per pass (`-` when nothing passed). An errored cell (the runner raised even
+cost per pass (`-` when nothing passed). Like the metered `t3 eval run --backend
+sdk` lane, **the benchmark DEFAULTS to running in the container** (a metered run
+must never accidentally bill the host); `--local` is the explicit host escape (a
+quick check with a loud WARNING, not the reproducible gate). An errored cell (the runner raised even
 after the bounded retries — see "Model matrix" above) is excluded from `executed`
 so the pass-rate and mean-cost denominators stay fair; it is surfaced in its own
 `errored` column. `--scenarios a,b` narrows the suite, `--trials k`
@@ -391,6 +406,18 @@ across the variants compared), so charging that shared mass at full rate inflate
 cost 7–10x over real spend and amplifies a turn-count effect rather than removing
 the cache confound. So billed cost is the headline; the rest is honest
 observability around it.
+
+**Main-model vs auxiliary (haiku) split.** Claude Code always runs a cheap
+`claude-haiku-4-5` auxiliary alongside the requested main model, so the billed
+total mixes the two. Each `model_usage` entry carries a per-model `costUSD`, so
+the benchmark splits the billed spend: the requested main model's cost (`main
+cost`) is the headline comparison number, the auxiliary background cost (`aux
+cost`) is shown separately, and `aux%` is the auxiliary's share of the billed
+total — the reader's "how much of this run is haiku vs the requested model".
+`main cost + aux cost` need not equal the billed `total cost` exactly (the API's
+total can carry rounding / per-call fees the per-model split doesn't), so billed
+total stays the headline and the split is observability around it. The split is
+persisted per scenario (`main_cost_usd`/`aux_cost_usd` on `EvalScenarioResult`).
 
 Each `ResultMessage.usage` is captured (`sdk_runner` → `transcript.extract_usage`
 → `TokenUsage`, all-zero on a non-metered/subscription run, never raised) and
@@ -421,15 +448,27 @@ summed per variant. The added columns:
   normal-equation solve with an explicit condition-number guard).
 
 When any cell **fell back** to a different model (`fallback_model` kicked in, so
-the billed model ≠ the requested base model), a clearly-visible `!` note line is
-appended — the billed cost mixes model rates, and a fallen-back cell is excluded
-from the warm-equivalent fit. `--format json` adds the per-variant `usage`
-breakdown (`input`/`cache_creation`/`cache_read`/`output`), `cache_hit_rate`,
-`cold_write_fraction`, `mean_output_tokens`, `warm_equivalent_cost_usd`, and
-`fell_back_cells`. The persisted run carries nullable per-scenario token columns
+the requested main model was SUBSTITUTED away), a clearly-visible `!` note line
+is appended — the billed cost mixes model rates, and a fallen-back cell is
+excluded from the warm-equivalent fit. **`fell_back` is the requested main model
+being ABSENT from the `model_usage` keys, NOT the dominant-by-token-volume key
+differing** — Claude Code's haiku auxiliary routinely wins token volume beside
+the requested model, so a volume-based definition false-fires on essentially
+every real run. Comparison is on the base model id (the `@effort` tag stripped
+from the request, any trailing `-YYYYMMDD` date suffix stripped from each
+`model_usage` key); an auxiliary model present alongside the requested model is
+NORMAL, not a fallback. `extract_billed_model` is kept for diagnostics, but
+`fell_back` derives from requested-model presence
+(`transcript.requested_model_present`). `--format json` adds the per-variant
+`usage` breakdown (`input`/`cache_creation`/`cache_read`/`output`),
+`cache_hit_rate`, `cold_write_fraction`, `mean_output_tokens`,
+`warm_equivalent_cost_usd`, `fell_back_cells`, and the `main_cost_usd` /
+`aux_cost_usd` / `aux_cost_fraction` split. The persisted run carries nullable
+per-scenario token columns
 (`input_tokens`/`cache_creation_tokens`/`cache_read_tokens`/`output_tokens` on
 `EvalScenarioResult`; NULL is distinct from a real metered 0 for
-legacy/subscription rows) for reproducibility.
+legacy/subscription rows) plus the `main_cost_usd`/`aux_cost_usd` split for
+reproducibility.
 
 ### LLM-judge (opt-in, per scenario)
 
@@ -527,7 +566,7 @@ This table is the single source of truth for which lanes exist, how they run, an
 | transcript-replay | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
 | corpus-grade | free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every `t3 eval all` run + on demand |
 | ai-eval subscription | free (subscription tokens) | host | `t3 eval run` (default backend) | — (subscription run is in-session, not a CI job) | manual / on demand |
-| ai-eval sdk-metered | metered (Agent SDK) | **docker** (`--docker` locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --docker` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| ai-eval sdk-metered | metered (Agent SDK) | **docker** (the DEFAULT locally; `--local` for a host check; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
 
 ## Failure-class coverage
 

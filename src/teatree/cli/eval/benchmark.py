@@ -6,11 +6,19 @@ it runs the suite once per variant on the metered in-process Agent-SDK runner
 matrix record, and folds the rows into the per-variant comparison table in
 :mod:`teatree.eval.benchmark` — the deliverable for "how does opus@xhigh
 compare to fable@medium on pass-rate and cost".
+
+The benchmark is metered, so it defaults to running IN the CI container
+(``dev/Dockerfile.test``) — a metered run must never accidentally bill the host.
+``--local`` is the explicit host escape (a quick check, NOT the reproducible
+gate); the ``T3_EVAL_IN_CONTAINER=1`` marker the docker runner sets makes the
+in-container re-invocation run in-process.
 """
 
 import typer
 
 from teatree.cli._format_opts import require_valid_format
+from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import collect_matrix_rows, parse_model_tags
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
@@ -64,6 +72,14 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--persist/--no-persist",
         help="Persist the underlying matrix run into the run-history ledger (`t3 eval history`).",
     ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help=(
+            "Run on the HOST instead of the default CI container — a quick local check only. "
+            "A host run is NOT the reproducible regression gate (use Docker/CI for that)."
+        ),
+    ),
 ) -> None:
     """Benchmark cost AND pass-rate of model@effort variants against the eval suite.
 
@@ -75,7 +91,23 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     the command exits non-zero only when the run itself is broken (nothing
     executed, unknown variant/scenario). Pass-rate noise shrinks with
     ``--trials k`` (each cell's score becomes a k-trial pass-rate).
+
+    The benchmark is metered, so it defaults to running in the CI container; pass
+    ``--local`` for a quick host check (NOT the reproducible gate). The container
+    is ephemeral, so a Docker-routed run is forced ``--no-persist``.
     """
+    if should_route_to_docker(metered=True, local=local):
+        _dispatch_to_docker(
+            models=models,
+            scenarios=scenarios,
+            trials=trials,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            output_format=output_format,
+        )
+        return
+    if local:
+        warn_local_metered(metered=True)
     ensure_django()
     require_valid_format(output_format)
     tags = parse_model_tags(models)
@@ -88,6 +120,62 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     summaries = summarize_benchmark(rows, tags)
     renderer = render_benchmark_json if output_format == "json" else render_benchmark_text
     typer.echo(renderer(summaries))
+
+
+def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
+    *,
+    models: str,
+    scenarios: str | None,
+    trials: int,
+    max_turns: int | None,
+    max_budget_usd: float,
+    output_format: str,
+) -> None:
+    """Re-invoke ``t3 eval benchmark`` inside the CI container with the same args.
+
+    The ephemeral container cannot update the durable run-history ledger, so the
+    in-container run is forced ``--no-persist``.
+    """
+    try:
+        raise typer.Exit(
+            code=run_eval_in_docker(
+                _docker_passthrough(
+                    models=models,
+                    scenarios=scenarios,
+                    trials=trials,
+                    max_turns=max_turns,
+                    max_budget_usd=max_budget_usd,
+                    output_format=output_format,
+                )
+            )
+        )
+    except DockerUnavailableError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+
+
+def _docker_passthrough(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
+    *,
+    models: str,
+    scenarios: str | None,
+    trials: int,
+    max_turns: int | None,
+    max_budget_usd: float,
+    output_format: str,
+) -> list[str]:
+    """Build the ``benchmark …`` argv re-invoked in the container (forced ``--no-persist``)."""
+    args = ["benchmark", "--models", models]
+    if scenarios is not None:
+        args += ["--scenarios", scenarios]
+    if trials != 1:
+        args += ["--trials", str(trials)]
+    if max_turns is not None:
+        args += ["--max-turns", str(max_turns)]
+    args += ["--max-budget-usd", str(max_budget_usd)]
+    if output_format != "text":
+        args += ["--format", output_format]
+    args.append("--no-persist")
+    return args
 
 
 def _select_specs(scenarios: str | None) -> list[EvalSpec]:

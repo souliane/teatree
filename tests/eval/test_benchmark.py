@@ -20,6 +20,8 @@ def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Matri
     usage: TokenUsage | None = None,
     fell_back: bool = False,
     terminal_reason: str = "",
+    main_cost_usd: float = 0.0,
+    aux_cost_usd: float = 0.0,
 ) -> MatrixRow:
     return MatrixRow(
         scenario=scenario,
@@ -33,6 +35,8 @@ def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Matri
         usage=usage if usage is not None else TokenUsage(),
         fell_back=fell_back,
         terminal_reason=terminal_reason,
+        main_cost_usd=main_cost_usd,
+        aux_cost_usd=aux_cost_usd,
     )
 
 
@@ -136,6 +140,35 @@ class TestUsageAggregation:
         ]
         (summary,) = summarize_benchmark(rows, ["m"])
         assert summary.fell_back_cells == 1
+
+
+class TestMainAuxCostSplit:
+    def test_main_and_aux_cost_summed_across_executed_cells(self) -> None:
+        rows = [
+            _row("a", "m", cost_usd=0.52, main_cost_usd=0.5, aux_cost_usd=0.02),
+            _row("b", "m", cost_usd=0.31, main_cost_usd=0.3, aux_cost_usd=0.01),
+        ]
+        (summary,) = summarize_benchmark(rows, ["m"])
+        assert summary.main_cost_usd == pytest.approx(0.8)
+        assert summary.aux_cost_usd == pytest.approx(0.03)
+
+    def test_aux_cost_fraction_of_total(self) -> None:
+        rows = [_row("a", "m", cost_usd=0.5, main_cost_usd=0.45, aux_cost_usd=0.05)]
+        (summary,) = summarize_benchmark(rows, ["m"])
+        assert summary.aux_cost_fraction == pytest.approx(0.1)
+
+    def test_aux_cost_fraction_zero_when_no_metered_cost(self) -> None:
+        (summary,) = summarize_benchmark([_row("a", "m", skipped=True)], ["m"])
+        assert summary.aux_cost_fraction == pytest.approx(0.0)
+
+    def test_errored_cells_excluded_from_main_aux_split(self) -> None:
+        rows = [
+            _row("a", "m", cost_usd=0.5, main_cost_usd=0.5),
+            _row("b", "m", errored=True, passed=False, main_cost_usd=9.9, aux_cost_usd=9.9),
+        ]
+        (summary,) = summarize_benchmark(rows, ["m"])
+        assert summary.main_cost_usd == pytest.approx(0.5)
+        assert summary.aux_cost_usd == pytest.approx(0.0)
 
 
 class TestWarmEquivalent:
@@ -276,6 +309,26 @@ class TestRenderBenchmarkText:
         summaries = [VariantSummary(variant="m", passed=1, executed=1, skipped=0, errored=0, total_cost_usd=0.10)]
         assert "fell back" not in render_benchmark_text(summaries)
 
+    def test_main_and_aux_cost_columns_present(self) -> None:
+        summaries = [
+            VariantSummary(
+                variant="m",
+                passed=1,
+                executed=1,
+                skipped=0,
+                errored=0,
+                total_cost_usd=0.52,
+                main_cost_usd=0.5,
+                aux_cost_usd=0.02,
+            )
+        ]
+        text = render_benchmark_text(summaries)
+        header = text.splitlines()[0]
+        assert "main cost" in header
+        assert "aux cost" in header
+        assert "$0.5000" in text
+        assert "$0.0200" in text
+
 
 class TestRenderBenchmarkJson:
     def test_json_shape(self) -> None:
@@ -306,6 +359,9 @@ class TestRenderBenchmarkJson:
             "total_cost_usd": 0.40,
             "mean_cost_usd": 0.20,
             "cost_per_pass_usd": 0.40,
+            "main_cost_usd": 0.0,
+            "aux_cost_usd": 0.0,
+            "aux_cost_fraction": pytest.approx(0.0),
             "usage": {"input": 100, "cache_creation": 200, "cache_read": 700, "output": 120},
             "cache_hit_rate": pytest.approx(0.7),
             "cold_write_fraction": pytest.approx(0.2),
@@ -316,3 +372,21 @@ class TestRenderBenchmarkJson:
         assert second["errored"] == 3
         assert second["cost_per_pass_usd"] is None
         assert second["warm_equivalent_cost_usd"] is None
+
+    def test_json_carries_main_aux_cost_split(self) -> None:
+        summaries = [
+            VariantSummary(
+                variant="m",
+                passed=1,
+                executed=1,
+                skipped=0,
+                errored=0,
+                total_cost_usd=0.52,
+                main_cost_usd=0.5,
+                aux_cost_usd=0.02,
+            )
+        ]
+        (variant,) = json.loads(render_benchmark_json(summaries))["variants"]
+        assert variant["main_cost_usd"] == pytest.approx(0.5)
+        assert variant["aux_cost_usd"] == pytest.approx(0.02)
+        assert variant["aux_cost_fraction"] == pytest.approx(0.02 / 0.52)

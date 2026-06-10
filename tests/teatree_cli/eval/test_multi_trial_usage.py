@@ -26,7 +26,14 @@ def _spec(name: str, model: str = "claude-opus-4-8") -> EvalSpec:
     )
 
 
-def _run(spec: EvalSpec, *, usage: TokenUsage, billed_model: str | None, cost: float = 0.02) -> EvalRun:
+def _run(
+    spec: EvalSpec,
+    *,
+    usage: TokenUsage,
+    billed_model: str | None,
+    cost: float = 0.02,
+    fell_back: bool | None = None,
+) -> EvalRun:
     return EvalRun(
         spec_name=spec.name,
         tool_calls=(),
@@ -38,16 +45,18 @@ def _run(spec: EvalSpec, *, usage: TokenUsage, billed_model: str | None, cost: f
         cost_usd=cost,
         usage=usage,
         billed_model=billed_model,
+        fell_back=fell_back,
     )
 
 
 class _FixedRunner:
-    def __init__(self, *, usage: TokenUsage, billed_model: str | None) -> None:
+    def __init__(self, *, usage: TokenUsage, billed_model: str | None, fell_back: bool | None = None) -> None:
         self._usage = usage
         self._billed_model = billed_model
+        self._fell_back = fell_back
 
     def run(self, spec: EvalSpec) -> EvalRun:
-        return _run(spec, usage=self._usage, billed_model=self._billed_model)
+        return _run(spec, usage=self._usage, billed_model=self._billed_model, fell_back=self._fell_back)
 
 
 def _by_key(rows: list, scenario: str, model: str):
@@ -71,20 +80,28 @@ class TestUsageThreading:
 
 
 class TestFellBack:
-    def test_not_fell_back_when_billed_matches_requested_base_model(self) -> None:
-        runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-opus-4-8")
+    """``MatrixRow.fell_back`` is sourced from the run's presence signal (#2192).
+
+    The PROVEN false-positive: Claude Code always runs claude-haiku-4-5 as a cheap
+    auxiliary, and haiku winning token VOLUME made the old billed-model-by-volume
+    derivation flag fell_back on every real run. The run now carries a
+    requested-model-presence ``fell_back`` and the cell reads it verbatim.
+    """
+
+    def test_run_present_signal_is_not_a_fallback(self) -> None:
+        runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-haiku-4-5", fell_back=False)
         rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, trials=1, require="any")
         assert _by_key(rows, "alpha", "claude-opus-4-8@xhigh").fell_back is False
 
-    def test_fell_back_when_billed_differs_from_requested_base_model(self) -> None:
-        runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-sonnet-4-6")
+    def test_run_absent_signal_is_a_fallback(self) -> None:
+        runner = _FixedRunner(usage=TokenUsage(input=1), billed_model="claude-sonnet-4-6", fell_back=True)
         rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8@xhigh"], runner=runner, trials=1, require="any")
         assert _by_key(rows, "alpha", "claude-opus-4-8@xhigh").fell_back is True
 
-    def test_unknown_billed_model_is_not_a_fallback(self) -> None:
-        # A subscription/offline run has billed_model=None — never observable as a
+    def test_unobservable_run_signal_is_not_a_fallback(self) -> None:
+        # A subscription/offline run has fell_back=None — never observable as a
         # fallback, so the cell is not marked fell_back.
-        runner = _FixedRunner(usage=TokenUsage(), billed_model=None)
+        runner = _FixedRunner(usage=TokenUsage(), billed_model=None, fell_back=None)
         rows = collect_matrix_rows([_spec("alpha")], ["claude-opus-4-8"], runner=runner, trials=1, require="any")
         assert _by_key(rows, "alpha", "claude-opus-4-8").fell_back is False
 
