@@ -211,7 +211,7 @@ class Command(TyperCommand):
 
         The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
         hands the same structured result envelope ``run_headless`` would have
-        parsed out of ``claude -p`` stdout, and this drives the Task to its
+        parsed out of the detached headless-SDK run, and this drives the Task to its
         terminal state through the SHARED recorder — schema-key check, the
         #1284 phase-evidence gate, then ``complete`` (auto-advancing the
         ticket) or ``fail``. Pairs with ``t3 loop claim-next`` /
@@ -382,7 +382,7 @@ class Command(TyperCommand):
         # Fail-closed billing guard, shared with ``execute_headless_task`` via
         # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
         # a loop-dispatched phase task must run INTERACTIVE in the ``/loop`` slot,
-        # never as a metered ``claude -p`` here. The task is already CLAIMED by
+        # never as a metered detached headless-SDK run here. The task is already CLAIMED by
         # ``_claim_next_task``; record a FAILED refusal attempt so it is not left
         # stuck CLAIMED under the loop slot.
         refusal = loop_dispatch_refusal(task)

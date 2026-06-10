@@ -1,8 +1,10 @@
 """Tests for ``manage.py ticket_short_describe`` (#1156).
 
-The command shells out to ``claude -p`` in production. These tests
-inject a fake summarizer (via ``shutil.which`` and ``spawn`` patches)
-so the suite never invokes a real LLM binary.
+The command drives one in-process ``claude_agent_sdk.query`` turn in
+production (#2204 cutover — no ``claude -p`` subprocess). These tests
+inject a fake summary (via ``shutil.which`` and ``_describe`` patches)
+so the suite never invokes a real LLM, and pin that NO claude-binary
+subprocess is ever spawned on the describe path.
 """
 
 from unittest.mock import patch
@@ -10,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+import teatree.core.management.commands.ticket_short_describe as describe_mod
 from teatree.core.management.commands.ticket_short_describe import (
     _FALLBACK_LEN,
     _claude_summarize,
@@ -76,71 +79,73 @@ class TestGenerateShortDescription:
 
 
 class TestClaudeSummarizer:
+    """The summary path is the in-process Agent SDK — never a ``claude -p`` subprocess (#2204)."""
+
     def test_missing_binary_returns_empty(self) -> None:
-        with patch(
-            "teatree.core.management.commands.ticket_short_describe.shutil.which",
-            return_value=None,
+        with patch.object(describe_mod.shutil, "which", return_value=None):
+            assert _claude_summarize("anything") == ""
+
+    def test_sdk_failure_returns_empty(self) -> None:
+        """A crash inside the SDK turn falls through to empty (not raise)."""
+        with (
+            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(describe_mod, "_describe", side_effect=RuntimeError("sdk boom")),
         ):
             assert _claude_summarize("anything") == ""
 
-    def test_subprocess_failure_returns_empty(self) -> None:
-        """A crash inside ``spawn``/``communicate`` falls through to empty (not raise)."""
+    def test_timeout_returns_empty(self) -> None:
         with (
-            patch(
-                "teatree.core.management.commands.ticket_short_describe.shutil.which",
-                return_value="/usr/local/bin/claude",
-            ),
-            patch("teatree.utils.run.spawn", side_effect=OSError("permission denied")),
-        ):
-            assert _claude_summarize("anything") == ""
-
-    def test_non_zero_return_code_returns_empty(self) -> None:
-        class _Proc:
-            returncode = 2
-
-            def communicate(self, timeout: float = 30):
-                return ("garbage\n", "")
-
-        with (
-            patch(
-                "teatree.core.management.commands.ticket_short_describe.shutil.which",
-                return_value="/usr/local/bin/claude",
-            ),
-            patch("teatree.utils.run.spawn", return_value=_Proc()),
+            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(describe_mod, "_describe", side_effect=TimeoutError),
         ):
             assert _claude_summarize("title") == ""
 
     def test_returns_last_non_blank_line_stripped(self) -> None:
-        class _Proc:
-            returncode = 0
-
-            def communicate(self, timeout: float = 30):
-                return ('preamble\n"Final summary"\n', "")
-
         with (
-            patch(
-                "teatree.core.management.commands.ticket_short_describe.shutil.which",
-                return_value="/usr/local/bin/claude",
-            ),
-            patch("teatree.utils.run.spawn", return_value=_Proc()),
+            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(describe_mod, "_describe", return_value='preamble\n"Final summary"\n'),
         ):
             assert _claude_summarize("title") == "Final summary"
 
     def test_empty_output_returns_empty(self) -> None:
-        class _Proc:
-            returncode = 0
-
-            def communicate(self, timeout: float = 30):
-                return ("", "")
-
         with (
-            patch(
-                "teatree.core.management.commands.ticket_short_describe.shutil.which",
-                return_value="/usr/local/bin/claude",
-            ),
-            patch("teatree.utils.run.spawn", return_value=_Proc()),
+            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(describe_mod, "_describe", return_value=""),
         ):
             assert _claude_summarize("title") == ""
+
+    def test_summary_path_never_spawns_a_claude_subprocess(self) -> None:
+        """RED before the #2204 cutover: assert NO ``claude -p`` subprocess is launched.
+
+        The describe path drives the in-process SDK only. We record the two
+        ``subprocess`` egress *primitives* (``subprocess.Popen`` /
+        ``subprocess.run``) rather than the ``teatree.utils.run`` wrappers,
+        and that placement is what makes the guard real: every teatree wrapper
+        bottoms out in one of these primitives — ``spawn`` calls
+        ``subprocess.Popen`` at the module level (``run.py``), so a
+        reintroduced ``spawn(["claude", "-p", …])`` is recorded here.
+        Recording ``teatree.utils.run.spawn`` instead would be a no-op, since
+        the pre-cutover call site imported it by name
+        (``from teatree.utils.run import spawn``) — a binding a wrapper-level
+        patch can't reach. The SDK boundary (``_describe``) is stubbed to a
+        canned summary; a healthy run returns it and touches neither primitive.
+        """
+        spawn_calls: list[object] = []
+
+        def _record(*args: object, **kwargs: object) -> object:
+            spawn_calls.append(args)
+            return None
+
+        with (
+            patch.object(describe_mod.shutil, "which", return_value="/usr/local/bin/claude"),
+            patch.object(describe_mod, "_describe", return_value="dogfood smoke scanner"),
+            patch("subprocess.Popen", side_effect=_record),
+            patch("subprocess.run", side_effect=_record),
+        ):
+            result = _claude_summarize("implement the dogfood smoke scanner")
+
+        assert result == "dogfood smoke scanner"
+        assert spawn_calls == []
 
 
 @pytest.mark.django_db

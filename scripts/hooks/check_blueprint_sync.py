@@ -2,7 +2,7 @@
 
 Exits non-zero when source code changes without a corresponding BLUEPRINT.md
 update, unless the commit type is one that typically doesn't require it
-(test, docs, style, chore, ci, fix).
+(test, docs, style, chore, ci, fix, refactor).
 
 See: souliane/teatree#8
 """
@@ -11,8 +11,11 @@ import pathlib
 import subprocess
 import sys
 
-# Commit types that don't require BLUEPRINT updates.
-_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix")
+# Commit types that don't require BLUEPRINT updates. ``refactor`` joins the
+# set because a behaviour-preserving internal change (a swapped runner, an
+# extracted helper) does not alter the external contracts BLUEPRINT documents
+# — the same reasoning that exempts ``fix``.
+_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix", "refactor")
 
 
 def _staged_files() -> list[str]:

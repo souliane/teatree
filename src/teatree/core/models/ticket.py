@@ -499,7 +499,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         Shipping is a loop-dispatched phase (``(author, shipping)`` →
         ``t3:shipper``), so it runs as an in-session sub-agent
-        (subscription-covered), never a metered ``claude -p`` — regardless of
+        (subscription-covered), never a metered detached headless-SDK run — regardless of
         auto mode. Auto mode no longer changes the execution *target*; it only
         changes the *approval posture* the in-session shipper reads from
         ``execution_reason`` (auto = push without waiting; otherwise = gate for
