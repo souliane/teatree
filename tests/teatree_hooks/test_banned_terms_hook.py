@@ -458,3 +458,225 @@ def test_live_hook_blocks_private_commit_chained_to_public_post(
     assert blocked is True
     decision = json.loads(captured.out)
     assert decision["permissionDecision"] == "deny"
+
+
+# ── #1415 misfire regression suite ──────────────────────────────────────────
+#
+# Four reported over-block surfaces. FM2 (SSH-alias) was genuinely RED on the
+# pre-fix code and is closed by the ``slug_for_cwd`` dotless-alias normalization
+# in ``_repo_visibility``. FM1/FM3/FM4 are kept here as live-hook regression
+# LOCKS over the exact reported command shapes: they assert the gate does NOT
+# fire on a branch-name-only term, a clean/own-private body-file, or a no-body
+# help invocation, so a future change to the body-walker / destination-skip /
+# publish-detection cannot silently re-introduce the misfire. Each allow case is
+# paired with an anti-vacuity must-block guard.
+
+_FM_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\n'
+_FM_PRIVATE_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\nprivate_repos = ["owner-org"]\n'
+
+_FM1_HEAD_ONLY = 'gh pr create --head ac-acmewidget-feature --title "Add feature" --body "clean public body"'
+_FM1_REF_FLAGS = "gh pr create -H acmewidget-topic --base acmewidget-main --title T --body clean"
+_FM1_BODY_TERM = 'gh pr create --head clean-branch --title T --body "rolling out acmewidget"'
+_FM3_CLEAN_BODY_FILE = 'gh pr create --title "Release" --body-file {body}'
+_FM3_PRIVATE_UNRESOLVABLE = "gh pr create --repo owner-org/private-product --title T --body-file /no/such/body.md"
+_FM3_PUBLIC_UNRESOLVABLE = "gh pr create --repo souliane/teatree --title T --body-file /no/such/body.md"
+
+
+def test_fm1_term_only_in_head_branch_name_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM1 (#1415): a banned term that appears ONLY in the ``--head`` branch name
+    # of a ``gh pr create`` -- never in the published title/body -- must NOT block.
+    # The body walker is an allowlist of body-bearing flags, so a non-body flag
+    # value (branch ref) never enters the scanned payload.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {"tool_name": "Bash", "tool_input": {"command": _FM1_HEAD_ONLY}, "cwd": str(_public_clone(tmp_path))}
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_fm1_term_in_base_and_short_head_flags_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM1 variant: the ``-H`` / ``--base`` ref flags carry the term, body clean.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {"tool_name": "Bash", "tool_input": {"command": _FM1_REF_FLAGS}, "cwd": str(_public_clone(tmp_path))}
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""
+
+
+def test_fm1_term_in_actual_body_still_blocks_on_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM1 anti-vacuity guard: the SAME public command WITH the term in the real
+    # ``--body`` must STILL block. This proves the FM1 allow tests are not green
+    # merely because the gate stopped firing on this surface entirely.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {"tool_name": "Bash", "tool_input": {"command": _FM1_BODY_TERM}, "cwd": str(_public_clone(tmp_path))}
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
+
+
+def test_fm2_useratalias_ssh_remote_own_private_repo_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM2 (#1415) LIVE: a clone whose ``origin`` uses a per-account dotless SSH
+    # config alias (``git@gh-acct:owner-org/private-product``) is the user's OWN
+    # known-private repo. The post must downgrade/skip via the offline allowlist
+    # with no probe tool -- before the slug fix the dotless ``gh-acct`` segment
+    # broke the allowlist match and the own private repo over-blocked.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    repo = tmp_path / "alias-clone"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@gh-acct:owner-org/private-product.git")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --body "rolling out acmewidget"'},
+        "cwd": str(repo),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_fm2_useratalias_ssh_remote_public_repo_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM2 anti-vacuity guard: a clone using a dotless SSH alias but pointing at a
+    # PUBLIC repo NOT in the allowlist must STILL block a customer term -- the
+    # alias normalization must not blanket-downgrade every aliased remote.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    repo = tmp_path / "alias-public"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@gh-acct:souliane/teatree.git")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --body "rolling out acmewidget"'},
+        "cwd": str(repo),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
+
+
+def test_fm3_clean_body_file_to_public_repo_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM3 (#1415): a ``--body-file`` pointing at an EXISTING, clean file on a
+    # public repo must NOT fail-closed -- the file is read at scan time and the
+    # clean body produces no match.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    body = tmp_path / "body.md"
+    body.write_text("A perfectly clean public release note.\n", encoding="utf-8")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": _FM3_CLEAN_BODY_FILE.format(body=body)},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""
+
+
+def test_fm3_unresolvable_body_file_to_own_private_repo_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM3 (#1415): an UNRESOLVABLE ``--body-file`` whose destination is the user's
+    # OWN allowlisted-private repo must NOT fail-closed -- the destination skip
+    # precedes the body scan, so an own/private post is never blocked on an
+    # unreadable body.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_PRIVATE_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": _FM3_PRIVATE_UNRESOLVABLE},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""
+
+
+def test_fm3_unresolvable_body_file_to_public_repo_still_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM3 anti-vacuity guard: an UNRESOLVABLE ``--body-file`` to a PUBLIC repo
+    # must STILL fail closed (an unscanned body must not slip onto a public
+    # surface) -- the FM3 allow cases must not have weakened the real protection.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": _FM3_PUBLIC_UNRESOLVABLE},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
+
+
+def test_fm4_help_invocation_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FM4 (#1415): a ``--help`` invocation of a publish subcommand carries no
+    # publish body, so the gate must not fire on it (an empty payload is a no-op,
+    # not a fail-closed unresolvable body).
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _FM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    cwd = str(_public_clone(tmp_path))
+    for command in ("glab mr note --help", "gh pr create --help", "gh issue comment -h"):
+        data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd}
+        blocked = handle_banned_terms_pretool(data)
+        captured = capsys.readouterr()
+        assert blocked is False, command
+        assert captured.out == "", command
