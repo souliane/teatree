@@ -1,0 +1,124 @@
+"""Time-box + loud-alert guards for long-blocking provisioning steps (#2220).
+
+A `worktree provision` / `start` step (DSLR restore, `migrate`, `--create-db`
+test-DB rebuild) must never hang silently: it is bounded by a configurable
+ceiling, and on a timeout — or on a forked migration graph detected in the
+step's output — it fails loud AND fires an out-of-band user alert naming the
+slow/diagnosed step, with a progress heartbeat distinguishing slow-but-moving
+from a true hang.
+"""
+
+import subprocess
+import time
+from unittest.mock import MagicMock, patch
+
+from django.test import TestCase, override_settings
+
+from teatree.core.provision_timebox import detect_migration_conflict, resolve_step_timeout_seconds, run_timeboxed_step
+from teatree.core.step_runner import run_step
+
+
+class TestDetectMigrationConflict(TestCase):
+    """The forked-graph detector: True on a conflict, False on a linear graph."""
+
+    def test_conflicting_migrations_phrase(self) -> None:
+        out = "CommandError: Conflicting migrations detected; multiple leaf nodes in the migration graph"
+        conflict = detect_migration_conflict(out)
+        assert conflict is not None
+        assert "core" in conflict or conflict  # truthy diagnosis
+
+    def test_multiple_leaf_nodes_phrase(self) -> None:
+        out = "multiple leaf nodes in the migration graph (0045_a, 0045_b in core)"
+        assert detect_migration_conflict(out) is not None
+
+    def test_linear_output_is_not_a_conflict(self) -> None:
+        out = "Operations to perform:\n  Apply all migrations: core\nRunning migrations:\n  No migrations to apply."
+        assert detect_migration_conflict(out) is None
+
+    def test_empty_output_is_not_a_conflict(self) -> None:
+        assert detect_migration_conflict("") is None
+
+
+class TestResolveStepTimeout(TestCase):
+    """The ceiling is configurable; a sensible positive default applies."""
+
+    def test_default_is_a_positive_ceiling(self) -> None:
+        assert resolve_step_timeout_seconds() > 0
+
+    @override_settings()
+    def test_override_wins(self) -> None:
+        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(provision_step_timeout_seconds=42)
+            assert resolve_step_timeout_seconds() == 42
+
+
+class TestRunTimeboxedStep(TestCase):
+    """A timeout fails loud + alerts; a conflict is diagnosed; progress heartbeats."""
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    def test_timeout_aborts_and_alerts(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["migrate"], timeout=1)
+        result = run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=1)
+        assert result.success is False
+        assert "timed out" in result.error
+        assert mock_notify.called
+        alert_text = mock_notify.call_args.args[0]
+        assert "migrate" in alert_text
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    def test_migration_conflict_diagnosed_in_alert(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="CommandError: Conflicting migrations detected; multiple leaf nodes",
+        )
+        result = run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=300)
+        assert result.success is False
+        assert mock_notify.called
+        alert_text = mock_notify.call_args.args[0]
+        assert "migration" in alert_text.lower()
+        assert "makemigrations --merge" in alert_text
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    def test_success_does_not_alert(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        result = run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=300)
+        assert result.success is True
+        assert not mock_notify.called
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    def test_heartbeat_fires_while_running(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
+        beats: list[str] = []
+
+        def slow_then_finish(*_args: object, **_kwargs: object) -> MagicMock:
+            time.sleep(0.25)
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+
+        mock_run.side_effect = slow_then_finish
+        run_timeboxed_step(
+            "restore",
+            ["pg_restore"],
+            timeout=300,
+            heartbeat_interval=0.05,
+            heartbeat=beats.append,
+        )
+        assert beats, "expected at least one heartbeat while the op ran"
+        assert any("restore" in b for b in beats)
+
+
+class TestRunStepUsesTimebox(TestCase):
+    """`run_step` routes long-blocking steps through the time-box on timeout."""
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_timeout_emits_alert(self, mock_sp: MagicMock, mock_notify: MagicMock) -> None:
+        mock_sp.run.side_effect = subprocess.TimeoutExpired(cmd=["slow"], timeout=1)
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        result = run_step("migrate", ["manage.py", "migrate"], timeout=1)
+        assert result.success is False
+        assert "timed out" in result.error
+        assert mock_notify.called

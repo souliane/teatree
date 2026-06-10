@@ -11,8 +11,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.utils.run import run_allowed_to_fail
-
 logger = logging.getLogger(__name__)
 
 
@@ -83,45 +81,29 @@ def run_step(  # noqa: PLR0913
 
     Unlike raw ``subprocess.run(..., check=False)``, this always captures
     output and reports duration, making failures diagnosable.
+
+    Routed through :func:`teatree.core.provision_timebox.run_timeboxed_step`
+    so a timeout, or a non-zero exit whose output shows a forked migration
+    graph, fires a loud out-of-band user alert and names the diagnosed cause —
+    a long provisioning step that cannot complete must alert, never hang
+    silently (souliane/teatree#2220). With ``check=False`` a non-zero exit
+    stays benign (the historical contract), while a timeout / command-not-found
+    is still surfaced as a failure.
     """
-    start = time.monotonic()
-    try:
-        proc = run_allowed_to_fail(
-            cmd,
-            cwd=cwd,
-            env=env,
-            expected_codes=None,
-            timeout=timeout,
-        )
-        duration = time.monotonic() - start
-        if proc.returncode != 0 and check:
-            error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
-            logger.warning("Step %r failed: %s", name, error)
-            return StepResult(
-                name=name,
-                success=False,
-                duration=duration,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                error=error,
-            )
-        return StepResult(
-            name=name,
-            success=True,
-            duration=duration,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-        )
-    except subprocess.TimeoutExpired:
-        duration = time.monotonic() - start
-        error = f"timed out after {timeout}s"
-        logger.warning("Step %r %s", name, error)
-        return StepResult(name=name, success=False, duration=duration, error=error)
-    except OSError as exc:
-        duration = time.monotonic() - start
-        error = f"command not found: {getattr(exc, 'filename', cmd[0]) if cmd else exc}"
-        logger.warning("Step %r: %s", name, error)
-        return StepResult(name=name, success=False, duration=duration, error=error)
+    from teatree.core.provision_timebox import run_timeboxed_step  # noqa: PLC0415
+
+    result = run_timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+    if result.success or check:
+        return result
+    if result.error.startswith(("timed out", "command not found")):
+        return result
+    return StepResult(
+        name=result.name,
+        success=True,
+        duration=result.duration,
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
 
 
 def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
@@ -195,6 +177,7 @@ def run_provision_steps(
             if verbose and result.stderr:
                 for line in result.stderr.strip().splitlines()[:20]:
                     write_err(f"    | {line}")
+            _alert_on_migration_conflict(result)
             if step.required and stop_on_required_failure:
                 write_err(f"  HALTED: required step '{step.name}' failed.")
                 break
@@ -202,3 +185,21 @@ def run_provision_steps(
             write(f"    OK ({result.duration:.1f}s)")
 
     return report
+
+
+def _alert_on_migration_conflict(result: StepResult) -> None:
+    """Fire a loud user alert when a failed step's output shows a forked graph.
+
+    Covers callable-based steps (overlay ``migrate`` / ``db_import`` that
+    return a ``CompletedProcess``) whose output never flows through
+    :func:`run_step`'s subprocess time-box. A forked migration graph hit by
+    such a step is diagnosed by its symptom — "rebase/renumber needed" — and
+    surfaced out-of-band, instead of leaving the agent to discover the grind
+    (souliane/teatree#2220). Best-effort: the alert never breaks provisioning.
+    """
+    from teatree.core.provision_timebox import alert_provision_user, detect_migration_conflict  # noqa: PLC0415
+
+    conflict = detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
+    if conflict is not None:
+        logger.warning("Provisioning step %r hit a %s", result.name, conflict)
+        alert_provision_user(step=result.name, repo="", detail=conflict)
