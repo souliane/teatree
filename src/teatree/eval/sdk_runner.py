@@ -50,9 +50,11 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
+from claude_agent_sdk.types import EffortLevel
 
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
+from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
     extract_cost_usd,
@@ -89,6 +91,9 @@ class CleanRoomConfig:
     allowed_tools: tuple[str, ...]
     model: str
     max_turns: int
+    #: Reasoning-effort level (the SDK's first-class ``effort`` option, rendered
+    #: as the ``claude --effort <level>`` flag). ``None`` = the model's default.
+    effort: EffortLevel | None = None
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -115,6 +120,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         max_budget_usd=float(MAX_BUDGET_USD),
         model=config.model,
         fallback_model=FALLBACK_MODEL,
+        effort=config.effort,
     )
 
 
@@ -181,6 +187,7 @@ class SdkInProcessRunner:
         return _eval_run_from_messages(spec, messages)
 
     async def _drive(self, spec: EvalSpec, *, system_prompt: str, max_turns: int) -> list[Message]:
+        variant = parse_model_variant(spec.model)
         with isolated_claude_env() as (env, cwd):
             options = build_sdk_options(
                 CleanRoomConfig(
@@ -189,8 +196,9 @@ class SdkInProcessRunner:
                     cwd=cwd,
                     env=env,
                     allowed_tools=spec.tools,
-                    model=spec.model,
+                    model=variant.model,
                     max_turns=max_turns,
+                    effort=variant.effort,
                 )
             )
             return await asyncio.wait_for(_collect(spec.prompt, options), timeout=WATCHDOG_SECONDS)

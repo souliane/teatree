@@ -1189,8 +1189,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
 │                                  suite: 'subscription' (default — grade      │
 │                                  in-session transcripts, no API spend) or    │
-│                                  'sdk' (metered claude -p, the explicit      │
-│                                  opt-in).                                    │
+│                                  'sdk' (the metered in-process Agent-SDK     │
+│                                  runner, the explicit opt-in).               │
 │                                  [default: subscription]                     │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
 │                                  transcripts for the AI lane (default: cwd). │
@@ -1217,6 +1217,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
 │                       assert it is caught (token-free).                      │
+│ benchmark             Benchmark cost AND pass-rate of model@effort variants  │
+│                       against the eval suite.                                │
 │ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
 │                       scenario's transcript path.                            │
 │ transcript-replay     Replay a real session transcript against teatree       │
@@ -1257,6 +1259,47 @@ Usage: t3 eval negative-control [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval benchmark`
+
+```
+Usage: t3 eval benchmark [OPTIONS]
+
+ Benchmark cost AND pass-rate of model@effort variants against the eval suite.
+
+ Runs the scenario suite once per variant on the metered in-process
+ Agent-SDK runner (``--backend sdk`` semantics; the all-skipped gate is
+ always armed) and renders one comparison line per variant: scenarios
+ passed/executed, pass-rate, total metered cost, mean cost per scenario,
+ and cost per pass. A failing scenario is the measurement, not an error —
+ the command exits non-zero only when the run itself is broken (nothing
+ executed, unknown variant/scenario). Pass-rate noise shrinks with
+ ``--trials k`` (each cell's score becomes a k-trial pass-rate).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --models                       TEXT     Comma-separated model@effort      │
+│                                            variants to compare, e.g.         │
+│                                            claude-opus-4-8@xhigh,claude-fab… │
+│                                            (a plain model name = default     │
+│                                            effort).                          │
+│                                            [required]                        │
+│    --scenarios                    TEXT     Comma-separated scenario names to │
+│                                            benchmark (default: the whole     │
+│                                            suite).                           │
+│    --trials                       INTEGER  Re-run each (scenario, variant)   │
+│                                            cell this many times.             │
+│                                            [default: 1]                      │
+│    --max-turns                    INTEGER  Override every scenario's         │
+│                                            max_turns (per-invocation).       │
+│    --format                       TEXT     Report format: text or json.      │
+│                                            [default: text]                   │
+│    --persist      --no-persist             Persist the underlying matrix run │
+│                                            into the run-history ledger (`t3  │
+│                                            eval history`).                   │
+│                                            [default: persist]                │
+│    --help                                  Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1436,11 +1479,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
  ``--backend subscription`` (default) grades transcripts produced on the
  subscription via an in-session sub-agent — no API spend (run
  ``t3 eval prepare-subscription`` first for the prompts + expected paths).
- ``--backend sdk`` shells the metered ``claude -p`` runner, authed by
- ``CLAUDE_CODE_OAUTH_TOKEN`` (``ANTHROPIC_API_KEY`` is also honored as a
- legacy alternative); CI passes ``--backend sdk`` explicitly via the standalone
- ``eval.yml`` job. ``--trials``/``--models`` always use the metered ``sdk``
- runner regardless of ``--backend``.
+ ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
+ spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
+ (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
+ ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
+ ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
+ of ``--backend``.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -1451,10 +1495,10 @@ Usage: t3 eval run [OPTIONS] [NAME]
  ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
  meant to run in-container, never on the host — the runner forwards the host's
  ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
- ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
- clean container and never lands on the command line.
+ ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
+ child inside a clean container and never lands on the command line.
 
- ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
+ ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
  I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
  Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
 
@@ -1483,7 +1527,13 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     matrix (e.g.             │
 │                                                     opus,sonnet,haiku); runs │
 │                                                     the suite once per       │
-│                                                     model.                   │
+│                                                     model. Each entry may    │
+│                                                     carry a reasoning-effort │
+│                                                     variant as model@effort  │
+│                                                     (e.g.                    │
+│                                                     claude-opus-4-8@xhigh) — │
+│                                                     the tag is the           │
+│                                                     column/ledger identity.  │
 │ --persist                  --no-persist             Persist this run into    │
 │                                                     the run-history ledger   │
 │                                                     (read back via `t3 eval  │
@@ -1535,8 +1585,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     transcripts, no API      │
 │                                                     spend; see `t3 eval      │
 │                                                     prepare-subscription`)   │
-│                                                     or 'sdk' (metered claude │
-│                                                     -p, authed by            │
+│                                                     or 'sdk' (the metered    │
+│                                                     in-process Agent-SDK     │
+│                                                     runner, authed by        │
 │                                                     CLAUDE_CODE_OAUTH_TOKEN; │
 │                                                     runs in-container via    │
 │                                                     --docker locally or in   │
@@ -1573,12 +1624,13 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     CLAUDE_CODE_OAUTH_TOKEN… │
 │                                                     (env pass-through).      │
 │ --parallel                                 INTEGER  Run this many scenarios  │
-│                                                     concurrently (each       │
-│                                                     claude -p is I/O-bound;  │
-│                                                     a bounded pool cuts      │
-│                                                     wall-clock from          │
-│                                                     Nxlatency to ~latency).  │
-│                                                     Default 1 = sequential.  │
+│                                                     concurrently (each SDK   │
+│                                                     scenario run is          │
+│                                                     I/O-bound; a bounded     │
+│                                                     pool cuts wall-clock     │
+│                                                     from Nxlatency to        │
+│                                                     ~latency). Default 1 =   │
+│                                                     sequential.              │
 │                                                     [default: 1]             │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
@@ -1652,11 +1704,11 @@ Usage: t3 eval all [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
 │                                  grade in-session transcripts, no API spend) │
-│                                  or 'sdk' (metered claude -p, authed by      │
-│                                  CLAUDE_CODE_OAUTH_TOKEN; the explicit CI    │
-│                                  opt-in via the standalone eval.yml job;     │
-│                                  ANTHROPIC_API_KEY also honored as a legacy  │
-│                                  alternative).                               │
+│                                  or 'sdk' (the metered in-process Agent-SDK  │
+│                                  runner, authed by CLAUDE_CODE_OAUTH_TOKEN;  │
+│                                  the explicit CI opt-in via the standalone   │
+│                                  eval.yml job; ANTHROPIC_API_KEY also        │
+│                                  honored as a legacy alternative).           │
 │                                  [default: subscription]                     │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
 │                                  transcripts for the AI lane (default: cwd). │

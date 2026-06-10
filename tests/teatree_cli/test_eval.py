@@ -657,7 +657,7 @@ class TestEvalBackend:
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
         assert result.exit_code == 0, result.output
-        assert "metered sdk runner" in result.output
+        assert "metered in-process Agent-SDK runner" in result.output
 
 
 @pytest.mark.django_db
@@ -899,6 +899,158 @@ class TestEvalModelMatrix:
             result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
+
+
+@pytest.mark.django_db
+class TestEvalModelVariantMatrix:
+    """`--models` accepts `model@effort` variants; the tag is the identity string."""
+
+    def test_variant_tags_render_as_matrix_columns(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _PassRunner),
+        ):
+            result = CliRunner().invoke(
+                app,
+                ["eval", "run", "--models", "claude-opus-4-8@xhigh,claude-fable-5@medium", "--no-persist"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "claude-opus-4-8@xhigh" in result.output
+        assert "claude-fable-5@medium" in result.output
+
+    def test_variant_tag_is_persisted_as_the_model_identity(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--models", "opus@xhigh,opus@medium"])
+            history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+        payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
+        assert payload["runs"][0]["model"] == "opus@xhigh,opus@medium"
+
+    def test_unknown_effort_exits_code_2_with_known_levels(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus@turbo", "--no-persist"])
+        assert result.exit_code == 2
+        assert "unknown effort 'turbo'" in result.output
+        assert "xhigh" in result.output
+
+    def test_html_format_is_rejected_for_a_matrix_run(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--format", "html", "--no-persist"])
+        assert result.exit_code == 2
+        assert "only supported for a single-trial run" in result.output
+
+
+class _BenchmarkRunner:
+    """Passes everything on `@xhigh` variants; fails `beta` elsewhere; costed per call."""
+
+    def __init__(self, *_: object, **__: object) -> None: ...
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        passing = spec.model.endswith("@xhigh") or spec.name == "alpha"
+        cost = 0.20 if spec.model.endswith("@xhigh") else 0.05
+        return _run(spec.name, tool_calls=_PASSING_CALL if passing else (), cost_usd=cost)
+
+
+@pytest.mark.django_db
+class TestEvalBenchmark:
+    def _invoke(self, args: list[str], *, specs: list[EvalSpec], runner: type = _BenchmarkRunner):
+        with (
+            patch("teatree.cli.eval.benchmark.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.benchmark.SdkInProcessRunner", runner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            return CliRunner().invoke(app, ["eval", "benchmark", *args])
+
+    def test_renders_per_variant_comparison_table(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        result = self._invoke(["--models", "claude-opus-4-8@xhigh,claude-fable-5@medium", "--no-persist"], specs=specs)
+        assert result.exit_code == 0, result.output
+        assert "claude-opus-4-8@xhigh" in result.output
+        assert "claude-fable-5@medium" in result.output
+        assert "2/2" in result.output
+        assert "1/2" in result.output
+
+    def test_trials_aggregate_cost_and_pass_rate_per_cell(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        result = self._invoke(
+            ["--models", "opus@xhigh", "--trials", "2", "--format", "json", "--no-persist"], specs=specs
+        )
+        assert result.exit_code == 0, result.output
+        (entry,) = json.loads(result.output)["variants"]
+        assert (entry["passed"], entry["executed"]) == (2, 2)
+        assert entry["total_cost_usd"] == pytest.approx(0.80)
+
+    def test_json_shape_carries_the_comparison_metrics(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        result = self._invoke(["--models", "opus@xhigh,fable@medium", "--format", "json", "--no-persist"], specs=specs)
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        by_variant = {entry["variant"]: entry for entry in payload["variants"]}
+        opus = by_variant["opus@xhigh"]
+        assert (opus["passed"], opus["executed"]) == (2, 2)
+        assert opus["pass_rate"] == pytest.approx(1.0)
+        assert opus["total_cost_usd"] == pytest.approx(0.40)
+        assert opus["cost_per_pass_usd"] == pytest.approx(0.20)
+        fable = by_variant["fable@medium"]
+        assert (fable["passed"], fable["executed"]) == (1, 2)
+        assert fable["cost_per_pass_usd"] == pytest.approx(0.10)
+
+    def test_failing_scenarios_are_data_not_an_exit_failure(self) -> None:
+        # The benchmark is a comparison report, not a gate: a weaker variant
+        # failing scenarios is the measurement, never a non-zero exit.
+        specs = [_spec("alpha"), _spec("beta")]
+        result = self._invoke(["--models", "fable@medium", "--no-persist"], specs=specs)
+        assert result.exit_code == 0, result.output
+
+    def test_scenarios_flag_filters_the_suite(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        result = self._invoke(
+            ["--models", "opus@xhigh", "--scenarios", "alpha", "--format", "json", "--no-persist"],
+            specs=specs,
+        )
+        assert result.exit_code == 0, result.output
+        (entry,) = json.loads(result.output)["variants"]
+        assert entry["executed"] == 1
+
+    def test_unknown_scenario_exits_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        result = self._invoke(["--models", "opus@xhigh", "--scenarios", "nope", "--no-persist"], specs=specs)
+        assert result.exit_code == 2
+        assert "unknown scenario" in result.output
+
+    def test_unknown_effort_exits_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        result = self._invoke(["--models", "opus@turbo", "--no-persist"], specs=specs)
+        assert result.exit_code == 2
+        assert "unknown effort 'turbo'" in result.output
+
+    def test_empty_models_exits_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        result = self._invoke(["--models", " , ", "--no-persist"], specs=specs)
+        assert result.exit_code == 2
+        assert "--models was empty" in result.output
+
+    def test_all_skipped_fails_loud(self) -> None:
+        # Benchmark is metered (`--backend sdk` semantics): the all-skipped
+        # require-executed gate is always armed, never a decorative green.
+        specs = [_spec("alpha")]
+        result = self._invoke(["--models", "opus@xhigh", "--no-persist"], specs=specs, runner=_SkippingRunner)
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
+
+    def test_persists_one_matrix_record_with_variant_tags(self) -> None:
+        specs = [_spec("alpha")]
+        self._invoke(["--models", "opus@xhigh,fable@medium"], specs=specs)
+        history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+        payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
+        assert payload["runs"][0]["model"] == "opus@xhigh,fable@medium"
 
 
 class _CostRunner:

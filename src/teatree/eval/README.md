@@ -23,7 +23,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `benchmark.py` per-variant cost/pass-rate comparison; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
@@ -341,6 +341,30 @@ per `(scenario, model)` cell (unless `--no-persist`); combined with
 `--gate-regressions` it flags per-model drops against each model's baseline.
 `--format json` emits a
 `{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
+
+Each `--models` entry may carry a reasoning-effort variant as `model@effort`
+(e.g. `claude-opus-4-8@xhigh`; levels `low`/`medium`/`high`/`xhigh`/`max`,
+mirroring `claude --effort`). The rendered tag is the variant's identity
+string everywhere — matrix column, `EvalScenarioResult.model`, baselines,
+score/cost gates — with zero schema change; the SDK runner
+(`model_variant.py`) strips the tag back into the SDK's first-class `effort`
+option when building `ClaudeAgentOptions`.
+
+### Benchmark (`t3 eval benchmark`)
+
+`t3 eval benchmark --models claude-opus-4-8@xhigh,claude-fable-5@medium`
+answers "which variant is worth its cost": it runs the suite once per
+`model@effort` variant on the metered Agent-SDK runner (the all-skipped gate
+always armed), persists the matrix record into the run-history ledger, and
+renders one comparison line per variant — scenarios passed/executed,
+pass-rate, total metered cost, mean cost per scenario, and cost per pass
+(`-` when nothing passed). `--scenarios a,b` narrows the suite, `--trials k`
+de-noises each cell's pass-rate, `--format json` emits the same metrics as a
+`{variants: [...]}` payload. A failing scenario is the measurement, not an
+error: the command exits non-zero only when the run itself is broken. The
+summary math/renderers live in `src/teatree/eval/benchmark.py`; the thin
+command in `src/teatree/cli/eval/benchmark.py` reuses the matrix lane's
+row collector.
 
 ### LLM-judge (opt-in, per scenario)
 

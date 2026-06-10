@@ -10,6 +10,7 @@ from rich.console import Console
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import build_scenarios_table, hint_missing_transcripts, run_full_suite
 from teatree.cli.eval.audit import audit
+from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.label import label_app
@@ -53,6 +54,7 @@ eval_app = typer.Typer(
     help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
 )
 eval_app.command("negative-control")(negative_control)
+eval_app.command("benchmark")(benchmark)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
 eval_app.command("skill-triggers")(skill_triggers)
@@ -94,7 +96,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     models: str | None = typer.Option(
         None,
         "--models",
-        help="Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model.",
+        help=(
+            "Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model. "
+            "Each entry may carry a reasoning-effort variant as model@effort (e.g. "
+            "claude-opus-4-8@xhigh) — the tag is the column/ledger identity."
+        ),
     ),
     persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         True,
@@ -144,9 +150,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Execution backend for a single-trial run: 'subscription' (default — grade "
             "subscription-produced transcripts, no API spend; see `t3 eval prepare-subscription`) "
-            "or 'sdk' (metered claude -p, authed by CLAUDE_CODE_OAUTH_TOKEN; runs in-container "
-            "via --docker locally or in the standalone eval.yml CI job). --trials and "
-            "--models always use the metered sdk runner regardless of this flag."
+            "or 'sdk' (the metered in-process Agent-SDK runner, authed by CLAUDE_CODE_OAUTH_TOKEN; "
+            "runs in-container via --docker locally or in the standalone eval.yml CI job). --trials "
+            "and --models always use the metered sdk runner regardless of this flag."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -176,8 +182,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         DEFAULT_PARALLEL,
         "--parallel",
         help=(
-            "Run this many scenarios concurrently (each claude -p is I/O-bound; a bounded pool "
-            "cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
+            "Run this many scenarios concurrently (each SDK scenario run is I/O-bound; a bounded "
+            "pool cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
         ),
     ),
 ) -> None:
@@ -196,11 +202,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``--backend subscription`` (default) grades transcripts produced on the
     subscription via an in-session sub-agent — no API spend (run
     ``t3 eval prepare-subscription`` first for the prompts + expected paths).
-    ``--backend sdk`` shells the metered ``claude -p`` runner, authed by
-    ``CLAUDE_CODE_OAUTH_TOKEN`` (``ANTHROPIC_API_KEY`` is also honored as a
-    legacy alternative); CI passes ``--backend sdk`` explicitly via the standalone
-    ``eval.yml`` job. ``--trials``/``--models`` always use the metered ``sdk``
-    runner regardless of ``--backend``.
+    ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
+    spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
+    (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
+    ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
+    ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
+    of ``--backend``.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -211,10 +218,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
     meant to run in-container, never on the host — the runner forwards the host's
     ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
-    ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
-    clean container and never lands on the command line.
+    ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
+    child inside a clean container and never lands on the command line.
 
-    ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
+    ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
     I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
     Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
     """
@@ -251,7 +258,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     require_executed = require_executed or sdk_metered
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
         typer.echo(
-            "note: --trials/--models force the metered sdk runner (claude -p, API-billed); "
+            "note: --trials/--models force the metered in-process Agent-SDK runner (API-billed); "
             "the 'subscription' default does not apply to multi-trial / matrix runs",
             err=True,
         )
@@ -396,7 +403,8 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--backend",
         help=(
             "AI-lane backend for the bare-`t3 eval` full suite: 'subscription' (default — grade "
-            "in-session transcripts, no API spend) or 'sdk' (metered claude -p, the explicit opt-in)."
+            "in-session transcripts, no API spend) or 'sdk' (the metered in-process Agent-SDK "
+            "runner, the explicit opt-in)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -462,8 +470,9 @@ def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--backend",
         help=(
             "AI-lane backend: 'subscription' (default — grade in-session transcripts, no API spend) "
-            "or 'sdk' (metered claude -p, authed by CLAUDE_CODE_OAUTH_TOKEN; the explicit CI opt-in "
-            "via the standalone eval.yml job; ANTHROPIC_API_KEY also honored as a legacy alternative)."
+            "or 'sdk' (the metered in-process Agent-SDK runner, authed by CLAUDE_CODE_OAUTH_TOKEN; "
+            "the explicit CI opt-in via the standalone eval.yml job; ANTHROPIC_API_KEY also honored "
+            "as a legacy alternative)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(

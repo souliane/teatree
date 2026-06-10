@@ -20,6 +20,7 @@ from teatree.cli.eval.run_modes import (
     with_model,
 )
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
+from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
@@ -115,16 +116,9 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     require_executed: bool = False,
 ) -> None:
     """Run the suite once per model and render a per-model comparison."""
-    model_list = [m.strip() for m in models.split(",") if m.strip()]
-    if not model_list:
-        typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
-        raise typer.Exit(code=2)
+    model_list = parse_model_tags(models)
     runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=require_executed)
-    rows: list[MatrixRow] = []
-    for model in model_list:
-        for spec in specs:
-            scoped = with_model(spec, model)
-            rows.append(_matrix_trial(runner, scoped, trials=trials, require=require, grader=grader))
+    rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
@@ -142,6 +136,41 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         )
     if any(not row.passed and not row.skipped for row in rows) or regressed or cost_regressed:
         sys.exit(1)
+
+
+def parse_model_tags(models: str) -> list[str]:
+    """Parse ``--models`` into validated variant tags, or exit 2 with the parse error.
+
+    Each entry is a ``model[@effort]`` variant (`teatree.eval.model_variant`);
+    the rendered tag is the identity string the matrix/benchmark machinery
+    threads through ``MatrixRow.model`` and the run-store ledger.
+    """
+    try:
+        variants = parse_model_variants(models)
+    except ModelVariantError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    if not variants:
+        typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
+        raise typer.Exit(code=2)
+    return [variant.tag for variant in variants]
+
+
+def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benchmark CLI flag through the shared loop.
+    specs: list[EvalSpec],
+    model_tags: list[str],
+    *,
+    runner: SdkInProcessRunner,
+    trials: int,
+    require: str,
+    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+) -> list[MatrixRow]:
+    """Run every scenario against every variant tag — the shared matrix/benchmark loop."""
+    return [
+        _matrix_trial(runner, with_model(spec, tag), trials=trials, require=require, grader=grader)
+        for tag in model_tags
+        for spec in specs
+    ]
 
 
 def _matrix_trial(

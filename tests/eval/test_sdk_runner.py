@@ -169,6 +169,20 @@ class TestSdkInProcessRunnerCapture:
         _run, captured = self._run(spec, [_result()])
         assert captured["options"].max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
 
+    def test_model_at_effort_tag_splits_into_model_and_effort_options(self, tmp_path: Path) -> None:
+        # ClaudeAgentOptions.effort is the SDK's first-class reasoning-effort
+        # field (the transport renders it as the CLI's `--effort <level>` flag).
+        spec = _spec(tmp_path, model="claude-opus-4-8@xhigh")
+        _run, captured = self._run(spec, [_result()])
+        assert captured["options"].model == "claude-opus-4-8"
+        assert captured["options"].effort == "xhigh"
+
+    def test_plain_model_leaves_effort_unset(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, model="claude-fable-5")
+        _run, captured = self._run(spec, [_result()])
+        assert captured["options"].model == "claude-fable-5"
+        assert captured["options"].effort is None
+
     def test_timeout_yields_timeout_run(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
 
