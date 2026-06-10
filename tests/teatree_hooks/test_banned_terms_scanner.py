@@ -1035,13 +1035,23 @@ class TestDestinationAwareGate:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Raw-REST ``gh api`` / ``glab api`` can target any surface (custom
-        # host, method, endpoint), so the destination gate never SKIPS an
-        # api segment even when its URL path resolves to an internal
-        # project -- mirroring the carve-out, which excludes api from its
-        # eligible verbs. The over-scan is recoverable via --allow-banned-term.
+    def test_internal_glab_api_raw_rest_with_provable_url_target_is_allowed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 over-block fix: a raw ``gh``/``glab api`` WRITE carries its
+        # body only to the endpoint its URL path names, so a URL that itself
+        # resolves to a provably-internal project is skip-safe -- the gate no
+        # longer forces the --allow-banned-term escape hatch on every private
+        # MR/issue api update.
         cmd = "glab api projects/internalcorp%2Fprivate-svc/issues -f body=acmecorp"
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_public_api_raw_rest_write_is_still_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The carve-out is URL-proof-scoped: the same api WRITE shape toward a
+        # public repo still scans and denies.
+        cmd = "gh api repos/souliane/teatree/issues -f body=acmecorp"
         blocked = handle_banned_terms_pretool(_bash(cmd))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"

@@ -329,3 +329,62 @@ class TestGateSkipsDestination:
         cfg = _config(tmp_path, ["internalcorp"])
         cmd = "gh pr create -R internalcorp/private-svc --body ok && gh api repos/souliane/teatree/issues -f body=x"
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+    @pytest.mark.parametrize(
+        "write",
+        [
+            'glab api --method PUT "projects/internalcorp%2Fprivate-svc/merge_requests/7562" --input /tmp/body.json',
+            "glab api projects/internalcorp%2Fprivate-svc/merge_requests/7562 -X PUT --input /tmp/body.json",
+            "gh api repos/internalcorp/private-svc/issues -f body=hello",
+            "glab api projects/internalcorp%2Fprivate-svc/issues/5/notes -f body=hello",
+            "gh api /repos/internalcorp/private-svc/issues -f body=hello",
+            "gh api --paginate repos/internalcorp/private-svc/issues -f body=hello",
+        ],
+        ids=[
+            "glab-put-input-quoted",
+            "glab-x-put-input",
+            "gh-post-field",
+            "glab-note-post",
+            "gh-leading-slash",
+            "gh-boolean-flag-before-url",
+        ],
+    )
+    def test_api_write_to_internal_repo_is_skipped(self, tmp_path: Path, write: str) -> None:
+        # Over-block guard: an ``api`` WRITE whose URL path itself names a
+        # provably-internal repo carries its body only to that private project's
+        # surface (e.g. updating a customer MR description). It must skip the
+        # public-leak scan instead of forcing the override escape hatch.
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert publish_destination.gate_skips_destination(write, None, config_path=cfg) is True
+
+    @pytest.mark.parametrize(
+        "write",
+        [
+            'glab api --method PUT "projects/$opp/merge_requests/7562" --input /tmp/body.json',
+            "gh api /user -f name=x",
+            "glab api projects/souliane%2Fteatree/issues -f title=x",
+            "gh api --jq repos/internalcorp/private-svc user/keys -f key=x",
+        ],
+        ids=["unexpanded-variable", "non-repo-endpoint", "public-repo", "unknown-flag-value-misparse"],
+    )
+    def test_api_write_without_provable_internal_target_fails_closed(self, tmp_path: Path, write: str) -> None:
+        # The carve-out needs the slug from the URL path itself: a shell
+        # variable, a non-repo endpoint, or a public repo stays fail-closed.
+        # The ``--jq`` row pins the value-misparse hole: a known value-taking
+        # flag's VALUE that merely LOOKS like an internal repo path must not
+        # stand in for the real (public-surface) endpoint positional.
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert publish_destination.gate_skips_destination(write, None, config_path=cfg) is False
+
+    def test_unexpanded_variable_slug_unprovable_even_when_probe_answers_private(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The visibility probe is a PROOF source, but an unexpanded ``$var``
+        # slug has an unknowable runtime value -- no probe answer about the
+        # literal ``$opp`` string can prove anything about the repo the
+        # expanded command will actually hit. Even a private-answering probe
+        # must leave it PUBLIC (fail-closed).
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: True)
+        cmd = 'glab api --method PUT "projects/$opp/merge_requests/7562" --input /tmp/body.json'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
