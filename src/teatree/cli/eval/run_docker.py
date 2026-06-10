@@ -23,6 +23,7 @@ class RunDockerArgs:
     name: str | None
     output_format: str
     max_turns: int | None
+    max_budget_usd: float
     trials: int
     require: str
     models: str | None
@@ -38,6 +39,7 @@ class RunDockerArgs:
             args += ["--format", self.output_format]
         if self.max_turns is not None:
             args += ["--max-turns", str(self.max_turns)]
+        args += ["--max-budget-usd", str(self.max_budget_usd)]
         if self.trials != 1:
             args += ["--trials", str(self.trials), "--require", self.require]
         if self.models is not None:

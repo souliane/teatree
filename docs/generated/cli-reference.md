@@ -1217,6 +1217,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
 │                       assert it is caught (token-free).                      │
+│ all                   Run every eval lane in sequence and render one unified │
+│                       summary table + verdict.                               │
 │ benchmark             Benchmark cost AND pass-rate of model@effort variants  │
 │                       against the eval suite.                                │
 │ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
@@ -1239,8 +1241,6 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       eval run.                                              │
 │ history               Show recent eval runs and per-scenario pass-rate over  │
 │                       time.                                                  │
-│ all                   Run every eval lane in sequence and render one unified │
-│                       summary table + verdict.                               │
 │ corpus                Ground-truth corpus curation: list, inspect, and grade │
 │                       captured sessions.                                     │
 │ label                 Corpus-label curation: list nominations, scaffold a    │
@@ -1262,6 +1262,52 @@ Usage: t3 eval negative-control [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval all`
+
+```
+Usage: t3 eval all [OPTIONS]
+
+ Run every eval lane in sequence and render one unified summary table +
+ verdict.
+
+ The explicit form of the bare-``t3 eval`` default — both call
+ :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
+ callback for the flag semantics, including ``--html``). Kept as a named
+ subcommand for scripts/CI that spell the full run out.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
+│                                  grade in-session transcripts, no API spend) │
+│                                  or 'sdk' (the metered in-process Agent-SDK  │
+│                                  runner, authed by CLAUDE_CODE_OAUTH_TOKEN;  │
+│                                  the explicit CI opt-in via the standalone   │
+│                                  eval.yml job; ANTHROPIC_API_KEY also        │
+│                                  honored as a legacy alternative).           │
+│                                  [default: subscription]                     │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
+│                                  transcripts for the AI lane (default: cwd). │
+│ --free-only                      Run only the free deterministic lanes (drop │
+│                                  the AI lane) — the fast pre-push gate.      │
+│ --strict                         Exit non-zero when a lane was SKIPPED for   │
+│                                  setup reasons (the AI behavioural lane with │
+│                                  no transcripts / no key) — for CI, where    │
+│                                  'not yet validated' must fail. Default      │
+│                                  leaves a setup-skip green (the caveat is in │
+│                                  the verdict text, not a confusing           │
+│                                  non-zero).                                  │
+│ --docker                         Run inside the exact CI image               │
+│                                  (dev/Dockerfile.test) for parity; host-run  │
+│                                  is the default.                             │
+│ --parallel              INTEGER  Run this many AI-lane scenarios             │
+│                                  concurrently (wall-clock; default 1 =       │
+│                                  sequential).                                │
+│                                  [default: 1]                                │
+│ --html                  PATH     Write a self-contained whole-suite HTML     │
+│                                  report to this path (CI artifact).          │
+│ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval benchmark`
 
 ```
@@ -1279,27 +1325,41 @@ Usage: t3 eval benchmark [OPTIONS]
  ``--trials k`` (each cell's score becomes a k-trial pass-rate).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --models                       TEXT     Comma-separated model@effort      │
-│                                            variants to compare, e.g.         │
-│                                            claude-opus-4-8@xhigh,claude-fab… │
-│                                            (a plain model name = default     │
-│                                            effort).                          │
-│                                            [required]                        │
-│    --scenarios                    TEXT     Comma-separated scenario names to │
-│                                            benchmark (default: the whole     │
-│                                            suite).                           │
-│    --trials                       INTEGER  Re-run each (scenario, variant)   │
-│                                            cell this many times.             │
-│                                            [default: 1]                      │
-│    --max-turns                    INTEGER  Override every scenario's         │
-│                                            max_turns (per-invocation).       │
-│    --format                       TEXT     Report format: text or json.      │
-│                                            [default: text]                   │
-│    --persist      --no-persist             Persist the underlying matrix run │
-│                                            into the run-history ledger (`t3  │
-│                                            eval history`).                   │
-│                                            [default: persist]                │
-│    --help                                  Show this message and exit.       │
+│ *  --models                            TEXT     Comma-separated model@effort │
+│                                                 variants to compare, e.g.    │
+│                                                 claude-opus-4-8@xhigh,claud… │
+│                                                 (a plain model name =        │
+│                                                 default effort).             │
+│                                                 [required]                   │
+│    --scenarios                         TEXT     Comma-separated scenario     │
+│                                                 names to benchmark (default: │
+│                                                 the whole suite).            │
+│    --trials                            INTEGER  Re-run each (scenario,       │
+│                                                 variant) cell this many      │
+│                                                 times.                       │
+│                                                 [default: 1]                 │
+│    --max-turns                         INTEGER  Override every scenario's    │
+│                                                 max_turns (per-invocation).  │
+│    --max-budget-usd                    FLOAT    Per-run USD budget circuit   │
+│                                                 breaker (default 2.0 —       │
+│                                                 generous so even an          │
+│                                                 opus@xhigh scenario          │
+│                                                 COMPLETES rather than        │
+│                                                 truncating; a truncated run  │
+│                                                 measures the cap, not the    │
+│                                                 model). An over-budget cell  │
+│                                                 is recorded as a             │
+│                                                 budget_exceeded FAIL, not a  │
+│                                                 crash.                       │
+│                                                 [default: 2.0]               │
+│    --format                            TEXT     Report format: text or json. │
+│                                                 [default: text]              │
+│    --persist           --no-persist             Persist the underlying       │
+│                                                 matrix run into the          │
+│                                                 run-history ledger (`t3 eval │
+│                                                 history`).                   │
+│                                                 [default: persist]           │
+│    --help                                       Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1514,6 +1574,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │ --max-turns                                INTEGER  Override the scenario's  │
 │                                                     max_turns                │
 │                                                     (per-invocation).        │
+│ --max-budget-usd                           FLOAT    Per-run USD budget       │
+│                                                     circuit breaker for the  │
+│                                                     metered sdk runner       │
+│                                                     (default 0.10, the cheap │
+│                                                     cap). The benchmark lane │
+│                                                     (`t3 eval benchmark`)    │
+│                                                     defaults higher so a     │
+│                                                     costly model completes;  │
+│                                                     raise this here for a    │
+│                                                     costly --models/--trials │
+│                                                     run. An over-budget      │
+│                                                     scenario is recorded as  │
+│                                                     a budget_exceeded FAIL,  │
+│                                                     not a crash.             │
+│                                                     [default: 0.1]           │
 │ --trials                                   INTEGER  Re-run each scenario     │
 │                                                     this many times          │
 │                                                     (pass@k).                │
@@ -1685,52 +1760,6 @@ Usage: t3 eval history [OPTIONS]
 │ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
 │                                 for its model, then show history.            │
 │ --help                          Show this message and exit.                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval all`
-
-```
-Usage: t3 eval all [OPTIONS]
-
- Run every eval lane in sequence and render one unified summary table +
- verdict.
-
- The explicit form of the bare-``t3 eval`` default — both call
- :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
- callback for the flag semantics, including ``--html``). Kept as a named
- subcommand for scripts/CI that spell the full run out.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
-│                                  grade in-session transcripts, no API spend) │
-│                                  or 'sdk' (the metered in-process Agent-SDK  │
-│                                  runner, authed by CLAUDE_CODE_OAUTH_TOKEN;  │
-│                                  the explicit CI opt-in via the standalone   │
-│                                  eval.yml job; ANTHROPIC_API_KEY also        │
-│                                  honored as a legacy alternative).           │
-│                                  [default: subscription]                     │
-│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
-│                                  transcripts for the AI lane (default: cwd). │
-│ --free-only                      Run only the free deterministic lanes (drop │
-│                                  the AI lane) — the fast pre-push gate.      │
-│ --strict                         Exit non-zero when a lane was SKIPPED for   │
-│                                  setup reasons (the AI behavioural lane with │
-│                                  no transcripts / no key) — for CI, where    │
-│                                  'not yet validated' must fail. Default      │
-│                                  leaves a setup-skip green (the caveat is in │
-│                                  the verdict text, not a confusing           │
-│                                  non-zero).                                  │
-│ --docker                         Run inside the exact CI image               │
-│                                  (dev/Dockerfile.test) for parity; host-run  │
-│                                  is the default.                             │
-│ --parallel              INTEGER  Run this many AI-lane scenarios             │
-│                                  concurrently (wall-clock; default 1 =       │
-│                                  sequential).                                │
-│                                  [default: 1]                                │
-│ --html                  PATH     Write a self-contained whole-suite HTML     │
-│                                  report to this path (CI artifact).          │
-│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

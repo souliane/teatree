@@ -37,7 +37,7 @@ from typing import Protocol
 
 from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.sdk_runner import SdkInProcessRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 
@@ -62,6 +62,7 @@ def make_runner(
     max_turns_override: int | None = None,
     transcript_dir: Path | None = None,
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
@@ -76,10 +77,18 @@ def make_runner(
     missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
     by an unprovisioned CLI. The subscription runner ignores it — its legitimate
     pre-transcript all-skip is caught downstream by :func:`guard_executed`.
+
+    ``max_budget_usd`` is the sdk runner's per-run circuit breaker (default the
+    cheap-lane :data:`~teatree.eval.sdk_runner.MAX_BUDGET_USD`); the subscription
+    runner never meters, so it ignores it.
     """
     if backend == SDK_BACKEND:
         ensure_oauth_token()
-        return SdkInProcessRunner(max_turns_override=max_turns_override, require_executed=require_executed)
+        return SdkInProcessRunner(
+            max_turns_override=max_turns_override,
+            require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+        )
     if backend == SUBSCRIPTION_BACKEND:
         return SubscriptionTranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
     msg = f"unknown eval backend {backend!r}; expected one of {', '.join(KNOWN_BACKENDS)}"

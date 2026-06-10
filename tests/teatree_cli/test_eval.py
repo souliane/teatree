@@ -108,6 +108,32 @@ class TestEvalList:
 
 
 class TestEvalRun:
+    def test_sdk_run_default_budget_stays_the_cheap_cap(self) -> None:
+        # `t3 eval run --backend sdk` keeps the cheap 0.10 default (only the
+        # benchmark raises it); the flag threads a per-run override.
+        _BudgetCapturingRunner.last_max_budget_usd = None
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _BudgetCapturingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(0.10)
+
+    def test_sdk_run_max_budget_usd_flag_threads_to_the_runner(self) -> None:
+        _BudgetCapturingRunner.last_max_budget_usd = None
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _BudgetCapturingRunner),
+        ):
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--max-budget-usd", "1.5", "--no-persist"]
+            )
+        assert result.exit_code == 0, result.output
+        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(1.5)
+
     def test_runs_all_scenarios_when_no_name(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
 
@@ -290,7 +316,9 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(self, *, max_turns_override: int | None = None, require_executed: bool = False) -> None:
+            def __init__(
+                self, *, max_turns_override: int | None = None, require_executed: bool = False, **_: object
+            ) -> None:
                 captured["max_turns_override"] = max_turns_override
                 captured["require_executed"] = require_executed
 
@@ -312,7 +340,9 @@ class TestTranscriptReplay:
         captured: dict[str, object] = {}
 
         class _StubRunner:
-            def __init__(self, *, max_turns_override: int | None = None, require_executed: bool = False) -> None:
+            def __init__(
+                self, *, max_turns_override: int | None = None, require_executed: bool = False, **_: object
+            ) -> None:
                 captured["require_executed"] = require_executed
 
             def run(self, spec: EvalSpec) -> EvalRun:
@@ -958,6 +988,18 @@ class _BenchmarkRunner:
         return _run(spec.name, tool_calls=_PASSING_CALL if passing else (), cost_usd=cost)
 
 
+class _BudgetCapturingRunner:
+    """Records the ``max_budget_usd`` it was constructed with; passes every scenario."""
+
+    last_max_budget_usd: float | None = None
+
+    def __init__(self, *_: object, max_budget_usd: float, **__: object) -> None:
+        type(self).last_max_budget_usd = max_budget_usd
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)
+
+
 @pytest.mark.django_db
 class TestEvalBenchmark:
     def _invoke(self, args: list[str], *, specs: list[EvalSpec], runner: type = _BenchmarkRunner):
@@ -1018,6 +1060,26 @@ class TestEvalBenchmark:
         assert result.exit_code == 0, result.output
         (entry,) = json.loads(result.output)["variants"]
         assert entry["executed"] == 1
+
+    def test_default_budget_is_generous_so_a_scenario_completes(self) -> None:
+        # The benchmark default must be high enough that an opus@xhigh scenario
+        # finishes rather than truncates — a truncated run is a false measurement.
+        _BudgetCapturingRunner.last_max_budget_usd = None
+        specs = [_spec("alpha")]
+        result = self._invoke(["--models", "opus@xhigh", "--no-persist"], specs=specs, runner=_BudgetCapturingRunner)
+        assert result.exit_code == 0, result.output
+        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(2.0)
+
+    def test_max_budget_usd_flag_threads_to_the_runner(self) -> None:
+        _BudgetCapturingRunner.last_max_budget_usd = None
+        specs = [_spec("alpha")]
+        result = self._invoke(
+            ["--models", "opus@xhigh", "--max-budget-usd", "1.5", "--no-persist"],
+            specs=specs,
+            runner=_BudgetCapturingRunner,
+        )
+        assert result.exit_code == 0, result.output
+        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(1.5)
 
     def test_unknown_scenario_exits_code_2(self) -> None:
         specs = [_spec("alpha")]
@@ -1505,12 +1567,36 @@ class TestEvalRunDocker:
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--docker"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
-        assert run_docker.call_args.args[0] == ["run", "--backend", "sdk", "--require-executed", "--no-persist"]
+        assert run_docker.call_args.args[0] == [
+            "run",
+            "--max-budget-usd",
+            "0.1",
+            "--backend",
+            "sdk",
+            "--require-executed",
+            "--no-persist",
+        ]
 
     def test_forwards_scenario_name_and_trials(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
             CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3", "--docker"])
-        assert run_docker.call_args.args[0] == ["run", "alpha", "--trials", "3", "--require", "any", "--no-persist"]
+        assert run_docker.call_args.args[0] == [
+            "run",
+            "alpha",
+            "--max-budget-usd",
+            "0.1",
+            "--trials",
+            "3",
+            "--require",
+            "any",
+            "--no-persist",
+        ]
+
+    def test_forwards_max_budget_usd_into_the_container(self) -> None:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--max-budget-usd", "1.5", "--docker"])
+        forwarded = run_docker.call_args.args[0]
+        assert forwarded[forwarded.index("--max-budget-usd") + 1] == "1.5"
 
     def test_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=1):

@@ -16,7 +16,15 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.sdk_runner import MAX_BUDGET_USD, ClaudeCliMissingError, SdkInProcessRunner
+from teatree.eval.sdk_runner import (
+    MAX_BUDGET_USD,
+    BudgetExceededError,
+    ClaudeCliMissingError,
+    CleanRoomConfig,
+    SdkInProcessRunner,
+    build_sdk_options,
+    is_budget_exceeded_message,
+)
 
 
 def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
@@ -168,6 +176,13 @@ class TestSdkInProcessRunnerCapture:
         spec = _spec(tmp_path)
         _run, captured = self._run(spec, [_result()])
         assert captured["options"].max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
+
+    def test_max_budget_usd_override_flows_to_options(self, tmp_path: Path) -> None:
+        # A non-default per-run budget (the benchmark's generous cap) threads from
+        # the runner through CleanRoomConfig into ClaudeAgentOptions.max_budget_usd.
+        spec = _spec(tmp_path)
+        _run, captured = self._run(spec, [_result()], max_budget_usd=2.0)
+        assert captured["options"].max_budget_usd == pytest.approx(2.0)
 
     def test_model_at_effort_tag_splits_into_model_and_effort_options(self, tmp_path: Path) -> None:
         # ClaudeAgentOptions.effort is the SDK's first-class reasoning-effort
@@ -348,3 +363,115 @@ class TestSdkInProcessRunnerMessageMapping:
             pytest.raises(FileNotFoundError),
         ):
             SdkInProcessRunner(workspace=tmp_path).run(spec)
+
+
+def _config(tmp_path: Path, *, max_budget_usd: float) -> CleanRoomConfig:
+    return CleanRoomConfig(
+        system_prompt="sp",
+        workspace=tmp_path,
+        cwd=str(tmp_path),
+        env={},
+        allowed_tools=("Bash",),
+        model="haiku",
+        max_turns=3,
+        max_budget_usd=max_budget_usd,
+    )
+
+
+class TestBuildSdkOptionsBudget:
+    def test_default_budget_is_the_cheap_lane_constant(self, tmp_path: Path) -> None:
+        config = _config(tmp_path, max_budget_usd=float(MAX_BUDGET_USD))
+        assert build_sdk_options(config).max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
+
+    def test_non_default_budget_carries_into_options(self, tmp_path: Path) -> None:
+        # build_sdk_options must read the budget from the config, NOT the constant —
+        # this is the seam the benchmark's generous cap threads through.
+        config = _config(tmp_path, max_budget_usd=2.5)
+        assert build_sdk_options(config).max_budget_usd == pytest.approx(2.5)
+
+
+class TestBudgetExceededMessageDetection:
+    def test_recognizes_the_sdk_maximum_budget_message(self) -> None:
+        msg = "Claude Code returned an error result: Reached maximum budget ($0.1)"
+        assert is_budget_exceeded_message(msg) is True
+
+    def test_does_not_match_an_unrelated_error_message(self) -> None:
+        assert is_budget_exceeded_message("Claude Code returned an error result: error_during_execution") is False
+        assert is_budget_exceeded_message("some other RuntimeError about a socket") is False
+
+
+def _budget_raising_query(message: str):
+    """A fake ``query`` that raises a bare Exception(message) like the SDK's budget path."""
+
+    async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+        await asyncio.sleep(0)
+        raise Exception(message)  # noqa: TRY002 — the SDK raises a BARE Exception for the budget breaker; this fake must reproduce that exact class so the runner's message-based catch is exercised.
+        yield  # pragma: no cover
+
+    return _query
+
+
+class TestSdkInProcessRunnerBudgetExceeded:
+    def _run_with_raising_query(self, spec: EvalSpec, query, **kwargs: Any):
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+
+    def test_budget_exceeded_is_a_recorded_run_not_a_crash(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: Reached maximum budget ($0.1)")
+        run = self._run_with_raising_query(spec, query)
+        assert run.is_error is True
+        assert run.terminal_reason == "budget_exceeded"
+        assert run.tool_calls == ()
+
+    def test_budget_exceeded_recovers_the_partial_cost_from_the_message(self, tmp_path: Path) -> None:
+        # The cap floor is recoverable from the "($0.1)" the SDK message carries,
+        # so an over-budget cell renders a real cost, not a blank.
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: Reached maximum budget ($0.1)")
+        run = self._run_with_raising_query(spec, query)
+        assert run.cost_usd == pytest.approx(0.1)
+
+    def test_budget_exceeded_falls_back_to_cap_when_message_carries_no_amount(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: Reached maximum budget")
+        run = self._run_with_raising_query(spec, query, max_budget_usd=2.0)
+        assert run.cost_usd == pytest.approx(2.0)
+
+    def test_typed_budget_exceeded_error_is_caught(self, tmp_path: Path) -> None:
+        # A directly-raised BudgetExceededError (the typed alias) is also a run.
+        spec = _spec(tmp_path)
+
+        async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            message = "Reached maximum budget ($0.1)"
+            raise BudgetExceededError(message)
+            yield  # pragma: no cover
+
+        run = self._run_with_raising_query(spec, _query)
+        assert run.terminal_reason == "budget_exceeded"
+
+    def test_non_budget_exception_still_propagates(self, tmp_path: Path) -> None:
+        # Anti-vacuity: the catch is defensive, NOT a blanket swallow. An unrelated
+        # error must surface (a swallowed one would hide a real crash).
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: error_during_execution")
+        with pytest.raises(Exception, match="error_during_execution"):
+            self._run_with_raising_query(spec, query)
+
+    def test_budget_exceeded_run_grades_to_a_fail_with_visible_cost(self, tmp_path: Path) -> None:
+        # An over-budget cell is a real measurement: it grades to FAIL (not skip),
+        # carrying the cap cost so the benchmark renders it legibly, not blank.
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: Reached maximum budget ($0.1)")
+        run = self._run_with_raising_query(spec, query)
+        result = evaluate(spec, run)
+        assert result.skipped is False
+        assert result.passed is False
+        assert result.verdict == "fail"
+        assert result.run.cost_usd == pytest.approx(0.1)

@@ -36,6 +36,7 @@ The async ``query`` is bridged to the sync :meth:`SdkInProcessRunner.run` via
 
 import asyncio
 import dataclasses
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -65,9 +66,50 @@ from teatree.eval.transcript import (
 )
 
 WATCHDOG_SECONDS = 120
+#: Per-run budget for the cheap lane (``t3 eval run``). Only the DEFAULT — the
+#: metered benchmark threads a generous cap so a finishing scenario is measured,
+#: not truncated. See :data:`CleanRoomConfig.max_budget_usd`.
 MAX_BUDGET_USD = "0.10"
 FALLBACK_MODEL = "claude-sonnet-4-6"
 EMPTY_SETTINGS = '{"hooks":{}}'
+BUDGET_EXCEEDED_REASON = "budget_exceeded"
+
+#: The SDK has no typed budget exception: when ``max_budget_usd`` is hit the CLI
+#: emits an ``error_max_budget_usd`` result and exits non-zero, which the SDK
+#: surfaces as a bare ``Exception`` whose message contains "maximum budget"
+#: (e.g. ``Claude Code returned an error result: Reached maximum budget ($0.1)``).
+#: We match that substring defensively and re-raise everything else.
+_BUDGET_EXCEEDED_MARKER = "maximum budget"
+#: The cap the SDK reports in the message — ``Reached maximum budget ($0.1)`` —
+#: is the partial-cost floor when no metered ``result`` event was produced.
+_BUDGET_AMOUNT_RE = re.compile(r"\$\s*([0-9]+(?:\.[0-9]+)?)")
+
+#: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
+#: ``Exception`` for the budget breaker, so the runner ALSO matches the message
+#: substring — this alias only types the direct-raise path, never narrows it.
+BudgetExceededError = RuntimeError
+
+
+def is_budget_exceeded_message(message: str) -> bool:
+    """True when *message* is the SDK's budget-circuit-breaker error.
+
+    The detection is a substring match on the SDK's wording because the SDK has
+    no typed budget exception — see :data:`_BUDGET_EXCEEDED_MARKER`. Restricting
+    to this exact marker keeps the runner's catch defensive: any other error
+    message re-raises, so a genuine crash is never swallowed as a budget cell.
+    """
+    return _BUDGET_EXCEEDED_MARKER in message
+
+
+def _budget_floor_from_message(message: str, *, cap: float) -> float:
+    """Recover the partial cost from the SDK's ``Reached maximum budget ($X)``.
+
+    Returns the amount the message names (the spend at truncation) when present,
+    else the configured *cap* as a floor — an over-budget cell always reports a
+    real cost, never a misleading ``0.0``/blank.
+    """
+    match = _BUDGET_AMOUNT_RE.search(message)
+    return float(match.group(1)) if match else cap
 
 
 class ClaudeCliMissingError(RuntimeError):
@@ -94,6 +136,10 @@ class CleanRoomConfig:
     #: Reasoning-effort level (the SDK's first-class ``effort`` option, rendered
     #: as the ``claude --effort <level>`` flag). ``None`` = the model's default.
     effort: EffortLevel | None = None
+    #: Per-run USD budget circuit breaker. Defaults to the cheap-lane
+    #: :data:`MAX_BUDGET_USD`; the metered benchmark threads a generous cap so a
+    #: high-effort scenario completes (a truncated run is a false measurement).
+    max_budget_usd: float = float(MAX_BUDGET_USD)
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -117,7 +163,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         allowed_tools=list(config.allowed_tools),
         permission_mode="bypassPermissions",
         max_turns=config.max_turns,
-        max_budget_usd=float(MAX_BUDGET_USD),
+        max_budget_usd=config.max_budget_usd,
         model=config.model,
         fallback_model=FALLBACK_MODEL,
         effort=config.effort,
@@ -153,10 +199,12 @@ class SdkInProcessRunner:
         workspace: Path | None = None,
         max_turns_override: int | None = None,
         require_executed: bool = False,
+        max_budget_usd: float = float(MAX_BUDGET_USD),
     ) -> None:
         self._workspace = workspace or Path.cwd()
         self._max_turns_override = max_turns_override
         self._require_executed = require_executed
+        self._max_budget_usd = max_budget_usd
 
     def run(self, spec: EvalSpec) -> EvalRun:
         if shutil.which("claude") is None:
@@ -175,14 +223,14 @@ class SdkInProcessRunner:
         try:
             messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
         except TimeoutError:
-            return EvalRun(
-                spec_name=spec.name,
-                tool_calls=(),
-                text_blocks=(),
-                terminal_reason="timeout",
-                is_error=True,
-                raw_stdout="",
-                raw_stderr="",
+            return self._terminal_run(spec, terminal_reason="timeout")
+        except Exception as exc:
+            if not is_budget_exceeded_message(str(exc)):
+                raise
+            return self._terminal_run(
+                spec,
+                terminal_reason=BUDGET_EXCEEDED_REASON,
+                cost_usd=_budget_floor_from_message(str(exc), cap=self._max_budget_usd),
             )
         return _eval_run_from_messages(spec, messages)
 
@@ -199,9 +247,30 @@ class SdkInProcessRunner:
                     model=variant.model,
                     max_turns=max_turns,
                     effort=variant.effort,
+                    max_budget_usd=self._max_budget_usd,
                 )
             )
             return await asyncio.wait_for(_collect(spec.prompt, options), timeout=WATCHDOG_SECONDS)
+
+    @staticmethod
+    def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:
+        """Build an error-shaped :class:`EvalRun` for a run that never produced a transcript.
+
+        The timeout and budget-exceeded paths share this shape: no captured tool
+        calls/text, ``is_error=True``, and a terminal reason that grades the cell
+        to a FAIL signal rather than crashing the run. Mirrors how the timeout
+        path built its EvalRun before being extracted here.
+        """
+        return EvalRun(
+            spec_name=spec.name,
+            tool_calls=(),
+            text_blocks=(),
+            terminal_reason=terminal_reason,
+            is_error=True,
+            raw_stdout="",
+            raw_stderr="",
+            cost_usd=cost_usd,
+        )
 
     @staticmethod
     def _skip_run(spec: EvalSpec, reason: str) -> EvalRun:

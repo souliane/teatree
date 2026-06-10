@@ -24,7 +24,7 @@ from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.sdk_runner import SdkInProcessRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 
 
 def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
@@ -42,12 +42,15 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed."""
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
-    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=require_executed)
+    runner = SdkInProcessRunner(
+        max_turns_override=max_turns, require_executed=require_executed, max_budget_usd=max_budget_usd
+    )
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
         return evaluate(spec, runner.run(spec), judge=grader)
@@ -114,10 +117,13 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
 ) -> None:
     """Run the suite once per model and render a per-model comparison."""
     model_list = parse_model_tags(models)
-    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=require_executed)
+    runner = SdkInProcessRunner(
+        max_turns_override=max_turns, require_executed=require_executed, max_budget_usd=max_budget_usd
+    )
     rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))

@@ -241,6 +241,15 @@ def _timed(build: Callable[[], LaneResult]) -> LaneResult:
     return dataclasses.replace(lane, duration_s=time.monotonic() - started)
 
 
+#: Shared by the bare-``t3 eval`` callback (in app.py) and the ``t3 eval all``
+#: command (in all_command.py) — identical full-suite ``--strict`` flag.
+STRICT_HELP = (
+    "Exit non-zero when a lane was SKIPPED for setup reasons (the AI behavioural lane with no "
+    "transcripts / no key) — for CI, where 'not yet validated' must fail. Default leaves a "
+    "setup-skip green (the caveat is in the verdict text, not a confusing non-zero)."
+)
+
+
 def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` / `t3 eval all` flag. The arg list IS the CLI contract.
     *,
     backend: str,
@@ -310,4 +319,3 @@ def _write_html_report(lanes: list[LaneResult], html_path: Path) -> None:
     from teatree.cli.eval.suite_html import render_suite_html  # noqa: PLC0415
 
     html_path.write_text(render_suite_html(lanes), encoding="utf-8")
-    typer.echo(f"HTML report written to {html_path}", err=True)

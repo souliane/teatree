@@ -19,6 +19,14 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.sdk_runner import SdkInProcessRunner
 from teatree.utils.django_bootstrap import ensure_django
 
+#: Generous per-run cap for the benchmark lane. The whole point of the benchmark
+#: is measuring a model@effort's REAL cost on a scenario, so the cap must be high
+#: enough that even an opus-class run at xhigh effort COMPLETES rather than being
+#: truncated by the breaker — a truncated run measures the cap, not the model.
+#: This is ~20x the cheap-lane default; override per-invocation with
+#: ``--max-budget-usd``. (The cheap ``t3 eval run`` lane keeps the 0.10 default.)
+BENCHMARK_DEFAULT_BUDGET_USD = 2.0
+
 
 def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval benchmark`` flag.
     models: str = typer.Option(
@@ -39,6 +47,16 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         None,
         "--max-turns",
         help="Override every scenario's max_turns (per-invocation).",
+    ),
+    max_budget_usd: float = typer.Option(
+        BENCHMARK_DEFAULT_BUDGET_USD,
+        "--max-budget-usd",
+        help=(
+            "Per-run USD budget circuit breaker (default 2.0 — generous so even an "
+            "opus@xhigh scenario COMPLETES rather than truncating; a truncated run "
+            "measures the cap, not the model). An over-budget cell is recorded as a "
+            "budget_exceeded FAIL, not a crash."
+        ),
     ),
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
     persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -62,7 +80,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     require_valid_format(output_format)
     tags = parse_model_tags(models)
     specs = _select_specs(scenarios)
-    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=True)
+    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd)
     rows = collect_matrix_rows(specs, tags, runner=runner, trials=trials, require="any")
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
     if persist:
