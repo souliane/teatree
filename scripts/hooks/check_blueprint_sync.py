@@ -1,8 +1,13 @@
-"""Commit-msg hook: warn when src/ changes but BLUEPRINT.md does not.
+"""Commit-msg hook: warn when src/ changes but the BLUEPRINT does not.
 
-Exits non-zero when source code changes without a corresponding BLUEPRINT.md
+Exits non-zero when source code changes without a corresponding BLUEPRINT
 update, unless the commit type is one that typically doesn't require it
 (test, docs, style, chore, ci, fix).
+
+The "BLUEPRINT" is the top-level ``BLUEPRINT.md`` plus its split appendix
+files under ``docs/blueprint/`` (e.g. ``configuration.md``,
+``loop-topology.md``) — the appendices ARE the BLUEPRINT, so updating one of
+them satisfies the sync requirement just as the monolith does.
 
 See: souliane/teatree#8
 """
@@ -25,12 +30,23 @@ def _staged_files() -> list[str]:
     return result.stdout.strip().splitlines()
 
 
+def _is_blueprint(path: str) -> bool:
+    """A staged path that counts as a BLUEPRINT update.
+
+    The top-level ``BLUEPRINT.md`` or any of its split appendix markdown files
+    under ``docs/blueprint/`` — the appendices are the BLUEPRINT's deep-mechanics
+    sections, so editing one satisfies the sync requirement.
+    """
+    return path == "BLUEPRINT.md" or (path.startswith("docs/blueprint/") and path.endswith(".md"))
+
+
 def _commit_message() -> str:
     min_args = 2
     if len(sys.argv) < min_args:
         return ""
     try:
-        return pathlib.Path(sys.argv[1]).open(encoding="utf-8").readline().strip()
+        with pathlib.Path(sys.argv[1]).open(encoding="utf-8") as fh:
+            return fh.readline().strip()
     except OSError:
         return ""
 
@@ -45,7 +61,7 @@ def main() -> int:
 
     files = _staged_files()
     has_src = any(f.startswith("src/") for f in files)
-    has_blueprint = "BLUEPRINT.md" in files
+    has_blueprint = any(_is_blueprint(f) for f in files)
 
     if has_src and not has_blueprint:
         print()

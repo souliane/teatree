@@ -114,3 +114,34 @@ class TestAgentSessionPinsCheck:
         _patch_config(monkeypatch, cfg)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
+
+    def test_unknown_fable_fallback_warns_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # teatree#2237: a typo'd fallback would silently downgrade Fable to an
+        # unknown model when the kill-switch is off — WARN on it.
+        cfg = _write(tmp_path, '[agent]\nfable_enabled = false\nfable_fallback = "opsu"\n')
+        _patch_config(monkeypatch, cfg)
+        assert _check_agent_session_pins() is True
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "fable_fallback" in out
+        assert "opsu" in out
+
+    def test_valid_fable_fallback_does_not_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = _write(tmp_path, '[agent]\nfable_enabled = false\nfable_fallback = "opus"\n')
+        _patch_config(monkeypatch, cfg)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
+
+    def test_bad_fable_fallback_silent_when_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The fallback never applies while Fable is enabled, so a typo there is
+        # not surfaced — no WARN.
+        cfg = _write(tmp_path, '[agent]\nfable_enabled = true\nfable_fallback = "opsu"\n')
+        _patch_config(monkeypatch, cfg)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
