@@ -24,7 +24,7 @@ from django.test import TestCase, override_settings
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket
-from teatree.core.models.ticket import render_ticket_context
+from teatree.core.models.ticket_display import render_ticket_context
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 pytestmark = pytest.mark.filterwarnings(
