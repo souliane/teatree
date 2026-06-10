@@ -45,6 +45,7 @@ Infrastructure and orchestration are code; development methodology is skill-guid
 2. **Coordination needs transactional guarantees.** An FSM + ORM provide atomic transitions and row-locked workers. Coordination through JSON files cannot.
 3. **Code is testable; prose is not.** Core logic must reach >90% branch coverage.
 4. **One ABC with a handful of methods beats thirty thin extension points.** Overlay customization goes through `OverlayBase` — typed methods with defaults, no priority system, no plugin registries.
+5. **Terminal today, SDK/API-portable by design.** Teatree is driven through Claude Code's interactive terminal app today, but every architectural decision is made so the same flow can be driven through the Anthropic Agent SDK / API. Don't adopt a mechanism that only works in the terminal CLI when an SDK/API-portable equivalent exists. The terminal-driven flow keeps working; SDK/API-portability is the binding constraint when the two pull apart. This is why the headless executor (`agents/headless.py`) is kept deliberately slim — it is the swap point for an SDK runtime — and why dispatch, state, and skill-loading route through code rather than terminal-only affordances.
 
 ---
 
