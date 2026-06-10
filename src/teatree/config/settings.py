@@ -138,6 +138,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "todo_sweep_disabled": bool,
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
+    "provision_step_timeout_seconds": int,
     "idle_stack_reaper_disabled": bool,
     "idle_stack_idle_minutes": int,
     "idle_stack_reaper_cadence_minutes": int,
@@ -468,6 +469,16 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+    # #2220 Hard ceiling (seconds) for one long-blocking provisioning subprocess
+    # — a DSLR snapshot restore, ``migrate``, or a ``--create-db`` test-DB
+    # rebuild. On exceeding it the step ABORTS with an actionable error AND
+    # fires a loud out-of-band user alert, instead of grinding silently for an
+    # hour (the recurring "frozen sub-agent" symptom, e.g. a forked migration
+    # graph). The default is generous (30 min) so a healthy restore+migrate
+    # never trips it; a forked graph or a true hang blows past it and gets
+    # aborted+alerted. A non-positive value degrades to the default — the
+    # "never hang" invariant cannot be configured away. Per-overlay overridable.
+    provision_step_timeout_seconds: int = 1800
     # #2190 Idle-stack reaper — a loop scanner that stops the docker stack of
     # an IDLE locally-running worktree (``services_up``/``ready``) and demotes
     # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the
