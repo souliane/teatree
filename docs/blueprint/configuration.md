@@ -23,6 +23,7 @@ repo_mode = ""                             # solo/collaborative working mode (#5
 claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
 agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 max_concurrent_local_stacks = 0            # #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded, default)
+provision_step_timeout_seconds = 1800      # #2220: hard ceiling for one long-blocking provisioning step (DSLR restore / migrate / --create-db); abort+alert past it, never hang
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -147,6 +148,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
 | `eval_local_cadence_hours` | Cadence floor for the local-eval scanner (default 168 = weekly) |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
+| `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Per-overlay overridable; enforced by `teatree.core.provision_timebox`. |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `orchestrator_turn_budget` | Soft per-turn tool-call budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` and the fanned-out `TaskCreated` counterpart until the resolvable pending teatree skills load. Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
