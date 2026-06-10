@@ -1,7 +1,10 @@
 """Tests for the ``loop_dispatch`` management command (pending-spawn / spawn-claim)."""
 
 import json
+import tempfile
 from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
@@ -87,6 +90,35 @@ class TestPendingSpawn(_LoopDispatchTest):
         # reviewing is a mechanical phase → sonnet tier by default.
         assert entry["model"] == "sonnet"
         assert isinstance(entry["skill_bundle"], list)
+
+    def test_payload_never_carries_an_effort_key(self) -> None:
+        # Effort is session-wide only — the per-sub-agent dispatch payload (which
+        # feeds the Agent tool, which has no effort param) must NEVER carry it.
+        self._reviewer_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        entry = json.loads(stdout.getvalue())[0]
+        assert "effort" not in entry
+        assert "session_effort" not in entry
+
+    def test_skill_floor_raises_the_dispatch_model(self) -> None:
+        # A per-skill MODEL floor on a skill in the resolved bundle raises the
+        # dispatch payload's model above the phase tier (most-capable-wins).
+        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
+        cfg.write_text('[agent.skill_models]\ncode-review = "fable"\n', encoding="utf-8")
+
+        self._reviewer_task()
+        stdout = StringIO()
+        with (
+            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
+            patch("teatree.config_agent.CONFIG_PATH", cfg),
+            patch("teatree.agents.skill_bundle.resolve_skill_bundle", return_value=["code-review"]),
+        ):
+            call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        entry = json.loads(stdout.getvalue())[0]
+        # reviewing's sonnet phase floor raised to fable by the code-review skill.
+        assert entry["model"] == "fable"
+        assert entry["skill_bundle"] == ["code-review"]
 
 
 class TestClaimNextAtomicDispatch(_LoopDispatchTest):

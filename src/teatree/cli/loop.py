@@ -248,8 +248,31 @@ def start_command(
         typer.echo(f"    {register_command}")
         raise typer.Exit(code=1)
 
+    argv = [claude_bin, *_session_pin_flags(), register_command]
     typer.echo(f"Starting Claude Code with `{register_command}` …")
-    os.execv(claude_bin, [claude_bin, register_command])  # noqa: S606  # Path comes from shutil.which; no shell, no user-controlled input.
+    os.execv(claude_bin, argv)  # noqa: S606  # Path comes from shutil.which; no shell, no user-controlled input.
+
+
+def _session_pin_flags() -> list[str]:
+    """The interactive main-agent ``--model`` / ``--effort`` pins from ``[agent]``.
+
+    These are session-level pins so the user never runs ``/model`` (or sets the
+    effort) by hand. They are injected ONLY into the interactive ``claude``
+    spawn argv here — never into ``claude -p`` headless (effort is session-wide,
+    not per-sub-agent). Absent settings inject nothing, so the spawn is
+    byte-for-byte today's behaviour. Effort is validated at parse time
+    (``config_agent.resolve_agent_config``), so an off-scale value fails loudly
+    rather than reaching the CLI.
+    """
+    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+
+    cfg = resolve_agent_config()
+    flags: list[str] = []
+    if cfg.session_model:
+        flags.extend(["--model", cfg.session_model])
+    if cfg.session_effort:
+        flags.extend(["--effort", cfg.session_effort])
+    return flags
 
 
 @loop_app.command("stop")
