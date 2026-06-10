@@ -16,7 +16,7 @@ class Migration(migrations.Migration):
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
                 ("audited_at", models.DateTimeField(default=django.utils.timezone.now)),
-                ("session_id", models.CharField(db_index=True, max_length=128)),
+                ("session_id", models.CharField(max_length=128)),
                 ("corpus_entry_id", models.CharField(max_length=128)),
                 ("outcome_axis", models.CharField(max_length=64)),
                 ("expected_outcome", models.CharField(max_length=64)),

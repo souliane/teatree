@@ -144,7 +144,7 @@ class TestSustainedVsOneShot(TestCase):
         record = audit_session(AuditInput(session_id="s1", events=events, label=None))
         assert classify_behavior_pattern(record) is BehaviorPattern.ONE_SHOT
 
-    def test_recurring_violation_is_sustained(self) -> None:
+    def test_more_than_one_distinct_violation_is_sustained(self) -> None:
         events = parse_session_jsonl(
             _assistant(_bash("git push --force origin main"))
             + "\n"
@@ -272,3 +272,21 @@ class TestPrivacy(TestCase):
         for outcome in record.invariant_results:
             assert set(outcome) == {"invariant_id", "ok", "offending_index"}
             assert "secret-msg" not in json.dumps(outcome)
+
+    def test_judge_rationale_is_the_bounded_reason_not_session_payload(self) -> None:
+        # The judge path is the only one that persists free text. Inject a judge
+        # whose rationale is its own bounded reason; assert the persisted record
+        # carries exactly that reason and never the session's command payload.
+        label = _label("faithful_explanation")
+        events = parse_session_jsonl(_assistant(_bash("echo leaked-session-secret-xyz")) + "\n")
+
+        def _judge(spec: object, run: object) -> JudgeOutcome:
+            return JudgeOutcome(passed=False, skipped=False, rationale="the prose claims a change the diff lacks")
+
+        record = audit_session(AuditInput(session_id="s-judge-priv", events=events, label=label), judge=_judge)
+        assert record.judge_rationale == "the prose claims a change the diff lacks"
+        # Rebuild the leak blob by iterating every concrete field so a future
+        # column is auto-covered, not just the ones spelled out today.
+        blob = json.dumps({field.name: str(getattr(record, field.name)) for field in record._meta.concrete_fields})
+        assert "leaked-session-secret-xyz" not in blob
+        assert "echo leaked-session-secret" not in blob

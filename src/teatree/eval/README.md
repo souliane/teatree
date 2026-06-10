@@ -314,6 +314,24 @@ candidate=…)`), and the per-model baseline is what the model matrix compares
 against. The store is a Django model so history survives across machines that
 share the control DB.
 
+### Cost-regression gate
+
+`--gate-cost-regression` is the cost counterpart of `--gate-regressions`. Each
+scenario's metered cost is persisted (`EvalScenarioResult.cost_usd`; `$0` for a
+non-metered/subscription row), and the gate diffs the just-persisted run's
+per-scenario cost against the SAME per-model baseline the score gate uses
+(`EvalRunRecord.cost_regression_diff(baseline=…, candidate=…)`). A scenario
+whose cost rose by more than `--cost-regression-tolerance` (relative drift,
+default `0.20` = +20%) prints a `COST REGRESSED` line and exits non-zero. This
+is *relative drift*, distinct from the absolute `--max-budget-usd` ceiling: a
+scenario can stay under the absolute cap while still doubling its cost vs the
+baseline. A `$0` baseline scenario (subscription/free — no metered reference)
+has undefined relative drift, so the gate no-ops it (never divides by zero) and
+reports "no cost baseline" when no metered baseline exists at all. The gate runs
+in every run shape — single-trial, `--trials` (pass@k, cost summed across
+trials), and `--models` (per `(scenario, model)` cell) — so a cost blow-up fails
+loud in the matrix/pass@k lanes too, not only the single-trial path.
+
 ### Model matrix
 
 `--models opus,sonnet,haiku` runs the suite once per model and renders a

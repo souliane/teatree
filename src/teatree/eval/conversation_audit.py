@@ -63,12 +63,14 @@ _UNJUDGED = "unjudged"
 
 
 class BehaviorPattern(StrEnum):
-    """How a session's violations are distributed in time.
+    """How many distinct problems a session exhibited.
 
-    ``CLEAN`` — no invariant violation and no preventable gate failure. ``ONE_SHOT``
-    — a single lapse (one offending signal). ``SUSTAINED`` — a violation recurring
-    across the session (more than one offending signal): a repeated pattern the
-    audit weights more heavily than an isolated slip.
+    The signal is a COUNT of distinct offending signals (failing invariants +
+    preventable gate failures), not a same-problem recurrence: ``CLEAN`` — zero;
+    ``ONE_SHOT`` — exactly one distinct violation or preventable gate failure;
+    ``SUSTAINED`` — more than one distinct violation or preventable gate failure
+    (two unrelated single slips already count as SUSTAINED), a broader-trouble
+    signal the audit weights more heavily than an isolated lapse.
     """
 
     CLEAN = "clean"

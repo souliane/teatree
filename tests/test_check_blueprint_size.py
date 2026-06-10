@@ -1,8 +1,9 @@
 """Tests for the BLUEPRINT.md hard size cap (#1180).
 
-The gate hard-fails when ``BLUEPRINT.md`` exceeds 104 KB. The
-documented escape hatch is ``T3_BLUEPRINT_SIZE_OVERRIDE=1`` for
-intentional, reviewed growth.
+The gate hard-fails when ``BLUEPRINT.md`` exceeds ``gate._THRESHOLD_BYTES``
+(the single source of truth for the cap, so this docstring cannot drift). The
+documented escape hatch is ``T3_BLUEPRINT_SIZE_OVERRIDE=1`` for intentional,
+reviewed growth.
 """
 
 from pathlib import Path

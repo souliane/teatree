@@ -377,7 +377,7 @@ class EvalScenarioResult(models.Model):
     judge_rationale = models.CharField(max_length=512, blank=True, default="")
     cost_usd = models.FloatField(default=0.0)
 
-    objects: ClassVar[EvalScenarioResultManager] = EvalScenarioResultManager()  # type: ignore[valid-type]
+    objects = EvalScenarioResultManager()
 
     class Meta:
         db_table = "teatree_eval_scenario_result"

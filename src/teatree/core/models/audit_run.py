@@ -67,7 +67,7 @@ class SessionAuditRecord(models.Model):
     """One captured session's audit verdict against the ground-truth corpus."""
 
     audited_at = models.DateTimeField(default=timezone.now)
-    session_id = models.CharField(max_length=128, db_index=True)
+    session_id = models.CharField(max_length=128)
     corpus_entry_id = models.CharField(max_length=128)
     outcome_axis = models.CharField(max_length=64)
     expected_outcome = models.CharField(max_length=64)
@@ -87,7 +87,7 @@ class SessionAuditRecord(models.Model):
     )
     git_sha = models.CharField(max_length=64, blank=True, default="")
 
-    objects: ClassVar[SessionAuditManager] = SessionAuditManager()  # type: ignore[valid-type]
+    objects = SessionAuditManager()
 
     class Meta:
         db_table = "teatree_session_audit"
