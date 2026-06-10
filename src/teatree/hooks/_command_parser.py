@@ -40,51 +40,21 @@ from teatree.hooks._publish_detection import (
     command_has_opaque_forge_transport,
     command_has_token_aware_publish_surface,
     extract_title_fragments,
+    segment_is_substring_publish,
     segment_word_lists,
 )
-from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands, tokenize
+from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokenize
 
 if TYPE_CHECKING:
     from teatree.hooks._body_file_resolution import BodyFileContext
 
 # ── Publish-surface substring catalogues ────────────────────────────
 
-# Bash commands that publish to an external surface. The substring match
-# is sufficient — Bash strings come from the LLM, not from a shell, so
-# we don't have to worry about ``echo "gh issue create" | grep``-style
-# embedding.
-_BASH_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
-    "gh issue create",
-    "gh issue edit",
-    "gh issue comment",
-    "gh pr create",
-    "gh pr edit",
-    "gh pr comment",
-    "gh pr review",
-    "glab issue create",
-    "glab issue update",
-    "glab issue note create",
-    # ``glab issue note <id>`` (no ``create`` segment) is the real
-    # comment subcommand — trailing space pins the substring to the
-    # subcommand boundary so ``glab issue notebook`` would not match.
-    "glab issue note ",
-    "glab mr create",
-    "glab mr update",
-    "glab mr note create",
-    "glab mr note ",
-    "git commit -m",
-    "git commit --message",
-    "git commit -F",
-    "git commit --file",
-    "git tag --message",
-    "chat.postMessage",
-)
-# ``gh api`` / ``glab api`` is NOT a contiguous-substring publish: a bare
-# substring match flagged read-only GET calls (``gh api user``, ``gh api
-# repos/o/r/commits/main``) as publishes, so the destination-aware gates
-# over-blocked them (#1530). Raw-REST publishes are classified WRITE-only and
-# flag-order-robust by the token-aware :func:`_publish_detection.segment_is_api_write`
-# (effective method ≠ GET), reached via :func:`is_publish_command`.
+# The ``gh``/``glab``/``git``/``curl`` contiguous-substring spellings now live
+# in :data:`_publish_detection._LEADER_PUBLISH_SUBSTRINGS`, keyed by their owning
+# leader so a read-only ``grep``/``cat``/``rg`` that merely QUOTES one is not a
+# publish (the false positive). ``gh``/``glab api`` stays WRITE-only / token-aware
+# (:func:`_publish_detection.segment_is_api_write`, effective method ≠ GET, #1530).
 
 # t3 sub-commands that publish on the user's behalf. The overlay segment
 # between ``t3`` and the verb is arbitrary (one of the registered
@@ -125,47 +95,44 @@ def is_fail_closed_sentinel(text: str) -> bool:
     return FAIL_CLOSED_SENTINEL in text
 
 
-def normalize_for_substring_match(command: str) -> str:
-    r"""Return a publish-detection-friendly string for ``command``.
+def _segment_is_t3_publish(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``t3``-led segment carrying a publish verb.
 
-    Re-emits the lexed token stream as space-separated WORD tokens, with
-    one space between command segments. This collapses ``\<NL>`` (both
-    token-internal and between-token) and ANSI-C decoding so the
-    publish-substring matcher sees the same logical command bash would
-    execute.
+    Keyed to the segment's own leading executable so a read-only
+    ``grep "notify send"`` (leader ``grep``) is not misread as a ``t3`` post,
+    and a ``cd <wt> && t3 <overlay> notify send`` (the publish verb on its own
+    ``t3``-led segment) is correctly detected. The overlay segment between
+    ``t3`` and the verb is arbitrary, so the verb-segment substring is matched
+    against the segment's joined words.
     """
-    tokens = tokenize(command)
-    out: list[str] = []
-    for tok in tokens:
-        if is_command_separator(tok):
-            out.append(" ")
-        else:
-            out.extend((tok.value, " "))
-    return "".join(out)
-
-
-def _is_t3_publish_invocation(joined: str) -> bool:
-    if not joined.lstrip().startswith("t3 "):
+    if words[0] != "t3":
         return False
+    joined = " ".join(words)
     return any(needle in joined for needle in _T3_PUBLISH_SUBSTRINGS)
 
 
 def is_publish_command(command: str) -> bool:
     """Return True iff the Bash command would publish to an external surface.
 
-    The contiguous substring catalogue (:data:`_BASH_PUBLISH_SUBSTRINGS`)
-    catches the common spellings; the token-aware per-segment checks
-    (:func:`_publish_detection.command_has_token_aware_publish_surface`) catch
-    the ``git [global-flags] commit`` after a ``-C``/``--git-dir`` flag and the
-    raw-REST ``gh``/``glab api`` WRITE (effective method ≠ GET) regardless of
-    flag ordering, so the body reaches the scanner. A read-only ``gh``/``glab
-    api`` GET is NOT a publish and is not flagged (#1530).
+    Detection is per-SEGMENT and keyed to each segment's own leading executable:
+
+    - the leader-keyed substring catalogue
+        (:func:`_publish_detection.segment_is_substring_publish`) catches the
+        common ``gh``/``glab``/``git``/``curl`` spellings ONLY in a segment whose
+        own leader is that tool -- so a read-only ``grep "glab mr create"`` /
+        ``cat | grep "gh issue create"`` / ``rg "git commit -m"`` that merely
+        QUOTES the spelling in an argument is NOT a publish;
+    - the ``t3`` publish verbs (:func:`_segment_is_t3_publish`), likewise keyed
+        to a ``t3``-led segment; and
+    - the token-aware per-segment checks
+        (:func:`_publish_detection.command_has_token_aware_publish_surface`) catch
+        the ``git [global-flags] commit`` after a ``-C``/``--git-dir`` flag and the
+        raw-REST ``gh``/``glab api`` WRITE (effective method ≠ GET) regardless of
+        flag ordering. A read-only ``gh``/``glab api`` GET is NOT a publish (#1530).
     """
-    joined = normalize_for_substring_match(command)
-    if any(needle in joined for needle in _BASH_PUBLISH_SUBSTRINGS):
-        return True
-    if _is_t3_publish_invocation(joined):
-        return True
+    for words in segment_word_lists(command):
+        if segment_is_substring_publish(words) or _segment_is_t3_publish(words):
+            return True
     return command_has_token_aware_publish_surface(command)
 
 
@@ -317,27 +284,39 @@ def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
-    """Extract ``--body``/``-m``/``-b`` style payloads from a command.
+def _walk_body_flags(words: list[str], payloads: list[str], base: "Path | None") -> None:
+    """Extract ``--body``/``--description``/``--message``/``--title``/``-m``/``-b`` payloads.
 
     Handles both space-separated (``--body "x"``) and equals-separated
-    (``--body=x``) forms.
+    (``--body=x``) forms. Each extracted value is passed through
+    :func:`_body_file_resolution.resolve_inline_body_value`, which resolves a
+    ``$(cat <path>)`` command substitution to the file content and a ``$VAR`` to
+    its environment value (``base`` is the cold-hook cwd fallback for a relative
+    cat path); an unresolvable indirection yields the fail-closed sentinel so the
+    scan blocks rather than reads an unexpanded shell token.
     """
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
         if word in _BODY_FLAG_NAMES and i + 1 < n:
-            payloads.append(words[i + 1])
+            payloads.append(resolve_inline_body_value(words[i + 1], base))
             i += 2
             continue
+        attached_handled = False
         for flag in _BODY_FLAG_NAMES:
             attached = attached_value(word, flag + "=")
             if attached is not None:
-                payloads.append(attached)
+                payloads.append(resolve_inline_body_value(attached, base))
+                attached_handled = True
                 break
+        if attached_handled:
+            i += 1
+            continue
         if word in _BODY_SHORT_FLAGS and i + 1 < n:
-            payloads.append(words[i + 1])
+            payloads.append(resolve_inline_body_value(words[i + 1], base))
             i += 2
             continue
         i += 1
@@ -424,7 +403,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     first, _ = _first_two_words(segment)
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
-    _walk_body_flags(words, payloads)
+    _walk_body_flags(words, payloads, ctx.base)
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
