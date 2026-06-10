@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from django.core.exceptions import ImproperlyConfigured
 from rich.console import Console
 from rich.table import Table
 
@@ -43,6 +44,21 @@ _DIR_HELP = "Corpus directory (default: the shipped corpus)."
 #: The corpus ships inside this public repo, so a copied capture is always
 #: scanned as a public-repo publication regardless of overlay config.
 _PUBLIC_TARGET = "souliane/teatree"
+
+#: Strong default block patterns for the public-corpus copy path, applied on top
+#: of the active overlay's own ``privacy_block_patterns``. A real captured
+#: session log routinely carries a host filesystem path or a token-shaped string
+#: — either is a permanent PII leak in this public repo — so the guard blocks
+#: them by construction even when no overlay terms are configured.
+_PUBLIC_CORPUS_BLOCK_PATTERNS: tuple[str, ...] = (
+    r"/Users/[^/\s]+",  # macOS host home path (e.g. /Users/alice/...)
+    r"/home/[^/\s]+",  # Linux host home path (e.g. /home/alice/...)
+    r"\bgh[posru]_[A-Za-z0-9]{20,}",  # GitHub PAT / OAuth / refresh / server token
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}",  # GitHub fine-grained PAT
+    r"\bsk-[A-Za-z0-9]{16,}",  # OpenAI/Anthropic-style secret key
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}",  # Slack token
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",  # PEM private key block
+)
 
 
 @label_app.command("nominate")
@@ -140,7 +156,14 @@ def _circular_failure(label: CorpusLabel) -> str | None:
 
 
 def _refuse_on_redaction_hit(body: str) -> None:
-    verdict = scan_for_publication(text=body, target_repo=_PUBLIC_TARGET, public_repos=[_PUBLIC_TARGET])
+    redact_terms, overlay_block_patterns = _overlay_privacy_rules()
+    verdict = scan_for_publication(
+        text=body,
+        target_repo=_PUBLIC_TARGET,
+        public_repos=[_PUBLIC_TARGET],
+        redact_terms=redact_terms,
+        block_patterns=[*_PUBLIC_CORPUS_BLOCK_PATTERNS, *overlay_block_patterns],
+    )
     if not verdict.refused:
         return
     names = ", ".join(sorted({match.pattern_name for match in verdict.matches}))
@@ -150,6 +173,23 @@ def _refuse_on_redaction_hit(body: str) -> None:
         err=True,
     )
     sys.exit(1)
+
+
+def _overlay_privacy_rules() -> tuple[list[str], list[str]]:
+    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``.
+
+    Resolving the overlay is best-effort: when no single overlay is resolvable
+    (none installed, or several with no ``T3_OVERLAY_NAME`` to disambiguate), the
+    public-corpus default block set still applies, so the guard never silently
+    weakens — it only loses the overlay's own customer-domain terms.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred Django import.
+
+    try:
+        config = get_overlay().config
+    except (ImproperlyConfigured, ImportError):
+        return [], []
+    return list(config.privacy_redact_terms), list(config.privacy_block_patterns)
 
 
 def _default_entry_id(session_id: str) -> str:

@@ -8,8 +8,11 @@ publication scanner, never a stub.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -123,6 +126,57 @@ class TestLabelAdd:
         assert result.exit_code == 1, result.output
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_host_path_refuses_and_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-path")
+        _write_session(tmp_path, "sess-path", _assistant_bash("cat /Users/alice/.ssh/id_rsa"))
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-path", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_token_shape_refuses_and_writes_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-token")
+        # Assembled at runtime so the source carries no static token literal the
+        # secrets scanner would flag — the captured body still has the shape.
+        token = "ghp_" + "x" * 36
+        _write_session(tmp_path, "sess-token", _assistant_bash(f"export TOK={token}"))
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-token", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_active_overlay_redact_term_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-brand")
+        _write_session(tmp_path, "sess-brand", _assistant_bash("echo working on AcmeCorp tenant"))
+        fake_overlay = SimpleNamespace(
+            config=SimpleNamespace(privacy_redact_terms=["AcmeCorp"], privacy_block_patterns=[])
+        )
+        with patch("teatree.core.overlay_loader.get_overlay", return_value=fake_overlay):
+            result = CliRunner().invoke(app, ["eval", "label", "add", "sess-brand", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_default_block_set_applies_when_no_overlay_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-nooverlay")
+        _write_session(tmp_path, "sess-nooverlay", _assistant_bash("cat /Users/bob/secret"))
+        with patch("teatree.core.overlay_loader.get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+            result = CliRunner().invoke(app, ["eval", "label", "add", "sess-nooverlay", "--dir", str(corpus_dir)])
+        # Overlay terms are lost, but the public-corpus default block set still
+        # catches the host path — the guard never silently weakens.
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
 
     def test_no_audit_record_exits_2(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
