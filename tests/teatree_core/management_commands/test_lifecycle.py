@@ -170,8 +170,13 @@ class TestLifecycleSetup(TestCase):
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_continues_on_db_import_failure(self) -> None:
-        """Setup continues with provision steps even when db_import fails."""
+    def test_aborts_on_db_import_failure(self) -> None:
+        """A failed db_import aborts provision with SystemExit(1) (#2208 fail-loud).
+
+        Previously the runner warned and continued, marking the worktree
+        PROVISIONED with no test DB. #2208 restores the same posture as the
+        standalone ``t3 db import``: a failed import is a provision failure.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -188,10 +193,10 @@ class TestLifecycleSetup(TestCase):
 
             with patch.object(utils_run_mod, "subprocess") as mock_sp:
                 mock_sp.run.return_value = MagicMock(returncode=0)
-                worktree_id = cast("int", call_command("worktree", "provision", path=str(wt_dir)))
+                with pytest.raises(SystemExit) as exc_info:
+                    call_command("worktree", "provision", path=str(wt_dir))
 
-            worktree = Worktree.objects.get(pk=worktree_id)
-            assert worktree.state == Worktree.State.PROVISIONED
+            assert exc_info.value.code == 1
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

@@ -86,8 +86,9 @@ class WorktreeProvisionRunner(RunnerBase):
         if setup_failure is not None:
             return RunnerResult(ok=False, detail=setup_failure)
 
-        if worktree.db_name and overlay.get_db_import_strategy(worktree) is not None:
-            self._run_db_import()
+        db_import_needed = worktree.db_name and overlay.get_db_import_strategy(worktree) is not None
+        if db_import_needed and not self._run_db_import():
+            return RunnerResult(ok=False, detail="db import failed")
 
         report = run_provision_steps(overlay.get_provision_steps(worktree))
         post_db_report = self._run_post_db_steps()
@@ -103,7 +104,7 @@ class WorktreeProvisionRunner(RunnerBase):
             return RunnerResult(ok=False, detail=f"health checks failed: {', '.join(health_failures)}")
         return RunnerResult(ok=True, detail=f"{len(report.steps)} step(s) ok")
 
-    def _run_db_import(self) -> None:
+    def _run_db_import(self) -> bool:
         from teatree.core.worktree_env import worktree_pg_connection  # noqa: PLC0415
         from teatree.utils.db import db_exists  # noqa: PLC0415
 
@@ -115,7 +116,7 @@ class WorktreeProvisionRunner(RunnerBase):
             try:
                 if db_exists(worktree.db_name, user=user, host=host, env=env or None):
                     logger.info("DB exists: %s — skipping import", worktree.db_name)
-                    return
+                    return True
             except FileNotFoundError:
                 pass
 
@@ -127,8 +128,9 @@ class WorktreeProvisionRunner(RunnerBase):
             extra.pop("db_import_failures", None)
             worktree.extra = extra
             worktree.save(update_fields=["extra"])
-        else:
-            logger.warning("DB import failed for %s — continuing", worktree.repo_path)
+            return True
+        logger.error("DB import failed for %s — aborting provision", worktree.repo_path)
+        return False
 
     def _run_post_db_steps(self) -> ProvisionReport:
         steps = list(self.overlay.get_post_db_steps(self.worktree))
