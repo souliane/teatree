@@ -1631,19 +1631,39 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     (per-invocation).        │
 │ --max-budget-usd                           FLOAT    Per-run USD budget       │
 │                                                     circuit breaker for the  │
-│                                                     metered sdk runner       │
-│                                                     (default 0.10, the cheap │
-│                                                     cap). The benchmark lane │
-│                                                     (`t3 eval benchmark`)    │
-│                                                     defaults higher so a     │
-│                                                     costly model completes;  │
-│                                                     raise this here for a    │
-│                                                     costly --models/--trials │
-│                                                     run. An over-budget      │
-│                                                     scenario is recorded as  │
-│                                                     a budget_exceeded FAIL,  │
+│                                                     metered sdk runner.      │
+│                                                     Defaults GENEROUS        │
+│                                                     (env-configurable via    │
+│                                                     T3_EVAL_MAX_BUDGET_USD)  │
+│                                                     so a finishing scenario  │
+│                                                     COMPLETES rather than    │
+│                                                     truncating — a truncated │
+│                                                     run measures the cap,    │
+│                                                     not behaviour. Raise it  │
+│                                                     for a costly             │
+│                                                     --models/--trials run.   │
+│                                                     An over-budget scenario  │
+│                                                     is recorded as a         │
+│                                                     budget_exceeded FAIL,    │
 │                                                     not a crash.             │
-│                                                     [default: 0.1]           │
+│                                                     [default: 1.0]           │
+│ --effort                                   TEXT     Representative reasoning │
+│                                                     effort for the metered   │
+│                                                     sdk lane (low, medium,   │
+│                                                     high, xhigh, max;        │
+│                                                     default 'high',          │
+│                                                     env-configurable via     │
+│                                                     T3_EVAL_EFFORT). The     │
+│                                                     lane otherwise runs at   │
+│                                                     the model's DEFAULT      │
+│                                                     effort while real usage  │
+│                                                     is high — so a           │
+│                                                     default-effort pass-rate │
+│                                                     is pessimistic. A        │
+│                                                     scenario's own           │
+│                                                     model@effort still wins  │
+│                                                     over this lane default.  │
+│                                                     [default: high]          │
 │ --trials                                   INTEGER  Re-run each scenario     │
 │                                                     this many times          │
 │                                                     (pass@k).                │

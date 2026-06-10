@@ -3,8 +3,10 @@
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import typer
+from claude_agent_sdk.types import EffortLevel
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
@@ -39,13 +41,22 @@ from teatree.eval.backends import (
     make_runner,
 )
 from teatree.eval.discovery import discover_specs, find_spec
+from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.report import evaluate, render_html, render_json, render_text
-from teatree.eval.sdk_runner import MAX_BUDGET_USD
+from teatree.eval.sdk_runner import resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
+
+#: The metered ``t3 eval run --backend sdk`` lane's GENEROUS, configurable
+#: defaults — the cheap 0.10 floor truncated finishing scenarios (a truncated run
+#: measures the cap, not behaviour), and the model's DEFAULT effort understates
+#: real high-effort usage. Resolved once here (env-overridable) so the CLI default
+#: is generous + representative; a per-invocation flag still overrides.
+METERED_DEFAULT_BUDGET_USD = resolve_metered_budget_usd()
+METERED_DEFAULT_EFFORT = resolve_metered_effort()
 
 eval_app = typer.Typer(
     no_args_is_help=False,
@@ -89,13 +100,25 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help="Override the scenario's max_turns (per-invocation).",
     ),
     max_budget_usd: float = typer.Option(
-        float(MAX_BUDGET_USD),
+        METERED_DEFAULT_BUDGET_USD,
         "--max-budget-usd",
         help=(
-            "Per-run USD budget circuit breaker for the metered sdk runner (default 0.10, the "
-            "cheap cap). The benchmark lane (`t3 eval benchmark`) defaults higher so a costly "
-            "model completes; raise this here for a costly --models/--trials run. An over-budget "
-            "scenario is recorded as a budget_exceeded FAIL, not a crash."
+            "Per-run USD budget circuit breaker for the metered sdk runner. Defaults GENEROUS "
+            "(env-configurable via T3_EVAL_MAX_BUDGET_USD) so a finishing scenario COMPLETES "
+            "rather than truncating — a truncated run measures the cap, not behaviour. Raise it "
+            "for a costly --models/--trials run. An over-budget scenario is recorded as a "
+            "budget_exceeded FAIL, not a crash."
+        ),
+    ),
+    effort: str = typer.Option(
+        METERED_DEFAULT_EFFORT,
+        "--effort",
+        help=(
+            "Representative reasoning effort for the metered sdk lane "
+            f"({', '.join(EFFORT_LEVELS)}; default '{METERED_DEFAULT_EFFORT}', env-configurable via "
+            "T3_EVAL_EFFORT). The lane otherwise runs at the model's DEFAULT effort while real "
+            "usage is high — so a default-effort pass-rate is pessimistic. A scenario's own "
+            "model@effort still wins over this lane default."
         ),
     ),
     trials: int = typer.Option(1, "--trials", help="Re-run each scenario this many times (pass@k)."),
@@ -250,6 +273,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # backend; --local is the explicit host escape (a quick check, not the gate);
     # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
     # re-invocation in-process (no re-route loop).
+    effort_level = _require_effort(effort)
     metered = backend == SDK_BACKEND or trials > 1 or models is not None
     if docker or should_route_to_docker(metered=metered, local=local):
         run_in_docker_or_exit(
@@ -258,6 +282,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
                 output_format=output_format,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
+                effort=effort_level,
                 trials=trials,
                 require=require,
                 models=models,
@@ -333,6 +358,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             transcript_dir=transcript_dir,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
@@ -503,3 +529,11 @@ def _require_spec(name: str) -> EvalSpec:
         typer.echo(f"available scenarios: {available}", err=True)
         raise typer.Exit(code=2)
     return spec
+
+
+def _require_effort(effort: str) -> EffortLevel:
+    """Validate ``--effort`` against the known levels, or exit 2 listing them."""
+    if effort not in EFFORT_LEVELS:
+        typer.echo(f"unknown --effort {effort!r}; known levels: {', '.join(EFFORT_LEVELS)}", err=True)
+        raise typer.Exit(code=2)
+    return cast("EffortLevel", effort)

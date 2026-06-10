@@ -24,6 +24,7 @@ class RunDockerArgs:
     output_format: str
     max_turns: int | None
     max_budget_usd: float
+    effort: str
     trials: int
     require: str
     models: str | None
@@ -40,6 +41,9 @@ class RunDockerArgs:
         if self.max_turns is not None:
             args += ["--max-turns", str(self.max_turns)]
         args += ["--max-budget-usd", str(self.max_budget_usd)]
+        # Pass --effort explicitly so the in-container run is deterministic
+        # regardless of the container's env (the host already resolved the default).
+        args += ["--effort", self.effort]
         if self.trials != 1:
             args += ["--trials", str(self.trials), "--require", self.require]
         if self.models is not None:

@@ -35,6 +35,8 @@ on-disk files only, so the subscription lane never meters.
 from pathlib import Path
 from typing import Protocol
 
+from claude_agent_sdk.types import EffortLevel
+
 from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
@@ -56,13 +58,14 @@ class UnknownBackendError(ValueError):
     """Raised for a ``--backend`` value outside :data:`KNOWN_BACKENDS`."""
 
 
-def make_runner(
+def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction knob (turns / budget / effort / require / transcript-dir) from the `t3 eval run` CLI; the list IS the backend contract.
     backend: str,
     *,
     max_turns_override: int | None = None,
     transcript_dir: Path | None = None,
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
@@ -81,6 +84,11 @@ def make_runner(
     ``max_budget_usd`` is the sdk runner's per-run circuit breaker (default the
     cheap-lane :data:`~teatree.eval.sdk_runner.MAX_BUDGET_USD`); the subscription
     runner never meters, so it ignores it.
+
+    ``effort`` is the lane-level representative reasoning effort applied to a
+    scenario that declares no ``model@effort`` of its own (the metered lane runs
+    at a representative effort, not the model's default); the subscription runner
+    ignores it.
     """
     if backend == SDK_BACKEND:
         ensure_oauth_token()
@@ -88,6 +96,7 @@ def make_runner(
             max_turns_override=max_turns_override,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
+            effort=effort,
         )
     if backend == SUBSCRIPTION_BACKEND:
         return SubscriptionTranscriptRunner(transcript_dir=transcript_dir or Path.cwd())

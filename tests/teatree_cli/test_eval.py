@@ -120,9 +120,13 @@ class TestEvalList:
 
 
 class TestEvalRun:
-    def test_sdk_run_default_budget_stays_the_cheap_cap(self) -> None:
-        # `t3 eval run --backend sdk` keeps the cheap 0.10 default (only the
-        # benchmark raises it); the flag threads a per-run override.
+    def test_sdk_run_default_budget_is_generous_so_a_scenario_completes(self) -> None:
+        # The metered `t3 eval run --backend sdk` default budget is GENEROUS, not
+        # the cheap 0.10 floor: a truncated run measures the cap, not behaviour
+        # (the first full metered run lost scenarios to budget_exceeded). The flag
+        # still threads a per-run override.
+        from teatree.cli.eval.app import METERED_DEFAULT_BUDGET_USD  # noqa: PLC0415
+
         _BudgetCapturingRunner.last_max_budget_usd = None
         specs = [_spec("alpha")]
         with (
@@ -131,7 +135,37 @@ class TestEvalRun:
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
         assert result.exit_code == 0, result.output
-        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(0.10)
+        assert _BudgetCapturingRunner.last_max_budget_usd == pytest.approx(METERED_DEFAULT_BUDGET_USD)
+        assert METERED_DEFAULT_BUDGET_USD > 0.10
+
+    def test_effort_flag_threads_to_the_runner(self) -> None:
+        # `--effort high` reaches the SdkInProcessRunner's effort kwarg so the
+        # metered lane runs at a representative reasoning effort.
+        _EffortCapturingRunner.last_effort = "unset"
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _EffortCapturingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--effort", "high", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert _EffortCapturingRunner.last_effort == "high"
+
+    def test_effort_defaults_to_a_representative_level(self) -> None:
+        # The metered lane defaults to a representative effort (not the model's
+        # default) so the measured pass-rate reflects real high-effort usage.
+        from teatree.cli.eval.app import METERED_DEFAULT_EFFORT  # noqa: PLC0415
+
+        _EffortCapturingRunner.last_effort = "unset"
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _EffortCapturingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert _EffortCapturingRunner.last_effort == METERED_DEFAULT_EFFORT
+        assert METERED_DEFAULT_EFFORT == "high"
 
     def test_sdk_run_max_budget_usd_flag_threads_to_the_runner(self) -> None:
         _BudgetCapturingRunner.last_max_budget_usd = None
@@ -1012,6 +1046,18 @@ class _BudgetCapturingRunner:
         return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)
 
 
+class _EffortCapturingRunner:
+    """Records the ``effort`` it was constructed with; passes every scenario."""
+
+    last_effort: object = "unset"
+
+    def __init__(self, *_: object, effort: object = None, **__: object) -> None:
+        type(self).last_effort = effort
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)
+
+
 @pytest.mark.django_db
 class TestEvalBenchmark:
     def _invoke(self, args: list[str], *, specs: list[EvalSpec], runner: type = _BenchmarkRunner):
@@ -1691,7 +1737,9 @@ class TestEvalRunDocker:
         assert run_docker.call_args.args[0] == [
             "run",
             "--max-budget-usd",
-            "0.1",
+            "1.0",
+            "--effort",
+            "high",
             "--backend",
             "sdk",
             "--require-executed",
@@ -1705,13 +1753,26 @@ class TestEvalRunDocker:
             "run",
             "alpha",
             "--max-budget-usd",
-            "0.1",
+            "1.0",
+            "--effort",
+            "high",
             "--trials",
             "3",
             "--require",
             "any",
             "--no-persist",
         ]
+
+    def test_forwards_effort_into_the_container(self) -> None:
+        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--effort", "max", "--docker"])
+        forwarded = run_docker.call_args.args[0]
+        assert forwarded[forwarded.index("--effort") + 1] == "max"
+
+    def test_rejects_an_unknown_effort_level(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--effort", "turbo", "--docker"])
+        assert result.exit_code == 2, result.output
+        assert "unknown --effort 'turbo'" in result.output
 
     def test_forwards_max_budget_usd_into_the_container(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:

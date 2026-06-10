@@ -36,6 +36,7 @@ The async ``query`` is bridged to the sync :meth:`SdkInProcessRunner.run` via
 
 import asyncio
 import dataclasses
+import os
 import re
 import shutil
 from pathlib import Path
@@ -56,7 +57,7 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import DEFAULT_MAX_TURNS, EvalRun, EvalSpec
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
@@ -69,10 +70,98 @@ from teatree.eval.transcript import (
     requested_model_present,
 )
 
-WATCHDOG_SECONDS = 120
-#: Per-run budget for the cheap lane (``t3 eval run``). Only the DEFAULT — the
-#: metered benchmark threads a generous cap so a finishing scenario is measured,
-#: not truncated. See :data:`CleanRoomConfig.max_budget_usd`.
+#: Env var names for the metered lane's GENEROUS, configurable resource caps. A
+#: truncated run measures the cap, not behaviour (the first full metered run lost
+#: ~18 scenarios to cap truncation — a false negative), so each default is
+#: generous and overridable.
+_WATCHDOG_ENV_VAR = "T3_EVAL_WATCHDOG_SECONDS"
+_MAX_TURNS_ENV_VAR = "T3_EVAL_MAX_TURNS"
+_METERED_BUDGET_ENV_VAR = "T3_EVAL_MAX_BUDGET_USD"
+_METERED_EFFORT_ENV_VAR = "T3_EVAL_EFFORT"
+
+#: GENEROUS per-scenario wall-clock watchdog (seconds). 120s was too tight for
+#: sub-agent-spawning scenarios (an orchestrator that delegates an investigation
+#: timed out before it finished), so the default is raised. Override via
+#: ``T3_EVAL_WATCHDOG_SECONDS``.
+DEFAULT_WATCHDOG_SECONDS = 300
+
+#: GENEROUS default per-run budget for the metered ``t3 eval run --backend sdk``
+#: lane — distinct from the cheap-lane :data:`MAX_BUDGET_USD` runner floor (0.10),
+#: which truncated finishing scenarios (a truncated run measures the cap, not
+#: behaviour). ~10x the cheap floor, below the benchmark's 2.0; override via
+#: ``T3_EVAL_MAX_BUDGET_USD``.
+METERED_DEFAULT_BUDGET_USD = 1.0
+
+#: The metered lane's representative reasoning effort. The lane otherwise runs at
+#: the model's DEFAULT effort, while real usage is high effort — so a default-effort
+#: pass-rate is pessimistic. A scenario's own ``@effort`` still wins. Override via
+#: ``T3_EVAL_EFFORT``.
+METERED_DEFAULT_EFFORT: EffortLevel = "high"
+
+
+def _env_float(name: str, *, default: float) -> float:
+    """Resolve a positive ``float`` from env *name*, falling back to *default*.
+
+    A missing, empty, unparsable, or non-positive value yields the generous
+    *default* — a fat-fingered override never silently tightens the cap to an
+    accidental 0.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_int(name: str, *, default: int) -> int:
+    """Resolve a positive ``int`` from env *name*, falling back to *default* (see :func:`_env_float`)."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def resolve_watchdog_seconds() -> float:
+    """The generous per-scenario watchdog, ``T3_EVAL_WATCHDOG_SECONDS`` overriding the default."""
+    return _env_float(_WATCHDOG_ENV_VAR, default=float(DEFAULT_WATCHDOG_SECONDS))
+
+
+def resolve_default_max_turns() -> int:
+    """The generous default turn budget, ``T3_EVAL_MAX_TURNS`` overriding the default."""
+    return _env_int(_MAX_TURNS_ENV_VAR, default=DEFAULT_MAX_TURNS)
+
+
+def resolve_metered_budget_usd() -> float:
+    """The generous metered-lane budget, ``T3_EVAL_MAX_BUDGET_USD`` overriding the default."""
+    return _env_float(_METERED_BUDGET_ENV_VAR, default=METERED_DEFAULT_BUDGET_USD)
+
+
+def resolve_metered_effort() -> EffortLevel:
+    """The representative metered-lane effort, ``T3_EVAL_EFFORT`` overriding the default.
+
+    An invalid/unknown override falls back to the representative default rather
+    than passing a bad level through to the SDK.
+    """
+    from teatree.eval.model_variant import EFFORT_LEVELS  # noqa: PLC0415 — avoid an import cycle at module load.
+
+    raw = os.environ.get(_METERED_EFFORT_ENV_VAR, "").strip()
+    return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
+
+
+#: Resolved at import so the existing ``patch("…WATCHDOG_SECONDS", 0.01)`` test seam
+#: keeps working; the env override is read here once, generous by default.
+WATCHDOG_SECONDS = resolve_watchdog_seconds()
+#: Per-run budget for the cheap lane (``t3 eval run`` internal/runner default). Only
+#: the DEFAULT — the metered ``t3 eval run --backend sdk`` lane and the benchmark
+#: thread a generous cap so a finishing scenario is measured, not truncated. See
+#: :data:`CleanRoomConfig.max_budget_usd` and ``METERED_DEFAULT_BUDGET_USD``.
 MAX_BUDGET_USD = "0.10"
 FALLBACK_MODEL = "claude-sonnet-4-6"
 EMPTY_SETTINGS = '{"hooks":{}}'
@@ -250,11 +339,15 @@ class SdkInProcessRunner:
         max_turns_override: int | None = None,
         require_executed: bool = False,
         max_budget_usd: float = float(MAX_BUDGET_USD),
+        effort: EffortLevel | None = None,
     ) -> None:
         self._workspace = workspace or Path.cwd()
         self._max_turns_override = max_turns_override
         self._require_executed = require_executed
         self._max_budget_usd = max_budget_usd
+        #: Lane-level representative reasoning effort. Applied when a scenario
+        #: declares no ``model@effort`` of its own (a declared effort wins).
+        self._effort = effort
 
     def run(self, spec: EvalSpec) -> EvalRun:
         if shutil.which("claude") is None:
@@ -310,6 +403,9 @@ class SdkInProcessRunner:
 
     async def _drive(self, spec: EvalSpec, *, system_prompt: str, max_turns: int) -> list[Message]:
         variant = parse_model_variant(spec.model)
+        # A scenario's own ``model@effort`` is authoritative; the lane-level
+        # representative effort applies only when the scenario declares none.
+        effort = variant.effort if variant.effort is not None else self._effort
         with isolated_claude_env() as (env, cwd):
             options = build_sdk_options(
                 CleanRoomConfig(
@@ -320,7 +416,7 @@ class SdkInProcessRunner:
                     allowed_tools=spec.tools,
                     model=variant.model,
                     max_turns=max_turns,
-                    effort=variant.effort,
+                    effort=effort,
                     max_budget_usd=self._max_budget_usd,
                 )
             )

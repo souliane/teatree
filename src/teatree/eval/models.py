@@ -13,6 +13,15 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
     {"budget_exceeded", "max_turns", "timeout", "error_max_turns", "error_max_budget_usd", "aborted"}
 )
 
+#: GENEROUS default per-scenario turn budget for a scenario that declares no
+#: ``max_turns`` of its own. The old default of ``4`` force-FAILed multi-step /
+#: sub-agent-spawning scenarios (delegate/spawn trajectories need many turns), so
+#: a truncated run measured the cap, not behaviour. Raised generously; a scenario
+#: still declares its own lower value, and the lane reads an env override
+#: (:func:`teatree.eval.sdk_runner.resolve_default_max_turns`,
+#: ``T3_EVAL_MAX_TURNS``).
+DEFAULT_MAX_TURNS = 30
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:
@@ -83,7 +92,7 @@ class EvalSpec:
     matchers: tuple[ExpectItem, ...]
     source_path: Path
     model: str = "claude-sonnet-4-6"
-    max_turns: int = 4
+    max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()

@@ -17,7 +17,10 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from teatree.eval.models import EvalSpec, Matcher, TokenUsage
 from teatree.eval.sdk_runner import (
+    DEFAULT_MAX_TURNS,
+    DEFAULT_WATCHDOG_SECONDS,
     MAX_BUDGET_USD,
+    WATCHDOG_SECONDS,
     BudgetExceededError,
     ClaudeCliMissingError,
     CleanRoomConfig,
@@ -262,6 +265,28 @@ class TestSdkInProcessRunnerCapture:
         assert captured["options"].model == "claude-fable-5"
         assert captured["options"].effort is None
 
+    def test_lane_effort_reaches_the_clean_room_when_scenario_declares_none(self, tmp_path: Path) -> None:
+        # The metered lane's representative effort (`--effort high` → the runner's
+        # `effort=` kwarg) reaches CleanRoomConfig.effort and the SDK options when
+        # the scenario declares no `@effort` of its own.
+        spec = _spec(tmp_path, model="claude-fable-5")
+        _run, captured = self._run(spec, [_result()], effort="high")
+        assert captured["options"].effort == "high"
+
+    def test_scenario_declared_effort_wins_over_the_lane_default(self, tmp_path: Path) -> None:
+        # A scenario's own `model@effort` is authoritative: the lane-level default
+        # must NOT override an explicitly declared scenario effort.
+        spec = _spec(tmp_path, model="claude-opus-4-8@xhigh")
+        _run, captured = self._run(spec, [_result()], effort="high")
+        assert captured["options"].effort == "xhigh"
+
+    def test_no_lane_effort_leaves_a_plain_model_at_default_effort(self, tmp_path: Path) -> None:
+        # Backward compatibility: without a lane effort, a plain model stays at the
+        # model's default effort (effort=None), exactly as before.
+        spec = _spec(tmp_path, model="claude-fable-5")
+        _run, captured = self._run(spec, [_result()])
+        assert captured["options"].effort is None
+
     def test_timeout_yields_timeout_run(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
 
@@ -484,6 +509,91 @@ class TestBuildSdkOptionsBudget:
         # this is the seam the benchmark's generous cap threads through.
         config = _config(tmp_path, max_budget_usd=2.5)
         assert build_sdk_options(config).max_budget_usd == pytest.approx(2.5)
+
+
+class TestCalibratedCaps:
+    """The metered lane's resource caps default GENEROUS, not the cheap-lane floor.
+
+    A truncated run measures the cap, not behaviour — so the watchdog and the
+    default per-scenario turn budget are raised generously (the first full
+    metered run lost ~18 scenarios to cap truncation, a false negative). Each
+    stays scenario-overridable (a scenario may still declare its own
+    ``max_turns``) and env-configurable (default generous).
+    """
+
+    def test_watchdog_default_is_generous(self) -> None:
+        # 120s was too tight for sub-agent-spawning scenarios (they timed out).
+        # The default watchdog is raised to a generous value (was 120).
+        assert DEFAULT_WATCHDOG_SECONDS >= 300
+        assert WATCHDOG_SECONDS >= 300
+
+    def test_default_max_turns_is_generous(self) -> None:
+        # The old default of 4 force-FAILed multi-step / delegating scenarios.
+        # A scenario needing N>old-default turns is no longer truncated by the
+        # default — the default is generous (was 4).
+        assert DEFAULT_MAX_TURNS >= 20
+        assert EvalSpec.max_turns >= 20
+
+    def test_a_scenario_needing_many_turns_is_not_force_failed_by_the_default(self, tmp_path: Path) -> None:
+        # The lane default (no scenario-declared max_turns, no override) is the
+        # generous DEFAULT_MAX_TURNS, so a many-step scenario gets room to finish.
+        agent = tmp_path / "agent.md"
+        agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
+        spec = EvalSpec(
+            name="multi_step",
+            scenario="a delegating scenario needs many turns",
+            agent_path=str(agent),
+            prompt="x",
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+            source_path=tmp_path / "spec.yaml",
+        )
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        assert captured["options"].max_turns == DEFAULT_MAX_TURNS
+
+    def test_a_scenario_may_still_declare_a_lower_turn_budget(self, tmp_path: Path) -> None:
+        # A scenario's own max_turns is honoured — the generous default applies
+        # only when the scenario declares none.
+        spec = _spec(tmp_path, max_turns=3)
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        assert captured["options"].max_turns == 3
+
+
+class TestCapsAreEnvConfigurable:
+    """Each generous default is overridable via a ``T3_EVAL_*`` env var."""
+
+    def test_watchdog_resolves_the_env_override(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_watchdog_seconds  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_EVAL_WATCHDOG_SECONDS", "450")
+        assert resolve_watchdog_seconds() == pytest.approx(450.0)
+
+    def test_watchdog_falls_back_to_the_generous_default(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_watchdog_seconds  # noqa: PLC0415
+
+        monkeypatch.delenv("T3_EVAL_WATCHDOG_SECONDS", raising=False)
+        assert resolve_watchdog_seconds() == pytest.approx(float(DEFAULT_WATCHDOG_SECONDS))
+
+    def test_max_turns_resolves_the_env_override(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_default_max_turns  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_EVAL_MAX_TURNS", "50")
+        assert resolve_default_max_turns() == 50
+
+    def test_max_turns_falls_back_to_the_generous_default(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_default_max_turns  # noqa: PLC0415
+
+        monkeypatch.delenv("T3_EVAL_MAX_TURNS", raising=False)
+        assert resolve_default_max_turns() == DEFAULT_MAX_TURNS
 
 
 def _budget_raising_query(message: str):

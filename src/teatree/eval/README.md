@@ -283,10 +283,38 @@ chain: prepare → dispatch sub-agent → capture-subagent → grade.
 
 #### sdk backend (in-process Agent SDK)
 
-Each scenario invocation drives `claude_agent_sdk.query` in-process, mapping the typed messages to the same `--output-format
-stream-json` mode with a 120-second wall-clock watchdog and a
-`--max-budget-usd 0.10` circuit breaker. When `claude` is not on `PATH` the
-runner emits `SKIP <scenario>: claude binary not on PATH` and exits 0.
+Each scenario invocation drives `claude_agent_sdk.query` in-process, mapping the
+typed messages to the same `--output-format stream-json` mode under a
+per-scenario wall-clock watchdog and a per-run `--max-budget-usd` circuit
+breaker. When `claude` is not on `PATH` the runner emits `SKIP <scenario>:
+claude binary not on PATH` and exits 0.
+
+##### Generous, configurable resource caps (the metered lane must measure behaviour, not the cap)
+
+A run truncated by a tight cap measures the cap, not the agent — a
+**false negative**. So the metered lane's caps default GENEROUS and are
+env-configurable; a scenario still declares its own tighter values, and a
+per-invocation flag still overrides:
+
+| Cap | Default | Env override | Per-invocation |
+|---|---|---|---|
+| wall-clock watchdog | `300s` (`DEFAULT_WATCHDOG_SECONDS`) | `T3_EVAL_WATCHDOG_SECONDS` | — |
+| per-scenario turn budget | `30` (`DEFAULT_MAX_TURNS`, the `EvalSpec.max_turns` default) | `T3_EVAL_MAX_TURNS` | a scenario's own `max_turns:`; `--max-turns` |
+| `t3 eval run --backend sdk` budget | `1.0` USD (`METERED_DEFAULT_BUDGET_USD`) | `T3_EVAL_MAX_BUDGET_USD` | `--max-budget-usd` |
+
+The old `120s` / `4`-turn / `0.10`-USD floors were the cheap-lane values; they
+truncated legit multi-turn and sub-agent-spawning scenarios (an orchestrator
+that delegates an investigation needs many turns and time). A scenario that
+declares no `max_turns:` now gets the generous `DEFAULT_MAX_TURNS`; one that
+declares `max_turns: 3` keeps it.
+
+##### Representative effort (the metered lane runs at a representative reasoning effort)
+
+The lane otherwise runs at the model's DEFAULT reasoning effort, while real usage
+is **high** effort — so a default-effort pass-rate is pessimistic. `t3 eval run
+--effort <level>` (default `high`, env `T3_EVAL_EFFORT`) threads a lane-level
+representative effort into `CleanRoomConfig.effort`. A scenario's own
+`model@effort` is authoritative and still wins over this lane default.
 
 The Agent-SDK child authenticates from `CLAUDE_CODE_OAUTH_TOKEN` — the OAuth token from
 `claude setup-token` — which works in every environment without seeded login
@@ -304,6 +332,27 @@ A single trial against an LLM is noisy. `--trials k` re-runs each scenario `k`
 times and aggregates: `--require any` (default) is **pass@k** — capable-of the
 behavior; `--require all` is **pass^k** — a regression gate where intermittent
 compliance is itself a failure. The aggregation lives in `pass_at_k.py`.
+
+### Diagnostic vs gate — a pass-rate is only meaningful at a representative config
+
+A metered pass-rate is only meaningful at a **representative** model + effort +
+trials configuration. A `--trials 1`, default-effort run is a **DIAGNOSTIC**, not
+the gate: it OVER-counts failures. A single trial is noisy (per-trial
+variance), the model's default effort understates real high-effort usage, and a
+tight cap truncates legit multi-turn scenarios — all three push the measured
+score down, so the diagnostic number reads worse than the behaviour it samples.
+
+The first full metered run scored ~42% (`--trials 1`, default effort); that was
+the **config, not 93 bugs** — ~18 of the failures were cap truncations
+(`max_turns` / `timeout` / `budget_exceeded`, fixed by the generous caps above),
+and more were single-trial / default-effort noise. Use a `--trials 1` run to
+surface candidates to investigate; do not read its pass-rate as a behavioural
+verdict.
+
+The **representative gate config is `--trials 3` (pass@3) at the representative
+effort** (`--effort high`, the lane default) — that is the score to track and
+gate on. The generous caps and representative effort above exist precisely so the
+gate measures behaviour rather than the harness.
 
 ### Run-store and history (#1160)
 
@@ -864,7 +913,7 @@ YAML list of one or more specs.
   scenario: agent must create a worktree before editing the canonical clone
   agent_path: skills/code/SKILL.md
   model: haiku            # optional, default "claude-sonnet-4-6"
-  max_turns: 3            # optional, default 4
+  max_turns: 3            # optional, default 30 (the generous DEFAULT_MAX_TURNS)
   tools: [Bash]           # optional, default [Bash]
   prompt: >-
     You are working in <path>. ...
@@ -882,7 +931,8 @@ Fields:
 - `agent_path` — path to a `SKILL.md` (relative to the teatree repo root).
 - `prompt` — full prompt text passed as the user message.
 - `model` — Claude model alias (default `"claude-sonnet-4-6"`).
-- `max_turns` — turn budget for the CLI (default `4`).
+- `max_turns` — turn budget for the CLI (default `30`, the generous
+  `DEFAULT_MAX_TURNS`; env `T3_EVAL_MAX_TURNS`).
 - `tools` — allow-list of tools exposed to the agent (default `["Bash"]`).
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
