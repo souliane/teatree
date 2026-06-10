@@ -332,6 +332,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             grader=grader,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
         return
     if trials > 1:
@@ -349,6 +350,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             grader=grader,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
         return
     try:

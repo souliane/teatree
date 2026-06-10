@@ -142,3 +142,18 @@ class TestRunPassAtK:
         spec = _spec()
         result = run_pass_at_k(spec, lambda s: _result(s, passed=True, fell_back=None), k=3)
         assert result.fell_back is None
+
+    def test_cap_truncated_trial_does_not_count_as_a_pass(self) -> None:
+        # A trial whose partial trajectory satisfied its matchers but that hit a
+        # cap (max_turns/budget) must NOT increment the pass count in the GATING
+        # lane — raising caps (#19) would otherwise mask a real failure as green.
+        spec = _spec()
+        it = iter(["success", "max_turns", "success"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="all")
+        # Two clean passes, one cap-truncated trial excluded from the pass count.
+        assert result.passes == 2
+        assert not result.ok  # require="all" — a non-counted trial fails the gate

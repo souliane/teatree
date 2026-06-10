@@ -10,6 +10,7 @@ import json
 import sys
 
 import typer
+from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
@@ -50,13 +51,23 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> bool:
-    """Run the pass@k path; return ``True`` when any scenario failed or regressed."""
+    """Run the pass@k path; return ``True`` when any scenario failed or regressed.
+
+    ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
+    ``METERED_DEFAULT_EFFORT`` calibration). It is the runner-wide default applied
+    to scenarios that declare no ``model@effort`` of their own; a scenario's own
+    tag still wins at the runner's per-scenario seam.
+    """
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
     runner = SdkInProcessRunner(
-        max_turns_override=max_turns, require_executed=require_executed, max_budget_usd=max_budget_usd
+        max_turns_override=max_turns,
+        require_executed=require_executed,
+        max_budget_usd=max_budget_usd,
+        effort=effort,
     )
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
@@ -125,11 +136,21 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> None:
-    """Run the suite once per model and render a per-model comparison."""
+    """Run the suite once per model and render a per-model comparison.
+
+    ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
+    ``METERED_DEFAULT_EFFORT`` calibration), the runner-wide default for scenarios
+    declaring no ``model@effort``. A matrix variant's own ``model@effort`` tag (and
+    a scenario's own) still win over this lane default at the runner's seam.
+    """
     model_list = parse_model_tags(models)
     runner = SdkInProcessRunner(
-        max_turns_override=max_turns, require_executed=require_executed, max_budget_usd=max_budget_usd
+        max_turns_override=max_turns,
+        require_executed=require_executed,
+        max_budget_usd=max_budget_usd,
+        effort=effort,
     )
     rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
     if output_format == "json":

@@ -178,6 +178,52 @@ class TestVerdict:
             evaluate(spec, run)
 
 
+class TestCapTruncatedRunIsNotAPass:
+    """A cap-truncated run must NOT count as a gate pass (#2192).
+
+    Even when its partial trajectory satisfied every matcher:
+    ``_terminal_capped_run`` grades the partial trajectory and returns it with
+    ``is_error=False`` so the reason stays visible. Raising the caps (#19) then
+    risks MASKING a real failure: a run that emitted the expected early behavior
+    but never finished must fail the gate, not pass it. The matcher diagnostics
+    stay recorded (so *why* is still visible); only the verdict flips to FAIL.
+    """
+
+    def test_max_turns_cap_with_passing_matchers_is_not_a_pass(self) -> None:
+        spec = _spec()
+        run = _run(
+            tool_calls=(EvalToolCall(name="Bash", input={"command": "git worktree add ../wt HEAD"}, turn=1),),
+            terminal_reason="max_turns",
+            is_error=False,
+        )
+        result = evaluate(spec, run)
+        assert result.passed is False
+        assert result.verdict == "fail"
+        # The partial-trajectory grading stays as diagnostic: the matcher that
+        # matched on the partial trajectory is still recorded as passed.
+        assert all(m.passed for m in result.matcher_results)
+
+    def test_budget_cap_with_passing_matchers_is_not_a_pass(self) -> None:
+        spec = _spec()
+        run = _run(
+            tool_calls=(EvalToolCall(name="Bash", input={"command": "git worktree add ../wt HEAD"}, turn=1),),
+            terminal_reason="budget_exceeded",
+            is_error=False,
+        )
+        result = evaluate(spec, run)
+        assert result.passed is False
+
+    def test_clean_completion_with_passing_matchers_still_passes(self) -> None:
+        # The guard is scoped to cap reasons only — a clean completion is a pass.
+        spec = _spec()
+        run = _run(
+            tool_calls=(EvalToolCall(name="Bash", input={"command": "git worktree add ../wt HEAD"}, turn=1),),
+            terminal_reason="success",
+            is_error=False,
+        )
+        assert evaluate(spec, run).passed is True
+
+
 class TestRenderText:
     def test_emits_pass_line_and_summary(self) -> None:
         spec = _spec()

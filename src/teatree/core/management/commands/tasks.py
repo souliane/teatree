@@ -375,6 +375,8 @@ class Command(TyperCommand):
 
     @staticmethod
     def _execute_sdk(task: Task) -> dict[str, str]:
+        import traceback  # noqa: PLC0415
+
         from teatree.agents.headless import run_headless  # noqa: PLC0415
         from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
@@ -390,11 +392,26 @@ class Command(TyperCommand):
             task.complete_with_attempt(exit_code=1, error=refusal, result={"routing_error": refusal})
             return {"exit_code": "1", "routing_error": refusal}
 
-        attempt = run_headless(
-            task,
-            phase=task.phase,
-            overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-        )
+        # Durable failure recording, the same semantics ``execute_headless_task``
+        # applies (souliane/teatree#2192): ``run_headless`` can RAISE on an SDK
+        # client startup / query / response error. The task is already CLAIMED;
+        # without this, the raise leaves it silently CLAIMED until lease reap, then
+        # re-fires forever with NO durable failed TaskAttempt — a wedge/retry-loop
+        # under the no-fallback cutover. Record a FAILED attempt carrying the error
+        # via the shared ``complete_with_attempt`` recorder (which FAILs the task,
+        # releasing the claim) and return a nonzero command result, mirroring the
+        # refusal path above rather than re-raising and dropping the result dict.
+        try:
+            attempt = run_headless(
+                task,
+                phase=task.phase,
+                overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
+            )
+        except Exception:  # noqa: BLE001 — ANY SDK failure (startup/query/response) must be recorded durably, not escape.
+            error = traceback.format_exc()
+            logger.warning("Task %s: SDK headless run raised; recording a failed attempt", task.pk)
+            task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error})
+            return {"exit_code": "1", "sdk_error": error}
         return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
 
 

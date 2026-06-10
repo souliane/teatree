@@ -738,11 +738,13 @@ class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:
         assert run.tool_calls[0].input["command"].startswith("git worktree add")
         assert run.text_blocks == ("Creating a worktree first.",)
 
-    def test_max_turns_cap_with_satisfying_trajectory_grades_to_pass(self, tmp_path: Path) -> None:
-        # is_error decision: a capped run that captured a trajectory lets the
-        # matchers grade it. The agent satisfied the positive matcher before the
-        # cap, so the scenario PASSES — the cap is surfaced via terminal_reason,
-        # not forced into a FAIL.
+    def test_max_turns_cap_with_satisfying_trajectory_is_diagnostic_not_a_gate_pass(self, tmp_path: Path) -> None:
+        # A capped run that captured a satisfying trajectory keeps that grading as
+        # DIAGNOSTIC — the matcher still records a pass, ``is_error`` stays False,
+        # and the cap is surfaced via ``terminal_reason``. But the run did NOT
+        # finish, so it must NOT count as a GATE pass (#2192): a run that emitted
+        # the expected early behavior yet hit a cap fails the gate, otherwise
+        # raising the caps (#19) would mask real failures.
         from teatree.eval.report import evaluate  # noqa: PLC0415
 
         spec = _spec(tmp_path)
@@ -759,8 +761,12 @@ class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:
         assert run.is_error is False
         result = evaluate(spec, run)
         assert result.skipped is False
-        assert result.passed is True
-        assert result.verdict == "pass"
+        # Diagnostic preserved: the matcher that matched on the partial trajectory
+        # is still recorded as passed (the reason/why stays visible)...
+        assert all(m.passed for m in result.matcher_results)
+        # ...but the cap-truncated run is NOT a gate pass.
+        assert result.passed is False
+        assert result.verdict == "fail"
 
     def test_max_turns_cap_with_no_satisfying_call_grades_to_fail(self, tmp_path: Path) -> None:
         # The matchers still decide: a capped trajectory that does NOT satisfy the
