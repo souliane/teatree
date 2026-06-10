@@ -24,6 +24,9 @@ class MatrixRow:
     score: float
     trials: int
     skipped: bool
+    #: Total metered cost for this cell (summed across trials; 0.0 for a
+    #: non-metered run) — the cost-regression gate's per-scenario substrate.
+    cost_usd: float = 0.0
 
 
 def matrix_cell(row: MatrixRow | None) -> str:

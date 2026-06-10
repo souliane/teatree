@@ -901,6 +901,83 @@ class TestEvalModelMatrix:
         assert "executed 0" in result.output
 
 
+class _CostRunner:
+    """An sdk runner whose per-scenario cost is fixed at construction."""
+
+    cost = 0.05
+
+    def __init__(self, *_: object, **__: object) -> None: ...
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=type(self).cost)
+
+
+@pytest.mark.django_db
+class TestMatrixCostRegressionGate:
+    """`--gate-cost-regression` must NOT be silently inert for `--models`/`--trials`."""
+
+    def _cheap_baseline(self, model: str) -> None:
+        class _Cheap(_CostRunner):
+            cost = 0.10
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _Cheap),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--models", model, "--baseline"])
+
+    def test_models_lane_fails_on_a_cost_blowup(self) -> None:
+        self._cheap_baseline("opus")
+
+        class _Spendy(_CostRunner):
+            cost = 1.00
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _Spendy),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--gate-cost-regression"])
+        assert result.exit_code == 1, result.output
+        assert "COST REGRESSED" in result.output
+
+    def test_models_lane_passes_when_cost_is_flat(self) -> None:
+        self._cheap_baseline("opus")
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _CostRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--gate-cost-regression"])
+        # cost fell (0.05 < 0.10), no regression
+        assert result.exit_code == 0, result.output
+        assert "COST REGRESSED" not in result.output
+
+    def test_trials_lane_fails_on_a_cost_blowup(self) -> None:
+        class _Cheap(_CostRunner):
+            cost = 0.10
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _Cheap),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--baseline"])
+
+        class _Spendy(_CostRunner):
+            cost = 1.00
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.multi_trial.SdkInProcessRunner", _Spendy),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--gate-cost-regression"])
+        assert result.exit_code == 1, result.output
+        assert "COST REGRESSED" in result.output
+
+
 class TestPrepareSubscription:
     def test_emits_prompt_and_transcript_path(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]

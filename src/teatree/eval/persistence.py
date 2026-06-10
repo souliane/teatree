@@ -135,6 +135,7 @@ def persist_pass_at_k(
                 model=model,
                 score=0.0 if result.skipped else result.pass_rate,
                 trials=result.trials,
+                cost_usd=result.cost_usd,
             )
     return run
 
@@ -159,6 +160,7 @@ def persist_matrix(
                 model=row.model,
                 score=0.0 if row.skipped else row.score,
                 trials=row.trials,
+                cost_usd=row.cost_usd,
             )
     return run
 

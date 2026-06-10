@@ -266,6 +266,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             persist=persist,
             baseline=baseline,
             gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
+            cost_regression_tolerance=cost_regression_tolerance,
             grader=grader,
             require_executed=require_executed,
         )
@@ -280,6 +282,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             persist=persist,
             baseline=baseline,
             gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
+            cost_regression_tolerance=cost_regression_tolerance,
             grader=grader,
             require_executed=require_executed,
         )

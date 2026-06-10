@@ -125,75 +125,86 @@ def persist_matrix_run(
     return record
 
 
-def gate_run_regressions(record: "EvalRunRecord", *, enabled: bool) -> bool:
-    """Diff *record* against each model's baseline; print drops; True if any regressed."""
-    if not enabled:
-        return False
-    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
-
-    any_regressed = False
-    any_baseline = False
-    for model in record.models:
-        baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
-        if baseline_run is None:
-            continue
-        any_baseline = True
-        for entry in EvalRunRecord.regression_diff(baseline=baseline_run, candidate=record, model=model):
-            if entry.regressed:
-                any_regressed = True
-                typer.echo(
-                    f"REGRESSED {entry.scenario_name} [{entry.model}]: "
-                    f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
-                )
-            elif entry.improved:
-                typer.echo(
-                    f"IMPROVED {entry.scenario_name} [{entry.model}]: "
-                    f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
-                )
-    if not any_baseline:
-        typer.echo("baseline: no baseline recorded for these models — nothing to compare")
-    return any_regressed
-
-
 #: Default relative cost-drift a scenario may rise before ``--gate-cost-regression`` fails it
 #: (0.20 = +20% vs the baseline run's per-scenario cost). Tune with ``--cost-regression-tolerance``.
 DEFAULT_COST_REGRESSION_TOLERANCE = 0.20
 
 
-def _gate_cost_regressions(record: "EvalRunRecord", *, enabled: bool, tolerance: float) -> bool:
-    """Diff *record*'s per-scenario cost against each model's baseline cost.
+class RegressionGates:
+    """Per-model baseline diffs that turn a regressed run RED at the CLI boundary.
 
-    Returns ``True`` (caller exits non-zero) when any scenario's cost rose by
-    more than *tolerance* (relative drift) versus the baseline run. A scenario
-    whose baseline cost is ``0.0`` (subscription/free baseline — no metered
-    reference) has an undefined relative drift, so it is skipped, never flagged
-    and never a divide-by-zero. When no model has a baseline at all, the gate
-    reports "no cost baseline" and passes.
+    Both gates diff the just-persisted *record* against each model's current
+    baseline run (excluding itself) and print the per-scenario drops; each
+    returns ``True`` when the caller should exit non-zero. Shared by all three
+    run shapes (single-trial, pass@k, matrix), so a cost blow-up fails loud in
+    every lane, not only the single-trial one.
     """
-    if not enabled:
-        return False
-    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
 
-    any_regressed = False
-    any_baseline = False
-    for model in record.models:
-        baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
-        if baseline_run is None:
-            continue
-        any_baseline = True
-        for entry in EvalRunRecord.cost_regression_diff(baseline=baseline_run, candidate=record, model=model):
-            if entry.pct_increase is None:
+    @staticmethod
+    def scores(record: "EvalRunRecord", *, enabled: bool) -> bool:
+        """Diff *record* against each model's baseline; print drops; True if any regressed."""
+        if not enabled:
+            return False
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+
+        any_regressed = False
+        any_baseline = False
+        for model in record.models:
+            baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
+            if baseline_run is None:
                 continue
-            if entry.pct_increase > tolerance:
-                any_regressed = True
-                typer.echo(
-                    f"COST REGRESSED {entry.scenario_name} [{entry.model}]: "
-                    f"${entry.baseline_cost_usd:.4f} -> ${entry.candidate_cost_usd:.4f} "
-                    f"(+{entry.pct_increase:.0%}, tolerance {tolerance:.0%})"
-                )
-    if not any_baseline:
-        typer.echo("cost: no cost baseline recorded for these models — nothing to compare")
-    return any_regressed
+            any_baseline = True
+            for entry in EvalRunRecord.regression_diff(baseline=baseline_run, candidate=record, model=model):
+                if entry.regressed:
+                    any_regressed = True
+                    typer.echo(
+                        f"REGRESSED {entry.scenario_name} [{entry.model}]: "
+                        f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
+                    )
+                elif entry.improved:
+                    typer.echo(
+                        f"IMPROVED {entry.scenario_name} [{entry.model}]: "
+                        f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
+                    )
+        if not any_baseline:
+            typer.echo("baseline: no baseline recorded for these models — nothing to compare")
+        return any_regressed
+
+    @staticmethod
+    def costs(record: "EvalRunRecord", *, enabled: bool, tolerance: float) -> bool:
+        """Diff *record*'s per-scenario cost against each model's baseline cost.
+
+        Returns ``True`` (caller exits non-zero) when any scenario's cost rose by
+        more than *tolerance* (relative drift) versus the baseline run. A scenario
+        whose baseline cost is ``0.0`` (subscription/free baseline — no metered
+        reference) has an undefined relative drift, so it is skipped, never flagged
+        and never a divide-by-zero. When no model has a baseline at all, the gate
+        reports "no cost baseline" and passes.
+        """
+        if not enabled:
+            return False
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+
+        any_regressed = False
+        any_baseline = False
+        for model in record.models:
+            baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
+            if baseline_run is None:
+                continue
+            any_baseline = True
+            for entry in EvalRunRecord.cost_regression_diff(baseline=baseline_run, candidate=record, model=model):
+                if entry.pct_increase is None:
+                    continue
+                if entry.pct_increase > tolerance:
+                    any_regressed = True
+                    typer.echo(
+                        f"COST REGRESSED {entry.scenario_name} [{entry.model}]: "
+                        f"${entry.baseline_cost_usd:.4f} -> ${entry.candidate_cost_usd:.4f} "
+                        f"(+{entry.pct_increase:.0%}, tolerance {tolerance:.0%})"
+                    )
+        if not any_baseline:
+            typer.echo("cost: no cost baseline recorded for these models — nothing to compare")
+        return any_regressed
 
 
 def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` flag through the persist+gate tail.
@@ -218,8 +229,8 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     cost_regressed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-        cost_regressed = _gate_cost_regressions(
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
     return any(not r.passed for r in results) or regressed or cost_regressed

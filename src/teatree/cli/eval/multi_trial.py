@@ -12,8 +12,9 @@ import sys
 import typer
 
 from teatree.cli.eval.run_modes import (
+    DEFAULT_COST_REGRESSION_TOLERANCE,
+    RegressionGates,
     RunGuards,
-    gate_run_regressions,
     persist_matrix_run,
     persist_pass_at_k_run,
     with_model,
@@ -35,6 +36,8 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     persist: bool = False,
     baseline: bool = False,
     gate_regressions: bool = False,
+    gate_cost_regression: bool = False,
+    cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
@@ -81,11 +84,15 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )
     regressed = False
+    cost_regressed = False
     if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
         record = persist_pass_at_k_run(results, model=model_name, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    failed = any(not r.ok for r in results) or regressed
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
+            record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
+        )
+    failed = any(not r.ok for r in results) or regressed or cost_regressed
     if failed and model_override is None:
         sys.exit(1)
     return failed
@@ -102,6 +109,8 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     persist: bool,
     baseline: bool,
     gate_regressions: bool,
+    gate_cost_regression: bool = False,
+    cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
 ) -> None:
@@ -124,10 +133,14 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed
     )
     regressed = False
+    cost_regressed = False
     if persist:
         record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    if any(not row.passed and not row.skipped for row in rows) or regressed:
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
+            record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
+        )
+    if any(not row.passed and not row.skipped for row in rows) or regressed or cost_regressed:
         sys.exit(1)
 
 
@@ -148,6 +161,7 @@ def _matrix_trial(
             score=0.0 if result.skipped else result.pass_rate,
             trials=result.trials,
             skipped=result.skipped,
+            cost_usd=result.cost_usd,
         )
     scenario_result = evaluate(spec, runner.run(spec), judge=grader)
     return MatrixRow(
@@ -157,4 +171,5 @@ def _matrix_trial(
         score=0.0 if scenario_result.skipped else (1.0 if scenario_result.passed else 0.0),
         trials=1,
         skipped=scenario_result.skipped,
+        cost_usd=scenario_result.run.cost_usd,
     )

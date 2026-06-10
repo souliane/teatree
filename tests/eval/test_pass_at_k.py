@@ -20,7 +20,7 @@ def _spec() -> EvalSpec:
     )
 
 
-def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False) -> ScenarioResult:
+def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False, cost_usd: float = 0.0) -> ScenarioResult:
     run = EvalRun(
         spec_name=spec.name,
         tool_calls=(),
@@ -29,6 +29,7 @@ def _result(spec: EvalSpec, *, passed: bool, skipped: bool = False) -> ScenarioR
         is_error=not passed and not skipped,
         raw_stdout="",
         raw_stderr="",
+        cost_usd=cost_usd,
     )
     return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=skipped)
 
@@ -83,3 +84,8 @@ class TestRunPassAtK:
         spec = _spec()
         with pytest.raises(ValueError, match="require must be"):
             run_pass_at_k(spec, lambda s: _result(s, passed=True), k=1, require="most")
+
+    def test_sums_cost_across_every_trial(self) -> None:
+        spec = _spec()
+        result = run_pass_at_k(spec, lambda s: _result(s, passed=True, cost_usd=0.25), k=3)
+        assert result.cost_usd == pytest.approx(0.75)

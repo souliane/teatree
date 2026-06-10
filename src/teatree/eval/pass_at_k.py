@@ -36,6 +36,9 @@ class PassAtKResult:
     passes: int
     require: str
     skipped: bool
+    #: Total metered cost across every trial (0.0 for a non-metered/subscription
+    #: run) — the substrate the cost-regression gate reads in the pass@k lane.
+    cost_usd: float = 0.0
 
     @property
     def pass_rate(self) -> float:
@@ -65,8 +68,10 @@ def run_pass_at_k(
         raise ValueError(msg)
     passes = 0
     skipped_all = True
+    cost_usd = 0.0
     for _ in range(k):
         result = runner(spec)
+        cost_usd += result.run.cost_usd
         if result.skipped:
             continue
         skipped_all = False
@@ -78,4 +83,5 @@ def run_pass_at_k(
         passes=passes,
         require=require,
         skipped=skipped_all,
+        cost_usd=cost_usd,
     )
