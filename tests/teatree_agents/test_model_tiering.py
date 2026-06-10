@@ -216,6 +216,20 @@ class TestResolveSpawnModel:
         # coding inherits (phase model None) but a skill floor pins it up.
         assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=cfg) == "fable"
 
+    def test_inheriting_phase_floor_only_raises_when_stronger_than_assumed_opus(self, tmp_path: Path) -> None:
+        # An inheriting phase (coding) has phase model None, which tier_rank
+        # scores as the assumed-opus reasoning default. A per-skill floor only
+        # raises it when STRICTLY stronger than that default: an `opus` (or
+        # weaker) floor is silently dropped (still inherits → None), while a
+        # `fable` floor raises it to the floor.
+        opus_floor = tmp_path / "opus.toml"
+        _write_toml(opus_floor, '[agent.skill_models]\narchitecture-design = "opus"\n')
+        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=opus_floor) is None
+
+        fable_floor = tmp_path / "fable.toml"
+        _write_toml(fable_floor, '[agent.skill_models]\narchitecture-design = "fable"\n')
+        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=fable_floor) == "fable"
+
     def test_default_config_path_used_when_none(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
         _write_toml(cfg, '[agent.skill_models]\ncode-review = "fable"\n')

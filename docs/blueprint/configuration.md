@@ -290,8 +290,12 @@ of the phase tier and every loaded skill's floor (most-capable-wins via
 `cost.tier_rank`, capability order `haiku < sonnet < opus < fable`; a floor only
 RAISES, never downgrades). **MODEL only** — there is deliberately no per-skill
 effort axis. With this table absent the spawn model is byte-for-byte the
-per-phase tier. `t3 doctor` WARNs on a floor that names no known tier (likely a
-typo) since an unknown id ranks most-capable.
+per-phase tier. On an *inheriting* phase (`coding`/`debugging`, whose phase tier
+is `None`) a floor raises the spawn model only when it is *strictly stronger*
+than the assumed-opus inherited default — `tier_rank(None)` equals
+`tier_rank("opus")`, so an `opus`-or-weaker floor is silently dropped (the phase
+still inherits) and only a `fable` floor pins it up. `t3 doctor` WARNs on a floor
+that names no known tier (likely a typo) since an unknown id ranks most-capable.
 
 ### 10.2 Django Settings (framework-level, in teatree's settings.py)
 
