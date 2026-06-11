@@ -1,4 +1,4 @@
-"""Orphan auto-isolated worktree env-dir reaping for ``t3 workspace clean-all``.
+"""Orphan auto-isolated worktree env-dir reaping for ``t3 teatree workspace clean-all``.
 
 Its own module so :mod:`teatree.core.management.commands._workspace_cleanup`
 stays under the module-health LOC + function caps (mirrors
