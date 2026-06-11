@@ -129,6 +129,16 @@ The Module-Level Architectural Check above asks *what's inside* each touched fil
 
 Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
 
+#### Keep BLUEPRINT Tight (Qualitative — Not a Byte Gate)
+
+When the diff touches `BLUEPRINT.md` (or a `docs/blueprint/*.md` appendix), review the prose for bloat as **reviewer judgment** — there is no hard size cap or byte-delta budget (a single hand-edited KB constant every BLUEPRINT-touching PR had to bump just made concurrent PRs re-break each other's CI, with no quality signal). The BLUEPRINT is architectural, not a prose mirror of the code. Flag:
+
+1. **Prose that restates code rather than capturing architecture.** A paragraph that walks through what a function does line-by-line belongs in a docstring, `--help` text, `CLAUDE.md`/`AGENTS.md`, or the code itself — not the BLUEPRINT. The BLUEPRINT answers "why is the system shaped this way", not "what does this function do".
+2. **Stale or duplicated sections.** A section describing a mechanism that the diff just changed (or removed) must be updated or deleted in the same PR — see the documentation-alignment rule. Two sections saying the same thing is a consolidation finding: point at the one that should remain.
+3. **Appendix-class detail in the top-level file.** When a section grows past architectural overview into implementation depth, suggest splitting it into a linked appendix under `docs/blueprint/` (name the target path) so the top-level file stays digestible. The top-level file holds the architecture; appendices hold the depth. BLUEPRINT.md stays one file — move detail out, never split the top-level file itself.
+
+Scale the finding to impact: a section that legitimately documents a new architectural invariant is fine even if it grows the file — the test is "does this prose earn its place as architecture", not "how many bytes did it add". The full-tree staleness sweep (every section vs current code) is the periodic holistic review's job (`ac-reviewing-codebase` / the architectural-review loop); this per-diff check is scoped to what the change touches.
+
 #### Read BLUEPRINT.md Before Designing (Non-Negotiable)
 
 Before proposing a design that changes how existing code is structured, read `BLUEPRINT.md` and any architectural-invariants doc FIRST, not last. Inventory existing patterns touching the same subsystem before proposing new ones. If the proposed design reverses a BLUEPRINT invariant, surface that to the user BEFORE designing around it — the user decides whether to overturn the invariant; if yes, update BLUEPRINT.md in the same change.
