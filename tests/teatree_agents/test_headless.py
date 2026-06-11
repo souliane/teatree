@@ -278,6 +278,37 @@ class TestRunHeadlessUsageLimit(TestCase):
         assert "usage_limit" not in (attempt.error or "")
         assert task.status == Task.Status.COMPLETED
 
+    def test_non_limit_error_result_is_a_failure_not_a_completion(self) -> None:
+        # A ``ResultMessage(is_error=True)`` whose text is NOT a usage-limit
+        # message is a genuine FAILED run (#1764 class) — it must record a failed
+        # attempt and leave the task FAILED, never be laundered into a completion
+        # that advances the ticket FSM over a failed run.
+        error_message = _result_message(
+            subtype="error_during_execution",
+            is_error=True,
+            result="The agent crashed with an unhandled exception.",
+        )
+        with _fake_sdk([_assistant_text('{"summary": "partial"}'), error_message]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert task.status == Task.Status.FAILED
+
+    def test_missing_terminal_result_is_a_failure_not_a_completion(self) -> None:
+        # No terminal ``ResultMessage`` at all (the stream ended before the CLI
+        # emitted one) is also a failed run, not a silent completion.
+        with _fake_sdk([_assistant_text('{"summary": "partial"}')]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert task.status == Task.Status.FAILED
+
 
 def test_limit_signature_matches_known_phrases() -> None:
     msg = _result_message(is_error=True, result="You've hit your weekly limit.")
@@ -824,6 +855,20 @@ class TestBuildOptions(TestCase):
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
         assert options.permission_mode == "bypassPermissions"
+
+    def test_system_prompt_appends_claude_code_preset(self) -> None:
+        # A plain-str system_prompt REPLACES the claude_code preset (the SDK maps
+        # it to --system-prompt); a headless run must APPEND to the preset (the
+        # deleted ``claude -p`` path used --append-system-prompt), or every
+        # production run loses the Claude Code preset.
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        options = headless_mod._build_options(task, "my context", phase="coding", skills=[])
+        assert options.system_prompt == {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": "my context",
+        }
 
 
 class TestBuildOptionsSpawnModelFloor(TestCase):

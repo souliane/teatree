@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
+from claude_agent_sdk.types import SystemPromptPreset
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
@@ -203,6 +204,36 @@ _USAGE_LIMIT_PHRASES = (
 )
 
 
+_RESULT_ERROR_PREFIX = "result_error: "
+
+
+def _error_result_reason(message: ResultMessage | None) -> str | None:
+    """Return a failure reason when the run did NOT complete cleanly, else ``None``.
+
+    A missing terminal ``ResultMessage`` (the stream ended before the CLI emitted
+    one) and a ``ResultMessage(is_error=True)`` that is NOT a usage-limit message
+    are both genuine FAILED runs (#1764 class): they must record a failed attempt
+    carrying the CLI's own ``result`` / ``errors`` / ``api_error_status``, never
+    be laundered into a completion that advances the ticket FSM over a failed run.
+    Called only AFTER :func:`_limit_signature` has already claimed a limit error,
+    so a limit message never reaches here.
+    """
+    if message is None:
+        return f"{_RESULT_ERROR_PREFIX}no terminal ResultMessage — the run ended without completing"
+    if not message.is_error:
+        return None
+    detail = str(message.result or "").strip()
+    if not detail and message.errors:
+        detail = "; ".join(str(err) for err in message.errors)
+    status = message.api_error_status
+    parts = [f"subtype={message.subtype}"]
+    if status:
+        parts.append(f"api_error_status={status}")
+    if detail:
+        parts.append(detail)
+    return _RESULT_ERROR_PREFIX + " — ".join(parts)
+
+
 def _limit_signature(message: ResultMessage | None) -> str:
     """Return the matched usage-limit phrase, or ``""`` when not a limit error.
 
@@ -269,6 +300,10 @@ def run_headless(
         reason = f"{_USAGE_LIMIT_PREFIX}{limit} — subscription quota exhausted; retry after the limit resets"
         logger.warning("Task %s hit a usage limit: %s", task.pk, reason)
         return _record_failure(task, error=reason)
+    error_reason = _error_result_reason(outcome.result_message)
+    if error_reason is not None:
+        logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
+        return _record_failure(task, error=error_reason)
     return _record_success(task, outcome, phase=phase)
 
 
@@ -286,7 +321,11 @@ def _build_options(task: Task, system_context: str, *, phase: str, skills: list[
     add_dirs = [cwd] if cwd else []
     resume_session_id = _get_resume_session_id(task)
     return ClaudeAgentOptions(
-        system_prompt=system_context,
+        # APPEND to the claude_code preset, never REPLACE it: a plain-str
+        # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
+        # used --append-system-prompt), which would drop the Claude Code preset
+        # on every production headless run.
+        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
         model=resolve_spawn_model(phase, skills=skills) or None,
         cwd=cwd,
         add_dirs=add_dirs,
