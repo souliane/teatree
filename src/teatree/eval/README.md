@@ -214,9 +214,17 @@ scenario, the metered `--backend sdk` path — Docker-default), `pinned-regressi
 `negative-control` / `skill-triggers` / `coverage` (one free lane in isolation),
 `history` / `list` / `prepare-subscription` (introspection). The bare default
 accepts the same suite-shaping flags as `all` — `--free-only`, `--backend`,
-`--transcript-dir`, `--docker` — so `t3 eval --free-only` and `t3 eval all
---free-only` are identical. The process exits non-zero if ANY lane fails
+`--transcript-dir`, `--docker`, `--local` — so `t3 eval --free-only` and `t3 eval
+all --free-only` are identical. The process exits non-zero if ANY lane fails
 (fail-loud); a SKIP never counts as a green pass.
+
+A metered suite (`--backend sdk`, the metered AI lane + the live prose-judge)
+bills the API, so it DEFAULTS to running inside the CI container
+(`dev/Dockerfile.test`) — exactly like `t3 eval run` / `t3 eval benchmark` — and a
+metered host run never happens silently. `--local` is the explicit host escape (a
+quick check, NOT the reproducible gate; it prints a WARNING). `--free-only` runs
+only the host-safe deterministic lanes, so it is never metered and stays on the
+host.
 
 `--html <path>` writes a self-contained whole-suite HTML report (inline CSS, no
 external assets): a plain-language final verdict banner at the top, then a lane
@@ -231,12 +239,16 @@ still publishes its report).
 `t3 eval all` is the spelled-out form of the bare `t3 eval` default — both call
 the same `run_full_suite` chokepoint, so they run byte-for-byte the same suite,
 and `all` is kept for scripts/CI that prefer to name the full run explicitly. It
-runs every lane in one summary table: the six free deterministic lanes
+runs every lane in one summary table: the seven free deterministic lanes
 (`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
-`transcript-replay`, `corpus-grade`) plus the metered AI lane. The `skill-coverage` lane is
-warn-first (reports a gap, exit 0). The AI lane never meters silently — `--backend sdk` opts in.
-A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
-command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
+`transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
+The `skill-coverage` lane is warn-first (reports a gap, exit 0). The AI lane never
+meters silently — `--backend sdk` opts in. The ADVISORY `skill-prose-judge` lane
+fires the LIVE metered judge, so it runs ONLY under the metered opt-in
+(`--backend sdk`) — never on the default subscription path (which advertises "no
+API spend"). A missing real transcript SKIPs (never FAILs) the transcript-replay
+lane, and the command exits non-zero only on a real FAIL. Driver:
+`/t3:running-evals`.
 
 `--trials`/`--models` always force the metered `sdk` runner regardless of
 `--backend` (a multi-trial / matrix run cannot be served from a single saved
@@ -614,10 +626,11 @@ Per the campaign's decided philosophy this lane is **ADVISORY**: it logs scores
 and nominates, but a low score NEVER raises or makes the lane exit non-zero. A
 judge-only signal is too soft to gate CI deterministically — the
 matcher/structural lanes do that. `skill_prose_judge_lane` always returns
-`passed=True`, so the lane joins the metered path of `t3 eval all` (it makes a
-judge call) without ever failing the suite; it SKIPs cleanly when `claude` is
-not on PATH. The live judge run is metered — the unit tests mock the judge
-boundary, the metered path drives it for real.
+`passed=True`, so the lane never fails the suite; it SKIPs cleanly when `claude`
+is not on PATH. The live judge run is metered, so the lane is gated on the
+explicit metered opt-in (`--backend sdk`) — it does NOT fire on the default
+subscription `t3 eval` / `t3 eval all` path (which advertises "no API spend").
+The unit tests mock the judge boundary; the metered path drives it for real.
 
 ## Triggering
 

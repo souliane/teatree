@@ -28,6 +28,7 @@ from rich.table import Table
 
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
@@ -267,6 +268,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     free_only: bool,
     docker: bool,
     strict: bool,
+    local: bool = False,
     parallel: int = DEFAULT_PARALLEL,
     html_path: Path | None = None,
 ) -> None:
@@ -295,7 +297,14 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     default (the clarity is in the verdict text, not a confusing non-zero); pass
     ``--strict`` to make a setup-skipped lane exit non-zero for CI use.
     """
-    if docker:
+    # The metered SDK AI lane + the live prose-judge bill the API, so the whole
+    # suite defaults to the CI container when they are in scope (`--backend sdk`,
+    # not `--free-only`) — exactly like `eval run` / `eval benchmark`. `--docker`
+    # forces the container for any backend; `--local` is the explicit host escape;
+    # `--free-only` runs only the host-safe deterministic lanes, so it is never
+    # metered. A metered host run must never happen silently.
+    metered = backend != SUBSCRIPTION_BACKEND and not free_only
+    if docker or should_route_to_docker(metered=metered, local=local):
         passthrough = _full_suite_docker_passthrough(
             backend=backend, free_only=free_only, strict=strict, parallel=parallel, html_path=html_path
         )
@@ -304,6 +313,8 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
+    if local:
+        warn_local_metered(metered=metered)
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
@@ -316,19 +327,20 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         _timed(lambda: skill_command_validity_lane(validate_shipped_skill_commands())),
     ]
     if not free_only:
-        # The AI lane runs first, then the ADVISORY Tier-3 prose-judge lane (both
-        # model-metered, so off the --free-only path). skill_prose_judge_lane
-        # always returns passed=True, so a low prose score never fails the suite —
-        # only the deterministic lanes gate. _timed is eager and evaluated
-        # left-to-right, so order is preserved.
-        lanes.extend(
-            [
-                _timed(
-                    lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel)
-                ),
-                _timed(lambda: skill_prose_judge_lane(run_prose_judge())),
-            ]
+        # The AI lane runs first. It is itself backend-gated: the default
+        # subscription backend grades on-disk transcripts (no API spend) and never
+        # shells the metered runner, so it is safe on the bare-`t3 eval` path.
+        lanes.append(
+            _timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
         )
+    if metered:
+        # The ADVISORY Tier-3 prose-judge fires the LIVE metered ClaudeJudge, so it
+        # is gated on the explicit metered opt-in (`--backend sdk`), NOT merely on
+        # `not --free-only` — bare `t3 eval` (default subscription, advertised "no
+        # API spend") must never silently bill the judge, and `--free-only` (which
+        # is never metered) drops it. skill_prose_judge_lane always returns
+        # passed=True, so a low prose score never fails the suite.
+        lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
     Console().print(build_summary_table(lanes))
     print_verdict(lanes)
     if html_path is not None:

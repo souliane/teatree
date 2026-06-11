@@ -120,6 +120,12 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     summaries = summarize_benchmark(rows, tags)
     renderer = render_benchmark_json if output_format == "json" else render_benchmark_text
     typer.echo(renderer(summaries))
+    # An errored cell (auth/CLI failure) is counted as executed by the all-skipped
+    # gate, so an all-errored run would otherwise exit 0 (fake green). Like the
+    # matrix lane (multi_trial.run_model_matrix_lane), surface it as a non-zero
+    # exit — a graded FAIL stays a 0-exit datum, an ERRORED run does not.
+    if any(row.errored for row in rows):
+        raise typer.Exit(code=1)
 
 
 def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.

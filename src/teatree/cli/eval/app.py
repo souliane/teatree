@@ -487,6 +487,11 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help="Run a metered `--backend sdk` suite on the HOST (quick check, NOT the gate; prints a WARNING).",
+    ),
     parallel: int = typer.Option(
         DEFAULT_PARALLEL,
         "--parallel",
@@ -500,15 +505,13 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
-    Bare ``t3 eval`` (no subcommand, no args) runs every lane in one go and
-    prints a single aggregated summary table plus a plain-language verdict — the
-    suite the user reaches for by default. Subcommands are the targeted/special
-    path: ``run`` (a single AI scenario, the metered ``--backend sdk --docker``
-    path), ``pinned-regressions`` / ``negative-control`` / ``skill-triggers`` /
-    ``coverage`` (one free lane), ``history`` / ``list`` / ``prepare-subscription``
-    (introspection). ``--html`` writes a whole-suite HTML report for CI to
-    publish. The process exits non-zero if ANY lane fails (fail-loud); ``--strict``
-    also fails on a setup-skipped lane (the AI lane).
+    Bare ``t3 eval`` runs every lane in one go and prints a single aggregated
+    summary table plus a plain-language verdict — the default. Subcommands are the
+    targeted path: ``run`` (a single AI scenario, the metered ``--backend sdk``
+    path), one-free-lane (``pinned-regressions`` / ``negative-control`` / …), and
+    introspection (``history`` / ``list`` / ``prepare-subscription``). ``--html``
+    writes a whole-suite report; the process exits non-zero if ANY lane fails
+    (fail-loud); ``--strict`` also fails on a setup-skipped lane.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -518,6 +521,7 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         free_only=free_only,
         docker=docker,
         strict=strict,
+        local=local,
         parallel=parallel,
         html_path=html,
     )

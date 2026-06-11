@@ -47,6 +47,14 @@ def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help=(
+            "Run a metered `--backend sdk` suite on the HOST instead of the default CI container — a "
+            "quick local check only, NOT the reproducible gate (use Docker/CI for that)."
+        ),
+    ),
     parallel: int = typer.Option(
         DEFAULT_PARALLEL,
         "--parallel",
@@ -71,6 +79,7 @@ def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         free_only=free_only,
         docker=docker,
         strict=strict,
+        local=local,
         parallel=parallel,
         html_path=html,
     )

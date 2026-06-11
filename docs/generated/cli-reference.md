@@ -1235,6 +1235,9 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --docker                         Run inside the exact CI image               │
 │                                  (dev/Dockerfile.test) for parity; host-run  │
 │                                  is the default.                             │
+│ --local                          Run a metered `--backend sdk` suite on the  │
+│                                  HOST (quick check, NOT the gate; prints a   │
+│                                  WARNING).                                   │
 │ --parallel              INTEGER  Run this many AI-lane scenarios             │
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
@@ -1331,6 +1334,10 @@ Usage: t3 eval all [OPTIONS]
 │ --docker                         Run inside the exact CI image               │
 │                                  (dev/Dockerfile.test) for parity; host-run  │
 │                                  is the default.                             │
+│ --local                          Run a metered `--backend sdk` suite on the  │
+│                                  HOST instead of the default CI container —  │
+│                                  a quick local check only, NOT the           │
+│                                  reproducible gate (use Docker/CI for that). │
 │ --parallel              INTEGER  Run this many AI-lane scenarios             │
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
