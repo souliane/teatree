@@ -106,6 +106,27 @@ class TestResolveDataDir:
             resolve_data_dir(env={"XDG_DATA_HOME": str(canonical_xdg)}, home=home, repo_root=repo)
 
 
+class TestIsolatedSlug:
+    def test_slug_is_deterministic_and_short(self) -> None:
+        slug = paths.isolated_slug(Path("/some/worktree/org/repo"))
+        assert slug == paths.isolated_slug(Path("/some/worktree/org/repo"))
+        assert len(slug) == 12
+
+    def test_distinct_repos_get_distinct_slugs(self) -> None:
+        assert paths.isolated_slug(Path("/a/repo")) != paths.isolated_slug(Path("/b/repo"))
+
+    def test_slug_matches_resolve_data_dir(self, tmp_path: Path) -> None:
+        """The reaper's slug must equal the dir name the resolver actually creates."""
+        home = tmp_path / "home"
+        repo = _make_repo(tmp_path / "wt", worktree=True)
+        resolved = resolve_data_dir(env={}, home=home, repo_root=repo)
+        assert resolved.path.name == paths.isolated_slug(repo)
+        assert resolved.path.parent == _worktree_isolation_root(home)
+
+    def test_auto_isolated_dir_ends_in_teatree_worktrees(self) -> None:
+        assert paths.auto_isolated_worktrees_dir().name == "teatree-worktrees"
+
+
 class TestSeedIsolatedDb:
     def test_seeds_auto_isolated_dir_from_canonical(self, tmp_path: Path) -> None:
         canonical = tmp_path / "canonical" / "db.sqlite3"

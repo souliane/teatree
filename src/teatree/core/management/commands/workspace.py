@@ -34,6 +34,7 @@ from teatree.core.management.commands._workspace_docker import (
     reap_stale_local_stacks,
     reap_stale_report,
 )
+from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
@@ -561,7 +562,7 @@ class Command(TyperCommand):
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
     ) -> list[str]:
-        """Prune merged worktrees, stale branches, stashes, orphan databases + docker, and old DSLR snapshots."""
+        """Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots."""
         workspace = _workspace_dir()
         cleaned: list[str] = []
         interactive = _is_interactive()
@@ -581,6 +582,7 @@ class Command(TyperCommand):
 
         cleaned.extend(drop_orphan_databases())
         cleaned.extend(reap_orphan_worktree_docker())
+        cleaned.extend(reap_orphan_isolated_worktree_roots())
 
         repo_root = Path.cwd()
         if (repo_root / ".git").exists():
