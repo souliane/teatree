@@ -258,13 +258,14 @@ def _reconcile_slug_against_reviewed_sha(
     initial_live = fetch_live_head_sha(initial_slug, pr_id, host_kind=host_kind)
     if initial_live == reviewed_sha:
         return initial_slug
-    if not initial_live:
-        # The forge call failed (missing credentials, network) or returned an
-        # empty payload — that's a transient/auth condition, not a cross-repo
-        # confusion. Defer to ``assert_merge_preconditions``, which raises the
-        # established "could not resolve the live head" error against the
-        # initial slug.
-        return initial_slug
+    # An empty ``initial_live`` is itself a #1335 signal, NOT merely a transient
+    # auth/network failure: a cross-repo CLEAR resolves to the running clone's
+    # ``origin`` (the wrong repo), which has no PR <pr_id> at all, so the forge
+    # returns an empty head for it. Fall through to the cross-repo probe so a
+    # candidate overlay repo whose PR <pr_id> carries ``reviewed_sha`` is
+    # recovered. The genuinely-absent case (no candidate matches) is still
+    # covered by the ``MergePreconditionError`` below, whose message names every
+    # candidate considered — so a real auth/network outage still fails loud.
     candidates = _iter_candidate_repo_slugs()
     # The initial slug was already probed above — exclude it from the secondary
     # set so the candidates list in the error message reflects what was probed.
