@@ -93,6 +93,14 @@ class AgentConfig:
         Default ``"opus"`` (which the tier/cost machinery maps to
         ``claude-opus-4-8``), so Opus 4.8 compatibility is preserved by
         construction. Normalised through :func:`_normalize_model`.
+    *   ``honesty_model`` — the most-honest model a situational honesty-critical
+        escalation routes verification spawns to (teatree#2263). Default
+        ``"fable"`` so "today Fable, tomorrow the most-honest model" is a one-line
+        config edit. Normalised through :func:`_normalize_model`; an absent key
+        or a sentinel value falls back to ``"fable"`` (a concrete model id, never
+        the inherit sentinel — the escalation must route to a real model). The
+        escalation still passes through :func:`teatree.agents.model_tiering._downgrade_fable`,
+        so the ``fable_enabled`` kill-switch reverts an escalated Fable too.
     *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
         keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
         ``bool`` value enables the registry default ``fanout_n`` (``True``) or
@@ -110,6 +118,7 @@ class AgentConfig:
     fable_enabled: bool = True
     fable_fallback: str = "opus"
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
+    honesty_model: str = "fable"
 
 
 def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
@@ -162,6 +171,19 @@ def _fable_fallback_from(raw: object) -> str:
     return _normalize_model(raw) or "opus"
 
 
+def _honesty_model_from(raw: object) -> str:
+    """Normalise the ``[agent] honesty_model`` value to a non-empty model id.
+
+    Shares :func:`_normalize_model`'s boundary (whitespace strip + sentinel
+    handling). An absent key or a sentinel value (which normalises to ``None``)
+    falls back to ``"fable"`` — the escalation target must always be a concrete
+    model id, never the inherit sentinel.
+    """
+    if raw is None:
+        return "fable"
+    return _normalize_model(raw) or "fable"
+
+
 def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
     """Build an :class:`AgentConfig` from the parsed ``[agent]`` table.
 
@@ -176,6 +198,7 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         fable_enabled=bool(agent.get("fable_enabled", True)),
         fable_fallback=_fable_fallback_from(agent.get("fable_fallback")),
         phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
+        honesty_model=_honesty_model_from(agent.get("honesty_model")),
     )
 
 
