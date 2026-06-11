@@ -8,6 +8,14 @@ from ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
 per-setting resolvers live in ``resolution`` and are reached through the package
 facade at call-time (the partition's loader -> resolution edge, deferred to avoid
 the loader/resolution/discovery import cycle).
+
+``load_config`` builds only the **file tier** (the global ``[teatree]`` table
+merged onto the dataclass defaults). The higher tiers — env, the #1775 DB
+override tier (``ConfigSetting`` rows), and the per-overlay ``[overlays.<name>]``
+table — are layered on top by ``resolution.get_effective_settings``; consult its
+docstring for the full ``env -> DB -> per-overlay -> global -> default``
+precedence. Callers that need effective values must use ``get_effective_settings``,
+not the bare ``load_config().user`` (which sees neither env, DB, nor per-overlay).
 """
 
 import tomllib

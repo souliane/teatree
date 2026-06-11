@@ -1,10 +1,16 @@
-"""Effective-settings resolution — env + per-overlay overrides + the autonomy collapse.
+"""Effective-settings resolution — env + DB + per-overlay overrides + the autonomy collapse.
 
 ``get_effective_settings`` (the single resolver both the active-overlay and
 named-overlay paths share), ``cadence_seconds``, the autonomy-collapse
 (``_apply_autonomy``), and the per-setting toml resolvers ``load_config`` uses.
 Split out of the package module for the module-health LOC cap; re-exported from
 ``teatree.config``.
+
+The override tiers it layers on the file-tier ``UserSettings`` (later wins):
+per-overlay ``[overlays.<name>]`` TOML, then the #1775 DB tier
+(``_db_setting_overrides`` reading ``ConfigSetting`` rows), then ``T3_*`` env.
+The DB read is fail-safe (an absent/empty table or unconfigured Django yields no
+overrides) so an empty table is a provable no-op.
 
 ``_resolve_autonomy`` / ``_resolve_speed`` are collapsed into the generic
 ``_resolve_enum_setting`` registry — both are plain enum-or-default reads.
@@ -19,7 +25,13 @@ from typing import Any, Protocol
 import teatree.config as _facade
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
-from teatree.config.settings import ENV_SETTING_OVERRIDES, OverlayEntry, TeaTreeConfig, UserSettings
+from teatree.config.settings import (
+    ENV_SETTING_OVERRIDES,
+    OVERLAY_OVERRIDABLE_SETTINGS,
+    OverlayEntry,
+    TeaTreeConfig,
+    UserSettings,
+)
 from teatree.config_speak import speak_from_subtable
 from teatree.types import SlackVoiceClassifierMode, SpeakConfig
 
@@ -98,12 +110,21 @@ def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostM
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
-    """Return the user settings with env and per-overlay overrides applied.
+    """Return the user settings with env, DB, and per-overlay overrides applied.
 
     Resolution per field (first match wins): ``T3_*`` env var (see
-    ``ENV_SETTING_OVERRIDES``), active overlay's override from
-    ``[overlays.<name>]``, global ``[teatree]`` value, ``UserSettings``
-    dataclass default.
+    ``ENV_SETTING_OVERRIDES``), the DB override tier (``ConfigSetting`` rows,
+    #1775), the active overlay's override from ``[overlays.<name>]``, the global
+    ``[teatree]`` value, the ``UserSettings`` dataclass default — i.e.
+
+        env -> DB -> per-overlay TOML -> global [teatree] -> dataclass default.
+
+    The DB tier is the first slice of "move config to the database" (#1775): a
+    ``ConfigSetting`` row for a key in ``OVERLAY_OVERRIDABLE_SETTINGS`` overrides
+    the file value but is still beaten by an explicit env var. An EMPTY table is a
+    provable no-op — :func:`_db_setting_overrides` returns ``{}`` — so nothing
+    regresses during the migration window. The read fails safe to ``{}`` whenever
+    Django is not configured or the table does not exist yet.
 
     The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
     ``get_overlay()``), then cwd-based discovery, then the single
@@ -111,12 +132,12 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
 
     ``overlay_name`` resolves a SPECIFIC named overlay instead of the active
     one — the loop's scanner-builders fan out over every registered overlay,
-    not just the session's. In that mode the env layer is NOT applied; the
-    per-overlay ``[overlays.<name>]`` overrides and the autonomy collapse run
-    identically. This is the single resolver both paths share.
+    not just the session's. In that mode the env layer is NOT applied; the DB
+    tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
+    collapse run identically. This is the single resolver both paths share.
 
     To make an additional setting overridable, add it to
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or ``ENV_SETTING_OVERRIDES``
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay + DB) or ``ENV_SETTING_OVERRIDES``
     (env); the resolver picks it up generically via ``dataclasses.replace``.
     The one non-generic override is ``speak``: its ``[overlays.<name>.speak]``
     sub-table MERGES onto the base (see :func:`_overlay_speak_override`) rather
@@ -129,7 +150,15 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """
     config = _facade.load_config()
     base = config.user
-    overrides = _overlay_overrides_by_name(overlay_name) if overlay_name is not None else _active_overlay_overrides()
+    if overlay_name is not None:
+        overrides = _overlay_overrides_by_name(overlay_name)
+    else:
+        active = _active_overlay_entry()
+        overrides = dict(active.overrides) if active is not None else {}
+    # Precedence (later wins): per-overlay TOML -> DB tier -> env.
+    overrides.update(_db_setting_overrides())
+    if overlay_name is None:
+        overrides.update(_env_setting_overrides())
     settings = base if not overrides else replace(base, **overrides)
     speak_override = _overlay_speak_override(config, overlay_name, base.speak)
     if speak_override is not None:
@@ -165,14 +194,73 @@ def _overlay_speak_override(
 
 
 def _active_overlay_overrides() -> dict[str, Any]:
-    """Per-overlay overrides for the active overlay, with the env layer applied."""
+    """Per-overlay overrides for the active overlay, with the DB + env layers applied.
+
+    Precedence (later wins): per-overlay TOML -> DB tier -> env. Retained as the
+    composed helper for the public re-export; :func:`get_effective_settings`
+    layers the same tiers inline so the named-overlay path can skip the env layer.
+    """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
+    overrides.update(_db_setting_overrides())
+    overrides.update(_env_setting_overrides())
+    return overrides
+
+
+def _env_setting_overrides() -> dict[str, Any]:
+    """``T3_*`` env overrides, the highest-precedence tier (see ``ENV_SETTING_OVERRIDES``)."""
+    overrides: dict[str, Any] = {}
     for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
         raw = os.environ.get(env_var)
         if raw is not None:
             overrides[field_name] = parser(raw)
     return overrides
+
+
+def _db_setting_overrides() -> dict[str, Any]:
+    """The ``ConfigSetting`` DB override tier (#1775) — scoped to overridable keys.
+
+    Returns ``{field_name: coerced_value}`` for every ``ConfigSetting`` row whose
+    ``key`` is a registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field, coercing the
+    stored JSON value with that registry's parser so the resolved field keeps its
+    declared type. Rows for unknown / non-overridable keys are ignored, so a
+    stray row can never silently mutate the resolved settings.
+
+    Fails safe to ``{}`` — an empty/absent table, an unconfigured Django, or a
+    pre-migration database (the table does not exist yet) all yield no overrides,
+    so the file/env source is unchanged. This is the #1775
+    no-regression-during-migration invariant: the read is on every config
+    resolution and must never raise into it.
+    """
+    rows = _load_config_setting_rows()
+    if not rows:
+        return {}
+    overrides: dict[str, Any] = {}
+    for key, value in rows:
+        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+        if parser is None:
+            continue
+        overrides[key] = parser(value)
+    return overrides
+
+
+def _load_config_setting_rows() -> list[tuple[str, Any]]:
+    """Read every ``ConfigSetting`` ``(key, value)`` pair, or ``[]`` on any failure.
+
+    Reaches the model via Django's app registry (no static ``teatree.core``
+    import — that would be a backwards ``platform -> domain`` tach edge). Every
+    failure mode of an early/unconfigured read — Django apps not ready, no
+    settings, the table missing pre-migration, the DB unreachable — degrades to
+    an empty list so the DB tier is a strict no-op rather than an exception in the
+    hot config path.
+    """
+    try:
+        from django.apps import apps  # noqa: PLC0415
+
+        model = apps.get_model("core", "ConfigSetting")
+        return list(model.objects.values_list("key", "value"))
+    except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
+        return []
 
 
 def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:

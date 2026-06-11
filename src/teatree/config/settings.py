@@ -83,6 +83,13 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # here with a parser that coerces the raw toml value to the UserSettings
 # field type. The getter `get_effective_settings()` applies overrides
 # generically via ``dataclasses.replace`` — no per-setting wiring needed.
+#
+# This registry is ALSO the scope of the DB override tier (#1775,
+# ``ConfigSetting``): the resolver's ``_db_setting_overrides`` consults it to
+# decide which ``ConfigSetting`` rows may override a setting and reuses each
+# entry's parser to coerce the stored JSON value. A row for a key absent here is
+# ignored, so the DB tier can never override a setting that is not opted into
+# overriding. Precedence: env -> DB -> per-overlay TOML -> global -> default.
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
