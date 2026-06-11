@@ -283,14 +283,16 @@ def deliver_user_dm(
 ) -> RawAPIDict:
     """Post ONE bot→user DM, attaching spoken audio when ``slack`` is on (#2060).
 
-    The single chokepoint both bot→user DM egress points call. ``text`` is
-    the already-formatted DM body. When ``slack`` is on AND synthesis
-    succeeds, posts a SINGLE message via :meth:`post_audio_dm` carrying
-    ``text`` as the message + the audio inline; otherwise (``slack`` off,
-    ``say``/``afconvert`` absent, synthesis or upload failure) degrades to a
-    text-only :meth:`post_message` so the DM is never lost. Independently,
-    when ``local`` is ``dm`` or ``all`` the same text plays through the
-    speakers — never suppressed by ``slack`` (Slack never auto-plays).
+    The single chokepoint the ``notify post`` command calls for its direct
+    channel-post path (not the ``notify_user`` bot→user path — see
+    :func:`deliver_user_dm_sidecar` for that). ``text`` is the DM body.
+    When ``slack`` is on AND synthesis succeeds, posts a SINGLE message via
+    :meth:`post_audio_dm` carrying ``text`` as the message + the audio
+    inline; otherwise (``slack`` off, ``say``/``afconvert`` absent, synthesis
+    or upload failure) degrades to a text-only :meth:`post_message` so the
+    DM is never lost. Independently, when ``local`` is ``dm`` or ``all`` the
+    same text plays through the speakers — never suppressed by ``slack``
+    (Slack never auto-plays).
 
     Returns the raw Slack body of whichever post ran so the caller finalises
     its delivery row exactly as a plain ``post_message`` would. Never lets a
@@ -312,6 +314,43 @@ def deliver_user_dm(
         response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
     _maybe_speak_local(config, text)
     return response
+
+
+def deliver_user_dm_sidecar(
+    backend: MessagingBackend,
+    *,
+    channel: str,
+    text: str,
+    thread_ts: str = "",
+) -> None:
+    """Run the speak side-effects for a bot→user DM — never raises (#2054).
+
+    Called by :func:`teatree.core.notify._deliver_dm` AFTER the canonical
+    ``post_message`` delivery has already landed and its ``ts`` has been
+    captured. This function owns the two enrichment arms that do NOT
+    produce the delivery ``ts``:
+
+    *   **Slack audio attachment** — when ``slack`` is on, attach a spoken
+        audio file to the DM via ``post_audio_dm``. The attachment is a
+        pure enhancement; if it fails the text DM already exists. The
+        ``post_audio_dm`` response is intentionally ignored here: the caller
+        already has the ``ts`` from ``post_message`` and does not need it.
+    *   **Local playback** — play the text through the machine's speakers
+        when ``local`` is ``dm`` or ``all``.
+
+    Both arms are best-effort: any exception is swallowed so a speak failure
+    can NEVER retroactively break a text DM that has already landed. The
+    caller (:func:`teatree.core.notify._deliver_dm`) wraps this call inside
+    its own ``except`` block, so a raise here would be caught before the
+    delivery outcome is affected — but returning ``None`` without raising is
+    the cleaner contract.
+    """
+    config = _resolve_speak_safe()
+    try:
+        _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
+    except Exception as exc:  # noqa: BLE001 — sidecar must never break the delivered text DM
+        logger.debug("deliver_user_dm_sidecar audio attach failed: %s", exc)
+    _maybe_speak_local(config, text)
 
 
 def _resolve_speak_safe() -> SpeakConfig:
