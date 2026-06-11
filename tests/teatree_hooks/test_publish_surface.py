@@ -545,6 +545,26 @@ class TestSlugForCwdSshAliasNormalization:
         repo = _repo_with_remote(tmp_path / "r", "https://github.com/souliane/teatree.git")
         assert _repo_visibility.slug_for_cwd(repo) == "github.com/souliane/teatree"
 
+    def test_useratalias_ssh_alias_drops_dotless_host_alias(self, tmp_path: Path) -> None:
+        # FM2 (#1415): a per-account SSH config Host ALIAS carried WITH a ``user@``
+        # part (``git@gh-acct:owner/repo`` from a ``Host gh-acct`` block) was kept
+        # verbatim as ``gh-acct/owner/repo`` -- the dotless ``gh-acct`` glued in as
+        # the leading slug segment. The downstream dot-keyed host-strip / probe
+        # could not recognise it, so the canonical key was wrong. A dotless host
+        # is an alias with no canonical identity, so it is dropped -> ``owner/repo``.
+        repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
+        assert _repo_visibility.slug_for_cwd(repo) == "owner-org/private-product"
+
+    def test_useratalias_dotted_host_alias_resolves_to_owner_repo_after_strip(self, tmp_path: Path) -> None:
+        # FM2 (#1415): the exact reported remote shape -- a per-account SSH alias
+        # whose name happens to embed the real host with a dot
+        # (``git@github.com-acct:Owner/Repo``). The dotted alias is kept as
+        # the host segment, but ``_strip_host_prefix`` (and the visibility probe)
+        # strip a dotted leading segment, so the canonical owner/repo key resolves.
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com-acct:owner-org/private-product.git")
+        slug = _repo_visibility.slug_for_cwd(repo)
+        assert _repo_visibility._strip_host_prefix(slug) == "owner-org/private-product"
+
     def test_public_repo_with_alias_host_is_not_downgraded_end_to_end(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -554,6 +574,19 @@ class TestSlugForCwdSshAliasNormalization:
         repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is False
+
+    def test_useratalias_private_repo_downgrades_via_allowlist_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # FM2 end-to-end (#1415): a known-private own repo cloned through a dotless
+        # ``user@alias`` SSH remote must DOWNGRADE via the offline allowlist with
+        # no probe tool on PATH. Before the fix the slug carried the ``gh-acct``
+        # alias segment, so the ``owner-org`` allowlist entry did not match the
+        # leading segment and the own private repo over-blocked.
+        cfg = _config(tmp_path, ["owner-org"])
+        repo = _repo_with_remote(tmp_path / "r", "git@gh-acct:owner-org/private-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
 
 
 class TestVisibilityProbeFallback:
