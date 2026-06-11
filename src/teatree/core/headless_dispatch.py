@@ -1,7 +1,7 @@
 """Registry for the headless task runner — the core → agents inversion seam (#1922).
 
 ``core.tasks.execute_headless_task`` (a django-tasks worker) must run a task in a
-headless ``claude -p`` subprocess, but that runner lives in ``teatree.agents``
+detached headless Agent-SDK run, but that runner lives in ``teatree.agents``
 (the higher layer). Rather than ``core`` importing ``agents``, ``agents``
 registers its runner here at app-ready time and ``core`` resolves it through this
 registry.
@@ -53,7 +53,7 @@ def loop_dispatch_refusal(task: "Task") -> str | None:
     (souliane/teatree#1375): a loop-dispatched phase task — one whose
     ``(ticket.role, phase)`` has a registered phase agent (``Task.loop_dispatched``)
     — must run INTERACTIVE in the in-session ``/loop`` slot, never as a metered
-    detached ``claude -p`` subprocess (post-2026-06-15 billing). Unless the single
+    detached headless-SDK run (post-2026-06-15 billing). Unless the single
     ``LOOP_ALLOW_HEADLESS_DISPATCH`` toggle is explicitly enabled, return a
     ``routing_error`` reason so the caller records a refusal instead of shelling
     out. Free-form headless work (no registered phase agent) returns ``None`` and

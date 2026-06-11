@@ -1218,8 +1218,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
 │                                  suite: 'subscription' (default — grade      │
 │                                  in-session transcripts, no API spend) or    │
-│                                  'sdk' (metered claude -p, the explicit      │
-│                                  opt-in).                                    │
+│                                  'sdk' (the metered in-process Agent-SDK     │
+│                                  runner, the explicit opt-in).               │
 │                                  [default: subscription]                     │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
 │                                  transcripts for the AI lane (default: cwd). │
@@ -1235,6 +1235,9 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --docker                         Run inside the exact CI image               │
 │                                  (dev/Dockerfile.test) for parity; host-run  │
 │                                  is the default.                             │
+│ --local                          Run a metered `--backend sdk` suite on the  │
+│                                  HOST (quick check, NOT the gate; prints a   │
+│                                  WARNING).                                   │
 │ --parallel              INTEGER  Run this many AI-lane scenarios             │
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
@@ -1244,28 +1247,40 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ negative-control      Self-test the harness: plant a known violation and     │
-│                       assert it is caught (token-free).                      │
-│ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
-│                       scenario's transcript path.                            │
-│ transcript-replay     Replay a real session transcript against teatree       │
-│                       behavioural invariants.                                │
-│ list                  List discovered eval scenarios as a table (Name,       │
-│                       Scenario, Agent, File, Asserts).                       │
-│ run                   Run one scenario by name, or all scenarios when no     │
-│                       name is given.                                         │
-│ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
-│                       eval run.                                              │
-│ history               Show recent eval runs and per-scenario pass-rate over  │
-│                       time.                                                  │
-│ skill-triggers        Validate every skill's trigger keywords against the    │
-│                       must-fire/must-not-fire corpus.                        │
-│ coverage              Report per-skill behavioral-eval coverage: every skill │
-│                       is covered or eval_exempt.                             │
-│ pinned-regressions    Run the deterministic regression corpus over the real  │
-│                       gate/checker code paths.                               │
-│ all                   Run every eval lane in sequence and render one unified │
-│                       summary table + verdict.                               │
+│ negative-control        Self-test the harness: plant a known violation and   │
+│                         assert it is caught (token-free).                    │
+│ all                     Run every eval lane in sequence and render one       │
+│                         unified summary table + verdict.                     │
+│ benchmark               Benchmark cost AND pass-rate of model@effort         │
+│                         variants against the eval suite.                     │
+│ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
+│                         scenario's transcript path.                          │
+│ transcript-replay       Replay a real session transcript against teatree     │
+│                         behavioural invariants.                              │
+│ skill-triggers          Validate every skill's trigger keywords against the  │
+│                         must-fire/must-not-fire corpus.                      │
+│ coverage                Report per-skill behavioral-eval coverage: every     │
+│                         skill is covered or eval_exempt.                     │
+│ pinned-regressions      Run the deterministic regression corpus over the     │
+│                         real gate/checker code paths.                        │
+│ skill-command-validity  Validate every backticked ``t3 …`` in the skill docs │
+│                         against the live CLI registry.                       │
+│ skill-prose-judge       Score each skill's prose for clarity/actionability   │
+│                         via the LLM judge (ADVISORY).                        │
+│ audit                   Audit captured sessions into the durable ledger and  │
+│                         print per-session verdicts.                          │
+│ list                    List discovered eval scenarios as a table (Name,     │
+│                         Scenario, Agent, File, Asserts).                     │
+│ run                     Run one scenario by name, or all scenarios when no   │
+│                         name is given.                                       │
+│ prepare-subscription    Emit the per-scenario prompts for a LOCAL            │
+│                         subscription eval run.                               │
+│ history                 Show recent eval runs and per-scenario pass-rate     │
+│                         over time.                                           │
+│ corpus                  Ground-truth corpus curation: list, inspect, and     │
+│                         grade captured sessions.                             │
+│ label                   Corpus-label curation: list nominations, scaffold a  │
+│                         label, review the corpus.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1280,6 +1295,121 @@ Usage: t3 eval negative-control [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval all`
+
+```
+Usage: t3 eval all [OPTIONS]
+
+ Run every eval lane in sequence and render one unified summary table +
+ verdict.
+
+ The explicit form of the bare-``t3 eval`` default — both call
+ :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
+ callback for the flag semantics, including ``--html``). Kept as a named
+ subcommand for scripts/CI that spell the full run out.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
+│                                  grade in-session transcripts, no API spend) │
+│                                  or 'sdk' (the metered in-process Agent-SDK  │
+│                                  runner, authed by CLAUDE_CODE_OAUTH_TOKEN;  │
+│                                  the explicit CI opt-in via the standalone   │
+│                                  eval.yml job; ANTHROPIC_API_KEY also        │
+│                                  honored as a legacy alternative).           │
+│                                  [default: subscription]                     │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
+│                                  transcripts for the AI lane (default: cwd). │
+│ --free-only                      Run only the free deterministic lanes (drop │
+│                                  the AI lane) — the fast pre-push gate.      │
+│ --strict                         Exit non-zero when a lane was SKIPPED for   │
+│                                  setup reasons (the AI behavioural lane with │
+│                                  no transcripts / no key) — for CI, where    │
+│                                  'not yet validated' must fail. Default      │
+│                                  leaves a setup-skip green (the caveat is in │
+│                                  the verdict text, not a confusing           │
+│                                  non-zero).                                  │
+│ --docker                         Run inside the exact CI image               │
+│                                  (dev/Dockerfile.test) for parity; host-run  │
+│                                  is the default.                             │
+│ --local                          Run a metered `--backend sdk` suite on the  │
+│                                  HOST instead of the default CI container —  │
+│                                  a quick local check only, NOT the           │
+│                                  reproducible gate (use Docker/CI for that). │
+│ --parallel              INTEGER  Run this many AI-lane scenarios             │
+│                                  concurrently (wall-clock; default 1 =       │
+│                                  sequential).                                │
+│                                  [default: 1]                                │
+│ --html                  PATH     Write a self-contained whole-suite HTML     │
+│                                  report to this path (CI artifact).          │
+│ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval benchmark`
+
+```
+Usage: t3 eval benchmark [OPTIONS]
+
+ Benchmark cost AND pass-rate of model@effort variants against the eval suite.
+
+ Runs the scenario suite once per variant on the metered in-process
+ Agent-SDK runner (``--backend sdk`` semantics; the all-skipped gate is
+ always armed) and renders one comparison line per variant: scenarios
+ passed/executed, pass-rate, total metered cost, mean cost per scenario,
+ and cost per pass. A failing scenario is the measurement, not an error —
+ the command exits non-zero only when the run itself is broken (nothing
+ executed, unknown variant/scenario). Pass-rate noise shrinks with
+ ``--trials k`` (each cell's score becomes a k-trial pass-rate).
+
+ The benchmark is metered, so it defaults to running in the CI container; pass
+ ``--local`` for a quick host check (NOT the reproducible gate). The container
+ is ephemeral, so a Docker-routed run is forced ``--no-persist``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --models                            TEXT     Comma-separated model@effort │
+│                                                 variants to compare, e.g.    │
+│                                                 claude-opus-4-8@xhigh,claud… │
+│                                                 (a plain model name =        │
+│                                                 default effort).             │
+│                                                 [required]                   │
+│    --scenarios                         TEXT     Comma-separated scenario     │
+│                                                 names to benchmark (default: │
+│                                                 the whole suite).            │
+│    --trials                            INTEGER  Re-run each (scenario,       │
+│                                                 variant) cell this many      │
+│                                                 times.                       │
+│                                                 [default: 1]                 │
+│    --max-turns                         INTEGER  Override every scenario's    │
+│                                                 max_turns (per-invocation).  │
+│    --max-budget-usd                    FLOAT    Per-run USD budget circuit   │
+│                                                 breaker (default 2.0 —       │
+│                                                 generous so even an          │
+│                                                 opus@xhigh scenario          │
+│                                                 COMPLETES rather than        │
+│                                                 truncating; a truncated run  │
+│                                                 measures the cap, not the    │
+│                                                 model). An over-budget cell  │
+│                                                 is recorded as a             │
+│                                                 budget_exceeded FAIL, not a  │
+│                                                 crash.                       │
+│                                                 [default: 2.0]               │
+│    --format                            TEXT     Report format: text or json. │
+│                                                 [default: text]              │
+│    --persist           --no-persist             Persist the underlying       │
+│                                                 matrix run into the          │
+│                                                 run-history ledger (`t3 eval │
+│                                                 history`).                   │
+│                                                 [default: persist]           │
+│    --local                                      Run on the HOST instead of   │
+│                                                 the default CI container — a │
+│                                                 quick local check only. A    │
+│                                                 host run is NOT the          │
+│                                                 reproducible regression gate │
+│                                                 (use Docker/CI for that).    │
+│    --help                                       Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1337,200 +1467,6 @@ Usage: t3 eval transcript-replay [OPTIONS]
 │ --format                    TEXT  Report format: text or json.               │
 │                                   [default: text]                            │
 │ --help                            Show this message and exit.                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval list`
-
-```
-Usage: t3 eval list [OPTIONS]
-
- List discovered eval scenarios as a table (Name, Scenario, Agent, File,
- Asserts).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval run`
-
-```
-Usage: t3 eval run [OPTIONS] [NAME]
-
- Run one scenario by name, or all scenarios when no name is given.
-
- With ``--trials k`` each scenario runs ``k`` times and the verdict is
- aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
- runs the suite once per model and renders a comparison matrix. A single trial
- against the default backend is the legacy behavior.
-
- Each run is recorded into the run-history ledger (``t3 eval history``) unless
- ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
- baseline for its model — the reference ``--gate-regressions`` compares a
- later candidate run against (a regression exits non-zero).
-
- ``--backend subscription`` (default) grades transcripts produced on the
- subscription via an in-session sub-agent — no API spend (run
- ``t3 eval prepare-subscription`` first for the prompts + expected paths).
- ``--backend sdk`` shells the metered ``claude -p`` runner, authed by
- ``CLAUDE_CODE_OAUTH_TOKEN`` (``ANTHROPIC_API_KEY`` is also honored as a
- legacy alternative); CI passes ``--backend sdk`` explicitly via the standalone
- ``eval.yml`` job. ``--trials``/``--models`` always use the metered ``sdk``
- runner regardless of ``--backend``.
-
- ``--require-executed`` fails the run when the suite collected scenarios but
- executed none (every scenario skipped — typically ``claude`` not on PATH /
- not authenticated), so a decorative all-skipped run cannot pass green. CI
- arms it always; local runs leave it off so the subscription backend's
- legitimate pre-transcript all-skip stays green.
-
- ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
- meant to run in-container, never on the host — the runner forwards the host's
- ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
- ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
- clean container and never lands on the command line.
-
- ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
- I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
- Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]  Scenario name to run (omit to run all).                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                              TEXT     Report format: text, json, or │
-│                                                html (single-trial; html is a │
-│                                                self-contained file).         │
-│                                                [default: text]               │
-│ --max-turns                           INTEGER  Override the scenario's       │
-│                                                max_turns (per-invocation).   │
-│ --trials                              INTEGER  Re-run each scenario this     │
-│                                                many times (pass@k).          │
-│                                                [default: 1]                  │
-│ --require                             TEXT     With --trials > 1: 'any'      │
-│                                                (pass@k) or 'all' (pass^k     │
-│                                                regression gate).             │
-│                                                [default: any]                │
-│ --models                              TEXT     Comma-separated model matrix  │
-│                                                (e.g. opus,sonnet,haiku);     │
-│                                                runs the suite once per       │
-│                                                model.                        │
-│ --persist             --no-persist             Persist this run into the     │
-│                                                run-history ledger (read back │
-│                                                via `t3 eval history`).       │
-│                                                [default: persist]            │
-│ --baseline                                     Mark the persisted run as the │
-│                                                baseline for its model.       │
-│ --gate-regressions                             Diff this run against each    │
-│                                                model's current baseline; any │
-│                                                regression exits non-zero.    │
-│ --judge               --no-judge               Grade scenarios that opt in   │
-│                                                (a `judge:` block) with an    │
-│                                                LLM judge in addition to      │
-│                                                matchers.                     │
-│                                                [default: no-judge]           │
-│ --judge-budget                        INTEGER  Max number of LLM-judge calls │
-│                                                per run (cost cap).           │
-│                                                [default: 20]                 │
-│ --backend                             TEXT     Execution backend for a       │
-│                                                single-trial run:             │
-│                                                'subscription' (default —     │
-│                                                grade subscription-produced   │
-│                                                transcripts, no API spend;    │
-│                                                see `t3 eval                  │
-│                                                prepare-subscription`) or     │
-│                                                'sdk' (metered claude -p,     │
-│                                                authed by                     │
-│                                                CLAUDE_CODE_OAUTH_TOKEN; runs │
-│                                                in-container via --docker     │
-│                                                locally or in the standalone  │
-│                                                eval.yml CI job). --trials    │
-│                                                and --models always use the   │
-│                                                metered sdk runner regardless │
-│                                                of this flag.                 │
-│                                                [default: subscription]       │
-│ --transcript-dir                      PATH     Directory of <scenario>.jsonl │
-│                                                transcripts for the           │
-│                                                'subscription' backend        │
-│                                                (default: cwd).               │
-│ --require-executed                             Fail when the suite collected │
-│                                                scenarios but executed none   │
-│                                                (all skipped). AUTO-ON for    │
-│                                                the metered sdk backend and   │
-│                                                --trials/--models (a metered  │
-│                                                run that executes nothing     │
-│                                                always fails loud); the flag  │
-│                                                only matters for the          │
-│                                                subscription backend, whose   │
-│                                                pre-transcript all-skip is    │
-│                                                legitimate.                   │
-│ --docker                                       Run inside the CI image       │
-│                                                (dev/Dockerfile.test); the    │
-│                                                metered sdk lane runs         │
-│                                                in-container, authenticated   │
-│                                                by the host's                 │
-│                                                CLAUDE_CODE_OAUTH_TOKEN/ANTH… │
-│                                                (env pass-through).           │
-│ --parallel                            INTEGER  Run this many scenarios       │
-│                                                concurrently (each claude -p  │
-│                                                is I/O-bound; a bounded pool  │
-│                                                cuts wall-clock from          │
-│                                                Nxlatency to ~latency).       │
-│                                                Default 1 = sequential.       │
-│                                                [default: 1]                  │
-│ --help                                         Show this message and exit.   │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval prepare-subscription`
-
-```
-Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
-
- Emit the per-scenario prompts for a LOCAL subscription eval run.
-
- The eval CLI is a plain process with no in-session ``Agent`` tool, so it
- cannot itself drive a subscription-covered turn. This command prints, per
- scenario, the agent definition, prompt, and the transcript path the
- ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
- in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
- prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
- sub-agent's JSONL to that path, and finally grades with
- ``t3 eval run --backend subscription``.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
-│                               <scenario>.jsonl transcript (default: cwd).    │
-│ --format                TEXT  Manifest format: text or json. [default: text] │
-│ --help                        Show this message and exit.                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval history`
-
-```
-Usage: t3 eval history [OPTIONS]
-
- Show recent eval runs and per-scenario pass-rate over time.
-
- The data substrate the model-regression diff reads. ``--baseline`` shows the
- current reference run per model; ``--mark-baseline <id>`` promotes a run to
- baseline (demoting the prior baseline for that model).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --limit                INTEGER  Maximum number of recent runs to show.       │
-│                                 [default: 20]                                │
-│ --model                TEXT     Filter to one model's runs.                  │
-│ --format               TEXT     Report format: text or json. [default: text] │
-│ --baseline                      Show only the current baseline run(s) and    │
-│                                 their per-scenario pass-rate.                │
-│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
-│                                 for its model, then show history.            │
-│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1594,49 +1530,515 @@ Usage: t3 eval pinned-regressions [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 eval all`
+#### `t3 eval skill-command-validity`
 
 ```
-Usage: t3 eval all [OPTIONS]
+Usage: t3 eval skill-command-validity [OPTIONS]
 
- Run every eval lane in sequence and render one unified summary table +
- verdict.
+ Validate every backticked ``t3 …`` in the skill docs against the live CLI
+ registry.
 
- The explicit form of the bare-``t3 eval`` default — both call
- :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
- callback for the flag semantics, including ``--html``). Kept as a named
- subcommand for scripts/CI that spell the full run out.
+ Tier-1 (deterministic, free, no ``claude`` run): each ``skills/<name>/`` doc's
+ backticked ``t3 …`` commands are token-walked against the live typer command
+ tree. A command that no longer resolves (a CLI rename left the doc stale) is a
+ violation — the "no stale references" rule — and exits non-zero. Generic
+ placeholder mentions (``t3 …`` / ``t3 <overlay> …``) are skipped.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
-│                                  grade in-session transcripts, no API spend) │
-│                                  or 'sdk' (metered claude -p, authed by      │
-│                                  CLAUDE_CODE_OAUTH_TOKEN; the explicit CI    │
-│                                  opt-in via the standalone eval.yml job;     │
-│                                  ANTHROPIC_API_KEY also honored as a legacy  │
-│                                  alternative).                               │
-│                                  [default: subscription]                     │
-│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
-│                                  transcripts for the AI lane (default: cwd). │
-│ --free-only                      Run only the free deterministic lanes (drop │
-│                                  the AI lane) — the fast pre-push gate.      │
-│ --strict                         Exit non-zero when a lane was SKIPPED for   │
-│                                  setup reasons (the AI behavioural lane with │
-│                                  no transcripts / no key) — for CI, where    │
-│                                  'not yet validated' must fail. Default      │
-│                                  leaves a setup-skip green (the caveat is in │
-│                                  the verdict text, not a confusing           │
-│                                  non-zero).                                  │
-│ --docker                         Run inside the exact CI image               │
-│                                  (dev/Dockerfile.test) for parity; host-run  │
-│                                  is the default.                             │
-│ --parallel              INTEGER  Run this many AI-lane scenarios             │
-│                                  concurrently (wall-clock; default 1 =       │
-│                                  sequential).                                │
-│                                  [default: 1]                                │
-│ --html                  PATH     Write a self-contained whole-suite HTML     │
-│                                  report to this path (CI artifact).          │
-│ --help                           Show this message and exit.                 │
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval skill-prose-judge`
+
+```
+Usage: t3 eval skill-prose-judge [OPTIONS]
+
+ Score each skill's prose for clarity/actionability via the LLM judge
+ (ADVISORY).
+
+ Tier-3 (model-judged): each ``skills/<name>/SKILL.md``'s prose is graded by
+ the existing ``ClaudeJudge`` seam and the verdict mapped to a coarse score.
+ ADVISORY by design — it ranks the skills worst-first and nominates the weakest
+ for a prose pass, but a low score NEVER exits non-zero (matcher / structural
+ lanes gate CI; this judge-only signal advises). The judge skips cleanly when
+ ``claude`` is not on PATH, so this never blocks a key-less contributor.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval audit`
+
+```
+Usage: t3 eval audit [OPTIONS]
+
+ Audit captured sessions into the durable ledger and print per-session
+ verdicts.
+
+ Each audited session yields one persisted ``SessionAuditRecord`` (verdict,
+ categorical triple, nominated-for-label flag); the closing line counts the
+ nominations the labelling queue (``t3 eval label nominate``) picks up.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit            INTEGER  Audit this many most-recent sessions for the     │
+│                             cwd's project.                                   │
+│                             [default: 20]                                    │
+│ --session          TEXT     Audit one specific session id instead of the     │
+│                             recent batch.                                    │
+│ --confusion        TEXT     After auditing, render the confusion matrix for  │
+│                             this outcome axis from the persisted ledger.     │
+│ --json                      With --confusion: render the matrix as JSON      │
+│                             instead of text.                                 │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval list`
+
+```
+Usage: t3 eval list [OPTIONS]
+
+ List discovered eval scenarios as a table (Name, Scenario, Agent, File,
+ Asserts).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval run`
+
+```
+Usage: t3 eval run [OPTIONS] [NAME]
+
+ Run one scenario by name, or all scenarios when no name is given.
+
+ With ``--trials k`` each scenario runs ``k`` times and the verdict is
+ aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
+ runs the suite once per model and renders a comparison matrix. A single trial
+ against the default backend is the legacy behavior.
+
+ Each run is recorded into the run-history ledger (``t3 eval history``) unless
+ ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
+ baseline for its model — the reference ``--gate-regressions`` compares a
+ later candidate run against (a regression exits non-zero).
+
+ ``--backend subscription`` (default) grades transcripts produced on the
+ subscription via an in-session sub-agent — no API spend (run
+ ``t3 eval prepare-subscription`` first for the prompts + expected paths).
+ ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
+ spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
+ (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
+ ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
+ ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
+ of ``--backend``.
+
+ ``--require-executed`` fails the run when the suite collected scenarios but
+ executed none (every scenario skipped — typically ``claude`` not on PATH /
+ not authenticated), so a decorative all-skipped run cannot pass green. CI
+ arms it always; local runs leave it off so the subscription backend's
+ legitimate pre-transcript all-skip stays green.
+
+ ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
+ meant to run in-container, never on the host — the runner forwards the host's
+ ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
+ ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
+ child inside a clean container and never lands on the command line.
+
+ ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
+ I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
+ Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to run (omit to run all).                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format                                   TEXT     Report format: text,     │
+│                                                     json, or html            │
+│                                                     (single-trial; html is a │
+│                                                     self-contained file).    │
+│                                                     [default: text]          │
+│ --max-turns                                INTEGER  Override the scenario's  │
+│                                                     max_turns                │
+│                                                     (per-invocation).        │
+│ --max-budget-usd                           FLOAT    Per-run USD budget       │
+│                                                     circuit breaker for the  │
+│                                                     metered sdk runner.      │
+│                                                     Defaults GENEROUS        │
+│                                                     (env-configurable via    │
+│                                                     T3_EVAL_MAX_BUDGET_USD)  │
+│                                                     so a finishing scenario  │
+│                                                     COMPLETES rather than    │
+│                                                     truncating — a truncated │
+│                                                     run measures the cap,    │
+│                                                     not behaviour. Raise it  │
+│                                                     for a costly             │
+│                                                     --models/--trials run.   │
+│                                                     An over-budget scenario  │
+│                                                     is recorded as a         │
+│                                                     budget_exceeded FAIL,    │
+│                                                     not a crash.             │
+│                                                     [default: 1.0]           │
+│ --effort                                   TEXT     Representative reasoning │
+│                                                     effort for the metered   │
+│                                                     sdk lane (low, medium,   │
+│                                                     high, xhigh, max;        │
+│                                                     default 'high',          │
+│                                                     env-configurable via     │
+│                                                     T3_EVAL_EFFORT). The     │
+│                                                     lane otherwise runs at   │
+│                                                     the model's DEFAULT      │
+│                                                     effort while real usage  │
+│                                                     is high — so a           │
+│                                                     default-effort pass-rate │
+│                                                     is pessimistic. A        │
+│                                                     scenario's own           │
+│                                                     model@effort still wins  │
+│                                                     over this lane default.  │
+│                                                     [default: high]          │
+│ --trials                                   INTEGER  Re-run each scenario     │
+│                                                     this many times          │
+│                                                     (pass@k).                │
+│                                                     [default: 1]             │
+│ --require                                  TEXT     With --trials > 1: 'any' │
+│                                                     (pass@k) or 'all'        │
+│                                                     (pass^k regression       │
+│                                                     gate).                   │
+│                                                     [default: any]           │
+│ --models                                   TEXT     Comma-separated model    │
+│                                                     matrix (e.g.             │
+│                                                     opus,sonnet,haiku); runs │
+│                                                     the suite once per       │
+│                                                     model. Each entry may    │
+│                                                     carry a reasoning-effort │
+│                                                     variant as model@effort  │
+│                                                     (e.g.                    │
+│                                                     claude-opus-4-8@xhigh) — │
+│                                                     the tag is the           │
+│                                                     column/ledger identity.  │
+│ --persist                  --no-persist             Persist this run into    │
+│                                                     the run-history ledger   │
+│                                                     (read back via `t3 eval  │
+│                                                     history`).               │
+│                                                     [default: persist]       │
+│ --baseline                                          Mark the persisted run   │
+│                                                     as the baseline for its  │
+│                                                     model.                   │
+│ --gate-regressions                                  Diff this run against    │
+│                                                     each model's current     │
+│                                                     baseline; any regression │
+│                                                     exits non-zero.          │
+│ --gate-cost-regression                              Diff this run's          │
+│                                                     per-scenario cost        │
+│                                                     against each model's     │
+│                                                     baseline cost; a         │
+│                                                     relative rise beyond     │
+│                                                     --cost-regression-toler… │
+│                                                     exits non-zero. Distinct │
+│                                                     from an absolute         │
+│                                                     ceiling: a zero-cost     │
+│                                                     (subscription/free)      │
+│                                                     baseline is skipped,     │
+│                                                     never divided by.        │
+│ --cost-regression-tole…                    FLOAT    Relative per-scenario    │
+│                                                     cost rise                │
+│                                                     --gate-cost-regression   │
+│                                                     tolerates before failing │
+│                                                     (default 0.20 = +20% vs  │
+│                                                     the baseline). A         │
+│                                                     scenario rising more     │
+│                                                     than this exits          │
+│                                                     non-zero.                │
+│                                                     [default: 0.2]           │
+│ --judge                    --no-judge               Grade scenarios that opt │
+│                                                     in (a `judge:` block)    │
+│                                                     with an LLM judge in     │
+│                                                     addition to matchers.    │
+│                                                     [default: no-judge]      │
+│ --judge-budget                             INTEGER  Max number of LLM-judge  │
+│                                                     calls per run (cost      │
+│                                                     cap).                    │
+│                                                     [default: 20]            │
+│ --backend                                  TEXT     Execution backend for a  │
+│                                                     single-trial run:        │
+│                                                     'subscription' (default  │
+│                                                     — grade                  │
+│                                                     subscription-produced    │
+│                                                     transcripts, no API      │
+│                                                     spend; see `t3 eval      │
+│                                                     prepare-subscription`)   │
+│                                                     or 'sdk' (the metered    │
+│                                                     in-process Agent-SDK     │
+│                                                     runner, authed by        │
+│                                                     CLAUDE_CODE_OAUTH_TOKEN; │
+│                                                     runs in-container via    │
+│                                                     --docker locally or in   │
+│                                                     the standalone eval.yml  │
+│                                                     CI job). --trials and    │
+│                                                     --models always use the  │
+│                                                     metered sdk runner       │
+│                                                     regardless of this flag. │
+│                                                     [default: subscription]  │
+│ --transcript-dir                           PATH     Directory of             │
+│                                                     <scenario>.jsonl         │
+│                                                     transcripts for the      │
+│                                                     'subscription' backend   │
+│                                                     (default: cwd).          │
+│ --require-executed                                  Fail when the suite      │
+│                                                     collected scenarios but  │
+│                                                     executed none (all       │
+│                                                     skipped). AUTO-ON for    │
+│                                                     the metered sdk backend  │
+│                                                     and --trials/--models (a │
+│                                                     metered run that         │
+│                                                     executes nothing always  │
+│                                                     fails loud); the flag    │
+│                                                     only matters for the     │
+│                                                     subscription backend,    │
+│                                                     whose pre-transcript     │
+│                                                     all-skip is legitimate.  │
+│ --docker                                            Force running inside the │
+│                                                     CI image                 │
+│                                                     (dev/Dockerfile.test)    │
+│                                                     for ANY backend. The     │
+│                                                     metered sdk lane ALREADY │
+│                                                     defaults to the          │
+│                                                     container; this forces   │
+│                                                     it for the subscription  │
+│                                                     lane too.                │
+│ --local                                             Run the metered sdk lane │
+│                                                     on the HOST instead of   │
+│                                                     the default CI container │
+│                                                     — a quick local check    │
+│                                                     only. A host run is NOT  │
+│                                                     the reproducible         │
+│                                                     regression gate (use     │
+│                                                     Docker/CI).              │
+│ --parallel                                 INTEGER  Run this many scenarios  │
+│                                                     concurrently (each SDK   │
+│                                                     scenario run is          │
+│                                                     I/O-bound; a bounded     │
+│                                                     pool cuts wall-clock     │
+│                                                     from Nxlatency to        │
+│                                                     ~latency). Default 1 =   │
+│                                                     sequential.              │
+│                                                     [default: 1]             │
+│ --help                                              Show this message and    │
+│                                                     exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval prepare-subscription`
+
+```
+Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
+
+ Emit the per-scenario prompts for a LOCAL subscription eval run.
+
+ The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+ cannot itself drive a subscription-covered turn. This command prints, per
+ scenario, the agent definition, prompt, and the transcript path the
+ ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+ in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
+ prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
+ sub-agent's JSONL to that path, and finally grades with
+ ``t3 eval run --backend subscription``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
+│                               <scenario>.jsonl transcript (default: cwd).    │
+│ --format                TEXT  Manifest format: text or json. [default: text] │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ Show recent eval runs and per-scenario pass-rate over time.
+
+ The data substrate the model-regression diff reads. ``--baseline`` shows the
+ current reference run per model; ``--mark-baseline <id>`` promotes a run to
+ baseline (demoting the prior baseline for that model).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval corpus`
+
+```
+Usage: t3 eval corpus [OPTIONS] COMMAND [ARGS]...
+
+ Ground-truth corpus curation: list, inspect, and grade captured sessions.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list   List corpus entries: id, oracle, confidence, axis, expected outcome,  │
+│        labeller (sorted by id).                                              │
+│ show   Show one label in full plus a privacy-safe session summary (counts    │
+│        only, never payloads).                                                │
+│ grade  Grade corpus entries against their ground-truth labels; any FAIL      │
+│        exits non-zero.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus list`
+
+```
+Usage: t3 eval corpus list [OPTIONS]
+
+ List corpus entries: id, oracle, confidence, axis, expected outcome, labeller
+ (sorted by id).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus show`
+
+```
+Usage: t3 eval corpus show [OPTIONS] ENTRY_ID
+
+ Show one label in full plus a privacy-safe session summary (counts only, never
+ payloads).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    entry_id      TEXT  Corpus entry id to inspect. [required]              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval corpus grade`
+
+```
+Usage: t3 eval corpus grade [OPTIONS] [ENTRY_ID]
+
+ Grade corpus entries against their ground-truth labels; any FAIL exits
+ non-zero.
+
+ Every entry passes
+ :func:`~teatree.eval.corpus_grade.assert_independent_oracle`
+ first — a matcher entry whose labeller is its rule author grades as a FAIL
+ row rather than silently agreeing with itself.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   entry_id      [ENTRY_ID]  Corpus entry id to grade (omit to grade all).    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir                           PATH     Corpus directory (default: the      │
+│                                          shipped corpus).                    │
+│ --judge           --no-judge             Grade judge-oracle entries with the │
+│                                          LLM judge (metered). The --no-judge │
+│                                          default is free and deterministic:  │
+│                                          judge entries SKIP with a note;     │
+│                                          `both` entries grade their matcher  │
+│                                          part.                               │
+│                                          [default: no-judge]                 │
+│ --judge-budget                  INTEGER  Max LLM-judge calls per run (cost   │
+│                                          cap).                               │
+│                                          [default: 20]                       │
+│ --help                                   Show this message and exit.         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval label`
+
+```
+Usage: t3 eval label [OPTIONS] COMMAND [ARGS]...
+
+ Corpus-label curation: list nominations, scaffold a label, review the corpus.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ nominate  List the audit records nominated for ground-truth labelling.       │
+│ add       Scaffold a corpus entry: copy the session capture and write a      │
+│           label template.                                                    │
+│ review    Validate every corpus label loads and every matcher oracle is      │
+│           independent.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label nominate`
+
+```
+Usage: t3 eval label nominate [OPTIONS]
+
+ List the audit records nominated for ground-truth labelling.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label add`
+
+```
+Usage: t3 eval label add [OPTIONS] SESSION_ID
+
+ Scaffold a corpus entry: copy the session capture and write a label template.
+
+ Refuses (exit 1, nothing written) when the publication privacy scanner finds
+ a hit in the capture — a real session log must be redacted before it can
+ live in the public corpus. The template pre-fills the categorical fields
+ from the session's audit record; ``labelled_by``, ``expected_behavior``, and
+ ``expect`` are left for the human labeller, and the printed label path is
+ the file to edit.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    session_id      TEXT  Session id of an audited session to scaffold into │
+│                            the corpus.                                       │
+│                            [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --entry-id        TEXT  Corpus entry id (default: derived from the session   │
+│                         id).                                                 │
+│ --dir             PATH  Corpus directory (default: the shipped corpus).      │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 eval label review`
+
+```
+Usage: t3 eval label review [OPTIONS]
+
+ Validate every corpus label loads and every matcher oracle is independent.
+
+ Non-zero exit on any failure: a label that does not parse/validate
+ (``EvalSpecError``) or a matcher-oracle label whose labeller is the rule's
+ author (``CircularOracleError``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dir         PATH  Corpus directory (default: the shipped corpus).          │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

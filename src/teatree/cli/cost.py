@@ -1,4 +1,4 @@
-"""``t3 cost`` — SDK-equivalent spend of the loop's headless ``claude -p`` usage.
+"""``t3 cost`` — SDK-equivalent spend of the loop's detached headless Agent-SDK usage.
 
 Top-level convenience over the ``cost`` Django management command. Anything
 touching the ORM must run through the management framework (Django bootstrapped

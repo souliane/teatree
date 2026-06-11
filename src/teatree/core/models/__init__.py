@@ -1,4 +1,5 @@
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
+from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
@@ -13,6 +14,7 @@ from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalE
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
 from teatree.core.models.eval_run import (
+    CostRegression,
     EvalRunRecord,
     EvalScenarioResult,
     EvalVerdict,
@@ -80,6 +82,7 @@ __all__ = [
     "ConfigSetting",
     "ConfigSettingManager",
     "ConsolidatedMemory",
+    "CostRegression",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",
@@ -106,6 +109,7 @@ __all__ = [
     "IncomingEvent",
     "IntentClassification",
     "InvalidTransitionError",
+    "InvariantOutcome",
     "LivePostApproval",
     "LivePostApprovalError",
     "LocalStackQueueItem",
@@ -149,6 +153,7 @@ __all__ = [
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
+    "SessionAuditRecord",
     "SessionHandover",
     "Severity",
     "Task",

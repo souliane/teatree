@@ -75,6 +75,19 @@ class TestRunEvalInDocker:
             run_eval_in_docker(["all"])
         assert DOCKER_IMAGE in streamed.call_args.args[0]
 
+    def test_sets_in_container_marker_so_the_re_invoked_command_runs_in_process(self) -> None:
+        # The in-container `t3 eval` re-invocation must run DIRECTLY in-process, not
+        # re-route to docker again (an infinite loop). The marker breaks the loop.
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
+        command = streamed.call_args.args[0]
+        index = command.index("T3_EVAL_IN_CONTAINER=1")
+        assert command[index - 1 : index + 1] == ["-e", "T3_EVAL_IN_CONTAINER=1"]
+
     def test_raises_when_docker_missing(self) -> None:
         with patch(f"{_MODULE}.shutil.which", return_value=None), pytest.raises(DockerUnavailableError):
             run_eval_in_docker(["all"])

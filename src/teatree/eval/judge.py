@@ -6,38 +6,57 @@ with arg X containing Y exists". Some behaviours don't: "the explanation is
 faithful to the diff", "the tone stays non-blaming", "the answer actually
 addresses the question". For those a scenario opts in to an LLM judge by adding
 a ``judge:`` block with a ``rubric``; this module feeds the captured transcript
-plus the rubric to a judge model and parses a PASS/FAIL verdict.
+plus the rubric to a judge model and reads a structured ``{verdict, reason}``
+back off the ``ResultMessage.structured_output`` — no free-text regex.
 
 Cost controls, by construction:
 
 *   the judge model defaults to the same Sonnet tier as a run
     (``claude-sonnet-4-6``) and is per-scenario overridable to a cheaper tier;
-*   ``--max-budget-usd`` caps spend per judge call and ``--max-output-tokens``
-    caps the reply (a judge needs one line, not an essay);
+*   ``max_budget_usd`` caps spend per judge call;
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,
     so a large suite cannot silently fan out into an unbounded bill.
 
-Like the runner, the judge call runs in a virgin environment via
-:func:`~teatree.eval.isolation.isolated_claude_env` plus the explicit
-``--settings`` / ``--strict-mcp-config`` flags so the developer's personal
-context never reaches the grader. It deliberately omits ``--bare`` for the same
-reason the runner does — ``--bare`` disables ``CLAUDE_CODE_OAUTH_TOKEN`` auth
-(the judge's only auth). When ``claude`` is not on PATH the judge skips
-(mirrors the runner's skip path) so CI and judge-less contributors are never
-blocked.
+Like the runner, the judge runs in a virgin configuration via the shared
+:func:`~teatree.eval.sdk_runner.build_sdk_options` clean-room builder
+(``setting_sources=[]`` + a plain-string ``system_prompt`` + empty ``settings``)
+so the developer's personal context never reaches the grader. When ``claude`` is
+not on PATH the judge skips (mirrors the runner's skip path) so CI and
+judge-less contributors are never blocked.
 """
 
+import asyncio
 import dataclasses
-import re
 import shutil
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.eval.sdk_runner import CleanRoomConfig, build_sdk_options
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 WATCHDOG_SECONDS = 120
-MAX_BUDGET_USD = "0.05"
-_VERDICT_RE = re.compile(r"\b(PASS|FAIL)\b", re.IGNORECASE)
+JUDGE_MAX_BUDGET_USD = "0.05"
+
+_JUDGE_SYSTEM_PROMPT = (
+    "You are grading an AI agent's behaviour against a rubric. Decide PASS or FAIL "
+    "and give a one-sentence reason. Reply via the required structured output only."
+)
+
+_VERDICT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+    "additionalProperties": False,
+}
 
 
 class JudgeBudgetExceededError(RuntimeError):
@@ -65,6 +84,26 @@ class JudgeVerdict:
     rationale: str
 
 
+@dataclasses.dataclass(frozen=True)
+class StructuredVerdict:
+    """The judge model's structured reply, parsed off ``ResultMessage.structured_output``."""
+
+    verdict: str | None
+    reason: str | None
+
+    @classmethod
+    def from_structured_output(cls, structured_output: object) -> "StructuredVerdict | None":
+        if not isinstance(structured_output, dict):
+            return None
+        fields = cast("Mapping[str, object]", structured_output)
+        verdict = fields.get("verdict")
+        reason = fields.get("reason")
+        return cls(
+            verdict=verdict if isinstance(verdict, str) else None,
+            reason=reason if isinstance(reason, str) else None,
+        )
+
+
 def build_judge_prompt(spec: EvalSpec, run: EvalRun) -> str:
     """Render the judge prompt: rubric + a privacy-safe transcript summary.
 
@@ -78,8 +117,7 @@ def build_judge_prompt(spec: EvalSpec, run: EvalRun) -> str:
     text = "\n".join(b.strip() for b in run.text_blocks if b.strip()) or "(no text output)"
     tool_lines = [f"- {c.name}({', '.join(sorted(c.input))})" for c in run.tool_calls] or ["(no tool calls)"]
     return (
-        "You are grading an AI agent's behaviour against a rubric. "
-        "Reply with a single line: `PASS` or `FAIL`, then a one-sentence reason.\n\n"
+        "Grade the agent against the rubric and return the structured verdict.\n\n"
         f"## Scenario\n{spec.scenario}\n\n"
         f"## Rubric (the agent passes only if ALL hold)\n{spec.judge.rubric.strip()}\n\n"
         f"## Agent text output\n{text}\n\n"
@@ -87,22 +125,8 @@ def build_judge_prompt(spec: EvalSpec, run: EvalRun) -> str:
     )
 
 
-def parse_judge_verdict(stdout: str) -> tuple[bool, str]:
-    """Parse the judge reply into ``(passed, rationale)``.
-
-    The first standalone ``PASS``/``FAIL`` token decides the verdict; anything
-    that never says either is treated as a FAIL (a judge that cannot commit to a
-    verdict must not pass a scenario by default).
-    """
-    text = stdout.strip()
-    match = _VERDICT_RE.search(text)
-    if match is None:
-        return False, "judge returned no PASS/FAIL verdict"
-    return match.group(1).upper() == "PASS", text
-
-
 class ClaudeJudge:
-    """Grade a scenario's captured run against its rubric via ``claude -p``."""
+    """Grade a scenario's captured run against its rubric via the Agent SDK."""
 
     def __init__(self, *, budget: JudgeBudget | None = None) -> None:
         self._budget = budget
@@ -112,48 +136,69 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="no judge configured")
         if run.terminal_reason.startswith("skipped:"):
             return JudgeVerdict(passed=True, skipped=True, rationale="run skipped")
-        binary = shutil.which("claude")
-        if binary is None:
+        if shutil.which("claude") is None:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
         if self._budget is not None:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)
-        command = self._build_command(binary, spec.judge.model, prompt)
         try:
-            with isolated_claude_env() as (env, cwd):
-                result = run_allowed_to_fail(
-                    command,
-                    expected_codes=None,
-                    timeout=WATCHDOG_SECONDS,
-                    env=env,
-                    cwd=cwd,
-                )
-        except TimeoutExpired:
+            structured = asyncio.run(_drive_judge(prompt, spec.judge.model))
+        except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
-        passed, rationale = parse_judge_verdict(result.stdout or "")
-        return JudgeVerdict(passed=passed, skipped=False, rationale=rationale)
+        return _verdict_from_structured(structured)
 
-    @staticmethod
-    def _build_command(binary: str, judge_model: str, prompt: str) -> list[str]:
-        return [
-            binary,
-            "-p",
-            "--output-format",
-            "text",
-            "--max-turns",
-            "1",
-            "--max-budget-usd",
-            MAX_BUDGET_USD,
-            "--model",
-            judge_model,
-            "--no-session-persistence",
-            "--disable-slash-commands",
-            "--permission-mode",
-            "bypassPermissions",
-            "--strict-mcp-config",
-            "--tools",
-            "",
-            "--settings",
-            '{"hooks":{}}',
-            prompt,
-        ]
+
+async def _drive_judge(prompt: str, judge_model: str) -> StructuredVerdict | None:
+    with isolated_claude_env() as (env, cwd):
+        options = _judge_options(model=judge_model, cwd=cwd, env=env)
+        return await asyncio.wait_for(_judge_result(prompt, options), timeout=WATCHDOG_SECONDS)
+
+
+def _judge_options(*, model: str, cwd: str, env: dict[str, str]) -> ClaudeAgentOptions:
+    options = build_sdk_options(
+        CleanRoomConfig(
+            system_prompt=_JUDGE_SYSTEM_PROMPT,
+            workspace=Path(cwd),
+            cwd=cwd,
+            env=env,
+            allowed_tools=(),
+            model=model,
+            max_turns=1,
+        )
+    )
+    options.max_budget_usd = float(JUDGE_MAX_BUDGET_USD)
+    options.output_format = {"type": "json_schema", "schema": _VERDICT_SCHEMA}
+    return options
+
+
+async def _judge_result(prompt: str, options: ClaudeAgentOptions) -> StructuredVerdict | None:
+    structured: StructuredVerdict | None = None
+    async for message in query(prompt=prompt, options=options):
+        if isinstance(message, ResultMessage):
+            structured = StructuredVerdict.from_structured_output(message.structured_output)
+    return structured
+
+
+def _verdict_from_structured(structured: StructuredVerdict | None) -> JudgeVerdict:
+    """Map the parsed :class:`StructuredVerdict` to a :class:`JudgeVerdict`.
+
+    A judge that returns no usable structured verdict cannot pass a scenario by
+    default — an absent/malformed verdict is a FAIL, never a silent pass.
+    """
+    if structured is None:
+        return JudgeVerdict(passed=False, skipped=False, rationale="judge returned no structured verdict")
+    rationale = structured.reason if structured.reason and structured.reason.strip() else str(structured.verdict)
+    if structured.verdict == "PASS":
+        return JudgeVerdict(passed=True, skipped=False, rationale=rationale)
+    if structured.verdict == "FAIL":
+        return JudgeVerdict(passed=False, skipped=False, rationale=rationale)
+    return JudgeVerdict(passed=False, skipped=False, rationale="judge returned no PASS/FAIL verdict")
+
+
+__all__ = [
+    "ClaudeJudge",
+    "JudgeBudget",
+    "JudgeBudgetExceededError",
+    "JudgeVerdict",
+    "build_judge_prompt",
+]

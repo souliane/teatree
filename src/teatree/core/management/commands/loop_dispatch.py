@@ -60,7 +60,7 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         "ticket_state": ticket.state,
         "ticket_extra": ticket.extra or {},
         # Model tier + skill bundle resolved in LOOP scope (not inside a
-        # ``claude -p`` subprocess) so the in-session ``/loop`` slot passes
+        # detached headless-SDK run) so the in-session ``/loop`` slot passes
         # ``model`` to its ``Agent`` tool and the ``skill_bundle`` into the
         # sub-agent prompt. ``model`` is ``null`` when the phase inherits the
         # user's default tier (no ``--model`` override).
@@ -97,7 +97,7 @@ def _resolve_fanout_directive(task: Task) -> str:
 def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
-    Moved out of the ``claude -p`` subprocess (``run_headless``) so the
+    Moved out of the detached headless-SDK run (``run_headless``) so the
     INTERACTIVE ``/loop`` slot resolves them once at claim time and threads
     them into the in-session sub-agent. The skill bundle is resolved FIRST so
     the model is the most-capable-wins floor merge of the phase tier and the

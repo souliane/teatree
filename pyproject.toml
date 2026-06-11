@@ -14,6 +14,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  "claude-agent-sdk>=0.2.94",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
   # It must be present in the installed tool env, not only the dev group —
@@ -355,7 +356,7 @@ tolerance = 0.05
 
 [tool.teatree.test_path_mirror]
 mode = "block"
-baseline = 213
+baseline = 219
 
 # Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
 # ``src/teatree/quality/mutation.py``). Mutation testing is expensive and

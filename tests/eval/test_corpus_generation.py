@@ -13,25 +13,16 @@ scenario's ``_pass`` fixture grades GREEN, its ``_fail`` fixture grades RED, and
 guarantee the on-disk anti-vacuous gate enforces, here pinned at the source.
 """
 
-import dataclasses
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from scripts.eval.corpus_gen.all_scenarios import ALL_SCENARIOS
 from scripts.eval.corpus_gen.model import Scenario, fixture_stream
 from scripts.eval.generate_corpus import planned_files
+from teatree.eval.backends import SubscriptionTranscriptRunner
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.report import evaluate
-from teatree.eval.runner import ClaudePRunner
-
-
-@dataclasses.dataclass
-class _FakeCompleted:
-    stdout: str
-    stderr: str = ""
-    returncode: int = 0
 
 
 def _grade(scenario: Scenario, variant: str, tmp_path: Path) -> bool:
@@ -40,16 +31,8 @@ def _grade(scenario: Scenario, variant: str, tmp_path: Path) -> bool:
 
     spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
     spec = load_eval_yaml(spec_path)[0]
-    fixture_text = fixture_stream(scenario, variant)
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
-        return _FakeCompleted(stdout=fixture_text)
-
-    with (
-        patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-        patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-    ):
-        run = ClaudePRunner(workspace=tmp_path).run(spec)
+    (tmp_path / f"{spec.name}.jsonl").write_text(fixture_stream(scenario, variant), encoding="utf-8")
+    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 

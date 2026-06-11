@@ -3,24 +3,35 @@
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import typer
+from claude_agent_sdk.types import EffortLevel
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
-from teatree.cli.eval.all import build_scenarios_table, hint_missing_transcripts, run_full_suite
+from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
+from teatree.cli.eval.all_command import all_lanes
+from teatree.cli.eval.audit import audit
+from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
+from teatree.cli.eval.corpus import corpus_app
+from teatree.cli.eval.label import label_app
+from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
+from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
 from teatree.cli.eval.run_modes import (
+    DEFAULT_COST_REGRESSION_TOLERANCE,
     RunGuards,
     build_subscription_manifest,
-    gate_run_regressions,
+    finalize_single_run,
     make_grader,
-    persist_single,
     render_subscription_text,
 )
+from teatree.cli.eval.skill_command_lane import skill_command_validity
+from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
 from teatree.eval.backends import (
     SDK_BACKEND,
@@ -29,37 +40,41 @@ from teatree.eval.backends import (
     UnknownBackendError,
     make_runner,
 )
-from teatree.eval.coverage import render_json as render_coverage_json
-from teatree.eval.coverage import render_text as render_coverage_text
-from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.discovery import discover_specs, find_spec
+from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
-from teatree.eval.regression_corpus import render_json as render_regression_json
-from teatree.eval.regression_corpus import render_text as render_regression_text
-from teatree.eval.regression_corpus import run_regression_corpus
 from teatree.eval.report import evaluate, render_html, render_json, render_text
-from teatree.eval.trigger_qa import render_json as render_trigger_json
-from teatree.eval.trigger_qa import render_text as render_trigger_text
-from teatree.eval.trigger_qa import run_trigger_qa
+from teatree.eval.sdk_runner import resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
 
-#: Shared by the bare-``t3 eval`` callback and the ``t3 eval all`` command (identical full-suite flag).
-_STRICT_HELP = (
-    "Exit non-zero when a lane was SKIPPED for setup reasons (the AI behavioural lane with no "
-    "transcripts / no key) — for CI, where 'not yet validated' must fail. Default leaves a "
-    "setup-skip green (the caveat is in the verdict text, not a confusing non-zero)."
-)
+#: The metered ``t3 eval run --backend sdk`` lane's GENEROUS, configurable
+#: defaults — the cheap 0.10 floor truncated finishing scenarios (a truncated run
+#: measures the cap, not behaviour), and the model's DEFAULT effort understates
+#: real high-effort usage. Resolved once here (env-overridable) so the CLI default
+#: is generous + representative; a per-invocation flag still overrides.
+METERED_DEFAULT_BUDGET_USD = resolve_metered_budget_usd()
+METERED_DEFAULT_EFFORT = resolve_metered_effort()
 
 eval_app = typer.Typer(
     no_args_is_help=False,
     help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
 )
 eval_app.command("negative-control")(negative_control)
+eval_app.command("all")(all_lanes)
+eval_app.command("benchmark")(benchmark)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
+eval_app.command("skill-triggers")(skill_triggers)
+eval_app.command("coverage")(coverage)
+eval_app.command("pinned-regressions")(pinned_regressions)
+eval_app.command("skill-command-validity")(skill_command_validity)
+eval_app.command("skill-prose-judge")(skill_prose_judge)
+eval_app.command("audit")(audit)
+eval_app.add_typer(corpus_app, name="corpus")
+eval_app.add_typer(label_app, name="label")
 
 
 @eval_app.command("list")
@@ -84,6 +99,28 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--max-turns",
         help="Override the scenario's max_turns (per-invocation).",
     ),
+    max_budget_usd: float = typer.Option(
+        METERED_DEFAULT_BUDGET_USD,
+        "--max-budget-usd",
+        help=(
+            "Per-run USD budget circuit breaker for the metered sdk runner. Defaults GENEROUS "
+            "(env-configurable via T3_EVAL_MAX_BUDGET_USD) so a finishing scenario COMPLETES "
+            "rather than truncating — a truncated run measures the cap, not behaviour. Raise it "
+            "for a costly --models/--trials run. An over-budget scenario is recorded as a "
+            "budget_exceeded FAIL, not a crash."
+        ),
+    ),
+    effort: str = typer.Option(
+        METERED_DEFAULT_EFFORT,
+        "--effort",
+        help=(
+            "Representative reasoning effort for the metered sdk lane "
+            f"({', '.join(EFFORT_LEVELS)}; default '{METERED_DEFAULT_EFFORT}', env-configurable via "
+            "T3_EVAL_EFFORT). The lane otherwise runs at the model's DEFAULT effort while real "
+            "usage is high — so a default-effort pass-rate is pessimistic. A scenario's own "
+            "model@effort still wins over this lane default."
+        ),
+    ),
     trials: int = typer.Option(1, "--trials", help="Re-run each scenario this many times (pass@k)."),
     require: str = typer.Option(
         "any",
@@ -93,7 +130,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     models: str | None = typer.Option(
         None,
         "--models",
-        help="Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model.",
+        help=(
+            "Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model. "
+            "Each entry may carry a reasoning-effort variant as model@effort (e.g. "
+            "claude-opus-4-8@xhigh) — the tag is the column/ledger identity."
+        ),
     ),
     persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         True,
@@ -109,6 +150,23 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         False,
         "--gate-regressions",
         help="Diff this run against each model's current baseline; any regression exits non-zero.",
+    ),
+    gate_cost_regression: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--gate-cost-regression",
+        help=(
+            "Diff this run's per-scenario cost against each model's baseline cost; a relative "
+            "rise beyond --cost-regression-tolerance exits non-zero. Distinct from an absolute "
+            "ceiling: a zero-cost (subscription/free) baseline is skipped, never divided by."
+        ),
+    ),
+    cost_regression_tolerance: float = typer.Option(
+        DEFAULT_COST_REGRESSION_TOLERANCE,
+        "--cost-regression-tolerance",
+        help=(
+            "Relative per-scenario cost rise --gate-cost-regression tolerates before failing "
+            "(default 0.20 = +20% vs the baseline). A scenario rising more than this exits non-zero."
+        ),
     ),
     judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
@@ -126,9 +184,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Execution backend for a single-trial run: 'subscription' (default — grade "
             "subscription-produced transcripts, no API spend; see `t3 eval prepare-subscription`) "
-            "or 'sdk' (metered claude -p, authed by CLAUDE_CODE_OAUTH_TOKEN; runs in-container "
-            "via --docker locally or in the standalone eval.yml CI job). --trials and "
-            "--models always use the metered sdk runner regardless of this flag."
+            "or 'sdk' (the metered in-process Agent-SDK runner, authed by CLAUDE_CODE_OAUTH_TOKEN; "
+            "runs in-container via --docker locally or in the standalone eval.yml CI job). --trials "
+            "and --models always use the metered sdk runner regardless of this flag."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -150,16 +208,24 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         False,
         "--docker",
         help=(
-            "Run inside the CI image (dev/Dockerfile.test); the metered sdk lane runs in-container, "
-            "authenticated by the host's CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY (env pass-through)."
+            "Force running inside the CI image (dev/Dockerfile.test) for ANY backend. The metered "
+            "sdk lane ALREADY defaults to the container; this forces it for the subscription lane too."
+        ),
+    ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help=(
+            "Run the metered sdk lane on the HOST instead of the default CI container — a quick "
+            "local check only. A host run is NOT the reproducible regression gate (use Docker/CI)."
         ),
     ),
     parallel: int = typer.Option(
         DEFAULT_PARALLEL,
         "--parallel",
         help=(
-            "Run this many scenarios concurrently (each claude -p is I/O-bound; a bounded pool "
-            "cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
+            "Run this many scenarios concurrently (each SDK scenario run is I/O-bound; a bounded "
+            "pool cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
         ),
     ),
 ) -> None:
@@ -178,11 +244,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``--backend subscription`` (default) grades transcripts produced on the
     subscription via an in-session sub-agent — no API spend (run
     ``t3 eval prepare-subscription`` first for the prompts + expected paths).
-    ``--backend sdk`` shells the metered ``claude -p`` runner, authed by
-    ``CLAUDE_CODE_OAUTH_TOKEN`` (``ANTHROPIC_API_KEY`` is also honored as a
-    legacy alternative); CI passes ``--backend sdk`` explicitly via the standalone
-    ``eval.yml`` job. ``--trials``/``--models`` always use the metered ``sdk``
-    runner regardless of ``--backend``.
+    ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
+    spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
+    (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
+    ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
+    ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
+    of ``--backend``.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -193,19 +260,29 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
     meant to run in-container, never on the host — the runner forwards the host's
     ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
-    ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
-    clean container and never lands on the command line.
+    ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
+    child inside a clean container and never lands on the command line.
 
-    ``--parallel N`` runs N scenarios concurrently (each ``claude -p`` is
+    ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
     I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
     Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
     """
-    if docker:
+    # The metered sdk lane (and the always-metered --trials/--models lanes) bills
+    # the API, so it defaults to running IN the CI container — a metered run must
+    # never accidentally run on the host. --docker forces the container for any
+    # backend; --local is the explicit host escape (a quick check, not the gate);
+    # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
+    # re-invocation in-process (no re-route loop).
+    effort_level = _require_effort(effort)
+    metered = backend == SDK_BACKEND or trials > 1 or models is not None
+    if docker or should_route_to_docker(metered=metered, local=local):
         run_in_docker_or_exit(
             RunDockerArgs(
                 name=name,
                 output_format=output_format,
                 max_turns=max_turns,
+                max_budget_usd=max_budget_usd,
+                effort=effort_level,
                 trials=trials,
                 require=require,
                 models=models,
@@ -215,7 +292,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             ),
             baseline=baseline,
             gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
         )
+    if local:
+        warn_local_metered(metered=metered)
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     if output_format == "html" and (trials > 1 or models is not None):
@@ -232,7 +312,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     require_executed = require_executed or sdk_metered
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
         typer.echo(
-            "note: --trials/--models force the metered sdk runner (claude -p, API-billed); "
+            "note: --trials/--models force the metered in-process Agent-SDK runner (API-billed); "
             "the 'subscription' default does not apply to multi-trial / matrix runs",
             err=True,
         )
@@ -247,8 +327,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             persist=persist,
             baseline=baseline,
             gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
+            cost_regression_tolerance=cost_regression_tolerance,
             grader=grader,
             require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
         return
     if trials > 1:
@@ -261,8 +345,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             persist=persist,
             baseline=baseline,
             gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
+            cost_regression_tolerance=cost_regression_tolerance,
             grader=grader,
             require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
         return
     try:
@@ -271,6 +359,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             max_turns_override=max_turns,
             transcript_dir=transcript_dir,
             require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort_level,
         )
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
@@ -284,11 +374,16 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     executed = sum(1 for r in results if not r.skipped)
     RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
     RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
-    regressed = False
-    if persist:
-        record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    if any(not r.passed for r in results) or regressed:
+    if finalize_single_run(
+        results,
+        specs=specs,
+        max_turns=max_turns,
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        cost_regression_tolerance=cost_regression_tolerance,
+    ):
         sys.exit(1)
 
 
@@ -360,68 +455,6 @@ def history(
     typer.echo(renderer(runs))
 
 
-@eval_app.command("skill-triggers")
-def skill_triggers(
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-) -> None:
-    """Validate every skill's trigger keywords against the must-fire/must-not-fire corpus.
-
-    Deterministic and free — no ``claude -p`` invocation. An under-trigger
-    (in-scope prompt that does not fire) or over-trigger (control prompt that
-    does fire) exits non-zero.
-    """
-    report = run_trigger_qa()
-    typer.echo(render_trigger_json(report) if output_format == "json" else render_trigger_text(report))
-    if not report.ok:
-        sys.exit(1)
-
-
-@eval_app.command("coverage")
-def coverage(
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-    fail_on_gap: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--fail-on-gap",
-        help="Exit non-zero on any coverage gap (Phase B enforcement); default is warn-first (exit 0).",
-    ),
-) -> None:
-    """Report per-skill behavioral-eval coverage: every skill is covered or eval_exempt.
-
-    A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
-    (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
-    frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
-    neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
-    Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
-    Phase-B enforcement that exits non-zero on any gap.
-    """
-    ensure_django()
-    require_valid_format(output_format)
-    report = skill_eval_coverage()
-    typer.echo(render_coverage_json(report) if output_format == "json" else render_coverage_text(report))
-    if fail_on_gap and report.gaps:
-        sys.exit(1)
-
-
-@eval_app.command("pinned-regressions")
-def pinned_regressions(
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-) -> None:
-    """Run the deterministic regression corpus over the real gate/checker code paths.
-
-    Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
-    function for a recurring failure class (branch-currency §940, the
-    bare-reference gate, the substrate-merge and maker≠checker floors, the
-    pid-anchored loop lease, the migration-graph leaf count) on a must-block and
-    a must-allow input. Any violated invariant exits non-zero.
-    """
-    ensure_django()
-    require_valid_format(output_format)
-    report = run_regression_corpus()
-    typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
-    if not report.ok:
-        sys.exit(1)
-
-
 @eval_app.callback(invoke_without_command=True)
 def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public bare-``t3 eval`` flag. The arg list IS the CLI contract.
     ctx: typer.Context,
@@ -430,7 +463,8 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--backend",
         help=(
             "AI-lane backend for the bare-`t3 eval` full suite: 'subscription' (default — grade "
-            "in-session transcripts, no API spend) or 'sdk' (metered claude -p, the explicit opt-in)."
+            "in-session transcripts, no API spend) or 'sdk' (the metered in-process Agent-SDK "
+            "runner, the explicit opt-in)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -446,12 +480,17 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
     strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--strict",
-        help=_STRICT_HELP,
+        help=STRICT_HELP,
     ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
+    ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help="Run a metered `--backend sdk` suite on the HOST (quick check, NOT the gate; prints a WARNING).",
     ),
     parallel: int = typer.Option(
         DEFAULT_PARALLEL,
@@ -466,15 +505,13 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
-    Bare ``t3 eval`` (no subcommand, no args) runs every lane in one go and
-    prints a single aggregated summary table plus a plain-language verdict — the
-    suite the user reaches for by default. Subcommands are the targeted/special
-    path: ``run`` (a single AI scenario, the metered ``--backend sdk --docker``
-    path), ``pinned-regressions`` / ``negative-control`` / ``skill-triggers`` /
-    ``coverage`` (one free lane), ``history`` / ``list`` / ``prepare-subscription``
-    (introspection). ``--html`` writes a whole-suite HTML report for CI to
-    publish. The process exits non-zero if ANY lane fails (fail-loud); ``--strict``
-    also fails on a setup-skipped lane (the AI lane).
+    Bare ``t3 eval`` runs every lane in one go and prints a single aggregated
+    summary table plus a plain-language verdict — the default. Subcommands are the
+    targeted path: ``run`` (a single AI scenario, the metered ``--backend sdk``
+    path), one-free-lane (``pinned-regressions`` / ``negative-control`` / …), and
+    introspection (``history`` / ``list`` / ``prepare-subscription``). ``--html``
+    writes a whole-suite report; the process exits non-zero if ANY lane fails
+    (fail-loud); ``--strict`` also fails on a setup-skipped lane.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -484,66 +521,7 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         free_only=free_only,
         docker=docker,
         strict=strict,
-        parallel=parallel,
-        html_path=html,
-    )
-
-
-@eval_app.command("all")
-def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public `t3 eval all` flag. The arg list IS the CLI contract.
-    backend: str = typer.Option(
-        SUBSCRIPTION_BACKEND,
-        "--backend",
-        help=(
-            "AI-lane backend: 'subscription' (default — grade in-session transcripts, no API spend) "
-            "or 'sdk' (metered claude -p, authed by CLAUDE_CODE_OAUTH_TOKEN; the explicit CI opt-in "
-            "via the standalone eval.yml job; ANTHROPIC_API_KEY also honored as a legacy alternative)."
-        ),
-    ),
-    transcript_dir: Path | None = typer.Option(
-        None,
-        "--transcript-dir",
-        help="Directory of <scenario>.jsonl subscription transcripts for the AI lane (default: cwd).",
-    ),
-    free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--free-only",
-        help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
-    ),
-    strict: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--strict",
-        help=_STRICT_HELP,
-    ),
-    docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--docker",
-        help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
-    ),
-    parallel: int = typer.Option(
-        DEFAULT_PARALLEL,
-        "--parallel",
-        help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
-    ),
-    html: Path | None = typer.Option(
-        None,
-        "--html",
-        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
-    ),
-) -> None:
-    """Run every eval lane in sequence and render one unified summary table + verdict.
-
-    The explicit form of the bare-``t3 eval`` default — both call
-    :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
-    callback for the flag semantics, including ``--html``). Kept as a named
-    subcommand for scripts/CI that spell the full run out.
-    """
-    run_full_suite(
-        backend=backend,
-        transcript_dir=transcript_dir,
-        free_only=free_only,
-        docker=docker,
-        strict=strict,
+        local=local,
         parallel=parallel,
         html_path=html,
     )
@@ -557,3 +535,11 @@ def _require_spec(name: str) -> EvalSpec:
         typer.echo(f"available scenarios: {available}", err=True)
         raise typer.Exit(code=2)
     return spec
+
+
+def _require_effort(effort: str) -> EffortLevel:
+    """Validate ``--effort`` against the known levels, or exit 2 listing them."""
+    if effort not in EFFORT_LEVELS:
+        typer.echo(f"unknown --effort {effort!r}; known levels: {', '.join(EFFORT_LEVELS)}", err=True)
+        raise typer.Exit(code=2)
+    return cast("EffortLevel", effort)

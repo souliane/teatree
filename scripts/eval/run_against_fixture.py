@@ -19,22 +19,13 @@ to drive the whole catalog.
 """
 
 import argparse
-import dataclasses
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
+from teatree.eval.backends import SubscriptionTranscriptRunner
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import AnyOf, EvalSpec, ExpectItem
 from teatree.eval.report import evaluate
-from teatree.eval.runner import ClaudePRunner
-
-
-@dataclasses.dataclass
-class _FakeCompleted:
-    stdout: str
-    stderr: str = ""
-    returncode: int = 0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -71,16 +62,9 @@ def main() -> int:
     specs = load_eval_yaml(args.spec_path)
     spec = _pick_spec(specs, args.spec_name, args.spec_path)
     fixture_text = args.fixture_path.read_text(encoding="utf-8")
-
-    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:  # noqa: ARG001
-        return _FakeCompleted(stdout=fixture_text)
-
-    workspace = Path(tempfile.mkdtemp(prefix="eval-scenarios-fixture-"))
-    with (
-        patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-        patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-    ):
-        run = ClaudePRunner(workspace=workspace).run(spec)
+    transcript_dir = Path(tempfile.mkdtemp(prefix="eval-scenarios-fixture-"))
+    (transcript_dir / f"{spec.name}.jsonl").write_text(fixture_text, encoding="utf-8")
+    run = SubscriptionTranscriptRunner(transcript_dir=transcript_dir).run(spec)
 
     result = evaluate(spec, run)
     actual = "pass" if result.passed else "fail"

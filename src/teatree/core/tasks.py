@@ -44,8 +44,8 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 
     # Fail-closed billing guard: a loop-dispatched phase task (one whose
     # (role, phase) has a registered phase agent) must run INTERACTIVE in the
-    # in-session ``/loop`` slot, never as a metered detached ``claude -p``
-    # subprocess. The predicate lives in ONE shared helper both headless entry
+    # in-session ``/loop`` slot, never as a metered detached headless-SDK run.
+    # The predicate lives in ONE shared helper both headless entry
     # points consult (``loop_dispatch_refusal``), so the ``work-next-sdk`` CLI
     # path cannot drift from this seam (souliane/teatree#1375). Refuse here and
     # record a ``routing_error`` instead of shelling out — closing the seam
