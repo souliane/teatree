@@ -59,9 +59,18 @@ class MiniLoop:
     ``always_on`` keeps a loop enabled even when the user sets
     ``[loops] enabled = false`` — reserved for the core ``dispatch``
     mini-loop which has no graceful-degradation path.
+
+    ``off_live_tick`` excludes the loop from the live 12-minute work loop's
+    scanner fan-out (and the orchestrator's normal dispatch) — it is driven
+    by its OWN low-frequency cron instead, while still being registered so
+    its cadence is configured under ``[loops.<name>]``. Reserved for the
+    heavy ``dream`` consolidation pass (#1933 § 3), which must not run on or
+    re-arm the live tick. Default ``False`` → every existing loop is
+    unchanged.
     """
 
     name: str
     default_cadence_seconds: int
     build_jobs: Callable[..., list["_ScannerJob"]]
     always_on: bool = False
+    off_live_tick: bool = False
