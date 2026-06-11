@@ -29,7 +29,7 @@ from teatree.core.branch_classification import (
 )
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils import git
@@ -525,7 +525,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     """
     workspace = load_config().user.workspace_dir
     wt_path = _resolve_worktree_path(workspace, worktree)
-    overlay = get_overlay()
+    overlay = get_overlay_for_worktree(worktree)
 
     if Path(wt_path).is_dir() and git.status_porcelain(wt_path):
         logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
