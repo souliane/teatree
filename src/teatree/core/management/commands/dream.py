@@ -73,11 +73,11 @@ class Command(TyperCommand):
             return
 
         try:
-            self._consolidate_and_mark(since=since, dry_run=dry_run, now=now)
+            succeeded = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now)
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
-        if enforce_cadence:
+        if enforce_cadence and succeeded:
             MiniLoopMarker.objects.mark_fired(MINI_LOOP.name, now)
 
         # Re-read confirmation so a stamped success can be cited (resilience #7).
@@ -86,33 +86,31 @@ class Command(TyperCommand):
             stamped = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "none"
             self.stdout.write(f"      dream marker last_succeeded_at={stamped}")
 
-    def _consolidate_and_mark(self, *, since: dt.datetime | None, dry_run: bool, now: dt.datetime) -> None:
+    def _consolidate_and_mark(self, *, since: dt.datetime | None, dry_run: bool, now: dt.datetime) -> bool:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415
         from teatree.loops.dream import engine  # noqa: PLC0415
 
         try:
             result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run)
         except Exception as exc:  # noqa: BLE001
-            # A failed pass bumps only the attempt timestamp — staleness keeps
-            # firing until a clean run lands (the alarm IS the fallback signal).
-            # A dry-run writes nothing, marker included, even on engine raise.
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
-            return
+            return False
 
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
                 f"from {result.members_replayed} member(s); no rows or marker written.",
             )
-            return
+            return False
 
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
             f"from {result.members_replayed} member(s).",
         )
+        return True
 
 
 def _parse_since(raw: str) -> dt.datetime | None:
