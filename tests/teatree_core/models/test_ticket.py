@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, TaskAttempt, Ticket, Worktree
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -397,3 +397,140 @@ class TestHasDispatchableOverlay(TestCase):
 
         with patch("teatree.core.overlay_loader.resolve_overlay_name", return_value=None):
             assert ticket.has_dispatchable_overlay() is False
+
+
+class TestTicketArtifacts(TestCase):
+    """``Ticket.artifacts`` — read-only per-ticket "find our eggs" aggregation (#273).
+
+    Collects, over EXISTING related rows (no new storage model): the ticket's
+    worktrees (on-disk path, ports, db_name, state), PlanArtifact rows, each
+    Task's ``result_artifact_path``, and E2eMandatoryRun evidence (spec + posted
+    video/comment URL). The port resolver is injected so the model method stays
+    pure — no live docker query in the model.
+    """
+
+    def _ports(self, _worktree: Worktree) -> dict[str, int]:
+        return {"backend": 18000, "frontend": 18080}
+
+    def test_empty_ticket_yields_empty_artifacts(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+
+        artifacts = ticket.artifacts()
+
+        assert artifacts.ticket_id == ticket.pk
+        assert artifacts.worktrees == ()
+        assert artifacts.plan_artifacts == ()
+        assert artifacts.result_artifact_paths == ()
+        assert artifacts.e2e_runs == ()
+
+    def test_collects_worktree_path_ports_db_name_and_state(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            db_name="wt_273",
+            state=Worktree.State.READY,
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+
+        artifacts = ticket.artifacts(port_resolver=self._ports)
+
+        assert len(artifacts.worktrees) == 1
+        wt = artifacts.worktrees[0]
+        assert wt.worktree_path == "/ws/273/example-repo"
+        assert wt.db_name == "wt_273"
+        assert wt.state == Worktree.State.READY
+        assert wt.repo_path == "example/repo"
+        assert wt.branch == "ac/273"
+        assert wt.ports == {"backend": 18000, "frontend": 18080}
+
+    def test_ports_default_to_empty_without_a_resolver(self) -> None:
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+
+        artifacts = ticket.artifacts()
+
+        assert artifacts.worktrees[0].ports == {}
+
+    def test_collects_plan_artifacts(self) -> None:
+        ticket = Ticket.objects.create()
+        PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by="planner")
+
+        artifacts = ticket.artifacts()
+
+        assert len(artifacts.plan_artifacts) == 1
+        plan = artifacts.plan_artifacts[0]
+        assert plan.plan_text == "the plan"
+        assert plan.recorded_by == "planner"
+
+    def test_collects_task_result_artifact_paths_skipping_blanks(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
+        Task.objects.create(ticket=ticket, session=session, phase="testing", result_artifact_path="/runs/b.jsonl")
+        # A task with no recorded artifact path must not surface as a blank "egg".
+        Task.objects.create(ticket=ticket, session=session, phase="review", result_artifact_path="")
+
+        artifacts = ticket.artifacts()
+
+        assert set(artifacts.result_artifact_paths) == {"/runs/a.jsonl", "/runs/b.jsonl"}
+
+    def test_collects_e2e_runs_with_spec_and_posted_video_url(self) -> None:
+        ticket = Ticket.objects.create()
+        E2eMandatoryRun.record(
+            ticket=ticket,
+            head_sha="a" * 40,
+            spec="e2e/login.spec.ts",
+            result=E2eMandatoryRun.Result.GREEN,
+            posted_url="https://github.com/example/repo/issues/273#comment-1",
+        )
+
+        artifacts = ticket.artifacts()
+
+        assert len(artifacts.e2e_runs) == 1
+        run = artifacts.e2e_runs[0]
+        assert run.spec == "e2e/login.spec.ts"
+        assert run.result == E2eMandatoryRun.Result.GREEN
+        assert run.posted_url == "https://github.com/example/repo/issues/273#comment-1"
+        assert run.head_sha == "a" * 40
+
+    def test_aggregates_all_sources_together(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/273")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="example/repo",
+            branch="ac/273",
+            db_name="wt_273",
+            extra={"worktree_path": "/ws/273/example-repo"},
+        )
+        PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="planner")
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
+        E2eMandatoryRun.record(
+            ticket=ticket,
+            head_sha="b" * 40,
+            spec="e2e/flow.spec.ts",
+            result=E2eMandatoryRun.Result.GREEN,
+            posted_url="https://example.com/c1",
+        )
+
+        artifacts = ticket.artifacts(port_resolver=self._ports)
+
+        assert len(artifacts.worktrees) == 1
+        assert len(artifacts.plan_artifacts) == 1
+        assert artifacts.result_artifact_paths == ("/runs/a.jsonl",)
+        assert len(artifacts.e2e_runs) == 1
+
+    def test_artifacts_are_immutable(self) -> None:
+        ticket = Ticket.objects.create()
+
+        artifacts = ticket.artifacts()
+
+        with pytest.raises(AttributeError):
+            artifacts.ticket_id = 99  # frozen dataclass rejects mutation

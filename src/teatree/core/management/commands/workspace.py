@@ -40,7 +40,7 @@ from teatree.core.management.commands._workspace_ticket_intake import (
     build_ticket,
 )
 from teatree.core.models import Ticket, Worktree
-from teatree.core.models.ticket import format_intake_summary
+from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
