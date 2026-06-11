@@ -15,7 +15,13 @@ import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
-from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, MINIMAL_OVERLAY, SETTINGS, _patch_overlays
+from tests.teatree_core.management_commands._overlays import (
+    FULL_OVERLAY,
+    MINIMAL_OVERLAY,
+    PRE_RUN_OVERLAY,
+    SETTINGS,
+    _patch_overlays,
+)
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -167,6 +173,37 @@ class TestRunTests(TestCase):
                 result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
             mock_run.assert_called_once()
+            assert "completed" in result.lower()
+
+    @_patch_overlays(PRE_RUN_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_runs_overlay_pre_test_steps_before_dispatch(self) -> None:
+        """``run tests`` executes ``get_pre_run_steps(worktree, "tests")`` first.
+
+        The same prerequisite seam every service launch uses (ServiceLauncher),
+        so an overlay can keep its test environment fast and correct — e.g.
+        clone/refresh a reusable test DB — without each caller re-deciding the
+        prerequisites (souliane/teatree#2207).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            worktree = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
+                result = cast("str", call_command("run", "tests", path=str(wt_dir)))
+
+            worktree.refresh_from_db()
+            assert (worktree.extra or {}).get("pre_run_log") == ["tests"]
             assert "completed" in result.lower()
 
     @_patch_overlays(MINIMAL_OVERLAY)
