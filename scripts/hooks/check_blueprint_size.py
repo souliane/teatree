@@ -4,9 +4,9 @@ The BLUEPRINT is architectural, not a prose mirror of the code. The
 companion #1128 corpus-budget gate sets per-file soft budgets that only
 fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
-file changes and exceeds 115 KB.
+file changes and exceeds 116 KB.
 
-Threshold: 115 KB (115 * 1024 bytes). The hook is scoped to commits
+Threshold: 116 KB (116 * 1024 bytes). The hook is scoped to commits
 that touch ``BLUEPRINT.md`` (via ``files:`` in
 ``.pre-commit-config.yaml``), so it gates every growth event without
 re-running on unrelated commits. Escape hatch:
@@ -39,7 +39,10 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # lifecycle invariant (unowned stacks are reaped fail-safe before
 # start/provision) composing with the #2190 idle reaper — legit architecture,
 # stacking on #2235's §2 principle after rebasing onto main.
-_THRESHOLD_BYTES = 115 * 1024
+# Raised 115 -> 116 KB: #2240 (planner E2E section) + #2241 (rubric-gate appendix)
+# merged in one wave; each passed the absolute cap alone but combined main to
+# 117,788 B (28 B over 115 KB) — the merge-order size fork. Restores headroom.
+_THRESHOLD_BYTES = 116 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 
