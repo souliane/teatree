@@ -716,6 +716,9 @@ _no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
 _no_orphan_docker = patch.object(workspace_mod, "reap_orphan_worktree_docker", new=list)
 
 
+_no_orphan_isolated_roots = patch.object(workspace_mod, "reap_orphan_isolated_worktree_roots", new=list)
+
+
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
@@ -1134,6 +1137,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1150,6 +1154,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1181,7 +1186,7 @@ class TestWorkspaceCleanAll(TestCase):
             with (
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
                 # The fake repo (.git is a bare dir) can't satisfy a real
                 # ``git bundle``; isolate the recovery-capture seam so this test
                 # exercises the clean+pushed reap path, not the capture itself.
@@ -1206,6 +1211,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1254,6 +1260,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1283,7 +1290,7 @@ class TestWorkspaceCleanAll(TestCase):
             with (
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
                 self.assertLogs("teatree.core.cleanup", level="WARNING") as logs,
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
@@ -1296,6 +1303,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1343,6 +1351,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1379,6 +1388,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1397,6 +1407,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1443,6 +1454,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1493,7 +1505,7 @@ class TestWorkspaceCleanAll(TestCase):
             with (
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
                 patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
                 # Isolate the recovery-capture seam — the fake repos (.git is a
                 # bare dir) can't satisfy a real ``git bundle``; this test
@@ -1523,6 +1535,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1575,7 +1588,7 @@ class TestWorkspaceCleanAll(TestCase):
                 patch("builtins.input", side_effect=_input_must_not_be_called),
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
                 patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
                 patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
@@ -1593,6 +1606,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1633,6 +1647,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1950,6 +1965,7 @@ class TestPruneBranches(TestCase):
 
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -3122,7 +3138,10 @@ class TestReapSquashMergedWorktreeRows(TestCase):
                 patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
                 patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=True),
                 patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
             ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_overlay.return_value.config.teardown_removes_pass_entries = False
                 cleaned = self._reap(workspace)
 
             assert not Worktree.objects.filter(pk=row.pk).exists(), (
@@ -3222,7 +3241,10 @@ class TestReapSquashMergedWorktreeRows(TestCase):
             with (
                 patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
                 patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
             ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_overlay.return_value.config.teardown_removes_pass_entries = False
                 cleaned = self._reap(workspace)
 
             assert Worktree.objects.filter(pk=row.pk).exists(), f"data-loss row must be kept; got: {cleaned!r}"

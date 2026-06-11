@@ -276,8 +276,13 @@ class TestLifecycleProvision(TestCase):
             mock_sp.run.return_value = MagicMock(returncode=0)
             call_command("worktree", "provision", path=backend_path)
 
-        # Teardown
-        with patch.object(utils_run_mod, "subprocess") as mock_td_sp:
+        # Teardown — needs overlay mock because cleanup_worktree now calls
+        # get_overlay_for_worktree(worktree) which reads worktree.overlay='test'
+        # and resolves it against the installed overlay registry (#295).
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_td_sp,
+        ):
             mock_td_sp.run.return_value = MagicMock(returncode=0)
             call_command("worktree", "teardown", path=backend_path)
 
@@ -727,9 +732,11 @@ class TestToolAndCleanCommands(TestCase):
         active_wt.save()
 
         with (
+            _patch_overlay(),
             patch.object(ws_cleanup_mod, "prune_branches", return_value=[]),
             patch.object(ws_cleanup_mod, "drop_orphaned_stashes", return_value=[]),
             patch.object(ws_cleanup_mod, "drop_orphan_databases", return_value=[]),
+            patch.object(workspace_mod, "reap_orphan_isolated_worktree_roots", return_value=[]),
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 

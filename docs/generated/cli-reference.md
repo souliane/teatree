@@ -4402,8 +4402,8 @@ Usage: t3 teatree workspace clean-merged [OPTIONS]
 ```
 Usage: t3 teatree workspace clean-all [OPTIONS]
 
- Prune merged worktrees, stale branches, stashes, orphan databases + docker,
- and old DSLR snapshots.
+ Prune merged worktrees/branches/stashes, orphan databases + docker + env
+ roots, and DSLR snapshots.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --keep-dslr        INTEGER  Number of DSLR snapshots to keep per tenant.     │
