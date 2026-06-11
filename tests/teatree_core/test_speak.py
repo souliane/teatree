@@ -11,6 +11,7 @@ the messaging backend. ``block=True`` runs delivery synchronously so assertions
 don't race the daemon thread.
 """
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -307,6 +308,47 @@ def _backend(*, audio_ok: bool = True, audio_error: str = "") -> MagicMock:
         body["ts"] = "1.0"
     backend.post_audio_dm.return_value = body
     return backend
+
+
+class TestResolveSpeakSafeLoudOnConfigCorruption:
+    """#258 fix round 2, blocker 3: loud on a corrupt config row on the DM path.
+
+    A corrupt config row on the spoken-DM path must FAIL LOUD (ERROR-level log),
+    never be swallowed at debug — while the text DM still degrades gracefully so
+    the message is not dropped.
+    """
+
+    def test_config_corruption_logs_error_and_text_dm_still_delivered(self, caplog) -> None:
+        backend = _backend()
+        corruption = ValueError("Invalid stored ConfigSetting value for 'allow_destructive_disk'")
+        with (
+            patch.object(speak_mod, "resolve_speak", side_effect=corruption),
+            caplog.at_level(logging.ERROR, logger="teatree.core.speak"),
+        ):
+            response = speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        # The text DM is NOT dropped (graceful degradation preserved).
+        backend.post_message.assert_called_once_with(channel="D-USER", text="hi", thread_ts="")
+        assert response["ok"] is True
+        # The corruption is LOUD: an ERROR record whose traceback names the
+        # offending key (``logger.exception`` carries the detail in ``exc_info``).
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, "config-corruption must log at ERROR, not be swallowed at debug"
+        assert any(r.exc_info is not None for r in errors), "ERROR must carry the exception traceback"
+        assert any("allow_destructive_disk" in str(r.exc_info[1]) for r in errors if r.exc_info)
+
+    def test_optional_failure_does_not_log_error(self, caplog) -> None:
+        # No-regression guard: a genuinely-optional speak read failure (not a
+        # config-corruption ValueError) must still degrade quietly — it must NOT
+        # be promoted to ERROR. Only config corruption is loud.
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", side_effect=RuntimeError("transient say probe")),
+            caplog.at_level(logging.DEBUG, logger="teatree.core.speak"),
+        ):
+            response = speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        backend.post_message.assert_called_once()
+        assert response["ok"] is True
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 class TestDeliverUserDmAttachAudio:

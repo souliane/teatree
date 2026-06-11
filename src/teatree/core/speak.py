@@ -315,14 +315,29 @@ def deliver_user_dm(
 
 
 def _resolve_speak_safe() -> SpeakConfig:
-    """Resolve the speak config, degrading to inert on any failure.
+    """Resolve the speak config, degrading to inert on a speak read failure.
 
-    The DM delivery must never be lost to a speak-config read error, so a
-    failed :func:`resolve_speak` falls back to both-destinations-off (a plain
-    text DM still goes out).
+    The DM delivery must never be lost to a speak-config read error, so a failed
+    :func:`resolve_speak` falls back to both-destinations-off (a plain text DM
+    still goes out). The degradation is loudness-graded by failure class (#258).
+
+    A :class:`ValueError` is config CORRUPTION — a stored ``ConfigSetting`` row
+    that fails its registry parser raises ``ValueError`` from
+    ``get_effective_settings`` by design (the loud-failure intent). It is logged
+    at ERROR (via ``logger.exception``, with the traceback) so the corruption is
+    visible, never swallowed at debug (which would undo the loud-failure intent).
+
+    Any other failure (a transient probe error, an unconfigured Django on the
+    bootstrap path) is a genuinely-optional speak read and stays a quiet debug
+    degradation — TTS is best-effort, the text DM is what must survive.
+
+    Either way the text DM still goes out via the inert :class:`SpeakConfig`.
     """
     try:
         return resolve_speak()
+    except ValueError:
+        logger.exception("speak config read failed on a corrupt config value; degrading to text-only DM")
+        return SpeakConfig()
     except Exception as exc:  # noqa: BLE001 — a config read must never drop the text DM
         logger.debug("speak config read failed; degrading to text-only DM: %s", exc)
         return SpeakConfig()

@@ -238,6 +238,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("show", "Print the currently resolved mode and source (override/schedule/default)."),
         ],
     ),
+    "config_setting": DjangoGroup(
+        "DB-backed config override tier — env -> DB -> TOML precedence (#1775).",
+        [
+            ("set", "Upsert a DB override row for an overridable setting (JSON value)."),
+            ("clear", "Remove a DB override row, falling back to the file/env source."),
+            ("list", "List every DB config override row (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
     "questions": DjangoGroup(
         "Manage the away-mode deferred-question backlog (#58).",
         [
