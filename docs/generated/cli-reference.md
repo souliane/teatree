@@ -61,6 +61,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
+│ dream           Idle-time memory-consolidation (dreaming) cron (#1933).      │
+│                 Distils recent session feedback into the ConsolidatedMemory  │
+│                 DB ledger on a low-frequency schedule, decoupled from the    │
+│                 live work loop. `run` is the manual escape hatch; `tick` is  │
+│                 the cadence-gated cron entry point.                          │
 │ mutation        Scoped mutation testing over high-value safety modules.      │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3497,6 +3502,54 @@ Usage: t3 dogfood overlay-provision-smoke [OPTIONS]
  Forward ``t3 dogfood overlay-provision-smoke `` to the management command.
 ```
 
+### `t3 dream`
+
+```
+Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
+
+ Idle-time memory-consolidation (dreaming) cron (#1933). Distils recent session
+ feedback into the ConsolidatedMemory DB ledger on a low-frequency schedule,
+ decoupled from the live work loop. `run` is the manual escape hatch; `tick` is
+ the cadence-gated cron entry point.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run   Run one consolidation pass NOW (ignores cadence).                      │
+│ tick  Run one consolidation pass IF the dream cadence has elapsed (cron      │
+│       entry).                                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 dream run`
+
+```
+Usage: t3 dream run [OPTIONS]
+
+ Run one consolidation pass NOW (ignores cadence).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since          TEXT  ISO-8601 lower bound for the replay window (default:  │
+│                        engine lookback).                                     │
+│ --dry-run              Do everything except writing ConsolidatedMemory rows  │
+│                        / the marker.                                         │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 dream tick`
+
+```
+Usage: t3 dream tick [OPTIONS]
+
+ Run one consolidation pass IF the dream cadence has elapsed (cron entry).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ### `t3 mutation`
 
 ```
@@ -6469,8 +6522,15 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 
  Upsert the DB override row for *key* to the JSON-parsed *value*.
 
- Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` and a *value* that
- is not valid JSON, leaving the store untouched on either error.
+ Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
+ not valid JSON, and a *value* that JSON-parses but is invalid for the
+ setting's type, leaving the store untouched on any error.
+
+ The type check runs the **same** registry parser the resolver applies on
+ read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
+ bool-typed setting is rejected here, at WRITE time, so a value that would
+ raise on every later config resolution can never be stored. Validating
+ on write is what keeps a bad row from bricking all reads.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key        TEXT  UserSettings field name (must be overridable).         │
