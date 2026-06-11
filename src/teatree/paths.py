@@ -100,16 +100,29 @@ def _worktree_isolation_root(home: Path) -> Path:
     return home / ".local" / "share" / "teatree-worktrees"
 
 
-def worktree_isolation_root() -> Path:
-    """Public accessor for the per-worktree isolated-DB root (#779).
+def auto_isolated_worktrees_dir() -> Path:
+    """Public accessor for the per-worktree auto-isolated env-dir root (#779/#291).
 
-    The cross-DB guard refuses when the *live Django connection* points at a
-    ``db.sqlite3`` under this root (a real per-worktree isolated DB the
-    shipping gate never reads), so it needs the root to classify the active
-    DB. ``:memory:`` test databases are never under it, so the guard is
-    naturally inert under the test runner without any test-only branch.
+    The single root holding every auto-isolated per-worktree env dir
+    (``<slug>/db.sqlite3`` + ``logs/``). Two consumers need it: the cross-DB
+    guard refuses when the *live Django connection* points at a ``db.sqlite3``
+    under this root (``:memory:`` test DBs are never under it, so the guard is
+    inert in tests without a test-only branch), and the clean-all reaper removes
+    DB-unreferenced child dirs of it left behind when a checkout is gone.
     """
     return _worktree_isolation_root(Path.home())
+
+
+def isolated_slug(repo_root: Path) -> str:
+    """The deterministic child-dir name an auto-isolated worktree env gets.
+
+    The single source of truth for the per-worktree slug: a 12-char SHA-256
+    prefix of the worktree checkout's absolute path. :func:`resolve_data_dir`
+    builds the isolated dir from this, and the clean-all reaper hashes each
+    live ``Worktree`` row's checkout path through it to learn which child dir
+    that row owns — so the resolver and the reaper agree on the mapping.
+    """
+    return hashlib.sha256(str(repo_root).encode()).hexdigest()[:12]
 
 
 def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> ResolvedDataDir:
@@ -133,8 +146,7 @@ def resolve_data_dir(*, env: dict[str, str], home: Path, repo_root: Path) -> Res
         if data_dir.resolve() == (home / ".local" / "share" / "teatree").resolve():
             raise CanonicalDBFromWorktreeError(repo_root)
         return ResolvedDataDir(data_dir, auto_isolated=False)
-    slug = hashlib.sha256(str(repo_root).encode()).hexdigest()[:12]
-    return ResolvedDataDir(_worktree_isolation_root(home) / slug, auto_isolated=True)
+    return ResolvedDataDir(_worktree_isolation_root(home) / isolated_slug(repo_root), auto_isolated=True)
 
 
 @contextmanager

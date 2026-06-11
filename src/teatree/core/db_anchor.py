@@ -109,7 +109,7 @@ def assert_lifecycle_db_is_canonical(
 
     The trip condition is the *live Django connection* being bound to a real
     per-worktree isolated ``db.sqlite3`` (under
-    :func:`paths.worktree_isolation_root`) — exactly the
+    :func:`paths.auto_isolated_worktrees_dir`) — exactly the
     ``uv run manage.py`` -from-a-worktree case whose writes/reads never reach
     the canonical DB the shipping gate consults. ``t3 <ov>`` proxies through
     the main clone (canonical DB) and never trips; ``:memory:`` test DBs are
@@ -125,7 +125,7 @@ def assert_lifecycle_db_is_canonical(
     if auto_isolated is None:
         is_isolated = _is_worktree_isolated_db(
             _active_db_path(),
-            isolation_root=paths.worktree_isolation_root(),
+            isolation_root=paths.auto_isolated_worktrees_dir(),
         )
     else:
         is_isolated = auto_isolated
