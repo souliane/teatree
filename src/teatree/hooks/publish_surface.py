@@ -45,7 +45,11 @@ selects the repo, so it is excluded -- a ``--git-dir <PUBLIC> --work-tree
 work-tree would leak banned content to public history. A sub-agent's
 ``git -C <worktree> commit`` runs from an ambient hook cwd that has reset away
 from the worktree, so resolving from the command's own flag is what keeps the
-carve-out from over-blocking that commit.
+carve-out from over-blocking that commit. ``resolve_commit_dir`` anchors a
+RELATIVE ``-C``/``cd`` target (``git -C ../worktree``) on that ambient hook
+cwd, never the cold hook's process cwd -- otherwise a relative public target
+resolves to no repo and fail-opens the carve-out (a banned-term leak to the
+public repo), and a relative private target only resolves by accident.
 
 ``commit_targets_private_repo`` decides whether the commit's resolved repo
 is known-private. The "is this repo private?" question (offline
