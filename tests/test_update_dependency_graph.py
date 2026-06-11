@@ -2,7 +2,8 @@
 
 Verifies that the generator writes the mermaid diagram to the dedicated
 generated file rather than into BLUEPRINT.md, so that structural changes
-that regenerate the graph do not grow the BLUEPRINT byte-budget corpus.
+that regenerate the graph keep BLUEPRINT.md architectural rather than
+bloating it with auto-generated detail.
 """
 
 from pathlib import Path
