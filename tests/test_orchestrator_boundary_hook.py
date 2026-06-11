@@ -28,6 +28,7 @@ from hooks.scripts.hook_router import (
     _call_is_from_subagent,
     _is_orchestration_action,
     _orchestrator_bash_gate_enabled,
+    _orchestrator_boundary_agent_gate_enabled,
     handle_enforce_orchestrator_boundary,
 )
 
@@ -418,15 +419,11 @@ class TestMainAgentForegroundAgentIsBlocked1442:
     """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
 
     Detection uses ``agent_id`` (the #115 fix) instead of the transcript
-    ``isSidechain`` read. Since #171 PR B the Agent-arm deny ships default-OFF
-    behind ``orchestrator_boundary_agent_gate_enabled``: the deny sits on the
-    orchestrator's own foreground Agent-dispatch hot path, so enabling it could
-    wedge the loop's own foreground dispatches — a lockout risk to validate
-    attended (#1646) — and it stays inert unless deliberately enabled. (The arm
-    is also currently phantom: no ``Agent`` matcher is wired in hooks.json,
-    though the Agent tool itself DOES reach PreToolUse.) These tests enable the
-    flag to exercise the deny logic, and the default-OFF / escape paths below
-    prove the no-lockout off-ramps.
+    ``isSidechain`` read. Since #1733 the Agent-arm deny is default-ON (an
+    ``Agent`` PreToolUse matcher is wired in hooks.json per #1646, and the
+    deny routes through ``_fail_open_or_deny`` per #1692). This fixture pins
+    the flag ON explicitly to exercise the deny logic; the kill-switch / escape
+    paths below prove the no-lockout off-ramps.
     """
 
     _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
@@ -456,14 +453,17 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert out["permissionDecision"] == "deny"
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
-    def test_agent_foreground_allowed_when_gate_default_off(
+    def test_agent_foreground_allowed_when_kill_switch_set(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Override the autouse enable with an empty home (no config) → the Agent
-        # flag is OFF → the foreground dispatch passes (no lockout).
-        empty_home = tmp_path / "empty-home"
-        empty_home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: empty_home))
+        # The gate is now default-ON (#1733); the OFF path is the explicit
+        # kill-switch. With it set, a foreground dispatch passes (no lockout).
+        kill_home = tmp_path / "kill-home"
+        kill_home.mkdir(parents=True, exist_ok=True)
+        (kill_home / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: kill_home))
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is False
         assert capsys.readouterr().out.strip() == ""
@@ -494,6 +494,113 @@ class TestMainAgentForegroundAgentIsBlocked1442:
             "agent_type": "general-purpose",
         }
         assert handle_enforce_orchestrator_boundary(data) is False
+
+
+class TestAgentGateDefaultOn1733:
+    """#1733 / #1646 — the foreground-Agent gate flips to DEFAULT-ON.
+
+    The Agent arm of the orchestrator-boundary gate is now wired (an ``Agent``
+    PreToolUse matcher exists in hooks.json) and default-enabled. A bare
+    foreground main-agent Agent dispatch with NO config at all is DENIED
+    (proving the flip is live), while every off-ramp + always-allowed tool
+    stays allowed even with no kill-switch written. The attended dry-run that
+    #1733 asks for is the user's pre-INSTALL gate, not a blocker to the code:
+    these tests pin the default-ON behaviour and the never-lockout off-ramps.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _empty_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # No ~/.teatree.toml at all — the gate must be ON by its new default.
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: empty_home))
+        monkeypatch.setenv("HOME", str(empty_home))
+
+    def test_gate_enabled_by_default_when_config_absent(self) -> None:
+        assert _orchestrator_boundary_agent_gate_enabled() is True
+
+    def test_bare_foreground_agent_denied_by_default(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
+        assert handle_enforce_orchestrator_boundary(data) is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "main-agent-orchestration-guard" in out["permissionDecisionReason"]
+
+    def test_background_agent_allowed_by_default(self) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": True}}
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_fg_ok_token_allowed_by_default(self) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"prompt": "[fg-ok: attended] go", "run_in_background": False}}
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_subagent_dispatch_allowed_by_default(self) -> None:
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"description": "nested", "run_in_background": False},
+            "agent_id": "a4ad83956ff699aaa",
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_explicit_kill_switch_disables_default_on_gate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "kill"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        assert _orchestrator_boundary_agent_gate_enabled() is False
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+
+class TestAgentDenyRoutesThroughFailOpen1692:
+    """#1692 — the foreground-Agent deny routes through ``_fail_open_or_deny``.
+
+    Before #1692 the Agent arm called ``emit_pretooluse_deny`` directly, so the
+    master ``[teatree] danger_gate_fail_open`` kill-switch and the self-rescue
+    allowlist (the never-lockout machinery every other over-deny gate funnels
+    through) did NOT apply to it. After #1692 a foreground Agent dispatch is
+    relaxed by the master fail-open switch exactly like every other over-deny
+    gate — even with the gate itself ON.
+    """
+
+    @pytest.fixture
+    def home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def _enable_gate(self, home: Path, *, master_fail_open: bool) -> None:
+        lines = ["[teatree]", "orchestrator_boundary_agent_gate_enabled = true"]
+        if master_fail_open:
+            lines.append("danger_gate_fail_open = true")
+        (home / ".teatree.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _fg_agent(self) -> dict:
+        return {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
+
+    def test_master_fail_open_relaxes_foreground_agent_deny(
+        self, home: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Gate ON + master fail-open ON → the foreground deny is relaxed,
+        # which is only possible if the deny routed through _fail_open_or_deny.
+        self._enable_gate(home, master_fail_open=True)
+        assert handle_enforce_orchestrator_boundary(self._fg_agent()) is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_foreground_agent_still_denied_when_master_fail_open_off(
+        self, home: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Anchor: gate ON, master fail-open OFF → the deny still fires (the
+        # fail-open routing is an escape, not a defanged gate).
+        self._enable_gate(home, master_fail_open=False)
+        assert handle_enforce_orchestrator_boundary(self._fg_agent()) is True
+        assert capsys.readouterr().out.strip()
 
 
 class TestSelfRescueEscapeHatchNeverGated:

@@ -96,6 +96,15 @@ class TestGitHubRequireExecutedUnconditional:
             "missing binary fails the job instead of skipping every scenario."
         )
 
+    def test_metered_lane_runs_through_the_container(self) -> None:
+        # "All metered eval in Docker" must hold in CI too: the runner has Docker,
+        # so the metered `t3 eval run` step routes through dev/Dockerfile.test (the
+        # `--docker` force, or — equivalently — the default-Docker path with no
+        # --local). The container ships the Claude CLI, so the run is reproducible.
+        command = _gh_eval_run_command()
+        assert "--docker" in command, "The CI metered eval must run IN the container (--docker)."
+        assert "--local" not in command, "The CI metered eval must never use --local (a host run)."
+
     def test_oauth_token_secret_is_wired_not_the_api_key(self) -> None:
         env = _gh_eval_step_env()
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (

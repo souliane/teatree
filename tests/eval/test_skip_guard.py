@@ -51,6 +51,15 @@ class TestAssertSdkRunWasMetered:
             assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
         assert "metered" in str(exc.value).lower() or "$0" in str(exc.value)
 
+    def test_unmetered_message_names_both_auth_and_usage_limit_causes(self) -> None:
+        # The message must name the usage/weekly-limit cause too, not only the
+        # auth failure — dogfooding surfaced quota exhaustion as the same $0 shape.
+        with pytest.raises(UnmeteredSdkRunError) as exc:
+            assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
+        message = str(exc.value).lower()
+        assert "auth failure" in message
+        assert "usage" in message or "weekly limit" in message
+
     def test_metered_sdk_run_does_not_raise(self) -> None:
         assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0556)
 

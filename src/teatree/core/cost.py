@@ -1,4 +1,4 @@
-"""SDK-equivalent cost of headless ``claude -p`` usage.
+"""SDK-equivalent cost of detached headless Agent-SDK usage.
 
 From 2026-06-15 the Agent SDK bills headless usage against a monthly credit
 (Max 20x = $200) at standard API rates, no rollover, no longer covered by the

@@ -19,7 +19,15 @@ def _spec(name: str) -> EvalSpec:
     )
 
 
-def _row(scenario: str, model: str, *, passed: bool = True, skipped: bool = False, trials: int = 1) -> MatrixRow:
+def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a MatrixRow field a case varies.
+    scenario: str,
+    model: str,
+    *,
+    passed: bool = True,
+    skipped: bool = False,
+    trials: int = 1,
+    errored: bool = False,
+) -> MatrixRow:
     return MatrixRow(
         scenario=scenario,
         model=model,
@@ -27,6 +35,7 @@ def _row(scenario: str, model: str, *, passed: bool = True, skipped: bool = Fals
         score=1.0 if passed else 0.0,
         trials=trials,
         skipped=skipped,
+        errored=errored,
     )
 
 
@@ -44,6 +53,9 @@ class TestMatrixCell:
     def test_multitrial_shows_rate(self) -> None:
         cell = matrix_cell(MatrixRow(scenario="a", model="haiku", passed=True, score=0.67, trials=3, skipped=False))
         assert cell == "0.67"
+
+    def test_errored_is_err(self) -> None:
+        assert matrix_cell(_row("a", "haiku", passed=False, errored=True)) == "ERR"
 
 
 class TestRenderMatrixText:
@@ -63,6 +75,16 @@ class TestRenderMatrixText:
         assert "opus: 1 passed, 1 failed, 0 skipped" in text
         assert "haiku: 2 passed, 0 failed, 0 skipped" in text
 
+    def test_errored_cell_excluded_from_failed_and_counted_as_errored(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        rows = [
+            _row("alpha", "opus"),
+            _row("beta", "opus", passed=False, errored=True),
+        ]
+        text = render_matrix_text(rows, ["opus"], specs)
+        assert "opus: 1 passed, 0 failed, 0 skipped, 1 errored" in text
+        assert "ERR" in text
+
 
 class TestRenderMatrixJson:
     def test_shape(self) -> None:
@@ -79,3 +101,11 @@ class TestRenderMatrixJson:
         rows = [_row("alpha", "opus")]
         payload = json.loads(render_matrix_json(rows, ["opus", "haiku"], specs))
         assert payload["scenarios"][0]["results"]["haiku"] is None
+
+    def test_errored_cell_carries_errored_flag(self) -> None:
+        specs = [_spec("alpha")]
+        rows = [_row("alpha", "opus", passed=False, errored=True)]
+        payload = json.loads(render_matrix_json(rows, ["opus"], specs))
+        cell = payload["scenarios"][0]["results"]["opus"]
+        assert cell["errored"] is True
+        assert cell["passed"] is False

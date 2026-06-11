@@ -1,4 +1,4 @@
-"""``t3 cost`` — SDK-equivalent spend of the loop's headless ``claude -p`` usage.
+"""``t3 cost`` — SDK-equivalent spend of the loop's detached headless Agent-SDK usage.
 
 From 2026-06-15 the Agent SDK bills headless usage against a monthly credit
 (Max 20x = $200) at standard API rates. This command totals the cost captured

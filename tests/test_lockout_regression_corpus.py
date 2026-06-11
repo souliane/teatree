@@ -621,15 +621,16 @@ class TestCircuitBreakerNeverOpensSafetyGate:
 
 
 class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
-    """The orchestrator-boundary Agent arm (#171 PR B) must not wedge the loop.
+    """The orchestrator-boundary Agent arm (#1733 default-ON) must not wedge the loop.
 
     The loop dispatches builder/reviewer/resolver sub-agents via the ``Agent``
     tool — sometimes foreground, often background. The foreground-Agent deny
-    (#1442) ships default-OFF behind ``orchestrator_boundary_agent_gate_enabled``
-    precisely so an unattended run can never be locked out of its own dispatches.
-    These rows guard the four safe paths (flag OFF, background, sub-agent context,
-    ``[fg-ok: <reason>]`` token) and the one genuine deny (flag ON + bare
-    foreground main-agent dispatch with no escape).
+    (#1442) is now default-ON (#1733: matcher wired #1646, fail-open-routed
+    #1692). Every off-ramp keeps an unattended run from being locked out of its
+    own dispatches: the explicit kill-switch, ``run_in_background``, a sub-agent
+    context, and the ``[fg-ok: <reason>]`` token. These rows guard the four safe
+    paths and the one genuine deny (flag ON + bare foreground main-agent
+    dispatch with no escape).
     """
 
     @pytest.fixture(autouse=True)
@@ -641,8 +642,15 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
         self._home_dir = home
 
     def _enable(self) -> None:
+        # The gate is default-ON; writing the flag explicitly is a no-op for the
+        # verdict but documents intent at the call site.
         (self._home_dir / ".teatree.toml").write_text(
             "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
+        )
+
+    def _disable(self) -> None:
+        (self._home_dir / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
         )
 
     def _agent(self, *, run_in_background: bool = False, prompt: str = "implement", agent_id: str = "") -> dict:
@@ -655,10 +663,12 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
             data["agent_id"] = agent_id
         return data
 
-    def test_foreground_agent_passes_when_flag_off(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Default-OFF: no config file at all → gate inert, foreground dispatch allowed.
+    def test_foreground_agent_passes_when_kill_switch_set(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Explicit kill-switch → gate inert, foreground dispatch allowed (the
+        # default-ON OFF-ramp the user flips when validating attended #1646).
+        self._disable()
         verdict = handle_enforce_orchestrator_boundary(self._agent(run_in_background=False))
-        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch denied while gate default-OFF."
+        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch denied with the kill-switch set."
         assert capsys.readouterr().out.strip() == ""
 
     def test_background_agent_passes_with_flag_on(self, capsys: pytest.CaptureFixture[str]) -> None:

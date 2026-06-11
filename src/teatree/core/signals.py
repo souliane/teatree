@@ -149,7 +149,8 @@ def _is_loop_dispatched(instance: Task) -> bool:
     now defaults to INTERACTIVE at creation (``Task.save`` chokepoint), so the
     ``execution_target`` guard below already skips it; this remains as
     defense-in-depth for a row that reaches HEADLESS some other way, so a
-    queue drainer never shells a metered ``claude -p`` for loop phase work. A
+    queue drainer never launches a metered detached headless-SDK run for loop
+    phase work. A
     pair with NO registered agent is free-form headless and still rides the
     ``execute_headless_task`` path — never zero dispatch.
     """

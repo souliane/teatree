@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
-from teatree.eval.models import AnyOf
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf
 
 _MINIMAL = (
     "- name: example\n"
@@ -35,9 +35,12 @@ class TestLoadEvalYaml:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
         assert spec.model == "claude-sonnet-4-6"
 
-    def test_defaults_max_turns_to_four(self, tmp_path: Path) -> None:
+    def test_defaults_max_turns_to_the_generous_default(self, tmp_path: Path) -> None:
+        # A scenario that declares no max_turns gets the GENEROUS lane default —
+        # the old floor of 4 force-FAILed multi-step / delegating scenarios.
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
-        assert spec.max_turns == 4
+        assert spec.max_turns == DEFAULT_MAX_TURNS
+        assert DEFAULT_MAX_TURNS >= 20
 
     def test_defaults_tools_to_bash(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]

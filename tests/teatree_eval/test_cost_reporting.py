@@ -4,16 +4,17 @@ Anti-vacuous TDD: these tests must go RED when cost aggregation / the summary
 line are removed. Proven RED before any implementation landed.
 """
 
-import dataclasses
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk import ResultMessage
 
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.report import ScenarioResult, render_json, render_text
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import SdkInProcessRunner
 from teatree.eval.transcript import StreamJsonEvent, extract_cost_usd
 
 # ---------------------------------------------------------------------------
@@ -113,34 +114,24 @@ class TestEvalRunCostField:
         assert run.cost_usd == pytest.approx(0.042)
 
 
-# ---------------------------------------------------------------------------
-# Runner populates cost_usd from stream-json result event
-# ---------------------------------------------------------------------------
-
-_STREAM_JSONL_WITH_COST = "\n".join(
-    [
-        json.dumps({"type": "system", "subtype": "init"}),
-        json.dumps({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.01}),
-    ]
-)
-
-_STREAM_JSONL_NO_COST = "\n".join(
-    [
-        json.dumps({"type": "system", "subtype": "init"}),
-        json.dumps({"type": "result", "subtype": "success", "is_error": False}),
-    ]
-)
+# The in-process SDK runner populates cost_usd from ResultMessage.total_cost_usd
 
 
-@dataclasses.dataclass
-class _FakeCompleted:
-    stdout: str
-    stderr: str = ""
-    returncode: int = 0
+def _sdk_result(total_cost_usd: float | None) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="s1",
+        total_cost_usd=total_cost_usd,
+        result="ok",
+    )
 
 
 class TestRunnerCostCapture:
-    def _run_with_stdout(self, tmp_path: Path, stdout: str) -> EvalRun:
+    def _run_with_cost(self, tmp_path: Path, total_cost_usd: float | None) -> EvalRun:
         agent = tmp_path / "agent.md"
         agent.write_text("# fake\nbody\n", encoding="utf-8")
         spec = EvalSpec(
@@ -152,21 +143,22 @@ class TestRunnerCostCapture:
             source_path=tmp_path / "spec.yaml",
         )
 
-        def _fake_run(cmd, **kwargs):
-            return _FakeCompleted(stdout=stdout)
+        async def _query(*, prompt, options=None, **_):
+            await asyncio.sleep(0)
+            yield _sdk_result(total_cost_usd)
 
         with (
-            patch("teatree.eval.runner.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", _query),
         ):
-            return ClaudePRunner(workspace=tmp_path).run(spec)
+            return SdkInProcessRunner(workspace=tmp_path).run(spec)
 
     def test_cost_captured_from_result_event(self, tmp_path: Path) -> None:
-        run = self._run_with_stdout(tmp_path, _STREAM_JSONL_WITH_COST)
+        run = self._run_with_cost(tmp_path, 0.01)
         assert run.cost_usd == pytest.approx(0.01)
 
     def test_cost_zero_when_no_cost_in_result(self, tmp_path: Path) -> None:
-        run = self._run_with_stdout(tmp_path, _STREAM_JSONL_NO_COST)
+        run = self._run_with_cost(tmp_path, None)
         assert run.cost_usd == pytest.approx(0.0)
 
 

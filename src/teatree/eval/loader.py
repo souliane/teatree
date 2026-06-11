@@ -15,11 +15,12 @@ from typing import Any
 
 import yaml
 
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_TURNS = 4
+# DEFAULT_MAX_TURNS is the single canonical default, reused from
+# teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
 DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512

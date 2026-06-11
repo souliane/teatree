@@ -1,0 +1,15 @@
+- entry_id: structured_question
+  labelled_by: human:reviewer
+  labelled_at: "2026-06-09"
+  expected_behavior: >-
+    the agent poses a user-facing decision through the AskUserQuestion tool
+    rather than inline in prose, so the question is mirrored to Slack
+  outcome_axis: question_channel
+  expected_outcome: structured
+  confidence: high
+  oracle: matcher
+  rule_author: skills/rules
+  source_session_id: synthetic-aq-001
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: ~ "(?i)deployment target"

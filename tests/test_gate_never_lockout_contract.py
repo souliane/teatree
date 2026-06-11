@@ -101,11 +101,10 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     "handle_block_edit_before_planned": (
         "denies Edit/Write only when the ticket FSM is in STARTED (no PlanArtifact yet); fail-open on any error"
     ),
-    # Broad-deny gates carrying their OWN never-lockout escapes, pending migration.
-    "handle_enforce_orchestrator_boundary": (
-        "broad heavy-Bash deny; kill-switch orchestrator_bash_gate_enabled=false + [fg-ok:] + sub-agent exempt. "
-        "TODO(never-lockout): route through _fail_open_or_deny"
-    ),
+    # NB: handle_enforce_orchestrator_boundary is NO LONGER exempt — both its
+    # heavy-Bash arm and its default-ON foreground-Agent arm (#1692) now route
+    # their deny through _fail_open_or_deny, so the contract verifies the route
+    # structurally rather than tracking a TODO here.
 }
 
 

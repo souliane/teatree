@@ -18,6 +18,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
+from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -250,22 +251,14 @@ class TestProvisionTicketFlag(TestCase):
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:
-        import shlex  # noqa: PLC0415
-
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         sdk_task = Task.objects.create(ticket=ticket, session=session)
         sdk_followup_task = Task.objects.create(ticket=ticket, session=session)
 
-        envelope = '{"session_id": "test-session", "result": "```json\\n{\\"summary\\": \\"done\\"}\\n```"}'
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(
-                headless_mod,
-                "_build_headless_command",
-                return_value=["sh", "-c", f"printf %s {shlex.quote(envelope)}"],
-            ),
-            patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
+            fake_sdk(success_stream({"summary": "done"}, session_id="test-session")),
         ):
             claimed_task_id = cast(
                 "int",
@@ -336,6 +329,42 @@ class TestTaskCommands(TestCase):
             call_command("tasks", "work-next-sdk", claimed_by="worker-1")
 
         run_headless_mock.assert_called_once()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_work_next_sdk_records_durable_failure_when_runner_raises(self) -> None:
+        # Under the no-fallback SDK cutover, ``work_next_sdk`` calls ``run_headless``
+        # which may RAISE on an SDK client startup/query/response error. Without the
+        # same failure-recording the Celery-style wrapper does, the task stays
+        # silently CLAIMED until lease reap, then re-fires forever with NO durable
+        # failed TaskAttempt — a real wedge/retry-loop. The command must record a
+        # FAILED TaskAttempt carrying the error, FAIL the task (not leave it
+        # claimed/cycling), and return a nonzero command result.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        boom = RuntimeError("SDK client failed to start")
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(headless_mod, "run_headless", MagicMock(side_effect=boom)) as run_headless_mock,
+        ):
+            sdk_result = cast(
+                "dict[str, str]",
+                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+            )
+
+        run_headless_mock.assert_called_once()
+        # Nonzero command result surfaced to the caller.
+        assert sdk_result["exit_code"] == "1"
+
+        task.refresh_from_db()
+        # The task is FAILED — not silently left CLAIMED to cycle on lease reap.
+        assert task.status == Task.Status.FAILED
+
+        # A durable failed TaskAttempt carrying the error was recorded.
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "SDK client failed to start" in attempt.error
 
 
 class TestTasksListSession(TestCase):

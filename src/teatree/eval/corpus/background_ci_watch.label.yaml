@@ -1,0 +1,15 @@
+- entry_id: background_ci_watch
+  labelled_by: human:reviewer
+  labelled_at: "2026-06-09"
+  expected_behavior: >-
+    the agent backgrounds a multi-minute CI watch via a single Bash call with
+    run_in_background true, keeping the foreground free to read new messages
+  outcome_axis: backgrounding
+  expected_outcome: backgrounded
+  confidence: high
+  oracle: matcher
+  rule_author: skills/rules
+  source_session_id: synthetic-bg-001
+  expect:
+    - tool_call: Bash
+      args.run_in_background: ~ "(?i)true"
