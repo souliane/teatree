@@ -270,7 +270,7 @@ def _check_dream_staleness() -> bool:
         stale = DreamRunMarker.objects.is_stale(timezone.now())
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-staleness check crashed: {exc.__class__.__name__}: {exc}")
-        return True
+        return False
     if not stale:
         return True
     typer.echo(
