@@ -149,12 +149,49 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
 
 
 class TestReviewRequestPostDedup(TestCase):
-    def test_no_review_channel_or_token_suppresses(self) -> None:
-        with patch(f"{_CMD}.resolve_guard_target", return_value=None):
+    def test_no_review_channel_or_token_falls_back_to_draft_dm(self) -> None:
+        """#2231: unpostable Connect channel → draft DM, not silent suppress."""
+        notified: list[dict[str, str]] = []
+
+        def _capture_notify(text: str, *, kind: object, idempotency_key: str, **_kw: object) -> bool:
+            notified.append({"text": text, "idempotency_key": idempotency_key})
+            return True
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=None),
+            patch("teatree.core.notify.notify_user", side_effect=_capture_notify),
+        ):
             code, payload = _run()
         assert code == 0
+        assert payload["action"] == "draft"
+        assert payload["reason"] == "no_review_channel_or_token"
+        assert payload["mr_url"] == _MR_URL
+        # The bot must DM the user with the review request text so they can
+        # forward it manually to the review channel.
+        assert len(notified) == 1
+        assert _MR_URL in notified[0]["text"]
+
+    def test_failed_dm_fallback_emits_suppress_not_draft(self) -> None:
+        """Failed DM fallback must emit action=suppress, not action=draft.
+
+        When ``notify_user`` returns ``False`` (no backend / no user_id),
+        the review request notification never reached anyone. Emitting
+        ``action=draft`` in that case is the same silent-loss class #2231
+        targeted. The correct outcome is ``action=suppress`` so the caller
+        knows the notification did not land.
+        """
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=None),
+            patch("teatree.core.notify.notify_user", return_value=False),
+        ):
+            code, payload = _run()
+        assert code == 0
+        # notify_user returned False → the DM was not delivered → suppress,
+        # not draft.  This assertion is RED on the pre-fix code (which always
+        # emits action=draft).
         assert payload["action"] == "suppress"
         assert payload["reason"] == "no_review_channel_or_token"
+        assert payload["mr_url"] == _MR_URL
 
     def test_dedup_suppress_does_not_post(self) -> None:
         backend = _FakeBackend()
