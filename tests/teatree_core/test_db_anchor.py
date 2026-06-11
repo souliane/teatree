@@ -211,7 +211,7 @@ class TestGuardWiredThroughCommandEntrypoints(TestCase):
         # Make the production default (`_active_db_path`) report a real
         # db.sqlite3 *under the isolation root* — exactly what the live
         # connection looks like when `uv run manage.py` runs from a worktree.
-        isolated_db = paths.worktree_isolation_root() / "deadbeef1234" / "db.sqlite3"
+        isolated_db = paths.auto_isolated_worktrees_dir() / "deadbeef1234" / "db.sqlite3"
         monkeypatch.setattr(db_anchor, "_active_db_path", lambda: str(isolated_db))
 
     def _ticket_with_worktree(self) -> Ticket:

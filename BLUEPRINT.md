@@ -386,7 +386,7 @@ Key ruff decisions: ALL rules selected then specific ignores; D1xx disabled (no 
 
 Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` strategy + selective fake-migration retry + post-import steps), DSLR integration, the worktree provisioning workflow (`worktree provision`), the server startup workflow (`worktree start`), and the state reconciler (`t3 workspace doctor`) are implementation details — they live in code under `teatree.core.runners`, `teatree.utils.db`, `teatree.utils.django_db`, `teatree.core.reconcile`, and the `lifecycle` / `worktree` / `workspace` management commands. The architectural contract:
 
-- **One reference DB per overlay** (canonical control DB at `teatree.paths.CANONICAL_DB`; worktree-aware code auto-isolates onto a per-worktree DB under `~/.local/share/teatree-worktrees/<slug>/`)
+- **One reference DB per overlay** (canonical control DB at `teatree.paths.CANONICAL_DB`; worktree-aware code auto-isolates onto a per-worktree DB under `teatree.paths.auto_isolated_worktrees_dir()` = `~/.local/share/teatree-worktrees/<slug>/`, the `<slug>` deterministic from the checkout path via `teatree.paths.isolated_slug`). `t3 workspace clean-all` reaps the DB-unreferenced orphan dirs under that root — those whose slug matches no live `Worktree` row's checkout — while keeping any dir holding a `.git` checkout (the #706/#835 data-loss guard)
 - **Configurable import strategy per overlay** (`get_db_import_strategy(worktree) → DbImportStrategy | None`) — overlays declare *what* to import; core runs the engine
 - **Migration retry with selective faking** for known-stuck migrations, declared per overlay
 - **Post-DB steps** run after import (password reset, fixtures, …) — declared per overlay
