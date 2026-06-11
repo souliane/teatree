@@ -234,23 +234,32 @@ class BodyFileContext:
     base: Path | None = None
 
 
-def commit_body_file_base(command: str) -> Path | None:
+def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
     """Return the dir to resolve a ``git commit -F <relpath>`` body against.
 
     The base is the dir whose repo the commit LANDS in — the command's own
     leading ``cd``/``pushd`` plus ``-C``/``--git-dir`` directives, resolved
-    by :func:`_commit_repo_dir.effective_repo_dir` and walked up to the
+    by :func:`_commit_repo_dir.resolve_commit_dir` (a RELATIVE ``-C``/``cd``
+    target anchored on the ambient ``cwd``, mirroring the carve-out, so a
+    sub-agent's ``git -C ../worktree`` body file resolves against the dir the
+    agent ran in, not the cold hook's process cwd) and walked up to the
     enclosing repo root by :func:`_commit_repo_dir.git_root_for_dir`. ``None``
-    when the command names no commit dir (a plain ``git commit`` whose body
-    file is then resolved against the process cwd only) or when the dir is the
-    fail-closed sentinel (a ``-C`` value the gate cannot pin down statically).
+    when the command names no commit dir (a plain ``git commit`` with no
+    ``cwd`` whose body file is then resolved against the process cwd only) or
+    when the dir is the fail-closed sentinel (a ``-C`` value the gate cannot
+    pin down statically).
     """
     from teatree.hooks import _commit_repo_dir  # noqa: PLC0415
 
-    repo_dir = _commit_repo_dir.effective_repo_dir(command)
-    if repo_dir is None or repo_dir == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
+    # A plain ``git commit`` names no dir; keep the historical ``None`` so the
+    # caller's own ``cwd`` fallback governs (anchoring only changes a command
+    # that DOES name a relative ``cd``/``-C``/``--git-dir`` target).
+    if _commit_repo_dir.effective_repo_dir(command) is None:
         return None
-    return _commit_repo_dir.git_root_for_dir(Path(repo_dir))
+    commit_dir = _commit_repo_dir.resolve_commit_dir(command, cwd)
+    if commit_dir is None or commit_dir == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
+        return None
+    return _commit_repo_dir.git_root_for_dir(Path(commit_dir))
 
 
 def command_body_file_base(command: str) -> Path | None:

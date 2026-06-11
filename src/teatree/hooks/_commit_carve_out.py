@@ -35,13 +35,16 @@ _FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
 def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
     r"""Return True iff the commit BODY's repo target makes it downgrade-eligible.
 
-    The repo the commit lands in is resolved by ``effective_repo_dir`` -- a
+    The repo the commit lands in is resolved by ``resolve_commit_dir`` -- a
     leading ``cd``/``pushd`` prefix, then ``--git-dir`` else the ``-C``-adjusted
-    dir, never ``--work-tree`` -- else the ambient ``cwd``; the nearest enclosing
-    ``.git`` root is then walked up to. Three states: a known-PRIVATE enclosing
-    repo is downgrade-eligible (True); a resolvable but PUBLIC/unknown enclosing
-    repo hard-blocks (False), so a commit in the public clone keeps the block;
-    NO resolvable commit dir at all (no ``cd``/``-C``/``--git-dir``, no ambient
+    dir, never ``--work-tree`` -- anchored on the ambient ``cwd`` (a RELATIVE
+    ``-C``/``cd`` target, e.g. a sub-agent's ``git -C ../worktree``, resolves
+    against ``cwd``, never the cold hook's process cwd), else the ambient
+    ``cwd`` itself for a plain commit; the nearest enclosing ``.git`` root is
+    then walked up to. Three states: a known-PRIVATE enclosing repo is
+    downgrade-eligible (True); a resolvable but PUBLIC/unknown enclosing repo
+    hard-blocks (False), so a commit in the public clone keeps the block; NO
+    resolvable commit dir at all (no ``cd``/``-C``/``--git-dir``, no ambient
     cwd, or the dir is in no git repo) FAILS-OPEN (True), because a local commit
     cannot leak and git rejects a commit outside a repo.
 
@@ -50,13 +53,12 @@ def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     """
     from teatree.hooks.publish_surface import commit_targets_private_repo  # noqa: PLC0415
 
-    repo_dir = _commit_repo_dir.effective_repo_dir(command)
-    if repo_dir == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
+    commit_target = _commit_repo_dir.resolve_commit_dir(command, cwd)
+    if commit_target == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
         return False
-    commit_target = Path(repo_dir) if repo_dir else cwd
     if commit_target is None:
         return True
-    repo_root = _commit_repo_dir.git_root_for_dir(commit_target)
+    repo_root = _commit_repo_dir.git_root_for_dir(Path(commit_target))
     if repo_root is None:
         return True
     return commit_targets_private_repo(repo_root, config_path=config_path)

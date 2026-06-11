@@ -1283,6 +1283,80 @@ class TestCarveOutApplies:
             is True
         )
 
+    # REGRESSION (#1415): a sub-agent's ``git -C <RELATIVE worktree>`` commit.
+    # The ambient hook cwd has reset away from the worktree to a SIBLING repo,
+    # and the in-command ``-C`` value is RELATIVE to that ambient cwd -- the
+    # form a worktree path takes when written relative to the workspace root.
+    # A relative target must be anchored on the AMBIENT cwd, not the cold
+    # hook's process cwd (which is outside any repo). Without the anchor, the
+    # relative ``-C`` resolves to a path in no git repo and the carve-out
+    # FAIL-OPENS for the wrong reason; here the resolved repo is allowlisted
+    # PRIVATE, so the carve-out must apply (downgrade) deterministically.
+    def test_relative_dash_c_private_target_anchored_on_ambient_cwd_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        # The ambient hook cwd is a SIBLING repo (public/unrelated), NOT the
+        # private worktree the relative ``-C`` names.
+        ambient_cwd = _repo_with_remote(workspace / "public-sibling", "git@github.com:some/public-sibling.git")
+        # The real target worktree (resolved relative to the AMBIENT cwd) is a
+        # private allowlisted repo, a sibling under workspace.
+        _repo_with_remote(workspace / "priv-worktree", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # DECOY at the PROCESS-cwd-relative location: a PUBLIC repo at the same
+        # ``../priv-worktree`` relative path. If the gate (wrongly) anchored the
+        # relative ``-C`` on the process cwd, it would resolve HERE -> public ->
+        # hard-block, so this test fails unless the anchor uses the AMBIENT cwd.
+        process_cwd = tmp_path / "process" / "cwd"
+        process_cwd.mkdir(parents=True)
+        _repo_with_remote(tmp_path / "process" / "priv-worktree", "git@github.com:souliane/teatree.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.chdir(process_cwd)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git -C ../priv-worktree commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # REGRESSION (#1415) -- the load-bearing LEAK direction. The ambient hook
+    # cwd is an allowlisted PRIVATE repo, but the in-command relative ``-C``
+    # names a PUBLIC sibling worktree the commit actually lands in. Anchoring
+    # the relative target on the ambient cwd resolves it to the PUBLIC repo, so
+    # the carve-out must NOT apply -- the banned-term commit to the public repo
+    # stays HARD-BLOCKED. (Before the anchor, the relative path resolved to no
+    # repo at the process cwd and FAIL-OPENED, allowing a public leak.)
+    def test_relative_dash_c_public_target_from_private_ambient_cwd_stays_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        # Ambient cwd is a PRIVATE allowlisted repo.
+        ambient_cwd = _repo_with_remote(
+            workspace / "priv-sibling", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # The real target worktree is a PUBLIC sibling under workspace.
+        _repo_with_remote(workspace / "public-worktree", "git@github.com:souliane/teatree.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        (tmp_path / "non-git-process-cwd").mkdir()
+        monkeypatch.chdir(tmp_path / "non-git-process-cwd")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git -C ../public-worktree commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
 
 class TestOwnSlugTermDowngrades:
     """A commit tripping on its OWN repo-slug term (#126 follow-up).
