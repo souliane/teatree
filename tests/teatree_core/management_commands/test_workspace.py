@@ -716,6 +716,9 @@ _no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
 _no_orphan_docker = patch.object(workspace_mod, "reap_orphan_worktree_docker", new=list)
 
 
+_no_orphan_isolated_roots = patch.object(workspace_mod, "reap_orphan_isolated_worktree_roots", new=list)
+
+
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
@@ -1134,6 +1137,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1150,6 +1154,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1206,6 +1211,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1254,6 +1260,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1296,6 +1303,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1343,6 +1351,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1379,6 +1388,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1397,6 +1407,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1443,6 +1454,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1523,6 +1535,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1593,6 +1606,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
@@ -1633,6 +1647,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1950,6 +1965,7 @@ class TestPruneBranches(TestCase):
 
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_isolated_roots
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

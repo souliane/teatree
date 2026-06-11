@@ -30,7 +30,7 @@ Ticket and workspace management.
 |------------|-----------|---------|-------------|
 | `ticket` | `issue_url`, `variant`, `repos`, `description` | ticket ID | Creates or updates a ticket with worktree entries for each repo. Idempotent — safe to re-run after partial failures. |
 | `finalize` | `ticket_id`, `--message` | string | Squashes worktree commits into one, then rebases on the default branch |
-| `clean-all` | `--keep-dslr` | list of strings | Prunes merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots |
+| `clean-all` | `--keep-dslr` | list of strings | Prunes merged worktrees, stale branches, orphaned stashes, orphan databases + docker, DB-unreferenced isolated worktree env roots, and old DSLR snapshots |
 
 ## `db`
 
