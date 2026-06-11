@@ -261,14 +261,33 @@ def _deliver_dm(
     (b) ``post_message`` raises — transport/network error.
     (c) ``post_message`` returns ``ok:false`` (missing_scope,
     channel_not_found) or ``ok:true`` with no ``ts`` — nothing landed.
+
+    **Why ``post_message`` instead of ``deliver_user_dm`` (#2054):** the
+    speak chokepoint (:func:`teatree.core.speak.deliver_user_dm`) posts
+    the text body via ``post_audio_dm`` (``files.getUploadURLExternal`` +
+    ``files.completeUploadExternal``) when ``speak.slack`` is on and
+    synthesis succeeds. That response does NOT carry a ``ts`` at the top
+    level — Slack populates it only under
+    ``files[].shares.private.<channel>[].ts``, which is frequently absent.
+    Reading ``response.get("ts", "")`` therefore always returns ``""`` and
+    every delivery fails with "Slack post returned no message ts".
+
+    The fix: use ``backend.post_message`` (``chat.postMessage``) for the
+    canonical text delivery — it always returns ``{"ok": true, "ts": "…"}``
+    — and fire the speak side-effects (audio attachment + local playback)
+    independently via ``deliver_user_dm_sidecar`` so the DM and its audio
+    enrichment are independent concerns. A failure on the speak side never
+    suppresses the text delivery.
     """
-    from teatree.core.speak import deliver_user_dm  # noqa: PLC0415
+    from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415
 
     try:
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        response = deliver_user_dm(backend, channel=channel, text=text, thread_ts=_active_dm_thread(channel))
+        thread_ts = _active_dm_thread(channel)
+        response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+        deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=thread_ts)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 

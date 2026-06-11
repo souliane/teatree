@@ -384,7 +384,7 @@ require_rubric_verification = true
         no_installed_overlays: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """#289: spec-coverage DoD gate is per-overlay overridable.
+        """#2232: spec-coverage DoD gate is per-overlay overridable.
 
         A spec-heavy overlay can require every acceptance criterion to carry a
         backing test before a ticket reaches DELIVERED while the global default

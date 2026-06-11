@@ -727,7 +727,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ``check_fix_record_dod`` requires a validated FixRecord for a ``kind=fix``
         ticket; ``check_spec_coverage`` requires every acceptance criterion to
         have a backing test when ``require_spec_coverage`` is on — done is not a
-        partial subset of the spec (#289). A refusal keeps the FSM at RETROSPECTED.
+        partial subset of the spec (#2232). A refusal keeps the FSM at RETROSPECTED.
         """
         from teatree.core.gates.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
         from teatree.core.gates.spec_coverage_gate import check_spec_coverage  # noqa: PLC0415

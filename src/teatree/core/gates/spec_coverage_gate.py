@@ -37,7 +37,7 @@ DELIVERED, beside ``check_fix_record_dod``. On a block it raises
 loop's outer atomic rolls the advance back and the ticket stays RETROSPECTED —
 merged on the forge, not yet *done*.
 
-TODO (deferred, souliane/teatree#289): the ``spec_coverage`` manifest is carried
+TODO (deferred, souliane/teatree#2232): the ``spec_coverage`` manifest is carried
 on the ticket (populated by the agent / a future ``ticket record-spec-coverage``
 CLI), the same shape as ``fix_record`` / ``anti_vacuity_attestation``. Automatic
 AC *extraction* — parsing the GitHub issue body / a linked spec doc into the

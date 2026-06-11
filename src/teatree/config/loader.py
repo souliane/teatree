@@ -8,6 +8,14 @@ from ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
 per-setting resolvers live in ``resolution`` and are reached through the package
 facade at call-time (the partition's loader -> resolution edge, deferred to avoid
 the loader/resolution/discovery import cycle).
+
+``load_config`` builds only the **file tier** (the global ``[teatree]`` table
+merged onto the dataclass defaults). The higher tiers — env, the #1775 DB
+override tier (``ConfigSetting`` rows), and the per-overlay ``[overlays.<name>]``
+table — are layered on top by ``resolution.get_effective_settings``; consult its
+docstring for the full ``env -> DB -> per-overlay -> global -> default``
+precedence. Callers that need effective values must use ``get_effective_settings``,
+not the bare ``load_config().user`` (which sees neither env, DB, nor per-overlay).
 """
 
 import tomllib
@@ -26,8 +34,6 @@ from teatree.config.settings import (
     UserSettings,
     _default_handover_mirror_path,
     _parse_disk_cache_allowlist,
-    _parse_excluded_skills,
-    _parse_user_identity_aliases,
 )
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
@@ -98,6 +104,20 @@ def _load_toml(path: Path) -> dict:
             raise ValueError(msg) from exc
 
 
+def _file_str_list(raw: object) -> list[str]:
+    """Lenient list coercion for the FILE tier (``load_config``).
+
+    A real TOML/JSON array coerces each element to ``str``; a malformed scalar
+    degrades to an empty list rather than raising — the global ``~/.teatree.toml``
+    has always been tolerant of a stray scalar here (the file tier never hard-
+    fails the whole config on one malformed key). The OVERRIDE tier (per-overlay
+    / DB) is the strict one: it routes through ``settings._parse_str_list`` which
+    RAISES on a non-list scalar (#258), so a bad override is rejected loud while
+    a bad global file still loads.
+    """
+    return [str(s) for s in raw] if isinstance(raw, list) else []
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
@@ -147,7 +167,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
-        user_identity_aliases=_parse_user_identity_aliases(teatree.get("user_identity_aliases", [])),
+        user_identity_aliases=_file_str_list(teatree.get("user_identity_aliases", [])),
         repo_mode=str(teatree.get("repo_mode", "")),
         architectural_review_disabled=bool(teatree.get("architectural_review_disabled", False)),
         architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
@@ -187,7 +207,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         worktree_stale_days=int(teatree.get("worktree_stale_days", 30)),
         max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
         allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
-        ram_kill_allowlist=_parse_excluded_skills(teatree.get("ram_kill_allowlist", [])),
+        ram_kill_allowlist=_file_str_list(teatree.get("ram_kill_allowlist", [])),
         todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
         todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
@@ -197,7 +217,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         stale_stack_min_age_minutes=int(teatree.get("stale_stack_min_age_minutes", 0)),
         local_stack_queue_disabled=bool(teatree.get("local_stack_queue_disabled", False)),
         local_stack_queue_max_attempts=int(teatree.get("local_stack_queue_max_attempts", 13)),
-        clean_ignore=_parse_excluded_skills(teatree.get("clean_ignore", [])),
+        clean_ignore=_file_str_list(teatree.get("clean_ignore", [])),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),

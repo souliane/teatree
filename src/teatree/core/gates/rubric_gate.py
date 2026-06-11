@@ -59,6 +59,27 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     return Rubric.objects.active_for_ticket(ticket)
 
 
+def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
+    """Write a ``shipped_incomplete`` honesty escalation for the ticket's session (#2263).
+
+    The deterministic backstop for trigger #4 (shipped a job not verified
+    complete): when the rubric done-gate REFUSES a merge, the work that reached
+    this point was shipped without a verified-complete rubric, so the ticket's
+    active session is escalated to the most-honest model for its next
+    verification spawn. Keyed to the ticket's most-recent session ``agent_id``
+    (ticket-wide, ``task_id=None``). Fail-SAFE: any error recording the row is
+    swallowed — the backstop must never block the (already-refusing) gate.
+    """
+    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415
+
+    try:
+        session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
+        if session is not None and session.agent_id:
+            HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=session.agent_id)
+    except Exception:  # noqa: BLE001
+        return
+
+
 def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) -> None:
     """Refuse a ``transition`` whose ticket rubric is not fully PASS at ``head_sha``.
 
@@ -68,12 +89,17 @@ def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) 
     independent grader bound to ``head_sha``. Fail-closed: a missing, empty,
     ungraded, failed, maker-graded, or stale-SHA rubric is refused. ``transition``
     names the gated action (e.g. ``"merge"``) for the remediation message.
+
+    On a refusal it also records a ``shipped_incomplete`` honesty escalation
+    (teatree#2263 trigger #4 backstop) for the ticket's active session before
+    raising, so the next verification spawn routes to the most-honest model.
     """
     if not rubric_gate_required():
         return
     rubric = latest_rubric(ticket)
     if rubric is not None and rubric.is_fully_passed_at(head_sha):
         return
+    _record_shipped_incomplete_escalation(ticket)
     reason = rubric.block_reason(head_sha) if rubric is not None else "no rubric is recorded for this ticket"
     short_sha = head_sha.strip()[:8] or head_sha.strip()
     msg = (

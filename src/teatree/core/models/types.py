@@ -92,7 +92,7 @@ class TicketExtra(TypedDict, total=False):
     # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
     # ``AntiVacuityAttestation`` below).
     anti_vacuity_attestation: "AntiVacuityAttestation"
-    # #289 per-ticket spec-coverage manifest mapping each acceptance criterion
+    # #2232 per-ticket spec-coverage manifest mapping each acceptance criterion
     # to its backing test(s); read by ``spec_coverage_gate`` (see
     # ``SpecCoverageManifest`` below) at ``mark_delivered`` when
     # ``require_spec_coverage`` is on. ``spec_coverage_override`` is the audited
@@ -180,7 +180,7 @@ class AntiVacuityAttestation(TypedDict, total=False):
 
 
 class AcceptanceCriterion(TypedDict, total=False):
-    """One acceptance criterion and the test(s) that back it (#289).
+    """One acceptance criterion and the test(s) that back it (#2232).
 
     ``id`` is the canonical label (e.g. ``"AC1"``); ``description`` is the
     human-readable statement and the fallback label when ``id`` is absent.
@@ -195,7 +195,7 @@ class AcceptanceCriterion(TypedDict, total=False):
 
 
 class SpecCoverageManifest(TypedDict, total=False):
-    """Per-ticket map of every acceptance criterion to its backing test(s) (#289).
+    """Per-ticket map of every acceptance criterion to its backing test(s) (#2232).
 
     Carried on ``Ticket.extra['spec_coverage']``. The spec-coverage DoD gate
     (``teatree.core.gates.spec_coverage_gate``) consumes it at ``mark_delivered``
@@ -208,7 +208,7 @@ class SpecCoverageManifest(TypedDict, total=False):
 
 
 class SpecCoverageOverride(TypedDict, total=False):
-    """Audited escape hatch for an AC-less ticket (#289).
+    """Audited escape hatch for an AC-less ticket (#2232).
 
     ``Ticket.extra['spec_coverage_override']`` with a non-empty ``reason`` makes
     the spec-coverage gate pass-and-log — for a genuinely AC-less ticket (a pure

@@ -436,6 +436,7 @@ graph LR
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate |
+| `e2e-review` | Reviewer-side quality gate for frontend Playwright E2E specs — business-readable scenario names, stable selector contracts, condition-not-clock waits, one-behaviour-per-test, fixture/cleanup discipline, no hardcoded creds/URLs, POM patterns — plus the procedure for converting an externally-authored suite into a project's conventions |
 | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `loops` | Show t3 loop status — which loops are running vs stalled, the cadence and next tick of each loop, and loop ownership |
