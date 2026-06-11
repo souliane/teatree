@@ -218,6 +218,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
     "require_anti_vacuity_attestation": _parse_strict_bool,
     "require_rubric_verification": _parse_strict_bool,
+    "require_spec_coverage": _parse_strict_bool,
     "scanning_news_disabled": _parse_strict_bool,
     "scanning_news_skill": _parse_strict_str,
     "scanning_news_cadence_hours": _parse_strict_int,
@@ -477,6 +478,12 @@ class UserSettings:
     # PASS by an independent verifier (grader != maker) at the merge-time head
     # SHA. Default false = NO-OP. Per-overlay overridable.
     require_rubric_verification: bool = False
+    # #2232 Opt-in per-ticket spec-coverage DoD gate on ``mark_delivered``
+    # (``spec_coverage_gate``): when on, a ticket cannot reach DELIVERED unless
+    # every acceptance criterion in ``extra['spec_coverage']`` has a backing
+    # test — done cannot be declared on a partial subset. Default false = NO-OP.
+    # Per-overlay overridable.
+    require_spec_coverage: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
