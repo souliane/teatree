@@ -54,7 +54,7 @@ from teatree.config.settings import (
     _default_handover_mirror_path,
     _parse_disk_cache_allowlist,
     _parse_env_bool,
-    _parse_excluded_skills,
+    _parse_str_list,
     _parse_user_identity_aliases,
 )
 from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
@@ -89,7 +89,7 @@ __all__ = [
     "_overlay_speak_override",
     "_parse_disk_cache_allowlist",
     "_parse_env_bool",
-    "_parse_excluded_skills",
+    "_parse_str_list",
     "_parse_user_identity_aliases",
     "_resolve_enum_setting",
     "_resolve_ep_project_path",
