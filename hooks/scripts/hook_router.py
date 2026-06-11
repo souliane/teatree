@@ -3324,6 +3324,39 @@ def _emit_banned_term_deny(
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
+def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
+    """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
+
+    ``scan_text`` returns either a configured banned term or a fail-closed
+    marker (an unresolvable body, an unavailable scanner). For a real term this
+    returns ``None`` so the caller takes the destination-aware banned-term path.
+
+    For the UNRESOLVABLE-body marker the decision is destination-aware: an
+    UNREADABLE body file (a ``git commit -F <path>`` whose file does not exist
+    at cold-hook scan time, a missing ``--body-file``) hard-blocks on a PUBLIC
+    surface — an unscanned body must never slip into public history — but a
+    ``git commit`` landing in a PRIVATE repo (or a pure private gh/glab post) is
+    not a public surface, so the unread body cannot leak and the gate downgrades
+    to a warn (#1415). The payload-driven carve-out fails closed on the sentinel,
+    so a body-INDEPENDENT private-destination check decides it here. The
+    SCANNER-unavailable marker stays hard-blocking on every surface (#1954).
+    """
+    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
+
+    marker_message = banned_terms_scanner.marker_deny_message(term)
+    if marker_message is None:
+        return None
+    if term == banned_terms_scanner.UNRESOLVABLE_BODY_MARKER and publish_surface.command_targets_private_only(
+        command, cwd_repo
+    ):
+        sys.stderr.write(
+            "WARNING: banned-terms gate (#1415) — could not read the commit/post body, but the "
+            "destination is a private repo; downgraded to warn. A private-repo body is not a public leak.\n"
+        )
+        return False
+    return emit_pretooluse_deny(marker_message)
+
+
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
@@ -3358,9 +3391,9 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
-    marker_message = banned_terms_scanner.marker_deny_message(term)
-    if marker_message is not None:
-        return emit_pretooluse_deny(marker_message)
+    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
+    if marker_decision is not None:
+        return marker_decision
     return _emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
 
 
