@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-pe2e-ui-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Recording the plan's acceptance-scenario section."}, {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "plan.md", "content": "### E2E test plan / Acceptance scenarios\n1. Remember-me keeps the session alive\n   - Flow / page: /login\n   - User action: enter valid credentials, check \"Remember me\", submit\n   - Observable assertion: a 30-day persistent session cookie is set and the user lands on /dashboard with their name in the header\n   - Precondition / fixture: a seeded active user\n"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
