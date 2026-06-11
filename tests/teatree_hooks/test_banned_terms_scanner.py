@@ -346,6 +346,34 @@ class TestRelativeBodyFileResolvesAgainstCommandDir:
         assert payload is not None
         assert "acmecorp" in payload
 
+    # REGRESSION (#1415): a sub-agent's ``git -C <RELATIVE worktree> commit -F
+    # <relative body>``. The relative ``-C`` worktree must be anchored on the
+    # AMBIENT hook cwd, not the cold hook's process cwd, so the relative body
+    # file (read from the worktree the commit lands in) is found and scanned.
+    def test_relative_dash_c_commit_body_file_anchored_on_ambient_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        ambient_cwd = workspace / "sibling"
+        worktree = workspace / "worktree"
+        worktree.mkdir(parents=True)
+        ambient_cwd.mkdir()
+        _git(worktree, "init", "-q")
+        (worktree / "msg.txt").write_text("internal note about acmecorp\n", encoding="utf-8")
+        # Process cwd is OUTSIDE the workspace, so a process-cwd-relative parse
+        # cannot find the body -- only the ambient-cwd anchor reaches it.
+        process_cwd = tmp_path / "process"
+        process_cwd.mkdir()
+        monkeypatch.chdir(process_cwd)
+        payload = banned_terms_scanner.extract_publish_payload(
+            "Bash",
+            {"command": "git -C ../worktree commit -F msg.txt"},
+            ambient_cwd,
+        )
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "acmecorp" in payload
+
 
 class TestHeredocBodyPairing:
     """A file-redirected heredoc is scanned only when its path is posted.

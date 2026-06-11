@@ -462,7 +462,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     ctx = BodyFileContext(
         heredoc_files=heredoc_files_map(command, tokens),
         fail_closed_body_file=fail_closed_body_file,
-        base=commit_body_file_base(command) or command_body_file_base(command) or cwd,
+        base=commit_body_file_base(command, cwd) or command_body_file_base(command) or cwd,
     )
     for segment in split_commands(tokens):
         _walk_command_segment(segment, parts, ctx)
