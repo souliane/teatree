@@ -76,9 +76,9 @@ class Command(TyperCommand):
         """Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 
         Machine-legible: prints a single JSON dict (``action`` is
-        ``post``/``suppress``/``refused``) and uses exit codes — ``0``
-        post/suppress, ``2`` refused (no recorded approval / no anti-vacuity
-        attestation).
+        ``post``/``draft``/``suppress``/``refused``) and uses exit codes —
+        ``0`` post/draft/suppress, ``2`` refused (no recorded approval / no
+        anti-vacuity attestation).
         """
         _ = approver  # the #960 approver is bound at approve-on-behalf record time.
 
@@ -100,9 +100,13 @@ class Command(TyperCommand):
             # that requires a user xoxp token the bot doesn't hold — #2231).
             # Fall back to a bot→user DM draft so the user can forward the
             # review request manually. Never silently suppress.
-            self._draft_dm_fallback(mr_url=mr_url, title=title)
+            sent = self._draft_dm_fallback(mr_url=mr_url, title=title)
             self._emit(
-                {"action": "draft", "reason": "no_review_channel_or_token", "mr_url": mr_url},
+                {
+                    "action": "draft" if sent else "suppress",
+                    "reason": "no_review_channel_or_token",
+                    "mr_url": mr_url,
+                },
                 exit_code=0,
             )
 
@@ -192,7 +196,7 @@ class Command(TyperCommand):
         )
 
     @staticmethod
-    def _draft_dm_fallback(*, mr_url: str, title: str) -> None:
+    def _draft_dm_fallback(*, mr_url: str, title: str) -> bool:
         """DM the user a draft review-request when the review channel is unpostable.
 
         Called when ``resolve_guard_target`` returns ``None`` — the review
@@ -200,19 +204,26 @@ class Command(TyperCommand):
         requires a user xoxp token the bot doesn't hold; #2231). A bot→user DM
         gives the user the full text they can forward manually, so the human
         review is never silently lost.
+
+        Returns the ``notify_user`` bool — ``True`` when the DM actually
+        landed, ``False`` when no backend / user_id is configured (NOOP). The
+        caller emits ``action=draft`` only on ``True``; ``False`` falls back to
+        ``action=suppress`` so a genuinely-undeliverable fallback stays loud
+        instead of masquerading as a draft.
         """
         from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
 
+        canonical = canonical_mr_url(mr_url)
         subject = title or _DEFAULT_TITLE
         text = (
             f"The review channel is unpostable (no token — Slack Connect channel?). "
             f"Please forward this review request manually:\n\n"
-            f"{subject} {mr_url}"
+            f"{subject} {canonical}"
         )
-        notify_user(
+        return notify_user(
             text,
             kind=NotifyKind.INFO,
-            idempotency_key=f"review_request_draft:{mr_url}",
+            idempotency_key=f"review_request_draft:{canonical}",
         )
 
     @staticmethod
