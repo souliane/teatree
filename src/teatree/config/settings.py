@@ -62,6 +62,29 @@ def _parse_env_bool(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_strict_bool(raw: object) -> bool:
+    """Coerce a TOML/JSON value for a bool-typed overridable setting, strictly.
+
+    TOML ``true``/``false`` and JSON ``true``/``false`` both decode to a real
+    Python ``bool``, so the only accepted inputs are :data:`True` / :data:`False`
+    (``isinstance(x, bool)`` — which excludes ``1``/``0`` since those are ``int``).
+
+    Anything else — a quoted ``"false"`` (a ``str``), a number, a list — raises
+    ``ValueError`` rather than truthy-coercing via ``bool(...)``. The naive
+    ``bool`` coercer the bool registry entries used to point at made
+    ``bool("false") == True`` (#258): a JSON/string ``"false"`` for an opt-in
+    safety setting (e.g. ``allow_destructive_disk``) silently ENABLED it. This
+    strict parser is the single coercer for every bool-typed overridable
+    setting, so both the write path (``config_setting set`` validates through the
+    registry) and the read path (``_db_setting_overrides`` coerces through it)
+    reject the ambiguous value identically.
+    """
+    if isinstance(raw, bool):
+        return raw
+    msg = f"Invalid bool value {raw!r}; expected a JSON/TOML boolean (true/false), not a quoted string or number"
+    raise ValueError(msg)
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -96,41 +119,41 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "speed": Speed.parse,
     "branch_prefix": str,
     "privacy": str,
-    "contribute": bool,
+    "contribute": _parse_strict_bool,
     "excluded_skills": _parse_excluded_skills,
     "loop_cadence_seconds": int,
-    "require_human_approval_to_merge": bool,
-    "require_human_approval_to_answer": bool,
-    "ask_before_post_on_behalf": bool,
+    "require_human_approval_to_merge": _parse_strict_bool,
+    "require_human_approval_to_answer": _parse_strict_bool,
+    "ask_before_post_on_behalf": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
-    "notify_user_via_bot": bool,
-    "notify_on_post_on_behalf": bool,
+    "notify_user_via_bot": _parse_strict_bool,
+    "notify_on_post_on_behalf": _parse_strict_bool,
     "user_identity_aliases": _parse_user_identity_aliases,
-    "architectural_review_disabled": bool,
+    "architectural_review_disabled": _parse_strict_bool,
     "architectural_review_skill": str,
     "architectural_review_cadence_hours": int,
     "architectural_review_after_merge_count": int,
     "review_skill": str,
-    "require_review_context": bool,
-    "e2e_mandatory_gate_enabled": bool,
-    "require_anti_vacuity_attestation": bool,
-    "require_rubric_verification": bool,
-    "scanning_news_disabled": bool,
+    "require_review_context": _parse_strict_bool,
+    "e2e_mandatory_gate_enabled": _parse_strict_bool,
+    "require_anti_vacuity_attestation": _parse_strict_bool,
+    "require_rubric_verification": _parse_strict_bool,
+    "scanning_news_disabled": _parse_strict_bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
-    "ask_before_creating_news_tickets": bool,
-    "eval_local_disabled": bool,
+    "ask_before_creating_news_tickets": _parse_strict_bool,
+    "eval_local_disabled": _parse_strict_bool,
     "eval_local_skill": str,
     "eval_local_cadence_hours": int,
-    "dogfood_smoke_disabled": bool,
+    "dogfood_smoke_disabled": _parse_strict_bool,
     "dogfood_smoke_skill": str,
     "dogfood_smoke_cadence_hours": int,
     "dogfood_smoke_overlay": str,
-    "self_update_disabled": bool,
+    "self_update_disabled": _parse_strict_bool,
     "self_update_cadence_hours": int,
-    "auto_update_reinstall": bool,
-    "auto_update_require_green_main": bool,
-    "resource_pressure_disabled": bool,
+    "auto_update_reinstall": _parse_strict_bool,
+    "auto_update_require_green_main": _parse_strict_bool,
+    "resource_pressure_disabled": _parse_strict_bool,
     "resource_pressure_cadence_minutes": int,
     "resource_pressure_min_free_interval_minutes": int,
     "disk_warn_free_gb": float,
@@ -138,33 +161,33 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "ram_warn_avail_gb": float,
     "ram_crit_avail_gb": float,
     "disk_cache_allowlist": _parse_excluded_skills,
-    "allow_destructive_disk": bool,
+    "allow_destructive_disk": _parse_strict_bool,
     "worktree_stale_days": int,
     "max_worktree_gc_per_tick": int,
-    "allow_destructive_ram": bool,
+    "allow_destructive_ram": _parse_strict_bool,
     "ram_kill_allowlist": _parse_excluded_skills,
-    "todo_sweep_disabled": bool,
+    "todo_sweep_disabled": _parse_strict_bool,
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
     "provision_step_timeout_seconds": int,
-    "idle_stack_reaper_disabled": bool,
+    "idle_stack_reaper_disabled": _parse_strict_bool,
     "idle_stack_idle_minutes": int,
     "idle_stack_reaper_cadence_minutes": int,
     "stale_stack_min_age_minutes": int,
-    "local_stack_queue_disabled": bool,
+    "local_stack_queue_disabled": _parse_strict_bool,
     "local_stack_queue_max_attempts": int,
     "clean_ignore": _parse_excluded_skills,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
-    "pull_main_clone_disabled": bool,
+    "pull_main_clone_disabled": _parse_strict_bool,
     "pull_main_clone_cadence_hours": int,
-    "review_nag_enabled": bool,
-    "orchestrator_bash_gate_enabled": bool,
+    "review_nag_enabled": _parse_strict_bool,
+    "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "mr_title_regex": str,
-    "issue_implementer_enabled": bool,
+    "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": str,
     "issue_implementer_max_concurrent": int,
     "issue_implementer_cadence_hours": int,
-    "auto_disposition_enabled": bool,
+    "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": int,
 }
 

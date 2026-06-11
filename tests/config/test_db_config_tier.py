@@ -98,3 +98,20 @@ issue_implementer_enabled = false
         assert get_effective_settings().issue_implementer_enabled is True
         ConfigSetting.objects.clear("issue_implementer_enabled")
         assert get_effective_settings().issue_implementer_enabled is False
+
+    def test_bool_row_false_resolves_false(self) -> None:
+        # #258 blocker 2: a stored real-bool ``False`` for an opt-in safety
+        # setting must resolve to Python ``False`` — never truthy-coerced on.
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("allow_destructive_disk", value=False)
+        assert get_effective_settings().allow_destructive_disk is False
+
+    def test_quoted_bool_string_row_does_not_silently_enable(self) -> None:
+        # #258 blocker 2 at the READ tier: a row storing the JSON STRING
+        # ``"false"`` (bypassing the write-time gate, e.g. an old row) must NOT
+        # silently enable the opt-in setting via ``bool("false") == True``. The
+        # strict parser rejects the ambiguous value rather than coercing it on.
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("allow_destructive_disk", "false")
+        with pytest.raises(ValueError, match="allow_destructive_disk"):
+            get_effective_settings()

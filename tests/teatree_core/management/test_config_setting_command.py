@@ -12,6 +12,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting
 
 
@@ -45,6 +46,32 @@ class TestConfigSettingSet(TestCase):
         with pytest.raises(SystemExit):
             call_command("config_setting", "set", "issue_implementer_enabled", "not-json")
         assert ConfigSetting.objects.filter(key="issue_implementer_enabled").exists() is False
+
+    def test_set_rejects_out_of_enum_value_and_leaves_reads_working(self) -> None:
+        # #258 blocker 1: a value that JSON-parses but is invalid for the
+        # setting's type (an out-of-enum ``mode``) must be rejected at WRITE
+        # time. Storing it would brick every config read — ``get_effective``'s
+        # DB tier coerces each stored value via the registry parser, so a bad
+        # ``mode`` row makes ``Mode.parse`` raise on EVERY resolution.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "mode", '"bogus"')
+        assert ConfigSetting.objects.filter(key="mode").exists() is False
+        # The store is untouched, so config reads still resolve.
+        assert get_effective_settings().mode is not None
+
+    def test_set_rejects_quoted_bool_string(self) -> None:
+        # #258 blocker 2: a JSON string ``"false"`` for a bool-typed setting
+        # must be rejected, not truthy-coerced via ``bool("false") == True``.
+        # Silently enabling an opt-in safety setting is the failure mode.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "allow_destructive_disk", '"false"')
+        assert ConfigSetting.objects.filter(key="allow_destructive_disk").exists() is False
+
+    def test_set_accepts_real_json_bool_false(self) -> None:
+        # The GREEN side of blocker 2: a real JSON boolean ``false`` resolves
+        # to Python ``False`` and the opt-in setting stays disabled.
+        call_command("config_setting", "set", "allow_destructive_disk", "false")
+        assert ConfigSetting.objects.get_effective("allow_destructive_disk") is False
 
 
 class TestConfigSettingClear(TestCase):

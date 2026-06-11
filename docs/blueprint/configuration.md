@@ -118,10 +118,25 @@ the canonical-tier-is-the-DB pattern (`MergeClear` / `DbApproval`): a row
 overrides the file value but is still beaten by an explicit env var. An **empty
 table is a provable no-op** — `resolution._db_setting_overrides()` returns `{}`,
 so nothing regresses during the migration window — and the read **fails safe to
-`{}`** whenever Django is unconfigured or the table is missing (pre-migration),
-so this hot config path never raises. The tier is scoped to keys registered in
-`OVERLAY_OVERRIDABLE_SETTINGS`, coercing the stored JSON value with that
-registry's parser; a row for any other key is ignored. The model reaches the
+`{}`** for INFRASTRUCTURE failures (Django unconfigured or the table missing
+pre-migration), so this hot config path never raises on a missing table. The
+tier is scoped to keys registered in `OVERLAY_OVERRIDABLE_SETTINGS`, coercing the
+stored JSON value with that registry's parser; a row for any other key is
+ignored.
+
+The stored value is **validated at WRITE time** ([#258](https://github.com/souliane/teatree/issues/258)):
+`config_setting set` runs the same registry parser before persisting, so an
+out-of-enum value (a bad `mode`) or a quoted bool (`"false"` for a bool-typed
+setting) is rejected loudly and never stored — a bad write can therefore never
+poison reads. Bool-typed settings use a strict parser (`_parse_strict_bool`)
+that accepts only real JSON/TOML booleans (`true`/`false`) and rejects a quoted
+`"false"` rather than truthy-coercing it via `bool(...)` (the old `bool("false")
+== True` footgun that would silently enable an opt-in safety setting). Because
+writes are validated, a per-row coercion failure at read time can only mean an
+out-of-band DB corruption — so it is raised loud with the offending key named,
+not silently dropped back to the file value.
+
+The model reaches the
 resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime
 lookup, not a static import) so the `config` platform layer never takes a
 backwards edge on the `core` domain layer (tach-clean). Admin path:

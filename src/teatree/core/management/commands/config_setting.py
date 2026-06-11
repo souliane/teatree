@@ -34,8 +34,15 @@ class Command(TyperCommand):
     ) -> None:
         """Upsert the DB override row for *key* to the JSON-parsed *value*.
 
-        Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` and a *value* that
-        is not valid JSON, leaving the store untouched on either error.
+        Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
+        not valid JSON, and a *value* that JSON-parses but is invalid for the
+        setting's type, leaving the store untouched on any error.
+
+        The type check runs the **same** registry parser the resolver applies on
+        read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
+        bool-typed setting is rejected here, at WRITE time, so a value that would
+        raise on every later config resolution can never be stored. Validating
+        on write is what keeps a bad row from bricking all reads.
         """
         if key not in OVERLAY_OVERRIDABLE_SETTINGS:
             self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
@@ -44,6 +51,12 @@ class Command(TyperCommand):
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
+            raise SystemExit(2) from exc
+        parser = OVERLAY_OVERRIDABLE_SETTINGS[key]
+        try:
+            parser(parsed)
+        except (ValueError, TypeError, AttributeError) as exc:
+            self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         ConfigSetting.objects.set_value(key, parsed)
         # Verify-by-re-read: report the stored value the resolver will now see.

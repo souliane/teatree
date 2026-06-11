@@ -226,11 +226,21 @@ def _db_setting_overrides() -> dict[str, Any]:
     declared type. Rows for unknown / non-overridable keys are ignored, so a
     stray row can never silently mutate the resolved settings.
 
-    Fails safe to ``{}`` — an empty/absent table, an unconfigured Django, or a
-    pre-migration database (the table does not exist yet) all yield no overrides,
-    so the file/env source is unchanged. This is the #1775
-    no-regression-during-migration invariant: the read is on every config
-    resolution and must never raise into it.
+    Fails safe to ``{}`` for INFRASTRUCTURE failures — an empty/absent table, an
+    unconfigured Django, or a pre-migration database (the table does not exist
+    yet) all yield no overrides, so the file/env source is unchanged. This is the
+    #1775 no-regression-during-migration invariant: the table read is on every
+    config resolution and must never raise into it (handled in
+    :func:`_load_config_setting_rows`).
+
+    A per-row parser failure is a DIFFERENT class: it means a stored value is
+    invalid for its setting's type (an out-of-enum ``mode``, a quoted ``"false"``
+    for a bool-typed setting). With write-time validation in place
+    (``config_setting set`` runs the same registry parser, #258) such a row can
+    only exist if the DB was corrupted out of band — so it is raised LOUD with
+    the offending key named, not swallowed: a silently-dropped invalid override
+    would resolve back to the file/env value with no signal, exactly the kind of
+    quiet wrong answer the strict parsing change is meant to foreclose.
     """
     rows = _load_config_setting_rows()
     if not rows:
@@ -240,7 +250,11 @@ def _db_setting_overrides() -> dict[str, Any]:
         parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
         if parser is None:
             continue
-        overrides[key] = parser(value)
+        try:
+            overrides[key] = parser(value)
+        except (ValueError, TypeError, AttributeError) as exc:
+            msg = f"Invalid stored ConfigSetting value for {key!r}: {exc}"
+            raise ValueError(msg) from exc
     return overrides
 
 
