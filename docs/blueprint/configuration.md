@@ -108,9 +108,55 @@ A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
 1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_REVIEW_SKILL`).
-2. Active overlay's override from `[overlays.<name>]`.
-3. Global `[teatree]` value.
-4. `UserSettings` dataclass default.
+2. **DB override tier** — a `ConfigSetting` row whose `key` is an overridable setting ([#1775](https://github.com/souliane/teatree/issues/1775), the first slice of "move config to the database").
+3. Active overlay's override from `[overlays.<name>]`.
+4. Global `[teatree]` value.
+5. `UserSettings` dataclass default.
+
+The DB tier (`core.models.ConfigSetting`, `db_table=teatree_config_setting`) is
+the canonical-tier-is-the-DB pattern (`MergeClear` / `DbApproval`): a row
+overrides the file value but is still beaten by an explicit env var. An **empty
+table is a provable no-op** — `resolution._db_setting_overrides()` returns `{}`,
+so nothing regresses during the migration window — and the read **fails safe to
+`{}`** for INFRASTRUCTURE failures (Django unconfigured or the table missing
+pre-migration), so this hot config path never raises on a missing table. The
+tier is scoped to keys registered in `OVERLAY_OVERRIDABLE_SETTINGS`, coercing the
+stored JSON value with that registry's parser; a row for any other key is
+ignored.
+
+The stored value is **validated at WRITE time** ([#258](https://github.com/souliane/teatree/issues/258)):
+`config_setting set` runs the same registry parser before persisting, so an
+out-of-enum value (a bad `mode`) or a quoted bool (`"false"` for a bool-typed
+setting) is rejected loudly and never stored — a bad write can therefore never
+poison reads. Bool-typed settings use a strict parser (`_parse_strict_bool`)
+that accepts only real JSON/TOML booleans (`true`/`false`) and rejects a quoted
+`"false"` rather than truthy-coercing it via `bool(...)` (the old `bool("false")
+== True` footgun that would silently enable an opt-in safety setting). The other
+typed parsers are **strict in the same spirit**: `_parse_strict_int` rejects a
+JSON `true` (a `bool` is a subclass of `int`, so the old bare `int` made
+`int(True) == 1` and accepted a bool for an int setting), `_parse_strict_float`
+rejects a bool, `_parse_strict_str` rejects a non-string rather than stringifying
+it, and `_parse_str_list` **raises** on a non-list scalar rather than silently
+degrading to `[]` (the old `excluded_skills true` footgun). Write validation
+**persists the canonical parsed value**, not the raw user value — a numeric
+string `"5"` is stored as the int `5`, an upper-case `"AUTO"` as the normalised
+`"auto"` — so the DB row and the read-time re-coercion always agree. Because
+writes are validated, a per-row coercion failure at read time can only mean an
+out-of-band DB corruption — so it is raised loud with the offending key named,
+not silently dropped back to the file value. The spoken-DM path
+(`speak._resolve_speak_safe`) honours that loudness: a `ValueError` from a corrupt
+config row is logged at **error** (the text DM still degrades gracefully), never
+swallowed at debug.
+
+The model reaches the
+resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime
+lookup, not a static import) so the `config` platform layer never takes a
+backwards edge on the `core` domain layer (tach-clean). Admin path:
+`t3 <overlay> config_setting set <key> <json> | clear <key> | list`. The pilot
+migrated setting is `issue_implementer_enabled` (a default-off boolean
+kill-switch). Bootstrap-readable settings (`DATABASE_URL` / data-dir /
+`DJANGO_SETTINGS_MODULE` / the offline `private_repos` allowlist) are explicitly
+out of scope — they must resolve before Django starts.
 
 The active overlay is resolved via (in order): `T3_OVERLAY_NAME` env var
 (runtime truth; matches `get_overlay()`), cwd-based discovery, then the
@@ -378,3 +424,5 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 **The text files are the source of truth for user *intent*; the DB caches *derived* state.** A datum may live DB-only **iff it can be deleted and deterministically rebuilt** from the text files (`~/.teatree.toml`, overlay config) plus repo state — deleting the DB must lose no user intent. If losing a datum would lose user intent, it stays text-file source-of-truth (the DB may cache a read view, never own it). The DB stays rebuildable from the text files indefinitely — no one-way migration.
 
 Consequences: bootstrap config (DB path, log level, the `mode` resolution chain) and user-authored intent (push mode, contribute, banned terms) stay in text files — they must resolve with the DB absent. Derived/observational state (cached env values, last-seen branch, lifecycle phase history) is DB-as-cache and carries a regeneration path. A DB-only user-*intent* field (e.g. #627 `Ticket.context`) is permitted **only** with a round-trip affordance so the `cat ~/.teatree.toml` affordance is not lost — `t3 config show` is that affordance: a read-only view partitioning text-file intent from DB regenerable cache, working with the DB absent.
+
+**[#1775](https://github.com/souliane/teatree/issues/1775) — moving overridable config into the DB.** The `ConfigSetting` override tier (§10.1.1) deliberately lets the DB *own* user intent for an overridable setting, rather than only cache derived state. It stays inside this rule's spirit on two counts: (1) the DB is a strictly higher tier than the file — an empty table resolves byte-identically to today and the read fails safe to no-override when the DB is absent, so deleting the DB never loses the file-authored intent that remains the floor; and (2) the round-trip affordance is preserved by the `t3 <overlay> config_setting set|clear|list` admin path. The genuinely bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE` / `private_repos`) remain text-only — they must resolve before Django, so they can never move to this tier.

@@ -3547,41 +3547,43 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ resetdb       Drop the SQLite database and re-run all migrations.            │
-│ worker        Start background task workers.                                 │
-│ full-status   Show ticket, worktree, and session state summary.              │
-│ ship          Code to PR — create pull request for the ticket.               │
-│ daily         Daily followup — sync MRs, check gates, remind reviewers.      │
-│ agent         Launch Claude Code with overlay context and auto-detected      │
-│               skills.                                                        │
-│ config        Overlay configuration.                                         │
-│ gate          Enforcement-gate kill-switches (self-rescue).                  │
-│ speed         Parallel-work throughput dial.                                 │
-│ autonomy      Per-overlay trust switch (collapses the approval gates).       │
-│ worktree      Per-worktree FSM operations.                                   │
-│ workspace     Ticket-level workspace operations (every worktree in the       │
-│               ticket).                                                       │
-│ run           Run services.                                                  │
-│ e2e           E2E test commands.                                             │
-│ db            Database operations.                                           │
-│ pr            Pull request helpers.                                          │
-│ tasks         Async task queue.                                              │
-│ queue         Background-task DB queue (inspect, expire stale jobs).         │
-│ followup      Follow-up snapshots.                                           │
-│ standup       Auto-generated daily update (read-only).                       │
-│ checking      Terse 'what did I miss' report since the last check            │
-│               (read-only).                                                   │
-│ handover      Hand all current work from this session to another session.    │
-│ lifecycle     Session lifecycle and phase tracking.                          │
-│ env           Inspect and mutate the worktree env cache.                     │
-│ ticket        Ticket state management.                                       │
-│ review        Persist + look up cold-review verdicts per MR.                 │
-│ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
-│ questions     Manage the away-mode deferred-question backlog (#58).          │
-│ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
-│ notify        Slack egress from the shell (#1030, #1750).                    │
-│ mr_reminder   Cross-repo "my open MRs" Slack reminder (TODO-276).            │
-│ retro         Retrospective enforcement tooling (#1573).                     │
+│ resetdb         Drop the SQLite database and re-run all migrations.          │
+│ worker          Start background task workers.                               │
+│ full-status     Show ticket, worktree, and session state summary.            │
+│ ship            Code to PR — create pull request for the ticket.             │
+│ daily           Daily followup — sync MRs, check gates, remind reviewers.    │
+│ agent           Launch Claude Code with overlay context and auto-detected    │
+│                 skills.                                                      │
+│ config          Overlay configuration.                                       │
+│ gate            Enforcement-gate kill-switches (self-rescue).                │
+│ speed           Parallel-work throughput dial.                               │
+│ autonomy        Per-overlay trust switch (collapses the approval gates).     │
+│ worktree        Per-worktree FSM operations.                                 │
+│ workspace       Ticket-level workspace operations (every worktree in the     │
+│                 ticket).                                                     │
+│ run             Run services.                                                │
+│ e2e             E2E test commands.                                           │
+│ db              Database operations.                                         │
+│ pr              Pull request helpers.                                        │
+│ tasks           Async task queue.                                            │
+│ queue           Background-task DB queue (inspect, expire stale jobs).       │
+│ followup        Follow-up snapshots.                                         │
+│ standup         Auto-generated daily update (read-only).                     │
+│ checking        Terse 'what did I miss' report since the last check          │
+│                 (read-only).                                                 │
+│ handover        Hand all current work from this session to another session.  │
+│ lifecycle       Session lifecycle and phase tracking.                        │
+│ env             Inspect and mutate the worktree env cache.                   │
+│ ticket          Ticket state management.                                     │
+│ review          Persist + look up cold-review verdicts per MR.               │
+│ availability    24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).  │
+│ config_setting  DB-backed config override tier — env -> DB -> TOML           │
+│                 precedence (#1775).                                          │
+│ questions       Manage the away-mode deferred-question backlog (#58).        │
+│ pending_chat    Manage the inbound Slack-DM queue (#1063).                   │
+│ notify          Slack egress from the shell (#1030, #1750).                  │
+│ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
+│ retro           Retrospective enforcement tooling (#1573).                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6437,6 +6439,73 @@ Usage: t3 teatree availability auto [OPTIONS]
 Usage: t3 teatree availability show [OPTIONS]
 
  Print the current resolved mode and which layer decided it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree config_setting`
+
+```
+Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
+
+ DB-backed config override tier — env -> DB -> TOML precedence (#1775).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ set    Upsert a DB override row for an overridable setting (JSON value).     │
+│ clear  Remove a DB override row, falling back to the file/env source.        │
+│ list   List every DB config override row (read-only).                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting set`
+
+```
+Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
+
+ Upsert the DB override row for *key* to the JSON-parsed *value*.
+
+ Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` and a *value* that
+ is not valid JSON, leaving the store untouched on either error.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key        TEXT  UserSettings field name (must be overridable).         │
+│                       [required]                                             │
+│ *    value      TEXT  JSON value, e.g. true / false / '"x"' / 3. [required]  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting clear`
+
+```
+Usage: t3 teatree config_setting clear [OPTIONS] KEY
+
+ Delete the DB override row for *key*; falls back to the file/env source.
+
+ Exits non-zero when no row exists so a typo'd key is loud, not silent.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key      TEXT  UserSettings field name whose DB override to remove.     │
+│                     [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting list`
+
+```
+Usage: t3 teatree config_setting list [OPTIONS]
+
+ List every DB config override row (read-only).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

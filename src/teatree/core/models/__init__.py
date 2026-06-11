@@ -3,6 +3,7 @@ from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
@@ -78,6 +79,8 @@ __all__ = [
     "ClearIssuanceError",
     "ClearRequest",
     "CodexReviewMarker",
+    "ConfigSetting",
+    "ConfigSettingManager",
     "ConsolidatedMemory",
     "CostRegression",
     "DailyDigestMessage",
