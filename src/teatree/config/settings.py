@@ -107,6 +107,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_review_context": bool,
     "e2e_mandatory_gate_enabled": bool,
     "require_anti_vacuity_attestation": bool,
+    "require_rubric_verification": bool,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
@@ -360,6 +361,11 @@ class UserSettings:
     # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
     # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
     require_anti_vacuity_attestation: bool = False
+    # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
+    # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
+    # PASS by an independent verifier (grader != maker) at the merge-time head
+    # SHA. Default false = NO-OP. Per-overlay overridable.
+    require_rubric_verification: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
