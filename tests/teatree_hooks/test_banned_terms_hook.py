@@ -680,3 +680,120 @@ def test_fm4_help_invocation_does_not_block(
         captured = capsys.readouterr()
         assert blocked is False, command
         assert captured.out == "", command
+
+
+# ── #1415: unreadable commit body on a PRIVATE repo must downgrade ────────────
+#
+# An UNREADABLE ``git commit -F <file>`` body (the file does not exist at cold-
+# hook scan time -- the agent's standard "write the body file, commit it in the
+# next call" idiom, or a relative path the reset hook cwd cannot reach) produced
+# the fail-closed sentinel and HARD-BLOCKED with "The publish body could not be
+# read", even when the commit lands in a known-PRIVATE repo. A private-repo
+# commit is not a public surface -- the body lands in private history regardless
+# of whether the gate could read it -- so an unread body cannot leak and must
+# downgrade to warn. The payload-driven carve-out fails closed on the sentinel,
+# so the fix routes the unreadable-body marker through a body-INDEPENDENT
+# private-destination check. The PUBLIC-surface fail-closed protection is
+# preserved by the paired anti-vacuity guards above (FM3) and below.
+
+
+def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # RED→GREEN (#1415): a ``git commit -F <nonexistent file>`` whose harness cwd
+    # IS a known-private worktree must DOWNGRADE to warn, not hard-block on
+    # "publish body could not be read". The body is unreadable at scan time, but
+    # the commit lands in the repo's own private history -- not a public leak.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = _private_worktree(tmp_path)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -F /no/such/COMMIT_MSG.txt"},
+        "cwd": str(worktree),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_live_hook_blocks_unreadable_commit_body_file_in_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ANTI-VACUITY guard for the private-downgrade above: the SAME unreadable
+    # ``git commit -F <nonexistent file>`` landing in a PUBLIC repo (cwd == that
+    # public repo) must STILL hard-block. The downgrade is private-only; an
+    # unscanned body must never slip into public history.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    public_repo = _public_clone(tmp_path)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -F /no/such/COMMIT_MSG.txt"},
+        "cwd": str(public_repo),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_blocks_unreadable_commit_body_file_in_unknown_visibility_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ANTI-VACUITY guard #2: an unreadable commit body whose landing repo is
+    # NEITHER allowlisted NOR probe-resolvable (the common cold-hook unknown
+    # state) must STILL hard-block. Default-deny on unknown visibility is
+    # preserved -- the downgrade fires only for a PROVABLY-private destination.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    repo = tmp_path / "unknown-vis"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@github.com:someorg/not-allowlisted.git")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -F /no/such/COMMIT_MSG.txt"},
+        "cwd": str(repo),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_allows_workitem_url_inline_commit_in_private_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #1415 (the reported inline shape): a ``git commit -m`` whose message holds a
+    # private-repo work-item URL (``host/<org>/<repo>/-/work_items/N``) and lands
+    # in that own private worktree must NOT hard-block -- the org slug in the URL
+    # is the repo's own identity, not a foreign leak.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = _private_worktree(tmp_path)
+    url = "https://gitlab.com/acmecorp-engineering/acmecorp-client-workspace/-/work_items/8223"
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f'git commit -m "fix(foo): see {url}"'},
+        "cwd": str(worktree),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON

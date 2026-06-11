@@ -95,6 +95,37 @@ def commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     return True
 
 
+def command_targets_private_only(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
+    """Return True iff ``command`` is a private-only git commit / gh-glab post.
+
+    The BODY-INDEPENDENT half of :func:`publish_surface.carve_out_applies`: it
+    decides ONLY whether the command's destination is a provably-private surface
+    (a ``git commit`` landing in a known-private repo, or a pure private
+    ``gh``/``glab`` post), with NO reference to the publish payload. This is what
+    an UNREADABLE-body case needs: when the body file cannot be read, the
+    payload-driven ``carve_out_applies`` fails closed on the unresolved-body
+    marker, but a commit to a PRIVATE repo is not a public surface at all, so
+    whether the body is readable is irrelevant -- the commit lands in private
+    history regardless of what its message says. A PUBLIC/unknown destination
+    returns False, so an unreadable body to a public surface still hard-blocks
+    (#1415).
+
+    Secrets are deliberately NOT considered here -- the caller scans the wide
+    secret surface separately and blocks a secret on every surface before this
+    is reached (#1672). Same destination logic as ``carve_out_applies``:
+    ``git commit`` -> :func:`commit_branch_downgrades`, else
+    :func:`publish_surface.command_is_pure_private_gh_glab_post`.
+    """
+    from teatree.hooks.publish_surface import (  # noqa: PLC0415
+        command_is_pure_private_gh_glab_post,
+        is_git_commit_command,
+    )
+
+    if is_git_commit_command(command):
+        return commit_branch_downgrades(command, cwd, config_path=config_path)
+    return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
+
+
 def segment_is_publish_inert(words: list[str]) -> bool:
     r"""Return True iff ``words`` provably cannot publish a body externally.
 
