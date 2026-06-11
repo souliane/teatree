@@ -93,6 +93,15 @@ class AgentConfig:
         Default ``"opus"`` (which the tier/cost machinery maps to
         ``claude-opus-4-8``), so Opus 4.8 compatibility is preserved by
         construction. Normalised through :func:`_normalize_model`.
+    *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
+        keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
+        ``bool`` value enables the registry default ``fanout_n`` (``True``) or
+        disables (``False``); an ``int`` value enables and overrides the panel
+        width. Empty by default → ``core.phases.resolve_fanout_directive``
+        renders nothing → dispatch is byte-identical to today until a pair is
+        opted in. Mirrors the ``skill_models`` precedent (a typed
+        ``[agent.phase_fanout]`` sub-table); the int range is validated at
+        directive-render time (``core.phases._resolved_fanout_n``), fail-loud.
     """
 
     skill_models: dict[str, str | None] = field(default_factory=dict)
@@ -100,6 +109,32 @@ class AgentConfig:
     session_effort: str | None = None
     fable_enabled: bool = True
     fable_fallback: str = "opus"
+    phase_fanout: dict[str, bool | int] = field(default_factory=dict)
+
+
+def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
+    """Normalise the ``[agent.phase_fanout]`` table into a ``"role:phase" → opt-in`` map.
+
+    Each value is a ``bool`` (enable at registry default / disable) or an
+    ``int`` (enable + override the panel width). ``bool`` is checked before
+    ``int`` because ``bool`` is an ``int`` subclass — a bare ``true``/``false``
+    must stay a bool, not collapse to ``1``/``0``. A non-table value (a
+    malformed scalar) yields an empty map, and any non-bool/non-int entry value
+    is skipped, matching the ``skill_models`` loader's tolerance. The int range
+    is NOT validated here — it is validated fail-loud at render time
+    (``core.phases._resolved_fanout_n``) so a bad N surfaces with the rendering
+    context, not as a silent drop at parse time.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    resolved: dict[str, bool | int] = {}
+    for pair, opt_in in raw.items():
+        # ``bool | int`` accepts both (``bool`` is an ``int`` subclass); a
+        # ``bool`` value stays a ``bool`` because it is the runtime type, never
+        # coerced to ``1``/``0``. Non-bool/non-int values are skipped.
+        if isinstance(opt_in, bool | int):
+            resolved[str(pair)] = opt_in
+    return resolved
 
 
 def _skill_models_from(raw: object) -> dict[str, str | None]:
@@ -140,6 +175,7 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         session_effort=parse_effort(agent.get("session_effort")),
         fable_enabled=bool(agent.get("fable_enabled", True)),
         fable_fallback=_fable_fallback_from(agent.get("fable_fallback")),
+        phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
     )
 
 

@@ -16,7 +16,7 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Task
-from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, subagent_for_phase
+from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, resolve_fanout_directive, subagent_for_phase
 
 # The phase → sub-agent authority is the single canonical map in
 # ``teatree.core.phases``. Each author phase dispatches to its OWN agent
@@ -66,7 +66,32 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # user's default tier (no ``--model`` override).
         "model": model,
         "skill_bundle": skill_bundle,
+        # Per-phase fan-out directive (teatree#2229), resolved loop-side beside
+        # model/skill_bundle. Empty string by default (no opt-in) → the slot
+        # appends nothing → byte-identical to today; the chokepoint renders the
+        # directive only when the user opts the ``(role, phase)`` pair in via
+        # ``[agent.phase_fanout]``.
+        "fanout_directive": _resolve_fanout_directive(task),
     }
+
+
+def _resolve_fanout_directive(task: Task) -> str:
+    """Resolve the fan-out directive for a dispatch, loop-side; empty by default.
+
+    The ``[agent]`` config is read here (the local import keeps ``teatree.core``
+    free of a top-level ``teatree.config_agent`` dependency edge — core is the
+    lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
+    ``resolve_agent_config`` itself fails-to-defaults on a missing/malformed
+    file (returning ``AgentConfig()`` with an empty ``phase_fanout``), so a
+    config read problem degrades to ``""`` without blocking the dispatch. The
+    chokepoint ``resolve_fanout_directive`` returns ``""`` when the pair has no
+    registered fan-out OR no opt-in — empty until a pair is opted in. An
+    explicitly out-of-range ``N`` raises ``ValueError`` (fail-loud), surfacing
+    the misconfiguration rather than silently dropping it.
+    """
+    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+
+    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 
 
 def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
