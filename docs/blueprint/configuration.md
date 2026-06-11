@@ -23,6 +23,8 @@ repo_mode = ""                             # solo/collaborative working mode (#5
 claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
 agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 max_concurrent_local_stacks = 0            # #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded, default)
+provision_step_timeout_seconds = 1800      # #2220: hard ceiling for one long-blocking provisioning step (DSLR restore / migrate / --create-db); abort+alert past it, never hang
+stale_stack_min_age_minutes = 0            # #2207: age threshold (min) for reaping ABANDONED docker stacks no live worktree owns (auto before start/provision + `workspace reap-stale`); 0 = opt-in off (default), e.g. 240 to enable
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -147,6 +149,8 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
 | `eval_local_cadence_hours` | Cadence floor for the local-eval scanner (default 168 = weekly) |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
+| `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Per-overlay overridable; enforced by `teatree.core.provision_timebox`. |
+| `stale_stack_min_age_minutes` | #2207: stale-stack reaper threshold (minutes, default `0` = disabled, opt-in like `max_concurrent_local_stacks`; set e.g. `240` to enable). A docker compose stack with NO live `Worktree` row (a hand-rolled test stack, a failed-teardown leftover) is torn down once its newest container lifecycle event is older than this — automatically before `worktree start` / `workspace start` / `workspace provision`, and on demand via `t3 <overlay> workspace reap-stale [--dry-run]`. Age-keyed + fail-safe (unknown age ⇒ keep) so a parallel session's fresh manual stack is never reaped; `clean-all` remains the blunt every-unowned-project clean. Per-overlay overridable. |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `orchestrator_turn_budget` | Soft per-turn tool-call **count** budget (default `25`; `0` disables) for the §17.6.4 gate 2 responsiveness nudge (`handle_orchestrator_turn_budget_nudge`). Governs long TURNS (vs the heavy-`Bash` arm's long OPERATIONS) — once a MAIN-agent turn makes this many NON-orchestration tool calls, a one-time `additionalContext` line steers it to yield. Advisory only (never a deny); orchestration calls and sub-agents exempt. |
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
@@ -243,6 +247,80 @@ autonomy = "notify"          # collaborative: autonomous + DM per on-behalf acti
 mode = "interactive"         # stay gated on client code (autonomy defaults to babysit)
 privacy = "strict"
 ```
+
+### 10.1.2 Agent model tiering & session pins (`[agent]`)
+
+The `[agent]` table holds the model/effort settings for spawned sub-agents and
+the interactive main agent. It is read with a raw `tomllib` parse
+(`config_agent.resolve_agent_config` + `model_tiering._load_phase_model_overrides`),
+independent of the per-overlay `[teatree]` merge — these are session-scoped
+spawn inputs, not overridable `UserSettings`.
+
+```toml
+[agent]
+session_model = "fable"           # interactive main-agent --model pin (so you never run /model by hand)
+session_effort = "xhigh"          # interactive main-agent --effort pin (strict CLI scale)
+# fable_enabled = false           # the single Fable kill-switch: flip to false to revert EVERY
+                                  # Fable pin to the Opus 4.8 baseline (default true == keep Fable)
+# fable_fallback = "opus"         # the model Fable downgrades to when disabled (default "opus" = Opus 4.8)
+
+[agent.phase_models]              # per-PHASE model tier for the spawned sub-agent (model_tiering)
+planning = "fable"                # pin a phase up; "" / "default" / "inherit" opts out
+reviewing = "sonnet"
+testing = ""                      # explicit inherit (no --model)
+
+[agent.skill_models]              # per-COMPANION-SKILL model floor (MODEL only, no effort axis)
+code-review = "opus"              # a loaded skill RAISES the spawn model to at least this tier
+architecture-design = "fable"
+```
+
+**`session_model` / `session_effort` (interactive main agent only).** Injected
+as `--model` / `--effort` into the interactive `claude` spawn argv by
+`t3 loop start` (`cli/loop.py`'s `os.execv`), so the main agent runs at the
+pinned model/effort without a manual `/model`. **Effort is settable only
+session-wide** — never per-sub-agent (the Agent tool has no effort param) and
+never on `claude -p` headless (`--model` only). The effort scale is the strict
+CLI scale `low | medium | high | xhigh | max` (`max` > `xhigh`; there is **no**
+`off`); an off-scale value is a hard `ValueError` at parse and a `t3 doctor`
+FAIL. "ultracode" (xhigh + auto dynamic workflows) is a session/settings
+concept, not a value here. A model sentinel (`""` / `"default"` / `"inherit"`)
+means inherit the default (no flag).
+
+**`[agent.phase_models]` (per-phase sub-agent tier).** The shipped default pins
+`planning → opus` and downgrades mechanical phases (`reviewing`/`requesting_review`/`testing`/`shipping`
+→ `sonnet`, `retrospecting` → `haiku`); reasoning phases (`coding`, `debugging`)
+inherit. Override any phase here; a sentinel opts it out.
+
+**`[agent.skill_models]` (per-companion-skill MODEL floor).** Maps a companion
+skill name to a model floor. When a dispatch loads that skill,
+`model_tiering.resolve_spawn_model` raises the spawn model to the most capable
+of the phase tier and every loaded skill's floor (most-capable-wins via
+`cost.tier_rank`, capability order `haiku < sonnet < opus < fable`; a floor only
+RAISES, never downgrades). **MODEL only** — there is deliberately no per-skill
+effort axis. With this table absent the spawn model is byte-for-byte the
+per-phase tier. On an *inheriting* phase (`coding`/`debugging`, whose phase tier
+is `None`) a floor raises the spawn model only when it is *strictly stronger*
+than the assumed-opus inherited default — `tier_rank(None)` equals
+`tier_rank("opus")`, so an `opus`-or-weaker floor is silently dropped (the phase
+still inherits) and only a `fable` floor pins it up. `t3 doctor` WARNs on a floor
+that names no known tier (likely a typo) since an unknown id ranks most-capable.
+
+**`fable_enabled` / `fable_fallback` (the single Fable kill-switch, teatree#2237).**
+Fable can be wired through several independent pins above (`session_model`, any
+`phase_models.<phase>`, any `skill_models.<skill>`). If Fable becomes
+unavailable, reverting to the Opus 4.8 baseline is **one flip**:
+`fable_enabled = false`. With it off, every resolved model value that is Fable —
+recognised by tier (`cost.tier_of_model`), so both the short alias `fable` and
+the full id `claude-fable-5` match — transparently downgrades to `fable_fallback`
+at the single resolution chokepoint (`model_tiering._downgrade_fable`, applied at
+the end of `resolve_spawn_model` covering every sub-agent spawn, plus the
+`session_model` `--model` pin in `cli/loop.py`). `fable_fallback` defaults to
+`"opus"` (the tier/cost machinery maps it to `claude-opus-4-8`), so Opus 4.8
+compatibility is preserved by construction. **The default is enabled** — an
+absent `fable_enabled` key counts as `true`, so existing configs that pin Fable
+keep resolving to Fable, byte-for-byte unchanged; only the explicit
+`fable_enabled = false` flips the revert. Non-Fable pins (`sonnet`, `haiku`,
+`opus`) and inheriting phases (`None`) pass through untouched either way.
 
 ### 10.2 Django Settings (framework-level, in teatree's settings.py)
 

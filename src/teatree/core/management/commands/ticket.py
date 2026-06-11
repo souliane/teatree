@@ -19,9 +19,12 @@ from teatree.core.management.commands._plan_gate_commands import (
     record_artifact_and_advance,
     record_trivial_skip_and_advance,
 )
+from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._transition_refusals import review_context_refusal
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.external_delivery import refresh_external_delivery_if_active
 
 
 class CompletionResult(TypedDict, total=False):
@@ -123,26 +126,7 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
-    """Actionable refusal when a `review` verdict lacks recorded context, else ``""``.
-
-    Mirrors the ``review_context_satisfied`` FSM condition the workflow path
-    (``Task.complete()``) and the lifecycle ``reviewing``-phase path also
-    consult, so the direct-CLI review driver gets a fix-it message instead of a
-    generic "not allowed".
-    """
-    if transition_name != "review" or ticket.review_context_satisfied():
-        return ""
-    return (
-        f"Transition 'review' refused: require_review_context is on but no referenced-context "
-        f"retrieval is recorded for ticket {ticket.pk}. Fetch the work item from its source, follow "
-        f"its links, download + analyze the referenced documents, then `t3 <overlay> lifecycle "
-        f"record-review-context {ticket.pk} --work-item <url> --documents <urls> "
-        f"--analysis <how-checked>` and retry."
-    )
-
-
-class Command(TyperCommand):
+class Command(RubricCommands, TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -167,20 +151,20 @@ class Command(TyperCommand):
             with transaction.atomic():
                 method()
                 ticket.save()
+                # #2217: external-owner FSM seam — refresh a LIVE lease so a long
+                # hand delivery never lapses mid-delivery (no-op without one).
+                refresh_external_delivery_if_active(ticket)
         except TransitionNotAllowed:
             # Surface the deep-retrieval refusal reason when that blocked the
             # `review` transition, else the generic not-allowed message.
-            context_refusal = _review_context_refusal(ticket, transition_name)
-            return {
-                "error": context_refusal or f"Transition '{transition_name}' not allowed from state '{ticket.state}'",
-            }
+            context_refusal = review_context_refusal(ticket, transition_name)
+            generic = f"Transition '{transition_name}' not allowed from state '{ticket.state}'"
+            return {"error": context_refusal or generic}
         except InvalidTransitionError as exc:
             # Dirty-worktree / missing-E2E DoD refusals: the FSM stays put
             # (the gate keeps blocking) and the refusal reason is surfaced
             # to the caller instead of a raw traceback.
-            return {
-                "error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}",
-            }
+            return {"error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}"}
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
 
@@ -256,6 +240,8 @@ class Command(TyperCommand):
         except PlanAdvanceError as exc:
             return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
 
+        # #2217: external-owner FSM seam — refresh a LIVE lease (no-op without one).
+        refresh_external_delivery_if_active(ticket)
         self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
 

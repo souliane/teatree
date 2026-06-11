@@ -9,6 +9,7 @@ graph TD
     teatree.config --> teatree.config_speak
     teatree.config --> teatree.config_mr_reminder
     teatree.config_speak --> teatree.types
+    teatree.config_agent --> teatree.config
     teatree.config_mr_reminder --> teatree.types
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
@@ -36,6 +37,7 @@ graph TD
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
+    teatree.agents --> teatree.config_agent
     teatree.backends --> teatree.types
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
@@ -48,6 +50,7 @@ graph TD
     teatree.contrib --> teatree.visual_qa
     teatree.cli --> teatree.paths
     teatree.cli --> teatree.config
+    teatree.cli --> teatree.config_agent
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends

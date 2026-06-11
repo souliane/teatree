@@ -122,7 +122,9 @@ When tasks exist (via the agent's task tracking tools), mark each task `complete
 
 ### 5. E2E Tests
 
-After TDD and commit, frontend changes that affect UI behavior need E2E tests as a follow-up step. Switch to `/t3:e2e` for writing Playwright tests, posting evidence, and the visual QA gate.
+The acceptance scenarios are **planned up front** — the `/plan` phase emits an `E2E test plan / Acceptance scenarios` section for any UI-visible ticket (see `agents/planner.md`). Treat those scenarios the way the unit-level TDD discipline treats a failing test: they are the behaviour-level red→green contract. Where the plan supplies them, write the failing browser-level test from the planned scenario **first** and implement to make it pass — don't leave E2E as an afterthought tacked on at the end. When the plan has no E2E section (a non-UI ticket), there's no behaviour-level contract to satisfy.
+
+Author the failing browser-level spec from the planned scenario first (§ 5 above); switch to `/t3:e2e` to run it red→green and post evidence via the visual QA gate once the implementation it gates is committed.
 
 ### 5b. When to Switch Skills
 

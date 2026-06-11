@@ -51,6 +51,7 @@ from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
+from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -59,6 +60,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.ticket_artifacts import E2eRunRef, PlanArtifactRef, TicketArtifacts, WorktreeArtifact
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -93,6 +95,7 @@ __all__ = [
     "E2EBypassApprovalError",
     "E2EBypassAudit",
     "E2eMandatoryRun",
+    "E2eRunRef",
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
@@ -120,6 +123,7 @@ __all__ = [
     "PendingChatInjection",
     "PendingReinstall",
     "PlanArtifact",
+    "PlanArtifactRef",
     "Ports",
     "PullMainCloneMarker",
     "PullRequest",
@@ -134,6 +138,9 @@ __all__ = [
     "ReviewRequestPost",
     "ReviewVerdict",
     "ReviewVerdictError",
+    "Rubric",
+    "RubricCriterion",
+    "RubricError",
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "ScenarioPassRate",
@@ -147,10 +154,12 @@ __all__ = [
     "Task",
     "TaskAttempt",
     "Ticket",
+    "TicketArtifacts",
     "TicketExtra",
     "TicketTransition",
     "TrajectoryToolCall",
     "Worktree",
+    "WorktreeArtifact",
     "WorktreeEnvOverride",
     "WorktreeExtra",
     "build_review_contract",

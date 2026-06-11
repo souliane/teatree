@@ -692,7 +692,7 @@ class TestDbImportAutoRepair(TestCase):
             assert "db_import_failures" not in (wt.extra or {})
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_retries_db_import_when_db_missing(self) -> None:
+    def test_aborts_when_db_missing_and_import_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             wt_path = str(tmp_path / "backend")
@@ -707,18 +707,19 @@ class TestDbImportAutoRepair(TestCase):
                 db_name="wt_100_acme",
             )
 
+            # db is missing → db_import is attempted; the mock overlay's import
+            # returns False → #2208 aborts provision with SystemExit(1) rather
+            # than warning and continuing.
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_DB_MOCK_OVERLAY),
                 patch("teatree.utils.db.db_exists", return_value=False),
                 patch("teatree.utils.redis_container.ensure_running"),
+                pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("worktree", "provision")
 
-            # db_import WAS called (and failed — DbOverlay always returns False)
-            wt = Worktree.objects.get(ticket=ticket)
-            # No circuit breaker counter — just a warning in stderr
-            assert "db_import_failures" not in (wt.extra or {})
+            assert exc_info.value.code == 1
 
 
 class TestUpdateTicketVariant(TestCase):

@@ -107,6 +107,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_review_context": bool,
     "e2e_mandatory_gate_enabled": bool,
     "require_anti_vacuity_attestation": bool,
+    "require_rubric_verification": bool,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
@@ -138,9 +139,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "todo_sweep_disabled": bool,
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
+    "provision_step_timeout_seconds": int,
     "idle_stack_reaper_disabled": bool,
     "idle_stack_idle_minutes": int,
     "idle_stack_reaper_cadence_minutes": int,
+    "stale_stack_min_age_minutes": int,
     "local_stack_queue_disabled": bool,
     "local_stack_queue_max_attempts": int,
     "clean_ignore": _parse_excluded_skills,
@@ -359,6 +362,11 @@ class UserSettings:
     # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
     # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
     require_anti_vacuity_attestation: bool = False
+    # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
+    # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
+    # PASS by an independent verifier (grader != maker) at the merge-time head
+    # SHA. Default false = NO-OP. Per-overlay overridable.
+    require_rubric_verification: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
@@ -468,6 +476,16 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+    # #2220 Hard ceiling (seconds) for one long-blocking provisioning subprocess
+    # — a DSLR snapshot restore, ``migrate``, or a ``--create-db`` test-DB
+    # rebuild. On exceeding it the step ABORTS with an actionable error AND
+    # fires a loud out-of-band user alert, instead of grinding silently for an
+    # hour (the recurring "frozen sub-agent" symptom, e.g. a forked migration
+    # graph). The default is generous (30 min) so a healthy restore+migrate
+    # never trips it; a forked graph or a true hang blows past it and gets
+    # aborted+alerted. A non-positive value degrades to the default — the
+    # "never hang" invariant cannot be configured away. Per-overlay overridable.
+    provision_step_timeout_seconds: int = 1800
     # #2190 Idle-stack reaper — a loop scanner that stops the docker stack of
     # an IDLE locally-running worktree (``services_up``/``ready``) and demotes
     # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the
@@ -480,6 +498,19 @@ class UserSettings:
     idle_stack_reaper_disabled: bool = False
     idle_stack_idle_minutes: int = 30
     idle_stack_reaper_cadence_minutes: int = 5
+    # #2207 Stale-stack reaper — tears down docker compose stacks that NO
+    # Worktree row owns (hand-rolled test stacks, failed-teardown leftovers)
+    # once their newest container lifecycle event (created/started/finished)
+    # is older than this many minutes. Age-keyed so a parallel session's
+    # fresh manual stack is never reaped; an unknown age fails safe (keep).
+    # Runs automatically before ``worktree start`` / ``workspace start`` /
+    # ``workspace provision`` and on demand via
+    # ``t3 <overlay> workspace reap-stale``. Default ``0`` keeps the sweep
+    # OPT-IN (mirroring ``max_concurrent_local_stacks``): a positive value
+    # (e.g. ``240``) enables it. Opt-in also keeps the suite hermetic — a
+    # default-on sweep would let unit tests of start/provision reach the
+    # developer's real docker daemon. Per-overlay overridable.
+    stale_stack_min_age_minutes: int = 0
     # #2190/#44 Acquisition queue — when ``worktree start`` / ``workspace
     # start`` hits the cap, it reaps idle, retries, then ENQUEUES (no
     # SystemExit). A loop scanner drains the queue each tick with a

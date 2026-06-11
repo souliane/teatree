@@ -28,7 +28,7 @@ from django.db import close_old_connections
 from django.db.models import Sum
 from django.utils import timezone
 
-from teatree.agents.model_tiering import resolve_phase_model
+from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt, Ticket
@@ -258,7 +258,7 @@ def run_headless(
     prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
-    options = _build_options(task, system_context, phase=phase)
+    options = _build_options(task, system_context, phase=phase, skills=skills)
 
     outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options))
 
@@ -272,21 +272,22 @@ def run_headless(
     return _record_success(task, outcome, phase=phase)
 
 
-def _build_options(task: Task, system_context: str, *, phase: str) -> ClaudeAgentOptions:
+def _build_options(task: Task, system_context: str, *, phase: str, skills: list[str]) -> ClaudeAgentOptions:
     """Build the REAL-environment SDK options for a headless task.
 
     Mirrors what the deleted ``_build_headless_command`` passed: the appended
-    system context, the resolved phase model (else the user's default), the
-    worktree as ``cwd`` / ``add_dirs``, and the parent session to resume. NO
-    clean-room isolation — a headless run executes a real task and needs the
-    real environment, skills, and project context.
+    system context, the resolved spawn model (the most-capable-wins floor merge
+    of the per-phase tier and the per-skill MODEL floors of the loaded skills,
+    else the user's default), the worktree as ``cwd`` / ``add_dirs``, and the
+    parent session to resume. NO clean-room isolation — a headless run executes
+    a real task and needs the real environment, skills, and project context.
     """
     cwd = _resolve_task_cwd(task)
     add_dirs = [cwd] if cwd else []
     resume_session_id = _get_resume_session_id(task)
     return ClaudeAgentOptions(
         system_prompt=system_context,
-        model=resolve_phase_model(phase) or None,
+        model=resolve_spawn_model(phase, skills=skills) or None,
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,

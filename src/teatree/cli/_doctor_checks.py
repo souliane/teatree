@@ -170,6 +170,49 @@ def _check_stale_uv_venv() -> bool:
     return ok
 
 
+def _check_agent_session_pins() -> bool:
+    """Validate the ``[agent]`` model + effort settings (teatree#2216).
+
+    A ``session_effort`` off the strict CLI scale (``low|medium|high|xhigh|max``)
+    is a hard FAIL — ``resolve_agent_config`` raises, and we surface the message
+    rather than letting it reach the interactive spawn. An unrecognised model in
+    ``session_model``, any ``[agent.skill_models]`` floor, or the Fable
+    kill-switch ``fable_fallback`` (teatree#2237) is a WARN (it ranks
+    most-capable via ``cost.tier_rank``, so it still works, but it is most likely
+    a typo). An absent or all-valid config is silently OK.
+    """
+    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+    from teatree.core.cost import PRICE_TABLE  # noqa: PLC0415
+
+    try:
+        cfg = resolve_agent_config()
+    except ValueError as exc:
+        typer.echo(f"FAIL  Invalid [agent] session_effort in ~/.teatree.toml: {exc}")
+        return False
+
+    def _unrecognised(model: str) -> bool:
+        lowered = model.lower()
+        return not any(tier in lowered for tier in PRICE_TABLE)
+
+    if cfg.session_model and _unrecognised(cfg.session_model):
+        typer.echo(
+            f"WARN  [agent] session_model {cfg.session_model!r} matches no known tier "
+            f"({', '.join(PRICE_TABLE)}); it will be treated as most-capable. Likely a typo."
+        )
+    for skill, floor in cfg.skill_models.items():
+        if floor and _unrecognised(floor):
+            typer.echo(
+                f"WARN  [agent.skill_models] {skill} = {floor!r} matches no known tier "
+                f"({', '.join(PRICE_TABLE)}); it will be treated as most-capable. Likely a typo."
+            )
+    if not cfg.fable_enabled and _unrecognised(cfg.fable_fallback):
+        typer.echo(
+            f"WARN  [agent] fable_fallback {cfg.fable_fallback!r} matches no known tier "
+            f"({', '.join(PRICE_TABLE)}); Fable will downgrade to an unknown model. Likely a typo."
+        )
+    return True
+
+
 def _check_legacy_overlay_alias() -> None:
     """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
 

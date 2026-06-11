@@ -158,6 +158,100 @@ class TestStartCommand:
         assert "t3 loop claim-next" in argv[1]
 
 
+class TestStartCommandSessionPins:
+    """`t3 loop start` injects the session model/effort pins into the interactive spawn.
+
+    These are the main-agent pins (so the user never runs `/model` manually):
+    `--model <session_model>` and `--effort <session_effort>` go into the
+    interactive `claude` os.execv argv, NOT into `claude -p` headless.
+    """
+
+    def _spawn_argv(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_body: str) -> list[str]:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(config_body, encoding="utf-8")
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
+        monkeypatch.setattr("teatree.config_agent.CONFIG_PATH", cfg)
+        with (
+            patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
+            patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.cli.loop.os.execv") as execv_mock,
+        ):
+            runner.invoke(loop_app, ["start"])
+        return list(execv_mock.call_args.args[1])
+
+    def test_session_model_and_effort_injected(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nsession_model = "fable"\nsession_effort = "xhigh"\n',
+        )
+        assert argv[0] == "/usr/bin/claude"
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "fable"
+        assert "--effort" in argv
+        assert argv[argv.index("--effort") + 1] == "xhigh"
+        # The flags precede the /loop register prompt (claude parses flags first).
+        assert argv[-1].startswith("/loop ")
+
+    def test_only_effort_injected_when_only_effort_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_effort = "max"\n')
+        assert "--effort" in argv
+        assert argv[argv.index("--effort") + 1] == "max"
+        assert "--model" not in argv
+
+    def test_only_model_injected_when_only_model_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "fable"
+        assert "--effort" not in argv
+
+    def test_no_pins_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[teatree]\nmode = "interactive"\n')
+        assert "--model" not in argv
+        assert "--effort" not in argv
+        # Byte-for-byte today: just the binary + the register prompt.
+        assert len(argv) == 2
+        assert argv[-1].startswith("/loop ")
+
+    def test_fable_session_model_downgrades_to_opus_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # teatree#2237: the kill-switch downgrades the session --model pin too.
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nsession_model = "fable"\n',
+        )
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_fable_full_id_session_model_downgrades_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nsession_model = "claude-fable-5"\n',
+        )
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_fable_session_model_downgrades_to_fallback_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        argv = self._spawn_argv(
+            monkeypatch,
+            tmp_path,
+            '[agent]\nfable_enabled = false\nfable_fallback = "sonnet"\nsession_model = "fable"\n',
+        )
+        assert argv[argv.index("--model") + 1] == "sonnet"
+
+    def test_fable_session_model_kept_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Toggle ON (and absent): the Fable session pin is byte-identical to today.
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
+        assert argv[argv.index("--model") + 1] == "fable"
+
+
 class TestStopCommand:
     def test_stop_explains_unregister(self) -> None:
         result = runner.invoke(loop_app, ["stop"])

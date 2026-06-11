@@ -1,0 +1,39 @@
+- name: planner_emits_e2e_plan_for_ui_ticket
+  scenario: "the plan emits an E2E / acceptance-scenario section with a concrete, observable scenario for a UI-visible ticket"
+  agent_path: skills/code/SKILL.md
+  agent_sections: ["5. E2E Tests"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    You are producing the implementation plan for a UI-visible ticket: a
+    frontend repo is in scope and the change adds a "remember me" checkbox to
+    the login page that keeps the session alive for 30 days. Write the plan's
+    `### E2E test plan / Acceptance scenarios` section with the ONE Write call
+    you would issue to record `plan_text`. Plan section only.
+  expect:
+    - tool_call: Write
+      args.content: '~ "(?i)### *E2E test plan|Acceptance scenarios"'
+    - tool_call: Write
+      args.content: '~ "(?i)(observable assertion|user action|flow ?/ ?page)"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(loads 200|page renders|returns 200|no E2E scenarios|no UI surface)"'
+
+- name: planner_skips_e2e_plan_for_backend_ticket
+  scenario: "the plan emits an explicit no-UI-surface skip note and fabricates NO scenarios for a pure-backend ticket"
+  agent_path: skills/code/SKILL.md
+  agent_sections: ["5. E2E Tests"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    You are producing the implementation plan for a pure-backend ticket: it
+    changes an internal retry-backoff constant in a Celery task. No frontend
+    repo is in scope and nothing user-visible changes. Write the plan's
+    `### E2E test plan / Acceptance scenarios` section with the ONE Write call
+    you would issue to record `plan_text`. Plan section only.
+  expect:
+    - tool_call: Write
+      args.content: '~ "(?i)no UI surface|no E2E scenarios"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(- *Observable assertion|- *User action|- *Flow ?/ ?page|click the|navigate to)"'

@@ -2,15 +2,56 @@
 
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
+info_app = typer.Typer(
+    no_args_is_help=False,
+    invoke_without_command=True,
+    help="Installation info (bare) and read-only per-ticket artifact discovery.",
+)
 
-def info() -> None:
-    """Show t3 installation, teatree/overlay sources, and editable status."""
+
+@info_app.callback()
+def info(ctx: typer.Context) -> None:
+    """Show t3 installation, teatree/overlay sources, and editable status.
+
+    The bare ``t3 info`` (no subcommand) prints the installation report; a
+    subcommand (e.g. ``t3 info artifacts <ticket>``) runs instead.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
     from teatree.cli.doctor import DoctorService  # noqa: PLC0415
 
     DoctorService.show_info()
+
+
+@info_app.command()
+def artifacts(
+    ticket_id: int,
+    *,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="text (default) | json"),
+    ] = "text",
+) -> None:
+    """Locate every artifact for a ticket: stack + ports, plans, run artifacts, E2E evidence.
+
+    Read-only "find our eggs" aggregation over a ticket's existing rows —
+    where its worktrees/stacks live (on-disk path, db_name, host ports, state),
+    its PlanArtifact rows, each Task's ``result_artifact_path``, and its
+    E2eMandatoryRun evidence (spec + posted video/comment URL).
+
+    ``--format`` validation, ticket resolution, and rendering all live in the
+    ``info`` management command this delegates to (the ORM-touching seam).
+    """
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+
+    ensure_django()
+    from django.core.management import call_command  # noqa: PLC0415
+
+    call_command("info", "artifacts", ticket_id, output_format=output_format)
 
 
 def startoverlay(

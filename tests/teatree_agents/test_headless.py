@@ -1,6 +1,8 @@
 import asyncio
 import json
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -563,7 +565,7 @@ class TestDriveWithHeartbeat(TestCase):
         self.task.renew_lease = lambda **_kw: None
 
     def _options(self) -> Any:
-        return headless_mod._build_options(self.task, "ctx", phase="coding")
+        return headless_mod._build_options(self.task, "ctx", phase="coding", skills=[])
 
     def test_collects_text_and_terminal_result(self) -> None:
         messages = [_assistant_text("hello"), _result_message(session_id="s1", num_turns=2)]
@@ -805,7 +807,7 @@ class TestBuildOptions(TestCase):
     def _options_for_phase(self, phase: str) -> Any:
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        return headless_mod._build_options(task, "ctx", phase=phase)
+        return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
 
     def test_retrospecting_runs_on_haiku(self) -> None:
         options = self._options_for_phase("retrospecting")
@@ -822,3 +824,57 @@ class TestBuildOptions(TestCase):
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
         assert options.permission_mode == "bypassPermissions"
+
+
+class TestBuildOptionsSpawnModelFloor(TestCase):
+    """``_build_options`` routes the SDK model through ``resolve_spawn_model``.
+
+    The model is the most-capable-wins floor merge of the per-phase tier and the
+    per-skill MODEL floors of the loaded skills (MODEL only — effort is a
+    session-wide interactive pin and never reaches a headless SDK run).
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _options(self, phase: str, *, skills: list[str], config_body: str) -> Any:
+        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
+        cfg.write_text(config_body, encoding="utf-8")
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        with (
+            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
+            patch("teatree.config_agent.CONFIG_PATH", cfg),
+        ):
+            return headless_mod._build_options(task, "ctx", phase=phase, skills=skills)
+
+    def test_skill_floor_raises_the_headless_model(self) -> None:
+        options = self._options(
+            "coding",
+            skills=["architecture-design"],
+            config_body='[agent.skill_models]\narchitecture-design = "fable"\n',
+        )
+        assert options.model == "fable"
+
+    def test_sentinel_skill_floor_keeps_phase_model(self) -> None:
+        options = self._options(
+            "reviewing",
+            skills=["code-review"],
+            config_body='[agent.skill_models]\ncode-review = "inherit"\n',
+        )
+        # reviewing's sonnet phase default stands; the inherit floor is a no-op.
+        assert options.model == "sonnet"
+
+    def test_never_sets_effort(self) -> None:
+        # Effort is session-wide only — a headless SDK run must NEVER carry an
+        # effort pin, even when session_effort is configured.
+        options = self._options(
+            "reviewing",
+            skills=["code-review"],
+            config_body=(
+                '[agent]\nsession_effort = "xhigh"\nsession_model = "fable"\n'
+                '[agent.skill_models]\ncode-review = "opus"\n'
+            ),
+        )
+        assert options.effort is None

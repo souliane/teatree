@@ -9,8 +9,10 @@ out (legitimate internal/private and local-only work is allowed). The corpus
 is the regression guard for the five fixes:
 
 1. ALL-SEGMENTS skip (a chained public post behind an internal segment scans);
-2. fail-closed on substitution / transport / raw-REST api WRITE (a read-only
-    ``api`` GET posts no body and stays skip-safe);
+2. fail-closed on substitution / transport / raw-REST api WRITE whose URL does
+    not prove an internal repo target (a read-only ``api`` GET posts no body
+    and stays skip-safe; an api WRITE whose URL path itself resolves to a
+    provably-internal repo skips -- the #1415 over-block carve-out);
 3. destination classification reuses the existing ``private_repos`` allowlist;
 4. file-based bodies (``--description-file``) are honoured;
 5. the commit gate resolves the real repo (``cd`` / walk-up) and fails OPEN on
@@ -226,6 +228,16 @@ class TestMustAllow:
         cmd = 'gh pr create -R internalcorp/svc --body "acmecorp internal" && gh api repos/souliane/teatree/issues'
         assert _verdict(cmd, None, config) == "allow"
 
+    def test_internal_raw_rest_api_write_allowed(self, config: Path, tmp_path: Path) -> None:
+        # #1415 over-block: a raw ``glab api`` WRITE whose URL path itself names
+        # a provably-internal project -- the exact MR-description-update shape
+        # that was over-blocked (``--method PUT ... --input <file>`` with domain
+        # words in the file body) -- must be allowed.
+        body = tmp_path / "body.json"
+        body.write_text('{"description": "acmecorp acmewidget rollout"}', encoding="utf-8")
+        cmd = f'glab api --method PUT "projects/internalcorp%2Fprivate-svc/merge_requests/7562" --input {body}'
+        assert _verdict(cmd, None, config) == "allow"
+
     def test_cross_repo_private_post_from_public_cwd_allowed(self, config: Path, tmp_path: Path) -> None:
         # A post FROM a public clone TO a provably-private ``--repo`` target must
         # downgrade on the TARGET slug, not the cwd: the carve-out and the
@@ -331,6 +343,15 @@ class TestMustDeny:
     def test_secret_in_api_title_field_blocks(self, config: Path) -> None:
         # Vector 4: a secret in a ``gh api -f title=`` field (not ``body=``) blocks.
         cmd = f"gh api repos/souliane/teatree/issues -f title={_FAKE_SECRET}"
+        assert _verdict(cmd, None, config) == "block"
+
+    def test_secret_on_internal_api_write_still_blocks(self, config: Path, tmp_path: Path) -> None:
+        # The #1415 api-write carve-out must NOT weaken the secrets-always-blocked
+        # invariant: a secret in the ``--input`` file body blocks even when the
+        # URL proves an internal target the destination gate now SKIPs.
+        body = tmp_path / "body.json"
+        body.write_text(f'{{"description": "token {_FAKE_SECRET}"}}', encoding="utf-8")
+        cmd = f'glab api --method PUT "projects/internalcorp%2Fprivate-svc/merge_requests/7562" --input {body}'
         assert _verdict(cmd, None, config) == "block"
 
     def test_secret_in_internal_short_title_flag_blocks(self, config: Path) -> None:

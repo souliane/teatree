@@ -70,27 +70,43 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
 
 
 def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
-    """Resolve the phase model tier and skill bundle for a dispatch, loop-side.
+    """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
     Moved out of the detached headless-SDK run (``run_headless``) so the
     INTERACTIVE ``/loop`` slot resolves them once at claim time and threads
-    them into the in-session sub-agent. Overlay/skill discovery failures
-    degrade to ``(model, [])`` so a dispatch is never blocked on resolution —
-    the slot then falls back to base skills.
+    them into the in-session sub-agent. The skill bundle is resolved FIRST so
+    the model is the most-capable-wins floor merge of the phase tier and the
+    per-skill ``[agent.skill_models]`` floors of the bundle's skills
+    (``resolve_spawn_model``). MODEL only — no effort is threaded into the
+    per-sub-agent dispatch (effort is a session-wide pin on the interactive
+    loop spawn; the Agent tool has no effort param). Overlay/skill discovery
+    failures degrade to an empty bundle so a dispatch is never blocked on
+    resolution — the model then collapses to the phase tier and the slot falls
+    back to base skills.
     """
-    from teatree.agents.model_tiering import resolve_phase_model  # noqa: PLC0415
-    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
+    from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
     from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
-    model = resolve_phase_model(normalize_phase(phase))
+    skill_bundle = _resolve_skill_bundle(phase)
+    model = resolve_spawn_model(normalize_phase(phase), skills=skill_bundle)
+    return model, skill_bundle
+
+
+def _resolve_skill_bundle(phase: str) -> list[str]:
+    """Resolve the loaded skill bundle for *phase*; empty on any discovery failure.
+
+    Imports ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a
+    top-level ``teatree.agents`` dependency edge (core is the lower layer).
+    """
+    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
+
     try:
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
         overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
-        skill_bundle = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+        return resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
     except Exception:  # noqa: BLE001
-        skill_bundle = []
-    return model, skill_bundle
+        return []
 
 
 class Command(TyperCommand):

@@ -346,6 +346,37 @@ require_review_context = true
 
         assert get_effective_settings().require_review_context is True
 
+    def test_overlay_can_override_require_rubric_verification(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Rubric done-gate is per-overlay overridable (#2241).
+
+        An overlay can dogfood the rubric->verifier done-gate while the global
+        default stays off — runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
+        registry, the R1 "default OFF, opt in per-overlay" decision.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+require_rubric_verification = false
+
+[overlays.dogfood]
+class = "x.y:Z"
+require_rubric_verification = true
+""",
+        )
+
+        assert get_effective_settings().require_rubric_verification is True
+
     def test_overlay_can_override_orchestrator_bash_gate_enabled(
         self,
         config_file: Path,

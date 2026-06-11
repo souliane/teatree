@@ -20,9 +20,18 @@ Phases absent from :data:`DEFAULT_PHASE_MODELS` return ``None`` so no
 """
 
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 from teatree.config import CONFIG_PATH
+from teatree.config_agent import _INHERIT_SENTINELS, AgentConfig, resolve_agent_config
+from teatree.core.cost import tier_of_model, tier_rank
+
+# The :func:`teatree.core.cost.tier_of_model` tier key for Fable. Normalising a
+# model id to its tier recognises BOTH the short alias ``fable`` and the full
+# ``claude-fable-5`` (and any future dated Fable id), so the kill-switch matches
+# on the tier rather than a brittle ``== "fable"`` string compare.
+_FABLE_TIER = "fable"
 
 # Default phase -> model-tier mapping. planning is pinned UP to opus as a
 # structural floor; mechanical phases are downgraded to sonnet/haiku; coding
@@ -35,10 +44,6 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
     "shipping": "sonnet",
     "retrospecting": "haiku",
 }
-
-# Values that explicitly opt a phase out of tiering — the resolver returns
-# ``None`` for these so the user's default model is inherited (no flag).
-_INHERIT_SENTINELS = frozenset({"", "default", "inherit"})
 
 
 def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str | None:
@@ -59,6 +64,54 @@ def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str |
             return None
         return value
     return DEFAULT_PHASE_MODELS.get(phase)
+
+
+def resolve_spawn_model(phase: str, *, skills: Iterable[str], config_path: Path | None = None) -> str | None:
+    """Resolve the spawn model: the phase model raised by the per-skill floors.
+
+    Starts from :func:`resolve_phase_model` (the per-phase tier) and merges in
+    the ``[agent.skill_models]`` MODEL floor of every loaded skill in *skills*.
+    The merge is *most-capable-wins*: a floor can only RAISE the resulting
+    model's capability (via :func:`teatree.core.cost.tier_rank`), never lower
+    it, so the merge is order-independent. A skill with no floor entry, or one
+    whose floor is an inherit sentinel (``None`` after normalisation),
+    contributes nothing.
+
+    Returns ``None`` when the phase inherits AND no skill floor applies — the
+    caller then passes no ``--model`` and the user's default model applies, so
+    absent config is byte-for-byte the prior :func:`resolve_phase_model`
+    behaviour. MODEL only: there is no per-skill effort axis (effort is a
+    session-wide pin set on the interactive loop spawn).
+
+    The resolved winner passes through :func:`_downgrade_fable` last: with the
+    ``[agent] fable_enabled`` kill-switch off (teatree#2237), a Fable winner
+    transparently downgrades to ``fable_fallback`` (Opus 4.8 baseline). This is
+    the single spawn chokepoint, so the downgrade covers every sub-agent spawn.
+    """
+    config = resolve_agent_config(config_path=config_path)
+    winner = resolve_phase_model(phase, config_path=config_path)
+    for skill in skills:
+        floor = config.skill_models.get(skill)
+        if floor is not None and tier_rank(floor) > tier_rank(winner):
+            winner = floor
+    return _downgrade_fable(winner, config)
+
+
+def _downgrade_fable(model: str | None, config: AgentConfig) -> str | None:
+    """Apply the single Fable kill-switch to one resolved *model* (teatree#2237).
+
+    When *model* is Fable — recognised by tier (the short alias ``fable`` OR the
+    full ``claude-fable-5``, via :func:`teatree.core.cost.tier_of_model`) — AND
+    ``config.fable_enabled`` is ``False``, return ``config.fable_fallback`` (the
+    Opus 4.8 baseline by default). Otherwise return *model* unchanged: a
+    non-Fable model, ``None`` (inherit), or Fable while the switch is on all pass
+    through untouched, so enabled/absent is byte-identical to today.
+    """
+    if model is None or config.fable_enabled:
+        return model
+    if tier_of_model(model) == _FABLE_TIER:
+        return config.fable_fallback
+    return model
 
 
 def _load_phase_model_overrides(config_path: Path | None) -> dict[str, str]:

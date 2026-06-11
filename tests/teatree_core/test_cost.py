@@ -6,6 +6,7 @@ import pytest
 
 from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
+    PRICE_TABLE,
     AttemptUsage,
     CostBreakdown,
     CostReport,
@@ -16,6 +17,7 @@ from teatree.core.cost import (
     price_table_cost_usd,
     project_month_end_usd,
     tier_of_model,
+    tier_rank,
 )
 
 
@@ -50,6 +52,39 @@ class TestTierResolution:
     def test_unknown_and_none_fall_back_to_reasoning_tier(self) -> None:
         assert tier_of_model(None) == "opus"
         assert tier_of_model("some-future-model") == "opus"
+
+
+class TestFableTier:
+    def test_fable_in_price_table_at_ten_fifty(self) -> None:
+        assert PRICE_TABLE["fable"] == ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0)
+
+    def test_tier_of_model_recognises_fable_substring(self) -> None:
+        assert tier_of_model("fable") == "fable"
+        assert tier_of_model("claude-fable-5[1m]") == "fable"
+
+    def test_fable_priced_above_opus(self) -> None:
+        assert price_for_model("claude-fable-5").input_per_mtok > price_for_model("opus").input_per_mtok
+
+
+class TestTierRank:
+    def test_capability_order_haiku_lt_sonnet_lt_opus_lt_fable(self) -> None:
+        assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus") < tier_rank("fable")
+
+    def test_dated_ids_rank_like_their_tier(self) -> None:
+        assert tier_rank("claude-fable-5[1m]") == tier_rank("fable")
+        assert tier_rank("claude-sonnet-4-6") == tier_rank("sonnet")
+
+    def test_unknown_full_id_ranks_above_every_known_tier(self) -> None:
+        unknown = tier_rank("claude-some-future-model")
+        assert unknown > tier_rank("fable")
+
+    def test_none_ranks_as_default_reasoning_tier(self) -> None:
+        # None = inherited default; ranked as the conservative reasoning tier so a
+        # below-default floor never silently downgrades an inheriting phase.
+        assert tier_rank(None) == tier_rank("opus")
+
+    def test_empty_string_ranks_as_default_reasoning_tier(self) -> None:
+        assert tier_rank("") == tier_rank("opus")
 
 
 class TestAttemptCost:
