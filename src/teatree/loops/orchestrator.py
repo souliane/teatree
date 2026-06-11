@@ -1,10 +1,12 @@
 """Orchestrator — fans a tick out across registered mini-loops (#1432).
 
 Each tick walks the registry (or the injected ``registry_fn``) in
-alphabetical order. For each mini-loop, the orchestrator consults
-:class:`LoopsConfig` (env/per-loop/global) to decide enable/disable —
-always-on loops bypass the user disable but honour the env
-kill-switch. For enabled loops it asks the cadence ledger whether the
+alphabetical order. An ``off_live_tick`` mini-loop (the heavy ``dream``
+consolidation pass, #1933) is skipped here — it is driven by its own
+low-frequency cron, not the work loop. For each remaining mini-loop, the
+orchestrator consults :class:`LoopsConfig` (env/per-loop/global) to decide
+enable/disable — always-on loops bypass the user disable but honour the
+env kill-switch. For enabled loops it asks the cadence ledger whether the
 cadence has elapsed (``None`` from no marker is treated as elapsed so
 a fresh install fires immediately), builds the loop's jobs (the legacy
 ``_ScannerJob`` shape) and passes them to ``dispatch_fn`` — the test
@@ -113,6 +115,9 @@ class Orchestrator:
 
         kwargs = _kwargs_for_request(request)
         for loop in self.registry_fn():
+            if loop.off_live_tick:
+                skipped[loop.name] = "off_live_tick"
+                continue
             decision = elapsed_and_enabled(self.config, loop, started_at)
             if not decision.should_fire:
                 skipped[loop.name] = decision.skip_reason or ""

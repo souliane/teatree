@@ -243,3 +243,39 @@ def _check_legacy_overlay_alias() -> None:
                 )
     except Exception:  # noqa: BLE001 — doctor warnings must never crash the run
         return
+
+
+def _check_dream_staleness() -> bool:
+    """Warn when the idle-time dream consolidation cron is stale (#1933).
+
+    The dream pass distils session feedback into the ``ConsolidatedMemory``
+    ledger; if it stops succeeding, memories pile up unpromoted unnoticed. The
+    alarm keys on the last *successful* run (``DreamRunMarker.is_stale``, 48h):
+    a run that keeps failing bumps only the attempt timestamp, so staleness
+    keeps firing, and bootstrap (never succeeded) is stale by construction. A
+    fresh successful pass clears it; the remedy points at scheduling
+    ``t3 dream tick`` (which advances the cadence ledger) rather than a one-off
+    ``t3 dream run``. Mirrors the SelfUpdateMarker/MiniLoopMarker-style
+    marker-staleness alarms.
+
+    Crash-proof: any error (DB offline, unmigrated self-DB) degrades to OK so a
+    doctor run never aborts on this check — same posture as the other
+    DB-reading doctor checks.
+    """
+    from django.utils import timezone  # noqa: PLC0415
+
+    from teatree.core.models import DreamRunMarker  # noqa: PLC0415
+
+    try:
+        stale = DreamRunMarker.objects.is_stale(timezone.now())
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Dream-staleness check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not stale:
+        return True
+    typer.echo(
+        "WARN  Dream consolidation is stale — no successful pass in 48h. "
+        "Memories pile up unpromoted; schedule `t3 dream tick` (~04:00 cron) so "
+        "the cadence ledger advances, not just a one-off `t3 dream run` (#1933).",
+    )
+    return False

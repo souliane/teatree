@@ -22,6 +22,7 @@ import typer
 from teatree.cli._doctor_checks import (
     _check_account_switch,
     _check_agent_session_pins,
+    _check_dream_staleness,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
@@ -62,6 +63,7 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
+    "_check_dream_staleness",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
@@ -553,6 +555,12 @@ def check() -> bool:
     from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
+
+    # Idle-time dream consolidation staleness alarm (#1933). Runs after
+    # ``ensure_django`` because it reads the ``DreamRunMarker`` row. A WARN
+    # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
+    # which the operator should fix, but it must not red the whole doctor run.
+    _check_dream_staleness()
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay
