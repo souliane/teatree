@@ -29,14 +29,18 @@ from teatree.core.management.commands._workspace_cleanup import (
     prune_branches,
     resolve_unsynced_worktree,
 )
-from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
+from teatree.core.management.commands._workspace_docker import (
+    reap_orphan_worktree_docker,
+    reap_stale_local_stacks,
+    reap_stale_report,
+)
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
     build_ticket,
 )
 from teatree.core.models import Ticket, Worktree
-from teatree.core.models.ticket import format_intake_summary
+from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
@@ -255,6 +259,10 @@ class Command(TyperCommand):
         # caller bypasses the CLI bridge or the env is lost).
         overlay = get_overlay(ticket.overlay or None)
 
+        # #2207: free abandoned unowned stacks (age-guarded) before the heavy
+        # provisioning work competes with them for host CPU/RAM.
+        reap_stale_local_stacks(self.stdout.write)
+
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         for wt in worktrees:
             self.stdout.write(f"  Provisioning {wt.repo_path}…")
@@ -289,6 +297,9 @@ class Command(TyperCommand):
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         started: list[Worktree] = []
         failures: list[str] = []
+        # #2207: abandoned unowned stacks (age-guarded) are reaped first so
+        # they neither hold host resources nor distort the stack-cap picture.
+        reap_stale_local_stacks(self.stdout.write)
         # #2190: at the cap, reap idle stacks → retry → ENQUEUE (no SystemExit).
         # A queued request means the loop's drainer re-fires ``start`` once a
         # slot frees — DO NOT advance any worktree's FSM for this ticket.
@@ -525,6 +536,25 @@ class Command(TyperCommand):
             OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
             for r in find_orphans_in_workspace()
         ]
+
+    @command(name="reap-stale")
+    def reap_stale(
+        self,
+        min_age_minutes: int = typer.Option(
+            0,
+            help="Override the stale threshold (minutes); 0 uses the configured stale_stack_min_age_minutes.",
+        ),
+        dry_run: bool = typer.Option(default=False, help="List the stacks that would be reaped without removing."),  # noqa: FBT001 — CLI flag
+    ) -> list[str]:
+        """Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207).
+
+        The on-demand twin of the automatic pre-start/pre-provision sweep: an
+        unowned compose project is reaped only when its newest container
+        lifecycle event is older than the threshold, so a parallel session's
+        fresh hand-rolled stack is never touched. ``clean-all`` remains the
+        blunt deep clean (every unowned project, regardless of age).
+        """
+        return reap_stale_report(min_age_minutes=min_age_minutes, dry_run=dry_run, write_out=self.stdout.write)
 
     @command(name="clean-all")
     def clean_all(

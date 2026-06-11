@@ -20,10 +20,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 credit.                                                      │
 │ speak           Read text aloud through the local speakers per  (no-op       │
 │                 unless local = all).                                         │
-│ info            Show t3 installation, teatree/overlay sources, and editable  │
-│                 status.                                                      │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
+│ info            Installation info (bare) and read-only per-ticket artifact   │
+│                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
 │ banned-terms    Banned-terms backstop scans.                                 │
 │ ci              CI pipeline helpers.                                         │
@@ -170,18 +170,6 @@ Usage: t3 speak [OPTIONS] TEXT
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-### `t3 info`
-
-```
-Usage: t3 info [OPTIONS]
-
- Show t3 installation, teatree/overlay sources, and editable status.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 ### `t3 ui`
 
 ```
@@ -193,6 +181,47 @@ Usage: t3 ui [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 info`
+
+```
+Usage: t3 info [OPTIONS] COMMAND [ARGS]...
+
+ Installation info (bare) and read-only per-ticket artifact discovery.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ artifacts  Locate every artifact for a ticket: stack + ports, plans, run     │
+│            artifacts, E2E evidence.                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 info artifacts`
+
+```
+Usage: t3 info artifacts [OPTIONS] TICKET_ID
+
+ Locate every artifact for a ticket: stack + ports, plans, run artifacts, E2E
+ evidence.
+
+ Read-only "find our eggs" aggregation over a ticket's existing rows —
+ where its worktrees/stacks live (on-disk path, db_name, host ports, state),
+ its PlanArtifact rows, each Task's ``result_artifact_path``, and its
+ E2eMandatoryRun evidence (spec + posted video/comment URL).
+
+ ``--format`` validation, ticket resolution, and rendering all live in the
+ ``info`` management command this delegates to (the ORM-touching seam).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  text (default) | json [default: text]                  │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4035,6 +4064,11 @@ Usage: t3 teatree run tests [OPTIONS]
 
  Extra arguments after ``--`` are appended to the test command
  (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
+
+ The overlay's ``get_pre_run_steps(worktree, "tests")`` run first —
+ the same prerequisite seam every service launch uses — so an overlay
+ can keep its test environment fast and correct (e.g. clone/refresh a
+ reusable test DB) without every caller re-deciding the prerequisites.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │

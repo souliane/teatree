@@ -33,6 +33,7 @@ def _auto_ship_enabled() -> bool:
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
+    from teatree.core.models.ticket_artifacts import PortResolver, TicketArtifacts
     from teatree.core.models.types import (
         AntiVacuityAttestation,
         ReviewContext,
@@ -414,6 +415,12 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """
         worktree_model = apps.get_model("core", "Worktree")
         return any(_worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
+
+    def artifacts(self, *, port_resolver: "PortResolver | None" = None) -> "TicketArtifacts":
+        """Read-only artifact-discovery aggregation (#273) — see ``ticket_artifacts``."""
+        from teatree.core.models.ticket_artifacts import collect_ticket_artifacts  # noqa: PLC0415
+
+        return collect_ticket_artifacts(self, port_resolver=port_resolver)
 
     def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless planning task after provisioning completes."""
@@ -1062,48 +1069,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             self.context = updated
             type(self).objects.filter(pk=self.pk).update(context=updated)
         return updated
-
-
-def render_ticket_context(context: str, *, max_lines: int = 40) -> str:
-    """Render ``Ticket.context`` as a collapsed intake section (#627).
-
-    Returns a leading-newline-prefixed GitHub-style ``<details>`` block so
-    the next session sees the durable knowledge without an explicit lookup,
-    while the intake output stays scannable. The block is appended directly
-    after the intake summary's last line, so a single ``str`` (rather than a
-    line list) keeps the call site one branch-free statement. Long stores
-    are truncated with a pointer to ``ticket context show``. An empty store
-    renders the empty string — nothing is shown.
-    """
-    body = context.strip()
-    if not body:
-        return ""
-    entries = body.splitlines()
-    shown = entries[:max_lines]
-    lines = ["", "", "<details>", "<summary>Ticket context (durable knowledge store)</summary>", "", *shown]
-    if len(entries) > max_lines:
-        hidden = len(entries) - max_lines
-        lines.extend(["", f"… ({hidden} more line(s) truncated — `t3 <overlay> ticket context show`)"])
-    lines.extend(["", "</details>"])
-    return "\n".join(lines)
-
-
-def format_intake_summary(ticket: Ticket, ticket_dir: str, branch: str) -> str:
-    """Format the ``workspace ticket`` intake summary block (#627).
-
-    Worktree list, ticket header, branch, and the collapsed durable-context
-    section, returned as one string. The ticket-display concern lives here
-    next to :func:`render_ticket_context` rather than inflating the already
-    at-capacity ``workspace`` command module (module-health split-by-concern).
-    """
-    lines = [f"  {wt.repo_path}: worktree #{wt.pk}" for wt in ticket.worktrees.all()]  # ty: ignore[unresolved-attribute]
-    lines.extend(
-        (
-            f"\nTicket #{ticket.pk} — worktrees in {ticket_dir}",
-            f"  Branch: {branch}{render_ticket_context(ticket.context)}",
-        )
-    )
-    return "\n".join(lines)
 
 
 def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = None) -> "Task":

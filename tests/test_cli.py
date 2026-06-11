@@ -302,6 +302,17 @@ class TestInfoCommand:
             assert "acme" in result.output
             assert "demo" in result.output
 
+    def test_info_artifacts_subcommand_is_registered(self):
+        """``t3 info artifacts`` is reachable as a subcommand (#273)."""
+        result = runner.invoke(app, ["info", "artifacts", "--help"])
+        assert result.exit_code == 0
+        assert "ticket" in result.output.lower()
+
+    def test_info_artifacts_rejects_unknown_format(self):
+        """The CLI wrapper rejects an unknown ``--format`` with exit 2 (#273)."""
+        result = runner.invoke(app, ["info", "artifacts", "1", "--format", "yaml"])
+        assert result.exit_code == 2
+
 
 # ── config subcommands ────────────────────────────────────────────────
 

@@ -116,9 +116,15 @@ class Command(TyperCommand):
 
         Extra arguments after ``--`` are appended to the test command
         (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
+
+        The overlay's ``get_pre_run_steps(worktree, "tests")`` run first —
+        the same prerequisite seam every service launch uses — so an overlay
+        can keep its test environment fast and correct (e.g. clone/refresh a
+        reusable test DB) without every caller re-deciding the prerequisites.
         """
         worktree = resolve_worktree(path)
         overlay = get_overlay()
+        ServiceLauncher(worktree, "tests", overlay=overlay).prepare()
         return self._dispatch_task(
             worktree,
             overlay.get_test_command(worktree),

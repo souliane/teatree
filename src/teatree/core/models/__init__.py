@@ -58,6 +58,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.ticket_artifacts import E2eRunRef, PlanArtifactRef, TicketArtifacts, WorktreeArtifact
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -91,6 +92,7 @@ __all__ = [
     "E2EBypassApprovalError",
     "E2EBypassAudit",
     "E2eMandatoryRun",
+    "E2eRunRef",
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
@@ -117,6 +119,7 @@ __all__ = [
     "PendingChatInjection",
     "PendingReinstall",
     "PlanArtifact",
+    "PlanArtifactRef",
     "Ports",
     "PullMainCloneMarker",
     "PullRequest",
@@ -146,10 +149,12 @@ __all__ = [
     "Task",
     "TaskAttempt",
     "Ticket",
+    "TicketArtifacts",
     "TicketExtra",
     "TicketTransition",
     "TrajectoryToolCall",
     "Worktree",
+    "WorktreeArtifact",
     "WorktreeEnvOverride",
     "WorktreeExtra",
     "build_review_contract",

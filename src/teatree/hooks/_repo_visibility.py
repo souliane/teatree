@@ -103,17 +103,27 @@ def slug_for_cwd(cwd: Path) -> str:
     allowlist entry matches a GitLab remote and a GitHub probe can be keyed by
     the same string.
 
-    Four remote forms normalize to a canonical slug:
+    Remote forms normalize to a canonical slug:
 
     - ``https://host/owner/repo`` -> ``host/owner/repo`` (host kept),
-    - ``user@host:owner/repo`` (standard SSH) -> ``host/owner/repo`` (real host
-        kept -- the ``user@`` segment proves the part before ``:`` is a host),
+    - ``user@host:owner/repo`` (SCP-style SSH) -> ``host/owner/repo`` ONLY when
+        ``host`` is a CANONICAL hostname (it contains a dot, e.g.
+        ``git@gitlab.com:org/repo`` -> ``gitlab.com/org/repo``). When ``host`` is
+        a dotless SSH CONFIG ALIAS (``git@gh-acct:owner/repo``, the ``Host
+        gh-acct`` form from ``~/.ssh/config`` that maps to a real ``HostName``),
+        the ``user@<alias>`` prefix is DROPPED -> ``owner/repo``: the alias is a
+        LOCAL name with no canonical identity, so keeping it glued ``gh-acct`` in
+        as the leading slug segment, where the dot-keyed host-strip / visibility
+        probe could not recognise it and a private own-repo failed to downgrade
+        (#1415). A dotted alias (``github.com-acct``) is kept as the host
+        segment but the downstream :func:`_strip_host_prefix` / probe already
+        strip a dotted leading segment, so it resolves correctly either way.
     - ``alias:owner/repo`` (SSH config ``Host alias``, no ``user@``) ->
-        ``owner/repo`` -- the alias is a LOCAL ``~/.ssh/config`` name with no
-        canonical identity, so it is DROPPED. Keeping it (the old verbatim
-        return) glued the alias into the slug, and an alias whose name contained
-        an allowlist entry then tripped the substring matcher and falsely
-        downgraded a PUBLIC repo (#1953).
+        ``owner/repo`` -- same rationale: a local alias with no canonical
+        identity is DROPPED. Keeping it (the old verbatim return) glued the alias
+        into the slug, and an alias whose name contained an allowlist entry then
+        tripped the substring matcher and falsely downgraded a PUBLIC repo
+        (#1953).
 
     ``FileNotFoundError`` (the ``git`` binary unresolved on the restricted hook
     PATH) and ``OSError`` are caught alongside ``CommandFailedError`` so a
@@ -132,10 +142,29 @@ def slug_for_cwd(cwd: Path) -> str:
         return cleaned.split("://", 1)[1]
     if ":" in cleaned and "/" not in cleaned.partition(":")[0]:
         host, _, path = cleaned.partition(":")
-        if "@" in host:
-            return f"{host.rsplit('@', 1)[-1]}/{path}"
+        real_host = host.rsplit("@", 1)[-1] if "@" in host else host
+        # A canonical hostname carries a dot (a TLD or a sub-domain); a dotless
+        # token is an SSH config Host ALIAS with no canonical identity, so drop
+        # it and keep only the canonical ``owner/repo`` key. This holds whether
+        # or not the remote carried a ``user@`` -- a ``user@gh-acct`` alias is no
+        # more canonical than a bare ``gh-acct`` one.
+        if _is_canonical_host(real_host):
+            return f"{real_host}/{path}"
         return path
     return cleaned
+
+
+def _is_canonical_host(host: str) -> bool:
+    """Return True iff ``host`` is a canonical hostname rather than an SSH alias.
+
+    A canonical hostname carries a dot (a registrable domain / sub-domain, e.g.
+    ``gitlab.com``, ``github.com``) or is the reserved ``localhost``. A dotless
+    token (``gh-acct``, ``work-github``) is an SSH config ``Host`` ALIAS -- a
+    local ``~/.ssh/config`` name with no canonical identity -- which must be
+    dropped from the slug so the dot-keyed host-strip / visibility probe key on
+    the real ``owner/repo`` instead of an unrecognisable alias segment (#1415).
+    """
+    return "." in host or host == "localhost"
 
 
 def _cache_root() -> Path:
