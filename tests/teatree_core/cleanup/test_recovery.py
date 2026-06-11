@@ -90,7 +90,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
     def _prune(self, worktree: Worktree) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
@@ -269,7 +269,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -296,7 +296,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -324,7 +324,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -355,7 +355,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -381,7 +381,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
             patch(
                 "teatree.core.cleanup.git.status_porcelain_strict",
