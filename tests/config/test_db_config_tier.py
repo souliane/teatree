@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """DB override tier in the effective-settings resolution chain (#1775).
 
 The DB tier sits between the env layer (which still wins) and the per-overlay
