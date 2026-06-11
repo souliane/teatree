@@ -202,7 +202,16 @@ def run_headless(
     # Most-capable-wins floor merge of the phase model and the per-skill MODEL
     # floors of the loaded skills. MODEL only — claude -p never carries
     # --effort (effort is a session-wide pin on the interactive loop spawn).
-    model = resolve_spawn_model(phase, skills=skills)
+    # session_id + task pk are threaded so a situational honesty-critical
+    # escalation (teatree#2263) can raise a verification spawn to the most-honest
+    # model; both default absent → byte-identical to today when none is active.
+    escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
+    model = resolve_spawn_model(
+        phase,
+        skills=skills,
+        session_id=escalation_session_id or None,
+        task_id=int(task.pk),
+    )
     command = _build_headless_command(
         binary,
         prompt,
