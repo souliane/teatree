@@ -37,6 +37,21 @@ def _config(body: str) -> Path:
 
 
 class _FanoutDispatchTest(TestCase):
+    def setUp(self) -> None:
+        # Blocker 1 (hermetic default-OFF spine): ``config_agent`` value-binds
+        # ``CONFIG_PATH`` at import, so the autouse ``_isolate_teatree_config``
+        # fixture (which patches ``teatree.config.CONFIG_PATH``) does NOT reach
+        # the resolver here. Without this pin the absent-opt-in tests would read
+        # the developer's real ``~/.teatree.toml`` and turn red the moment they
+        # opt a pair in. Pin to an empty config; opt-in tests override it via
+        # ``_entry_with_config`` / ``_context``.
+        super().setUp()
+        empty = Path(tempfile.mkdtemp()) / ".teatree.toml"
+        empty.write_text("[teatree]\n", encoding="utf-8")
+        patcher = patch("teatree.config_agent.CONFIG_PATH", empty)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _reviewer_task(self, *, url: str = "https://example.com/pr/1") -> Task:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -120,6 +135,16 @@ class TestRouteInvarianceAgainstRealComposer(_FanoutDispatchTest):
         self._coding_task()
         cfg = _config('[agent.phase_fanout]\n"author:coding" = true\n')
         assert self._entry_with_config(cfg)["fanout_directive"] == ""
+
+    def test_short_verb_config_key_resolves_like_canonical(self) -> None:
+        # The user may write the short-verb spelling in [agent.phase_fanout];
+        # it must resolve the same as the canonical gerund (mirrors the registry
+        # normalization), not silently no-op.
+        self._reviewer_task()
+        cfg = _config('[agent.phase_fanout]\n"reviewer:review" = true\n')
+        directive = self._entry_with_config(cfg)["fanout_directive"]
+        assert "adversarial-verify" in directive
+        assert "N=3" in directive
 
     def test_out_of_bounds_int_fails_loud_on_the_dispatch_path(self) -> None:
         self._planning_task()

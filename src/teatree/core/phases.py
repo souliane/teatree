@@ -25,11 +25,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # Annotation-only: ``resolve_fanout_directive`` receives a resolved
-    # ``AgentConfig`` from the caller (loop-side), so ``core`` never imports UP
-    # into the ``config_agent`` platform module at runtime (tach forbids the
-    # ``core → config_agent`` edge). The TYPE_CHECKING import is invisible to
-    # tach, mirroring the sibling ``core.management.commands.loop_self_improve``
-    # type-only import of ``teatree.loop``.
+    # ``AgentConfig`` from the caller (loop-side), so ``core`` keeps NO runtime
+    # import of the ``config_agent`` platform module. (The layered tach config
+    # would actually permit a domain→platform edge; the decoupling is upheld by
+    # convention + the import-isolation guard
+    # ``test_core_phases_has_no_runtime_config_agent_import``, not by tach.) The
+    # TYPE_CHECKING import is invisible to tach, mirroring the sibling
+    # ``core.management.commands.loop_self_improve`` type-only import of
+    # ``teatree.loop``.
     from teatree.config_agent import AgentConfig
 
 # Canonical token -> every accepted alias (including the canonical itself).
@@ -120,7 +123,7 @@ class PhaseFanout:
         sequential rigor when no formal workflow runtime engages.
     *   ``fanout_n`` — the default panel width (concurrent verifiers / judges).
         Within :data:`_FANOUT_N_BOUNDS`. A user opt-in of ``true`` uses this
-        default; an int opt-in overrides it (clamped to the bounds).
+        default; an int opt-in overrides it (within the bounds, else raises).
     *   ``directive_template`` — the plain-prompt instruction rendered into the
         sub-agent's prompt. ``{n}`` is substituted with the resolved width. The
         text is SDK/API-portable (BLUEPRINT §2): identical whether the flow is
@@ -209,7 +212,7 @@ def resolve_fanout_directive(role: str, phase: str, cfg: "AgentConfig") -> str:
     ``[agent.phase_fanout]`` opt-in — the absent-key / ``False`` case — renders
     the **empty string**, so a dispatch is byte-identical to today until the
     user opts a pair in. An opt-in of ``True`` renders the registry's default
-    ``fanout_n``; an int opt-in overrides it (clamped to
+    ``fanout_n``; an int opt-in overrides it (must lie within
     :data:`_FANOUT_N_BOUNDS`); an int outside the bounds raises ``ValueError``
     (fail-loud) so a misconfiguration is seen, not silently clamped to a value
     the user did not write.
@@ -217,11 +220,33 @@ def resolve_fanout_directive(role: str, phase: str, cfg: "AgentConfig") -> str:
     spec = fanout_for_phase(role, phase)
     if spec is None:
         return ""
-    opt_in = cfg.phase_fanout.get(f"{role}:{normalize_phase(phase)}")
+    opt_in = _phase_fanout_opt_in(cfg.phase_fanout, role=role, phase=phase)
     resolved_n = _resolved_fanout_n(spec, opt_in=opt_in)
     if resolved_n is None:
         return ""
     return spec.directive_template.format(n=resolved_n)
+
+
+def _phase_fanout_opt_in(phase_fanout: "dict[str, bool | int]", *, role: str, phase: str) -> "bool | int | None":
+    """Look up the opt-in for a ``(role, phase)`` pair, tolerant of key spelling.
+
+    The user writes ``[agent.phase_fanout]`` keys ``"role:phase"`` by hand, so a
+    short-verb spelling (``"reviewer:review"``) must resolve the same as the
+    canonical gerund (``"reviewer:reviewing"``) — mirroring
+    :func:`fanout_for_phase`'s normalization on the registry side. Keys are
+    normalized here (in ``core``, where :func:`normalize_phase` lives) rather
+    than at parse time, so the platform-layer ``config_agent`` need not import UP
+    into ``core``. The canonical key wins when both spellings are present.
+    """
+    canonical_key = f"{role}:{normalize_phase(phase)}"
+    direct = phase_fanout.get(canonical_key)
+    if direct is not None:
+        return direct
+    for raw_key, opt_in in phase_fanout.items():
+        raw_role, _, raw_phase = raw_key.partition(":")
+        if f"{raw_role}:{normalize_phase(raw_phase)}" == canonical_key:
+            return opt_in
+    return None
 
 
 def _resolved_fanout_n(spec: PhaseFanout, *, opt_in: bool | int | None) -> int | None:
