@@ -471,6 +471,35 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         assert result.extra["worktree_path"] == str(wt_dir)
         assert result.extra["some_other"] == "value"
 
+    def test_ticket_reuse_refreshes_stale_branch_and_path(self) -> None:
+        """Ticket+repo reuse must re-point the row at the worktree being resolved.
+
+        Bug: when a ticket already had a Worktree row for this repo (created
+        for an EARLIER worktree dir/branch of the same ticket),
+        ``get_or_create`` returned it with its defaults ignored — the row kept
+        the stale ``branch`` and ``extra.worktree_path``. Every downstream
+        consumer then acted on the stale directory: a frontend build invoked
+        from the new worktree silently ran inside the old directory.
+        """
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/321")
+        stale = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="my-repo",
+            branch="feat/old-branch",
+            extra={"worktree_path": "/somewhere/else/my-repo", "keep": "me"},
+        )
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new-branch"):
+            result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
+
+        assert result is not None
+        assert result.pk == stale.pk
+        assert result.branch == "feat/new-branch"
+        assert result.extra["worktree_path"] == str(wt_dir)
+        assert result.extra["keep"] == "me"
+        assert Worktree.objects.count() == 1
+
     def test_creates_new_ticket_when_no_worktree_exists(self) -> None:
         """First-time auto-register still creates a fresh ``auto:<branch>`` ticket."""
         wt_dir = self._make_git_worktree("my-repo")
