@@ -106,6 +106,41 @@ class _RaisesBaseExceptionRunner:
         raise self._exc
 
 
+class _CappedTrialRunner:
+    """One trial of a target cell hits a cap (max_turns); the rest finish clean.
+
+    Models the REAL multi-trial CI cell where a partial trajectory satisfied the
+    (matcher-less) grade but the run never finished within the cap. The capped
+    trial must taint the whole cell's gate verdict.
+    """
+
+    def __init__(self, *, capped_scenario: str, capped_model: str, cap_on_attempt: int) -> None:
+        self._capped_scenario = capped_scenario
+        self._capped_model = capped_model
+        self._cap_on_attempt = cap_on_attempt
+        self._attempts: dict[tuple[str, str], int] = {}
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        key = (spec.name, spec.model)
+        self._attempts[key] = self._attempts.get(key, 0) + 1
+        if (
+            spec.name == self._capped_scenario
+            and spec.model == self._capped_model
+            and self._attempts[key] == self._cap_on_attempt
+        ):
+            return EvalRun(
+                spec_name=spec.name,
+                tool_calls=(),
+                text_blocks=(),
+                terminal_reason="max_turns",
+                is_error=False,
+                raw_stdout="",
+                raw_stderr="",
+                cost_usd=0.01,
+            )
+        return _clean_run(spec)
+
+
 def _by_key(rows: list, scenario: str, model: str):
     return next(r for r in rows if r.scenario == scenario and r.model == model)
 
@@ -163,3 +198,19 @@ class TestPerCellErrorIsolation:
         specs = [_spec("alpha")]
         with pytest.raises(type(exc)):
             collect_matrix_rows(specs, ["opus"], runner=_RaisesBaseExceptionRunner(exc), trials=1, require="any")
+
+
+class TestMatrixCellCapTaint:
+    def test_multi_trial_cell_with_a_capped_trial_is_not_a_pass(self) -> None:
+        # A multi-trial (`--trials 3 --require any`) matrix cell whose aggregate is
+        # cap-tainted (one trial hit max_turns) must NOT grade as a passing cell —
+        # `passed` flips to False and `terminal_reason` carries the cap reason. A
+        # clean trial cannot prop up a green matrix cell over a capped sibling.
+        specs = [_spec("alpha")]
+        runner = _CappedTrialRunner(capped_scenario="alpha", capped_model="opus", cap_on_attempt=2)
+        rows = collect_matrix_rows(specs, ["opus"], runner=runner, trials=3, require="any")
+        (row,) = rows
+        assert row.errored is False
+        assert row.skipped is False
+        assert row.terminal_reason == "max_turns"
+        assert row.passed is False  # cap-tainted aggregate is not a passing cell

@@ -157,3 +157,45 @@ class TestRunPassAtK:
         # Two clean passes, one cap-truncated trial excluded from the pass count.
         assert result.passes == 2
         assert not result.ok  # require="all" — a non-counted trial fails the gate
+
+    def test_any_fails_when_a_trial_hit_max_turns_even_with_a_clean_pass(self) -> None:
+        # In the REAL CI lane (`--trials 3 --require any`), a cap-tainted aggregate
+        # must FAIL the gate even though a clean trial passed: a capped trial
+        # COULDN'T COMPLETE its work, so it cannot prop up a green gate. The pass
+        # COUNT stays diagnostic (one clean pass), but `ok` flips to False.
+        spec = _spec()
+        it = iter(["success", "max_turns", "max_turns"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert result.passes == 1  # the one clean trial still counts — diagnostic
+        assert result.terminal_reason == "max_turns"
+        assert not result.ok  # cap-tainted aggregate fails the require=any gate
+
+    def test_any_fails_on_budget_exceeded_cap_taint(self) -> None:
+        spec = _spec()
+        it = iter(["success", "budget_exceeded", "max_turns"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert not result.ok
+
+    def test_any_stays_ok_on_a_clean_matcher_miss_with_no_cap(self) -> None:
+        # ANTI-VACUITY GUARD: a clean matcher-miss (terminal_reason NOT in the cap
+        # set) is normal pass@k noise — `require="any"` tolerates it. Only a
+        # cap-tainted aggregate flips the gate. Revert the cap-taint line and the
+        # cap tests above go RED while THIS stays GREEN.
+        spec = _spec()
+        it = iter([True, False, True])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert result.passes == 2
+        assert result.terminal_reason == ""  # the clean miss carries no cap reason
+        assert result.ok  # pass@k noise tolerance preserved

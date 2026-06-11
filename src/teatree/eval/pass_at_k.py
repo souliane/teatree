@@ -75,6 +75,15 @@ class PassAtKResult:
     def ok(self) -> bool:
         if self.skipped:
             return True
+        # A cap-tainted aggregate (ANY trial hit max_turns/budget/watchdog)
+        # COULDN'T COMPLETE its work, so it can never prop up a green gate —
+        # regardless of ``require`` (any/all). The pass COUNT stays diagnostic
+        # (clean trials still count toward ``passes``/``pass_rate``); only this
+        # gate verdict flips. Without it the REAL CI lane (``--require any``)
+        # goes green on ``[success, max_turns, …]`` because one clean pass
+        # satisfies ``passes >= 1`` while two trials are cap-tainted (#2192).
+        if self.terminal_reason in CAP_TERMINAL_REASONS:
+            return False
         if self.require == "all":
             return self.passes == self.trials
         return self.passes >= 1
