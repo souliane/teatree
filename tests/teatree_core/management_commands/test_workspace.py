@@ -3122,7 +3122,10 @@ class TestReapSquashMergedWorktreeRows(TestCase):
                 patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
                 patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=True),
                 patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
             ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_overlay.return_value.config.teardown_removes_pass_entries = False
                 cleaned = self._reap(workspace)
 
             assert not Worktree.objects.filter(pk=row.pk).exists(), (
@@ -3222,7 +3225,10 @@ class TestReapSquashMergedWorktreeRows(TestCase):
             with (
                 patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
                 patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
+                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
             ):
+                mock_overlay.return_value.get_cleanup_steps.return_value = []
+                mock_overlay.return_value.config.teardown_removes_pass_entries = False
                 cleaned = self._reap(workspace)
 
             assert Worktree.objects.filter(pk=row.pk).exists(), f"data-loss row must be kept; got: {cleaned!r}"
