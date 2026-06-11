@@ -141,6 +141,43 @@ def git_root_for_dir(start: Path) -> Path | None:
     return None
 
 
+def resolve_commit_dir(command: str, cwd: Path | None) -> Path | str | None:
+    """Resolve the dir whose repo a ``git`` command's commit LANDS in.
+
+    Combines the command-only parse (:func:`effective_repo_dir` -- a leading
+    ``cd``/``pushd`` prefix plus ``-C``/``--git-dir``, never ``--work-tree``)
+    with the AMBIENT hook ``cwd``: a RELATIVE parsed dir (``git -C
+    ../worktree``, the form a sub-agent's command takes when the harness has
+    reset the hook ``cwd`` to a sibling repo) is anchored on ``cwd`` so it
+    resolves against the dir the agent actually ran in, NOT the cold hook's
+    process cwd. Anchoring on the process cwd (the prior behaviour, an implicit
+    ``Path(repo_dir)`` with no base) silently mis-resolved the worktree -- a
+    relative public target then resolved to no repo and FAIL-OPENED the
+    carve-out (a banned-term leak to the public repo), and a relative private
+    target resolved by accident only when the process cwd happened to match.
+
+    Returns:
+    - :data:`UNRESOLVABLE_REPO_DIR` when ``effective_repo_dir`` could not pin
+        the ``-C`` value statically (a substitution marker) -- the caller must
+        then NOT downgrade (fail closed).
+    - an absolute :class:`~pathlib.Path` of the resolved commit dir when the
+        command named one (``cd``/``-C``/``--git-dir``), anchored on ``cwd``
+        when the parsed dir is relative and ``cwd`` is given.
+    - ``cwd`` itself for a plain ``git commit`` that named no dir (it lands in
+        the ambient cwd's repo), or ``None`` when neither resolves -- the
+        caller reads ``None`` as a genuinely-unresolvable LOCAL commit.
+    """
+    repo_dir = effective_repo_dir(command)
+    if repo_dir == UNRESOLVABLE_REPO_DIR:
+        return UNRESOLVABLE_REPO_DIR
+    if repo_dir is None:
+        return cwd
+    parsed = Path(repo_dir)
+    if parsed.is_absolute() or cwd is None:
+        return parsed
+    return cwd / parsed
+
+
 def effective_repo_dir(command: str) -> str | None:
     """Return the dir whose repo a ``git`` command's commit LANDS in, or ``None``.
 
