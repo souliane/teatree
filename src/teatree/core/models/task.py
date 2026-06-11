@@ -72,10 +72,10 @@ class Task(models.Model):
 
         Such a task is dispatched per-phase by the in-session ``/loop`` slot
         (``loop_dispatch claim-next`` → the ``Agent`` tool), never via a
-        detached ``claude -p`` subprocess. Post the 2026-06-15 billing change
-        a ``claude -p`` dispatch is metered, so a loop-dispatched phase task
-        must run INTERACTIVE (subscription-covered). A pair with no registered
-        agent is free-form headless work and is left HEADLESS.
+        detached headless-SDK run. Post the 2026-06-15 billing change
+        a detached headless-SDK dispatch is metered, so a loop-dispatched phase
+        task must run INTERACTIVE (subscription-covered). A pair with no
+        registered agent is free-form headless work and is left HEADLESS.
         """
         from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
 
@@ -467,7 +467,7 @@ class Task(models.Model):
 
 class TaskAttemptQuerySet(models.QuerySet):
     def headless(self) -> "TaskAttemptQuerySet":
-        """Only the attempts that ran a billed ``claude -p`` subprocess.
+        """Only the attempts that ran a billed detached headless-SDK run.
 
         SDK-equivalent billing covers headless usage only — interactive turns
         run inside the user's own session, not against the credit.

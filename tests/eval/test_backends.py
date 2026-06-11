@@ -15,7 +15,7 @@ from teatree.eval.backends import (
     make_runner,
 )
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -39,8 +39,18 @@ def _spec(
 
 
 class TestMakeRunner:
-    def test_sdk_backend_builds_claude_p_runner(self) -> None:
-        assert isinstance(make_runner(SDK_BACKEND), ClaudePRunner)
+    def test_sdk_backend_builds_in_process_sdk_runner(self) -> None:
+        assert isinstance(make_runner(SDK_BACKEND), SdkInProcessRunner)
+
+    def test_sdk_backend_default_budget_is_the_cheap_cap(self) -> None:
+        runner = make_runner(SDK_BACKEND)
+        assert isinstance(runner, SdkInProcessRunner)
+        assert runner._max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
+
+    def test_sdk_backend_threads_the_budget_override(self) -> None:
+        runner = make_runner(SDK_BACKEND, max_budget_usd=2.0)
+        assert isinstance(runner, SdkInProcessRunner)
+        assert runner._max_budget_usd == pytest.approx(2.0)
 
     def test_subscription_backend_builds_transcript_runner(self, tmp_path: Path) -> None:
         runner = make_runner(SUBSCRIPTION_BACKEND, transcript_dir=tmp_path)

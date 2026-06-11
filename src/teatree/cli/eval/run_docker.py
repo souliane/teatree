@@ -23,6 +23,8 @@ class RunDockerArgs:
     name: str | None
     output_format: str
     max_turns: int | None
+    max_budget_usd: float
+    effort: str
     trials: int
     require: str
     models: str | None
@@ -38,6 +40,10 @@ class RunDockerArgs:
             args += ["--format", self.output_format]
         if self.max_turns is not None:
             args += ["--max-turns", str(self.max_turns)]
+        args += ["--max-budget-usd", str(self.max_budget_usd)]
+        # Pass --effort explicitly so the in-container run is deterministic
+        # regardless of the container's env (the host already resolved the default).
+        args += ["--effort", self.effort]
         if self.trials != 1:
             args += ["--trials", str(self.trials), "--require", self.require]
         if self.models is not None:
@@ -59,11 +65,13 @@ class RunDockerArgs:
             raise typer.Exit(code=2) from None
 
 
-def run_in_docker_or_exit(args: RunDockerArgs, *, baseline: bool, gate_regressions: bool) -> None:
-    if baseline or gate_regressions:
+def run_in_docker_or_exit(
+    args: RunDockerArgs, *, baseline: bool, gate_regressions: bool, gate_cost_regression: bool
+) -> None:
+    if baseline or gate_regressions or gate_cost_regression:
         typer.echo(
             "--docker runs in an ephemeral container, so it cannot update or compare the "
-            "durable baseline; drop --baseline/--gate-regressions or run on the host.",
+            "durable baseline; drop --baseline/--gate-regressions/--gate-cost-regression or run on the host.",
             err=True,
         )
         raise typer.Exit(code=2)

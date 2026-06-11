@@ -7,7 +7,7 @@ whether the harness caught it — naming the violated rule and the offending too
 call so a maintainer can read the proof at a glance.
 
 It is token-free and deterministic by construction — it never shells
-``claude -p``. The violating and compliant runs are built in process from the
+the Agent SDK. The violating and compliant runs are built in process from the
 ``worktree_first`` catalog scenario (the agent must create a worktree before
 editing the canonical clone). ``t3 eval negative-control`` and
 ``tests/eval/test_negative_control.py`` both drive this module.

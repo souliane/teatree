@@ -25,11 +25,21 @@ from django.db import transaction
 
 from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 from teatree.eval.matrix import MatrixRow
-from teatree.eval.models import AnyOf, ExpectItem, Matcher
+from teatree.eval.models import AnyOf, ExpectItem, Matcher, TokenUsage
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+
+def _token_columns(usage: TokenUsage) -> dict[str, int]:
+    """Map a :class:`TokenUsage` onto the ``record_scenario`` token kwargs."""
+    return {
+        "input_tokens": usage.input,
+        "cache_creation_tokens": usage.cache_creation,
+        "cache_read_tokens": usage.cache_read,
+        "output_tokens": usage.output,
+    }
 
 
 def current_git_sha() -> str:
@@ -110,6 +120,10 @@ def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a docum
                 tool_calls=_trajectory(result),
                 matcher_details=_matcher_details(result),
                 judge_rationale=_judge_rationale(result),
+                cost_usd=result.run.cost_usd,
+                main_cost_usd=result.run.main_cost_usd,
+                aux_cost_usd=result.run.aux_cost_usd,
+                **_token_columns(result.run.usage),
             )
     return run
 
@@ -134,6 +148,10 @@ def persist_pass_at_k(
                 model=model,
                 score=0.0 if result.skipped else result.pass_rate,
                 trials=result.trials,
+                cost_usd=result.cost_usd,
+                main_cost_usd=result.main_cost_usd,
+                aux_cost_usd=result.aux_cost_usd,
+                **_token_columns(result.usage),
             )
     return run
 
@@ -152,12 +170,23 @@ def persist_matrix(
             git_sha=current_git_sha() if git_sha is None else git_sha,
         )
         for row in rows:
+            if row.errored:
+                # An errored cell (the runner raised even after the matrix loop's
+                # bounded retries) is a transient infra blip, not a graded
+                # verdict. Persisting it as a `fail` row would unfairly lower the
+                # baseline pass-rate and the `--gate-regressions` diff — so it is
+                # excluded from the ledger entirely (no row written).
+                continue
             run.record_scenario(
                 scenario_name=row.scenario,
                 verdict=_matrix_verdict(row),
                 model=row.model,
                 score=0.0 if row.skipped else row.score,
                 trials=row.trials,
+                cost_usd=row.cost_usd,
+                main_cost_usd=row.main_cost_usd,
+                aux_cost_usd=row.aux_cost_usd,
+                **_token_columns(row.usage),
             )
     return run
 

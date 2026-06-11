@@ -211,7 +211,7 @@ class Command(TyperCommand):
 
         The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
         hands the same structured result envelope ``run_headless`` would have
-        parsed out of ``claude -p`` stdout, and this drives the Task to its
+        parsed out of the detached headless-SDK run, and this drives the Task to its
         terminal state through the SHARED recorder — schema-key check, the
         #1284 phase-evidence gate, then ``complete`` (auto-advancing the
         ticket) or ``fail``. Pairs with ``t3 loop claim-next`` /
@@ -375,6 +375,8 @@ class Command(TyperCommand):
 
     @staticmethod
     def _execute_sdk(task: Task) -> dict[str, str]:
+        import traceback  # noqa: PLC0415
+
         from teatree.agents.headless import run_headless  # noqa: PLC0415
         from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
@@ -382,7 +384,7 @@ class Command(TyperCommand):
         # Fail-closed billing guard, shared with ``execute_headless_task`` via
         # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
         # a loop-dispatched phase task must run INTERACTIVE in the ``/loop`` slot,
-        # never as a metered ``claude -p`` here. The task is already CLAIMED by
+        # never as a metered detached headless-SDK run here. The task is already CLAIMED by
         # ``_claim_next_task``; record a FAILED refusal attempt so it is not left
         # stuck CLAIMED under the loop slot.
         refusal = loop_dispatch_refusal(task)
@@ -390,11 +392,26 @@ class Command(TyperCommand):
             task.complete_with_attempt(exit_code=1, error=refusal, result={"routing_error": refusal})
             return {"exit_code": "1", "routing_error": refusal}
 
-        attempt = run_headless(
-            task,
-            phase=task.phase,
-            overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-        )
+        # Durable failure recording, the same semantics ``execute_headless_task``
+        # applies (souliane/teatree#2192): ``run_headless`` can RAISE on an SDK
+        # client startup / query / response error. The task is already CLAIMED;
+        # without this, the raise leaves it silently CLAIMED until lease reap, then
+        # re-fires forever with NO durable failed TaskAttempt — a wedge/retry-loop
+        # under the no-fallback cutover. Record a FAILED attempt carrying the error
+        # via the shared ``complete_with_attempt`` recorder (which FAILs the task,
+        # releasing the claim) and return a nonzero command result, mirroring the
+        # refusal path above rather than re-raising and dropping the result dict.
+        try:
+            attempt = run_headless(
+                task,
+                phase=task.phase,
+                overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
+            )
+        except Exception:  # noqa: BLE001 — ANY SDK failure (startup/query/response) must be recorded durably, not escape.
+            error = traceback.format_exc()
+            logger.warning("Task %s: SDK headless run raised; recording a failed attempt", task.pk)
+            task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error})
+            return {"exit_code": "1", "sdk_error": error}
         return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
 
 

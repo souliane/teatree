@@ -3660,31 +3660,34 @@ def _orchestrator_bash_gate_enabled() -> bool:
 
 
 def _orchestrator_boundary_agent_gate_enabled() -> bool:
-    """Whether the foreground-Agent-dispatch deny is enabled (default OFF, opt-in).
+    """Whether the foreground-Agent-dispatch deny is enabled (default ON, #1733).
 
-    The ``Agent`` arm of the orchestrator-boundary gate (#1442) is currently a
-    dead deny gate because no ``Agent`` matcher is wired in ``hooks.json`` (the
-    registered ``PreToolUse`` matchers are ``Bash|Edit|Write``,
-    ``AskUserQuestion``, ``mcp__.*[Ss]lack.*``). The ``Agent`` TOOL itself DOES
-    reach ``PreToolUse`` — a foreground Agent dispatch fires it with
-    ``run_in_background`` in the tool_input — so adding an ``Agent`` matcher
-    would make this deny genuinely live. That is why the deny ships behind an
-    explicit opt-in even before the matcher exists: enabling it on the
-    orchestrator's own foreground Agent-dispatch hot path is a lockout risk
-    (it would block the loop's own foreground builder/reviewer/resolver
-    dispatches), so it must be validated attended (#1646) before default-ON.
-    The flag also makes it lockout-safe the moment a matcher is added.
+    The ``Agent`` arm of the orchestrator-boundary gate (#1442) is now LIVE: an
+    ``Agent`` PreToolUse matcher is wired in ``hooks.json`` (#1646) so a
+    foreground Agent dispatch (which fires ``PreToolUse`` with
+    ``run_in_background`` in the tool_input) reaches this deny. The gate flipped
+    to default-ON (#1733) after the attended dry-run that #1646 asks for; that
+    dry-run is the user's pre-INSTALL gate, not a blocker to the code (hooks run
+    from the INSTALLED plugin, so a worktree change cannot lock out the live
+    session — it only takes effect post-merge + ``t3 update``).
+
+    Every never-lockout off-ramp stays intact even default-ON: a sub-agent
+    context, ``run_in_background: true``, a per-call ``[fg-ok: <reason>]`` token,
+    the ``[teatree] orchestrator_boundary_agent_gate_enabled = false``
+    kill-switch, the deny-circuit-breaker, AND — via :func:`_fail_open_or_deny`
+    (#1692) — the self-rescue allowlist and the master ``danger_gate_fail_open``
+    switch.
 
     (Distinct from the SEPARATE ``Task``/``Workflow`` fan-out vehicle, which
     genuinely bypasses ``PreToolUse`` and fires ``TaskCreated`` — no
     ``run_in_background`` in that schema, so this gate's foreground/background
     signal exists only on the Agent-matcher path, not the TaskCreated one.)
 
-    Fails CLOSED to disabled (missing/broken config → False; only an explicit
-    ``true`` enables). See :func:`_teatree_bool_setting` for the shared
-    bare-boolean semantics.
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; only an explicit bare ``false`` is the kill-switch. See
+    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
-    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled", default=False)
+    return _teatree_bool_setting("orchestrator_boundary_agent_gate_enabled", default=True)
 
 
 def _deny_foreground_agent_dispatch(data: dict) -> bool:
@@ -3696,12 +3699,14 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     the main agent is governed; a sub-agent dispatching its own ``Agent``
     may pick foreground.
 
-    Ships default-OFF behind :func:`_orchestrator_boundary_agent_gate_enabled`
-    (a previously-dead deny gate whose live behavior is unvalidated and which
-    could wedge the loop's own foreground dispatches). Even once enabled the
-    off-ramps are: the opt-in flag, a sub-agent context, ``run_in_background:
-    true``, and a per-call ``[fg-ok: <reason>]`` token in the prompt (mirroring
-    the heavy-Bash arm's escape).
+    Default-ON behind :func:`_orchestrator_boundary_agent_gate_enabled` (#1733)
+    now that an ``Agent`` PreToolUse matcher is wired (#1646). The off-ramps are:
+    the kill-switch flag, a sub-agent context, ``run_in_background: true``, and a
+    per-call ``[fg-ok: <reason>]`` token in the prompt (mirroring the heavy-Bash
+    arm's escape). The deny itself routes through :func:`_fail_open_or_deny`
+    (#1692) so the self-rescue allowlist and the master
+    ``danger_gate_fail_open`` switch relax it exactly like every other over-deny
+    gate — never a bare :func:`emit_pretooluse_deny` lockout.
     """
     if not _orchestrator_boundary_agent_gate_enabled():
         return False
@@ -3710,17 +3715,18 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     prompt = data.get("tool_input", {}).get("prompt", "")
     if isinstance(prompt, str) and _FG_OK_RE.search(prompt[:512]):
         return False
-    return emit_pretooluse_deny(
+    return _fail_open_or_deny(
+        data,
         "[main-agent-orchestration-guard] Foreground Agent dispatch "
         "DENIED in main agent context.\n"
         "Pass `run_in_background: true` to every Agent invocation "
         "from the main agent, add an explicit `[fg-ok: <reason>]` marker to the "
-        "prompt if you truly need a foreground dispatch, or disable this opt-in "
-        "gate by removing/clearing "
-        "`[teatree] orchestrator_boundary_agent_gate_enabled` in `~/.teatree.toml`.\n"
+        "prompt if you truly need a foreground dispatch, or disable this "
+        "gate by setting "
+        "`[teatree] orchestrator_boundary_agent_gate_enabled = false` in `~/.teatree.toml`.\n"
         "Memory rule: "
         "feedback_always_run_in_background_for_sub_agent_dispatch "
-        "(RED CARD recurrence)."
+        "(RED CARD recurrence).",
     )
 
 
@@ -3731,6 +3737,11 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     comes from a sub-agent, is dispatched with ``run_in_background:
     true``, carries a ``[fg-ok: <reason>]`` opt-out marker, or does not
     match the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+
+    The deny routes through :func:`_fail_open_or_deny` (#1692) so the
+    self-rescue allowlist and the master ``danger_gate_fail_open`` switch
+    relax it like every other over-deny gate — a belt-and-braces on top of
+    the self-rescue command never matching the heavy denylist.
     """
     if _is_orchestration_action(data) or _call_is_from_subagent(data):
         return False
@@ -3742,7 +3753,8 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         return False
     if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
         return False
-    return emit_pretooluse_deny(
+    return _fail_open_or_deny(
+        data,
         "BLOCKED: the orchestrator (main agent) ran a command that looks "
         "long-running / heavy and would tie up this session: "
         f"`{command[:120]}`.\n"
@@ -3753,7 +3765,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "`[fg-ok: <reason>]` marker if you truly need the output inline, "
         "or — if this is a false positive — set "
         "`orchestrator_bash_gate_enabled = false` under `[teatree]` in "
-        "~/.teatree.toml to disable the gate."
+        "~/.teatree.toml to disable the gate.",
     )
 
 
@@ -3794,21 +3806,33 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
 # The orchestrator stays responsive only if its TURNS stay short — a turn
 # that fires 20 tool calls before yielding makes the session feel dead to
 # a user trying to interject. The heavy-Bash gate above governs long
-# single OPERATIONS; this governs long TURNS (many small tool calls in a
-# row). It is a SOFT advisory nudge, never a deny: once a main-agent turn
-# crosses the configured tool-call budget, a one-time ``additionalContext``
-# line steers the orchestrator to wrap up and yield to the user. It can
-# never lock the orchestrator out — it does not write a deny.
+# single OPERATIONS; this governs long TURNS. It is a SOFT advisory nudge,
+# never a deny: once a main-agent turn crosses a responsiveness threshold,
+# a one-time ``additionalContext`` line steers the orchestrator to wrap up
+# and yield to the user. It can never lock the orchestrator out — it does
+# not write a deny.
+#
+# TWO independent dimensions fire the SAME yield nudge (#1733 §2):
+#   * COUNT (#1727)  — the turn made more than N non-orchestration tool calls;
+#   * WALL-CLOCK     — more than T seconds of wall-clock elapsed since the
+#                      turn started (the last user-visible action), regardless
+#                      of how few tool calls were made. This catches the
+#                      slow-but-few-calls failure the count dimension misses
+#                      (a handful of long-blocking calls tying the session up).
+# Either crossing nudges once per turn; both thresholds are config-driven and
+# fail-open, and both re-arm every user turn.
 #
 # Only the main agent is governed (a sub-agent's turn is its whole job and
 # must run to completion). Pure-orchestration tool calls — talking to the
 # user, dispatching sub-agents, posting status — are FREE: they neither
 # count toward the budget nor get nudged, because yielding to the user is
-# itself an orchestration action. The counter resets every user turn.
+# itself an orchestration action.
 
 _TURN_TOOL_COUNT_SUFFIX = "turn-tool-count"
 _TURN_NUDGED_SUFFIX = "turn-budget-nudged"
+_TURN_START_SUFFIX = "turn-start-monotonic"
 _DEFAULT_ORCHESTRATOR_TURN_BUDGET = 25
+_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS = 180
 
 
 def _orchestrator_turn_budget() -> int:
@@ -3839,31 +3863,64 @@ def _orchestrator_turn_budget() -> int:
     return raw
 
 
-def handle_reset_turn_tool_budget(data: dict) -> None:
-    """UserPromptSubmit: reset the per-turn tool-call counter and nudge marker.
+def _orchestrator_turn_wall_clock_threshold() -> int:
+    """Wall-clock responsiveness threshold for the main agent (default 180s; 0 ⇒ off).
 
-    A fresh user turn re-arms the responsiveness nudge — the orchestrator gets
-    its full budget again. Advisory only; never blocks the prompt.
+    Best-effort read of ``[teatree] orchestrator_turn_wall_clock_seconds`` from
+    ``~/.teatree.toml``, mirroring :func:`_orchestrator_turn_budget`'s toml-read
+    shape. A missing/broken config keeps the protective default; an explicit
+    ``0`` (or any non-positive value) disables the wall-clock dimension with one
+    config line. A non-int (or bool) value falls back to the default.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
+    raw = teatree.get("orchestrator_turn_wall_clock_seconds", _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
+    return raw
+
+
+def handle_reset_turn_tool_budget(data: dict) -> None:
+    """UserPromptSubmit: reset the per-turn responsiveness counters and nudge marker.
+
+    A fresh user turn re-arms BOTH responsiveness dimensions — the orchestrator
+    gets its full count budget and a fresh wall-clock window. Advisory only;
+    never blocks the prompt.
     """
     if not isinstance(data, dict):
         return
     session_id = data.get("session_id", "")
     if not isinstance(session_id, str) or not session_id:
         return
-    for suffix in (_TURN_TOOL_COUNT_SUFFIX, _TURN_NUDGED_SUFFIX):
+    for suffix in (_TURN_TOOL_COUNT_SUFFIX, _TURN_NUDGED_SUFFIX, _TURN_START_SUFFIX):
         try:
             _state_file(session_id, suffix).unlink(missing_ok=True)
         except OSError:
             continue
 
 
-_TURN_BUDGET_NUDGE = (
-    "[orchestrator-responsiveness] This turn has now made {count} tool calls "
-    "(soft budget {budget}). To keep the session responsive, wrap up the "
-    "current step and YIELD to the user: dispatch any remaining heavy work to "
-    "a background sub-agent (`Agent` with `run_in_background: true`), then end "
-    "the turn so a new user message can be read. Orchestrate — don't keep "
-    "grinding inline."
+_TURN_BUDGET_NUDGE_COUNT = (
+    "[orchestrator-responsiveness] This turn has now made {count} tool calls (soft budget {budget})."
+)
+_TURN_BUDGET_NUDGE_WALL_CLOCK = (
+    "[orchestrator-responsiveness] This turn has now run {elapsed}s of wall-clock (soft threshold {threshold}s)."
+)
+_TURN_BUDGET_NUDGE_TAIL = (
+    " To keep the session responsive, wrap up the current step and YIELD to the "
+    "user: dispatch any remaining heavy work to a background sub-agent (`Agent` "
+    "with `run_in_background: true`), then end the turn so a new user message can "
+    "be read. Orchestrate — don't keep grinding inline."
 )
 
 
@@ -3886,7 +3943,28 @@ def _bump_turn_tool_count(session_id: str) -> int:
     return count
 
 
-def _emit_turn_budget_nudge_once(session_id: str, count: int, budget: int) -> None:
+def _turn_elapsed_seconds(session_id: str) -> int:
+    """Wall-clock seconds since this turn started (the last user-visible action).
+
+    The turn-start monotonic timestamp is stamped lazily on the first tool call
+    of a turn (and cleared every user prompt by
+    :func:`handle_reset_turn_tool_budget`). Returns ``0`` when the start cannot
+    be read/written — the wall-clock dimension then never fires this call rather
+    than crashing the hook.
+    """
+    start_file = _state_file(session_id, _TURN_START_SUFFIX)
+    now = time.monotonic()
+    if start_file.is_file():
+        try:
+            return max(0, int(now - float(start_file.read_text(encoding="utf-8").strip())))
+        except (OSError, ValueError):
+            return 0
+    with contextlib.suppress(OSError):
+        start_file.write_text(repr(now), encoding="utf-8")
+    return 0
+
+
+def _emit_turn_budget_nudge_once(session_id: str, message: str) -> None:
     """Print the yield-to-user nudge at most once per turn (idempotent marker)."""
     nudged_marker = _state_file(session_id, _TURN_NUDGED_SUFFIX)
     if nudged_marker.exists():
@@ -3895,18 +3973,24 @@ def _emit_turn_budget_nudge_once(session_id: str, count: int, budget: int) -> No
         nudged_marker.write_text("1", encoding="utf-8")
     except OSError:
         return
-    print(json.dumps({"additionalContext": _TURN_BUDGET_NUDGE.format(count=count, budget=budget)}))  # noqa: T201
+    print(json.dumps({"additionalContext": message + _TURN_BUDGET_NUDGE_TAIL}))  # noqa: T201
 
 
 def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
-    """PreToolUse: once per turn, nudge the main agent to yield after N tool calls.
+    """PreToolUse: once per turn, nudge the main agent to yield to the user.
 
-    Counts NON-orchestration main-agent tool calls per turn (a fresh
-    ``python3`` process each call, so the count is persisted in a per-session
-    state file). When the count crosses :func:`_orchestrator_turn_budget`, a
-    single ``additionalContext`` line steers the orchestrator to wrap up and
-    yield. Sub-agents are exempt (their turn is their whole job); pure
-    orchestration calls (:func:`_is_orchestration_action` — talking to the
+    TWO responsiveness dimensions fire the same yield nudge (#1733 §2).
+    COUNT — NON-orchestration main-agent tool calls per turn (a fresh
+    ``python3`` process each call, so the count persists in a per-session
+    state file); the nudge fires once the count crosses
+    :func:`_orchestrator_turn_budget`. WALL-CLOCK — seconds elapsed since the
+    turn started (the last user-visible action); the nudge fires once the
+    elapsed wall-clock crosses :func:`_orchestrator_turn_wall_clock_threshold`,
+    independent of how few tool calls the turn made.
+
+    Either crossing nudges at most once per turn (one idempotent marker shared
+    by both dimensions). Sub-agents are exempt (their turn is their whole job);
+    pure orchestration calls (:func:`_is_orchestration_action` — talking to the
     user, dispatching, status posts) are free and never trigger the nudge,
     because yielding is itself orchestration. Advisory only — never a deny, so
     it cannot lock the orchestrator out.
@@ -3915,14 +3999,24 @@ def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
         return
     if _call_is_from_subagent(data) or _is_orchestration_action(data):
         return
-    budget = _orchestrator_turn_budget()
     session_id = data.get("session_id", "")
-    if budget <= 0 or not isinstance(session_id, str) or not session_id:
+    if not isinstance(session_id, str) or not session_id:
+        return
+    budget = _orchestrator_turn_budget()
+    wall_clock_threshold = _orchestrator_turn_wall_clock_threshold()
+    if budget <= 0 and wall_clock_threshold <= 0:
         return
     _ensure_state_dir()
+    elapsed = _turn_elapsed_seconds(session_id)
     count = _bump_turn_tool_count(session_id)
-    if count >= budget:
-        _emit_turn_budget_nudge_once(session_id, count, budget)
+    if budget > 0 and count >= budget:
+        _emit_turn_budget_nudge_once(session_id, _TURN_BUDGET_NUDGE_COUNT.format(count=count, budget=budget))
+        return
+    if wall_clock_threshold > 0 and elapsed >= wall_clock_threshold:
+        _emit_turn_budget_nudge_once(
+            session_id,
+            _TURN_BUDGET_NUDGE_WALL_CLOCK.format(elapsed=elapsed, threshold=wall_clock_threshold),
+        )
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────

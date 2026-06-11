@@ -148,12 +148,12 @@ TASKS = {
     },
 }
 
-# Single auditable kill-switch for the legacy detached ``claude -p`` phase
+# Single auditable kill-switch for the metered detached headless-SDK phase
 # dispatch (``execute_headless_task``). Default OFF: post the 2026-06-15
-# billing change a ``claude -p`` run is metered, so loop-dispatched phase
-# tasks run INTERACTIVE (subscription-covered) via the in-session ``/loop``
-# slot. When OFF, ``execute_headless_task`` refuses to shell ``claude -p``
-# for any ``(role, phase)`` with a registered phase agent and records a
-# ``routing_error`` instead. Flip to ``True`` only to deliberately re-enable
-# metered headless dispatch for loop-dispatched phases.
+# billing change a detached headless-SDK run is metered, so loop-dispatched
+# phase tasks run INTERACTIVE (subscription-covered) via the in-session
+# ``/loop`` slot. When OFF, ``execute_headless_task`` refuses to launch a
+# metered headless-SDK run for any ``(role, phase)`` with a registered phase
+# agent and records a ``routing_error`` instead. Flip to ``True`` only to
+# deliberately re-enable metered headless dispatch for loop-dispatched phases.
 LOOP_ALLOW_HEADLESS_DISPATCH = False

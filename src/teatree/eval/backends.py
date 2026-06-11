@@ -3,14 +3,14 @@
 The eval harness grades an :class:`~teatree.eval.models.EvalRun` regardless of
 HOW the run was produced — the matchers only see captured tool calls and text
 blocks. That makes the *execution* swappable, which matters after the
-2026-06-15 billing change: a ``claude -p`` invocation is metered.
+2026-06-15 billing change: a metered Agent-SDK invocation is billed.
 
 Two backends, one ``EvalRunner`` protocol.
 
-``ClaudePRunner`` (``backend="sdk"``) is the automated path, reserved for the
-CI eval job. CI exports ``ANTHROPIC_API_KEY`` so the metered ``claude -p`` /
-Agent-SDK spend is the accepted, budgeted CI cost (capped per-invocation by
-``--max-budget-usd``).
+:class:`~teatree.eval.sdk_runner.SdkInProcessRunner` (``backend="sdk"``) is the
+automated path, reserved for the CI eval job. It drives ``claude-agent-sdk``
+in-process; the metered Agent-SDK spend is the accepted, budgeted CI cost
+(capped per-invocation by ``max_budget_usd``).
 
 ``SubscriptionTranscriptRunner`` (``backend="subscription"``) is the LOCAL /
 manual path that stays on the subscription. A standalone ``t3 eval run``
@@ -35,9 +35,11 @@ on-disk files only, so the subscription lane never meters.
 from pathlib import Path
 from typing import Protocol
 
+from claude_agent_sdk.types import EffortLevel
+
 from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 
@@ -56,30 +58,46 @@ class UnknownBackendError(ValueError):
     """Raised for a ``--backend`` value outside :data:`KNOWN_BACKENDS`."""
 
 
-def make_runner(
+def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction knob (turns / budget / effort / require / transcript-dir) from the `t3 eval run` CLI; the list IS the backend contract.
     backend: str,
     *,
     max_turns_override: int | None = None,
     transcript_dir: Path | None = None,
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
-    ``"sdk"`` → the metered ``claude -p`` runner. Resolves
+    ``"sdk"`` → the metered in-process Agent-SDK runner. Resolves
     ``CLAUDE_CODE_OAUTH_TOKEN`` first (env wins for CI, else exports it from the
-    ``pass`` store for local) so the host runner's isolated-env copy and the
-    docker pass-through both carry it without a manual ``export``.
+    ``pass`` store for local) so the runner's isolated-env copy and the docker
+    pass-through both carry it without a manual ``export``.
     ``"subscription"`` → the transcript-ingest runner (local, subscription); it
-    never authenticates ``claude -p``, so it does not resolve the token.
+    never authenticates a metered turn, so it does not resolve the token.
 
     ``require_executed`` only affects the sdk runner: it arms the hard-error on a
     missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
     by an unprovisioned CLI. The subscription runner ignores it — its legitimate
     pre-transcript all-skip is caught downstream by :func:`guard_executed`.
+
+    ``max_budget_usd`` is the sdk runner's per-run circuit breaker (default the
+    cheap-lane :data:`~teatree.eval.sdk_runner.MAX_BUDGET_USD`); the subscription
+    runner never meters, so it ignores it.
+
+    ``effort`` is the lane-level representative reasoning effort applied to a
+    scenario that declares no ``model@effort`` of its own (the metered lane runs
+    at a representative effort, not the model's default); the subscription runner
+    ignores it.
     """
     if backend == SDK_BACKEND:
         ensure_oauth_token()
-        return ClaudePRunner(max_turns_override=max_turns_override, require_executed=require_executed)
+        return SdkInProcessRunner(
+            max_turns_override=max_turns_override,
+            require_executed=require_executed,
+            max_budget_usd=max_budget_usd,
+            effort=effort,
+        )
     if backend == SUBSCRIPTION_BACKEND:
         return SubscriptionTranscriptRunner(transcript_dir=transcript_dir or Path.cwd())
     msg = f"unknown eval backend {backend!r}; expected one of {', '.join(KNOWN_BACKENDS)}"

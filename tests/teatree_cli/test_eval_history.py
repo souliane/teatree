@@ -73,11 +73,16 @@ class TestRunPersists(TestCase):
 
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.ClaudePRunner", _stub_runner(outcomes)),
+            patch("teatree.eval.backends.SdkInProcessRunner", _stub_runner(outcomes)),
         ):
             # The sdk runner is what these persistence tests stub; the default
-            # backend is now subscription, so name sdk explicitly.
-            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", *args])
+            # backend is now subscription, so name sdk explicitly. The metered sdk
+            # lane defaults to Docker — T3_EVAL_IN_CONTAINER=1 makes it run
+            # in-process (the in-container path), so these persistence tests grade
+            # the stub runner directly instead of re-routing to a container.
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", *args], env={"T3_EVAL_IN_CONTAINER": "1"}
+            )
         assert "Traceback" not in result.output, result.output
 
     def test_run_records_one_row_per_scenario_with_signals(self) -> None:

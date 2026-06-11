@@ -8,40 +8,26 @@ against a rubric and turns that prose claim RED.
 
 These tests prove the anchor is anti-vacuous: the matcher path leaves the prose
 transcript green, the judge path turns it red, and the compliant transcript
-stays green under the judge.
+stays green under the judge. The captured stream-json fixtures are graded
+through the shared :class:`SubscriptionTranscriptRunner` (same extractors as the
+SDK path), so the runner swap leaves the anchor's contract intact.
 """
 
 from pathlib import Path
-from typing import Any
-from unittest.mock import patch
 
+from teatree.eval.backends import SubscriptionTranscriptRunner
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import JudgeOutcome, evaluate
-from teatree.eval.runner import ClaudePRunner
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SCENARIO = "done_claims_require_artifact_evidence"
 
 
-class _FakeCompleted:
-    def __init__(self, stdout: str) -> None:
-        self.stdout = stdout
-        self.stderr = ""
-        self.returncode = 0
-
-
 def _run_from_fixture(spec: EvalSpec, fixture_name: str, tmp_path: Path):
     text = (FIXTURES / fixture_name).read_text(encoding="utf-8")
-
-    def _fake_run(cmd: list[str], **kwargs: Any) -> _FakeCompleted:
-        return _FakeCompleted(stdout=text)
-
-    with (
-        patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-        patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-    ):
-        return ClaudePRunner(workspace=tmp_path).run(spec)
+    (tmp_path / f"{spec.name}.jsonl").write_text(text, encoding="utf-8")
+    return SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
 
 
 def _verdict_grader(*, passed: bool):

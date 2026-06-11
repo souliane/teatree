@@ -73,10 +73,15 @@ def _main_tool(tool_name: str, **tool_input: object) -> dict:
 
 # Pure-orchestration tools — dispatch, the task ledger, asking/talking to the
 # user, skill loads. The boundary gate must pass them through untouched.
+#
+# NOTE: a BARE foreground ``Agent`` is intentionally NOT in this list — with the
+# #1733 default-ON Agent gate, a foreground Agent dispatch is denied unless it
+# carries an off-ramp (``run_in_background: true`` / ``[fg-ok:]`` / sub-agent
+# context). The background-Agent allow + the foreground-Agent deny are pinned
+# explicitly in ``TestForegroundAgentBoundary`` below.
 _MUST_ALLOW_ORCHESTRATION_TOOLS = [
     "AskUserQuestion",
     "SendMessage",
-    "Agent",
     "Task",
     "TaskCreate",
     "TaskUpdate",
@@ -153,15 +158,25 @@ class TestMustDenyForegroundHeavyWork:
     def test_same_heavy_bash_allowed_in_background(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_bash(command, run_in_background=True)) is False
 
-    def test_foreground_agent_dispatch_denied_when_opt_in_enabled(self, clean_home: Path) -> None:
-        (clean_home / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
-        )
+
+class TestForegroundAgentBoundary:
+    """The #1733 default-ON foreground-Agent boundary (deny + off-ramps)."""
+
+    def test_foreground_agent_dispatch_denied_by_default(self, clean_home: Path) -> None:
+        # No config at all → the gate is ON by its #1733 default → a bare
+        # foreground main-agent Agent dispatch is denied.
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is True
 
     def test_foreground_agent_dispatch_allowed_in_background(self) -> None:
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": True}}
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_foreground_agent_dispatch_allowed_when_kill_switch_set(self, clean_home: Path) -> None:
+        (clean_home / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
+        )
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is False
 
 

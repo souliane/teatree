@@ -6,7 +6,7 @@ from collections.abc import Callable
 from html import escape
 
 from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
-from teatree.eval.models import AnyOf, EvalRun, EvalSpec, ExpectItem, Matcher
+from teatree.eval.models import CAP_TERMINAL_REASONS, AnyOf, EvalRun, EvalSpec, ExpectItem, Matcher
 
 
 @dataclasses.dataclass(frozen=True)
@@ -42,6 +42,14 @@ class ScenarioResult:
         if self.skipped:
             return True
         if self.run.is_error:
+            return False
+        # A cap-truncated run (max_turns/budget/watchdog) NEVER counts as a gate
+        # pass, even when its partial trajectory satisfied every matcher (#2192).
+        # ``_terminal_capped_run`` grades the partial trajectory with
+        # ``is_error=False`` so the reason stays visible (diagnostic), but a run
+        # that emitted the expected early behavior yet never finished must FAIL
+        # the gate — otherwise raising the caps (#19) masks real failures.
+        if self.run.terminal_reason in CAP_TERMINAL_REASONS:
             return False
         if not all(m.passed for m in self.matcher_results):
             return False
