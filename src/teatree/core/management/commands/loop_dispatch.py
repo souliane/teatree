@@ -48,7 +48,7 @@ def _dispatchable_q() -> Q:
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
     ticket = task.ticket
-    model, skill_bundle = _resolve_model_and_bundle(task.phase)
+    model, skill_bundle = _resolve_model_and_bundle(task)
     return {
         "task_id": int(task.pk),
         "ticket_id": int(ticket.pk),
@@ -94,7 +94,7 @@ def _resolve_fanout_directive(task: Task) -> str:
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 
 
-def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
+def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
     Moved out of the ``claude -p`` subprocess (``run_headless``) so the
@@ -108,12 +108,23 @@ def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
     failures degrade to an empty bundle so a dispatch is never blocked on
     resolution — the model then collapses to the phase tier and the slot falls
     back to base skills.
+
+    The task's session id + pk are threaded into ``resolve_spawn_model`` so a
+    situational honesty-critical escalation (teatree#2263) can raise a
+    verification spawn to the most-honest model. Both default to absent on a
+    session-less task → byte-identical to today when no escalation is active.
     """
     from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
     from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
-    skill_bundle = _resolve_skill_bundle(phase)
-    model = resolve_spawn_model(normalize_phase(phase), skills=skill_bundle)
+    skill_bundle = _resolve_skill_bundle(task.phase)
+    session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
+    model = resolve_spawn_model(
+        normalize_phase(task.phase),
+        skills=skill_bundle,
+        session_id=session_id or None,
+        task_id=int(task.pk),
+    )
     return model, skill_bundle
 
 
