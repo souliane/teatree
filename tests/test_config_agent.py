@@ -59,6 +59,11 @@ class TestAgentConfigDefaults:
         assert cfg.fable_enabled is True
         assert cfg.fable_fallback == "opus"
 
+    def test_default_honesty_model_is_fable(self) -> None:
+        # The most-honest model an honesty-critical escalation routes to is Fable
+        # by default (teatree#2263); a one-line config edit retargets it.
+        assert AgentConfig().honesty_model == "fable"
+
 
 class TestFableKillSwitchParse:
     """``[agent] fable_enabled`` / ``fable_fallback`` parsing (teatree#2237)."""
@@ -106,6 +111,35 @@ class TestFableKillSwitchParse:
         resolved = resolve_agent_config(config_path=cfg)
         assert resolved.fable_enabled is True
         assert resolved.fable_fallback == "opus"
+
+
+class TestHonestyModelParse:
+    """``[agent] honesty_model`` parsing (teatree#2263)."""
+
+    def test_honesty_model_parsed(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nhonesty_model = "opus"\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "opus"
+
+    def test_honesty_model_normalised_through_inherit_path(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nhonesty_model = "  fable  "\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+
+    def test_absent_honesty_model_defaults_to_fable(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, "[agent]\nfable_enabled = true\n")
+        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+
+    def test_sentinel_honesty_model_falls_back_to_fable(self, tmp_path: Path) -> None:
+        # An inherit-sentinel value normalises to None → falls back to a concrete
+        # model id (fable), never the sentinel (the escalation must route).
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nhonesty_model = "inherit"\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+
+    def test_missing_file_keeps_fable(self, tmp_path: Path) -> None:
+        assert resolve_agent_config(config_path=tmp_path / "nope.toml").honesty_model == "fable"
 
 
 class TestSkillModelsParse:
