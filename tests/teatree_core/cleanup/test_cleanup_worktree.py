@@ -7,6 +7,7 @@ mock; the shared module-level ``_patch_*`` decorators and the
 ``_no_unpushed``/``_mock_workspace`` helpers are lifted unchanged.
 """
 
+from collections.abc import Iterator
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
@@ -14,11 +15,12 @@ from django.test import TestCase
 
 from teatree.core.cleanup import BranchClassification, BranchCommit, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 
 _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
-_patch_overlay = patch("teatree.core.cleanup.get_overlay")
+_patch_overlay = patch("teatree.core.cleanup.get_overlay_for_worktree")
 _patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
 # Pin the #2205 merged-evidence override to False so tests that set
 # ``commits_absent_from_all_remotes`` to a non-empty list still hit the
@@ -922,3 +924,131 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         assert result.errors == []
         assert "org/repo" in result.label
         assert "org/repo" in str(result)
+
+
+# ---------------------------------------------------------------------------
+# Multi-overlay regression (#295)
+# ---------------------------------------------------------------------------
+
+
+class _NamedOverlay(OverlayBase):
+    """Minimal OverlayBase with a string marker so tests can distinguish instances."""
+
+    def __init__(self, marker: str) -> None:
+        super().__init__()
+        self.marker = marker
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+
+_OVERLAY_A = "overlay-alpha"
+_OVERLAY_B = "overlay-beta"
+
+
+class TestCleanupWorktreeMultiOverlay(TestCase):
+    """Regression: ``cleanup_worktree`` must not call bare ``get_overlay()`` (#295).
+
+    With two overlays installed, ``get_overlay()`` with no name raises
+    ``ImproperlyConfigured: Multiple overlays found``.  The fix derives the
+    overlay from the worktree's own field via ``get_overlay_for_worktree``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _register_both_overlays(self) -> Iterator[None]:
+        self.overlay_a = _NamedOverlay(_OVERLAY_A)
+        self.overlay_b = _NamedOverlay(_OVERLAY_B)
+        registry = {_OVERLAY_A: self.overlay_a, _OVERLAY_B: self.overlay_b}
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=registry):
+            yield
+
+    def _worktree(self, *, overlay: str) -> Worktree:
+        ticket = Ticket.objects.create(
+            overlay=overlay,
+            issue_url=f"https://example.com/issues/295-{overlay}",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay=overlay,
+            repo_path="org/repo",
+            branch="fix-295",
+            extra={"worktree_path": "/tmp/wt/org/repo"},
+        )
+
+    @patch("teatree.core.cleanup.load_config")
+    @patch("teatree.core.cleanup.git")
+    def test_cleanup_worktree_resolves_overlay_from_worktree_field(
+        self,
+        mock_git: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """``cleanup_worktree`` must not raise when multiple overlays are installed.
+
+        Before #295's fix the bare ``get_overlay()`` call on line 528 of
+        ``cleanup.py`` raised ``ImproperlyConfigured: Multiple overlays found``
+        as soon as two overlays were in the registry.  After the fix,
+        ``get_overlay_for_worktree(worktree)`` is called and the correct
+        overlay is selected.
+        """
+        _mock_workspace(mock_config)
+        mock_git.commits_absent_from_all_remotes.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        # cleanup_worktree calls overlay.get_cleanup_steps — wire it on the real instance.
+        self.overlay_a.get_cleanup_steps = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.get_cleanup_steps = lambda wt: []  # type: ignore[method-assign]
+        # Wire reap_worktree_external_resources too.
+        self.overlay_a.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+
+        wt = self._worktree(overlay=_OVERLAY_A)
+        # Must NOT raise ImproperlyConfigured — and must complete successfully.
+        result = cleanup_worktree(wt)
+        assert result.clean is True
+
+    @patch("teatree.core.cleanup.load_config")
+    @patch("teatree.core.cleanup.git")
+    def test_cleanup_worktree_selects_correct_overlay(
+        self,
+        mock_git: MagicMock,
+        mock_config: MagicMock,
+    ) -> None:
+        """The overlay that matches the worktree field is the one whose steps run.
+
+        Each overlay tracks whether its ``get_cleanup_steps`` was called, so the
+        test can assert that overlay-B's steps were invoked and overlay-A's were not.
+        """
+        _mock_workspace(mock_config)
+        mock_git.commits_absent_from_all_remotes.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+
+        a_called: list[bool] = []
+        b_called: list[bool] = []
+
+        def steps_a(wt: Worktree) -> list:
+            a_called.append(True)
+            return []
+
+        def steps_b(wt: Worktree) -> list:
+            b_called.append(True)
+            return []
+
+        self.overlay_a.get_cleanup_steps = steps_a  # type: ignore[method-assign]
+        self.overlay_b.get_cleanup_steps = steps_b  # type: ignore[method-assign]
+        self.overlay_a.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+
+        wt = self._worktree(overlay=_OVERLAY_B)
+        cleanup_worktree(wt)
+
+        assert b_called, "overlay-B's cleanup steps were not invoked"
+        assert not a_called, "overlay-A's cleanup steps were invoked but should not have been"

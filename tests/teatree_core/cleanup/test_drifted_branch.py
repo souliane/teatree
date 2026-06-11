@@ -97,7 +97,7 @@ class _DriftedWorktreeFixture(TestCase):
     def _cleanup(self, worktree: Worktree, *, force: bool = False, pr_merged: bool = False) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -220,7 +220,7 @@ class TestDetachedHeadUnpushedRefuses(_DriftedWorktreeFixture):
 
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -393,7 +393,7 @@ class TestPhantomSlugBranchNotAGitRef(TestCase):
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -507,7 +507,7 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
     def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
@@ -605,7 +605,7 @@ class TestLocalOnlyMatchingTreeNotPruned(TestCase):
     def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
         with (
             patch("teatree.core.cleanup.load_config") as mock_config,
-            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
