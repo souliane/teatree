@@ -1,17 +1,28 @@
 """Tests for teatree.docker.reap — compose-project container + image reaping.
 
 The docker subprocess is the only mocked boundary: a fake ``run_allowed_to_fail``
-records the commands and serves canned ``docker ps`` / ``docker images`` output.
-The label scoping (``com.docker.compose.project=<project>``) is what keeps base
-images and the main-clone deps image safe — compose only labels artifacts it
-built for that project, so they never appear under a removed worktree's project.
+records the commands and serves canned ``docker ps`` / ``docker images`` /
+``docker inspect`` output. The label scoping
+(``com.docker.compose.project=<project>``) is what keeps base images and the
+main-clone deps image safe — compose only labels artifacts it built for that
+project, so they never appear under a removed worktree's project.
 """
 
+from datetime import UTC, datetime
 from subprocess import CompletedProcess
 
 import pytest
 
-from teatree.docker.reap import ReapResult, list_compose_projects, reap_compose_project, reap_orphan_compose_projects
+from teatree.docker.reap import (
+    ReapResult,
+    _parse_docker_timestamp,
+    list_compose_projects,
+    project_last_activity,
+    reap_compose_project,
+    reap_orphan_compose_projects,
+    reap_stale_compose_projects,
+    stale_compose_projects,
+)
 from teatree.utils.run import TimeoutExpired
 
 _LABEL = "com.docker.compose.project"
@@ -44,10 +55,12 @@ class _FakeDocker:
         containers: dict[str, list[str]] | None = None,
         images: dict[str, list[str]] | None = None,
         enumerated: list[str] | None = None,
+        inspect: dict[str, str] | None = None,
     ) -> None:
         self.containers = containers or {}
         self.images = images or {}
         self.enumerated = enumerated or []
+        self.inspect = inspect or {}
         self.removed_containers: list[str] = []
         self.removed_images: list[str] = []
         self.calls: list[list[str]] = []
@@ -58,13 +71,17 @@ class _FakeDocker:
         self.calls.append(cmd)
         return CompletedProcess(cmd, 0, self._stdout(cmd), "")
 
+    def _remove(self, cmd: list[str]) -> str:
+        sink = self.removed_containers if cmd[1] == "rm" else self.removed_images
+        sink.extend(cmd[3:])
+        return "\n".join(cmd[3:]) + "\n"
+
     def _stdout(self, cmd: list[str]) -> str:
-        if cmd[:3] == ["docker", "rm", "-f"]:
-            self.removed_containers.extend(cmd[3:])
-            return "\n".join(cmd[3:]) + "\n"
-        if cmd[:3] == ["docker", "rmi", "-f"]:
-            self.removed_images.extend(cmd[3:])
-            return "\n".join(cmd[3:]) + "\n"
+        if cmd[:3] in (["docker", "rm", "-f"], ["docker", "rmi", "-f"]):
+            return self._remove(cmd)
+        if cmd[:2] == ["docker", "inspect"]:
+            ids = cmd[4:]  # ["docker", "inspect", "--format", <fmt>, *ids]
+            return "\n".join(self.inspect.get(cid, "") for cid in ids) + "\n"
         if _is_enumeration(cmd):
             return "\n".join(self.enumerated) + "\n"
         if cmd[:2] == ["docker", "ps"]:
@@ -225,5 +242,107 @@ class TestReapOrphanComposeProjects:
         results = reap_orphan_compose_projects(live_projects={"live-wt1"})
 
         assert results == []
+        assert fake.removed_containers == []
+        assert fake.removed_images == []
+
+
+# ── Stale-stack reaping (#2207) ──────────────────────────────────────────────
+
+_NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
+_OLD = "2026-06-10T01:00:00.123456789Z"  # 11h before _NOW — past any sane threshold
+_FRESH = "2026-06-10T11:45:00Z"  # 15m before _NOW — must never be reaped
+_ZERO = "0001-01-01T00:00:00Z"  # docker's "never happened" value
+
+
+class TestParseDockerTimestamp:
+    def test_nanosecond_precision_is_parsed(self) -> None:
+        parsed = _parse_docker_timestamp(_OLD)
+        assert parsed == datetime(2026, 6, 10, 1, 0, 0, 123456, tzinfo=UTC)
+
+    def test_zero_value_and_garbage_yield_none(self) -> None:
+        assert _parse_docker_timestamp(_ZERO) is None
+        assert _parse_docker_timestamp("") is None
+        assert _parse_docker_timestamp("not-a-time") is None
+
+
+class TestProjectLastActivity:
+    def test_newest_lifecycle_event_across_containers_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"stack-a": ["c1", "c2"]},
+            inspect={
+                "c1": f"{_OLD}|{_OLD}|{_ZERO}",
+                "c2": f"{_OLD}|{_FRESH}|{_ZERO}",
+            },
+        )
+        _patch(monkeypatch, fake)
+
+        assert project_last_activity("stack-a") == datetime(2026, 6, 10, 11, 45, 0, tzinfo=UTC)
+
+    def test_no_containers_means_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch(monkeypatch, _FakeDocker())
+
+        assert project_last_activity("ghost") is None
+
+
+class TestStaleComposeProjects:
+    def test_old_unowned_stack_is_selected_and_reaped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"abandoned-test": ["c1"]},
+            enumerated=["abandoned-test"],
+            inspect={"c1": f"{_OLD}|{_OLD}|{_OLD}"},
+        )
+        _patch(monkeypatch, fake)
+
+        selected = stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
+        assert selected == ["abandoned-test"]
+
+        results = reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW)
+        assert [r.project for r in results] == ["abandoned-test"]
+        assert fake.removed_containers == ["c1"]
+
+    def test_fresh_unowned_stack_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A parallel session's just-started manual stack must never be torn down."""
+        fake = _FakeDocker(
+            containers={"parallel-test": ["c1"]},
+            enumerated=["parallel-test"],
+            inspect={"c1": f"{_OLD}|{_FRESH}|{_ZERO}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert reap_stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+
+    def test_unknown_age_fails_safe_to_keep(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"mystery": ["c1"]},
+            enumerated=["mystery"],
+            inspect={"c1": f"{_ZERO}|{_ZERO}|{_ZERO}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+
+    def test_live_project_is_never_selected_even_when_old(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"backend-wt5": ["c1"]},
+            enumerated=["backend-wt5"],
+            inspect={"c1": f"{_OLD}|{_OLD}|{_ZERO}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects({"backend-wt5"}, min_age_minutes=240, now=_NOW) == []
+        assert fake.removed_containers == []
+
+    def test_dry_selection_removes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeDocker(
+            containers={"abandoned-test": ["c1"]},
+            enumerated=["abandoned-test"],
+            inspect={"c1": f"{_OLD}|{_OLD}|{_OLD}"},
+        )
+        _patch(monkeypatch, fake)
+
+        assert stale_compose_projects(set(), min_age_minutes=240, now=_NOW) == ["abandoned-test"]
         assert fake.removed_containers == []
         assert fake.removed_images == []

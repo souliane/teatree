@@ -18,6 +18,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
@@ -225,6 +226,9 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+        # #2207: abandoned unowned stacks (age-guarded) are reaped first so
+        # they neither hold host resources nor distort the stack-cap picture.
+        reap_stale_local_stacks(self.stdout.write)
         # #2190: at the cap, reap idle stacks → retry → ENQUEUE (no SystemExit).
         # A queued request (acquire returns False) means the loop's drainer will
         # re-fire ``start`` once a slot frees — so DO NOT advance the FSM here.
