@@ -21,6 +21,7 @@ one-directionally. ``_command_parser`` calls back into here via a lazy import
 (at call time, not module load) so no cycle forms.
 """
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,60 @@ from teatree.hooks._shell_lexer import Token, TokenKind, split_commands
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
 _BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset({"--body-file", "--description-file", "--file"})
+
+# A body value that IS exactly a ``$(cat <path>)`` command substitution. Agents
+# pass a body inline as ``--description "$(cat <path>)"`` / ``--body "$(cat
+# <path>)"``; the lexer keeps the whole quoted value as ONE token with the
+# substitution UNEXPANDED, so the gate would scan the literal ``$(cat ...)``
+# string -- rejecting a clean file and missing a banned term inside it. The
+# path is read so the scan runs against the ACTUAL body. Backticks (``$(cat …)``
+# only -- the modern form) and a single optional ``-- `` are tolerated; the path
+# may be quoted.
+_CAT_SUBST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\$\(\s*cat\s+(?:--\s+)?(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s*\)$",
+)
+
+# A body value that IS exactly a single shell-variable reference (``$VAR`` or
+# ``${VAR}``). Resolved best-effort from the hook subprocess's environment (it
+# inherits the agent's env, the same channel the ``ALLOW_BANNED_TERM`` override
+# reaches the gate through). An absent variable is genuinely unresolvable and
+# fails closed.
+_VAR_REF_RE: Final[re.Pattern[str]] = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
+
+
+def resolve_inline_body_value(value: str, base: Path | None) -> str:
+    """Resolve a ``--description``/``--body`` value's indirection to the real body.
+
+    Three forms are resolved so the banned-terms / quote scan runs against the
+    ACTUAL published body rather than an unexpanded shell token:
+
+    - ``$(cat <path>)`` -- the file content (read via :func:`read_file_arg`,
+        ``base``-relative fallback for the cold-hook reset cwd). An unreadable
+        path yields the fail-closed sentinel.
+    - ``$VAR`` / ``${VAR}`` -- the environment variable's value when present in
+        the hook subprocess env; absent yields the fail-closed sentinel.
+    - anything else -- returned verbatim (a normal inline body).
+
+    A value the resolver returns verbatim that STILL carries an unexpanded
+    command-substitution marker (a mixed ``"prefix $(cat x)"`` the single-form
+    matchers above do not fully resolve) yields the fail-closed sentinel: the
+    embedded substitution's content is unreadable, so passing the literal would
+    let a leak inside it slip. Resolution is never a bypass -- an unresolvable
+    source always fails closed.
+    """
+    cat_match = _CAT_SUBST_RE.match(value)
+    if cat_match is not None:
+        path = cat_match.group("path").strip("'\"")
+        content = read_file_arg(path, base)
+        return content if content is not None else FAIL_CLOSED_SENTINEL
+    var_match = _VAR_REF_RE.match(value)
+    if var_match is not None:
+        resolved = os.environ.get(var_match.group("name"))
+        return resolved if resolved is not None else FAIL_CLOSED_SENTINEL
+    if "$(" in value or "`" in value:
+        return FAIL_CLOSED_SENTINEL
+    return value
+
 
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
     r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
