@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0064_sessionauditrecord"),
+        ("core", "0065_sessionauditrecord"),
     ]
 
     operations = [
