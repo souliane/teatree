@@ -1,19 +1,28 @@
 r"""Token-aware publish/commit/api detection for the pre-publish gates (#1672).
 
 Split out of :mod:`teatree.hooks._command_parser` to keep that module under the
-project's per-file LOC ceiling. This module owns ONE concern: decide, by WORD
-position rather than contiguous substring, whether a Bash command segment is a
-publish surface the gates must scan.
+project's per-file LOC ceiling. This module owns publish-surface DETECTION:
+whether a Bash command segment is a publish the gates must scan. Two layers:
 
-The original detection (:data:`_command_parser._BASH_PUBLISH_SUBSTRINGS`) matches
-CONTIGUOUS substrings (``gh api ``, ``git commit -m``). An interspersed
-persistent flag breaks contiguity, so a real publish slipped detection unseen:
+- the leader-keyed contiguous-substring catalogue
+    (:data:`_LEADER_PUBLISH_SUBSTRINGS`, :func:`segment_is_substring_publish`) --
+    each spelling (``gh pr create``, ``git commit -m``, ``chat.postMessage``)
+    matches ONLY in a segment whose own leading executable is that spelling's
+    owning tool, so a read-only ``grep "glab mr create"`` that merely QUOTES the
+    spelling in an argument is not a publish; and
+- the token-aware per-WORD-position checks below, robust to interspersed
+    persistent flags.
+
+The contiguous-substring detection matches spellings like ``gh api ``,
+``git commit -m``. An interspersed persistent flag breaks contiguity, so a real
+publish would slip the substring detection unseen -- the token-aware checks
+close that:
 
 - ``gh --hostname H api ...`` / ``gh -X POST api ...`` -- a persistent flag
     before the ``api`` sub-command (:func:`segment_is_api_call`);
 - ``git -C <dir> commit -m ...`` / ``git --git-dir=x commit --message ...`` --
     a value-taking global flag before the ``commit`` verb
-    (:func:`segment_is_git_commit_publish`); and
+    (:func:`_segment_is_git_commit_publish`); and
 - ``sh -c "gh ... --body X"`` / ``eval`` / ``ssh host gh`` / ``xargs gh`` -- a
     forge call HIDDEN inside an interpreter argument the body walkers cannot
     descend into (:func:`segment_is_opaque_forge_transport`), which the gates
@@ -49,6 +58,43 @@ _GIT_COMMIT_BODY_ATTACHED: Final[tuple[str, ...]] = ("-m", "-F", "--message=", "
 # arg, an ``eval``/``ssh``/``xargs`` wrapper) is an OPAQUE forge transport the
 # walkers cannot reach -- so the body the post carries is unscannable.
 _PARSEABLE_FORGE_LEADERS: Final[frozenset[str]] = frozenset({"gh", "glab", "git", "curl"})
+
+# Contiguous-substring publish spellings, keyed by the LEADING executable that
+# owns each (the first word of the substring -- ``chat.postMessage`` is a Slack
+# REST endpoint reachable only via ``curl``). A substring is a publish ONLY when
+# it appears in a SEGMENT whose own leading executable (after a benign cd/env
+# prefix) is that leader: a read-only ``grep "glab mr create"`` / ``rg "git
+# commit -m"`` / ``cat | grep "gh issue create"`` merely QUOTES the substring in
+# an argument, so its leader is ``grep``/``rg``/``cat`` -- not a publish. Keying
+# detection to the segment leader closes that recurring false positive without
+# enumerating read-only tools (the inversion: prove the segment IS a forge call,
+# rather than denylist the inspection tools that can quote a forge string).
+_LEADER_PUBLISH_SUBSTRINGS: Final[tuple[tuple[str, str], ...]] = (
+    ("gh", "gh issue create"),
+    ("gh", "gh issue edit"),
+    ("gh", "gh issue comment"),
+    ("gh", "gh pr create"),
+    ("gh", "gh pr edit"),
+    ("gh", "gh pr comment"),
+    ("gh", "gh pr review"),
+    ("glab", "glab issue create"),
+    ("glab", "glab issue update"),
+    ("glab", "glab issue note create"),
+    # ``glab issue note <id>`` (no ``create`` segment) is the real comment
+    # subcommand -- trailing space pins it to the subcommand boundary so
+    # ``glab issue notebook`` would not match.
+    ("glab", "glab issue note "),
+    ("glab", "glab mr create"),
+    ("glab", "glab mr update"),
+    ("glab", "glab mr note create"),
+    ("glab", "glab mr note "),
+    ("git", "git commit -m"),
+    ("git", "git commit --message"),
+    ("git", "git commit -F"),
+    ("git", "git commit --file"),
+    ("git", "git tag --message"),
+    ("curl", "chat.postMessage"),
+)
 
 # Forge-tool markers detected as a SUBSTRING of any token, so a forge call
 # hidden inside a quoted interpreter argument is recognised as a transport.
@@ -187,7 +233,7 @@ def segment_is_api_read(words: list[str]) -> bool:
     return segment_is_api_call(words) and _api_effective_method(words) in _API_READ_METHODS
 
 
-def segment_is_git_commit_publish(words: list[str]) -> bool:
+def _segment_is_git_commit_publish(words: list[str]) -> bool:
     """Return True iff ``words`` is a ``git [global-flags] commit`` with a body flag.
 
     A leading ``cd``/``pushd`` navigation prefix and the value-taking ``git``
@@ -268,6 +314,28 @@ def segment_is_opaque_forge_transport(words: list[str]) -> bool:
     return carries_forge or carries_substitution
 
 
+def segment_is_substring_publish(words: list[str]) -> bool:
+    """Return True iff ``words`` is a publish by the leader-keyed substring catalogue.
+
+    The segment's own leading executable (after a benign ``cd``/``ENV=`` prefix)
+    must equal the leader that owns the matched substring -- so a read-only
+    ``grep "glab mr create"`` / ``cat | grep "gh issue create"`` / ``rg "git
+    commit -m"`` whose leader is ``grep``/``cat``/``rg`` is NOT a publish even
+    though it QUOTES the spelling in an argument. This is the per-segment,
+    leader-keyed replacement for the whole-command flattened substring match that
+    re-emitted quoted argument contents and produced that false positive. The
+    composed per-command form lives in :func:`_command_parser.is_publish_command`,
+    which already iterates segments (mirroring :func:`segment_is_api_write` and
+    the other per-segment predicates).
+    """
+    rest = _strip_cd_env_prefix(words)
+    if not rest:
+        return False
+    leader = rest[0]
+    joined = " ".join(rest)
+    return any(needle in joined for own_leader, needle in _LEADER_PUBLISH_SUBSTRINGS if own_leader == leader)
+
+
 def command_has_token_aware_publish_surface(command: str) -> bool:
     """Return True iff any segment is a token-aware ``api`` WRITE / ``git commit`` publish.
 
@@ -279,7 +347,7 @@ def command_has_token_aware_publish_surface(command: str) -> bool:
     and must not be force-classified as one (#1530).
     """
     return any(
-        segment_is_api_write(words) or segment_is_git_commit_publish(words) for words in segment_word_lists(command)
+        segment_is_api_write(words) or _segment_is_git_commit_publish(words) for words in segment_word_lists(command)
     )
 
 

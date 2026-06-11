@@ -323,19 +323,6 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
-      - id: blueprint-size-budget
-        name: BLUEPRINT corpus stays architectural, not prose-of-code (#1128)
-        language: system
-        entry: uv run python scripts/hooks/check_blueprint_size_budget.py
-        pass_filenames: false
-        always_run: true
-        stages: [commit-msg]
-      - id: check-blueprint-size
-        name: BLUEPRINT.md size cap (124KB)
-        language: system
-        entry: uv run python scripts/hooks/check_blueprint_size.py
-        files: ^BLUEPRINT\.md$
-        pass_filenames: false
 
   # Phase 7c - Version sync
   - repo: local

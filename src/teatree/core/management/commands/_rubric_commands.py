@@ -119,6 +119,26 @@ def parse_grades(grades_json: str) -> list[GradeInput]:
     return grades
 
 
+def clear_honesty_escalation_on_pass(ticket: Ticket) -> None:
+    """Clear the ticket's active honesty escalations on a verified-complete landing (#2263).
+
+    The PRIMARY clear for a :class:`~teatree.core.models.honesty_escalation.HonestyEscalation`:
+    when ``rubric-grade`` records a fully-passed rubric, the ticket landed an
+    honest, verified-complete outcome, so any active escalation for the ticket's
+    sessions is cleared (the TTL is only the safety-net backstop). Keyed to the
+    ticket's session ``agent_id``s. Fail-SAFE: a recording error never blocks the
+    grade command (the grade is already recorded — this is post-success cleanup).
+    """
+    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415
+
+    try:
+        sessions = ticket.sessions.exclude(agent_id="")  # ty: ignore[unresolved-attribute]
+        for agent_id in sessions.values_list("agent_id", flat=True).distinct():
+            HonestyEscalation.mark_cleared(agent_id)
+    except Exception:  # noqa: BLE001
+        return
+
+
 def apply_grades(rubric: Rubric, grades: list[GradeInput], *, grader_identity: str, reviewed_sha: str) -> int:
     """Stamp each grade through the guarded factory; raise on the first refusal.
 
@@ -235,6 +255,8 @@ class RubricCommands(TyperCommand):
             self.stderr.write(f"  rubric-grade refused: {exc}")
             raise SystemExit(1) from exc
         fully_passed = rubric.is_fully_passed_at(reviewed_sha)
+        if fully_passed:
+            clear_honesty_escalation_on_pass(ticket)
         self.stdout.write(f"  graded {graded} criteria on rubric {rubric.pk} (fully passed: {fully_passed})")
         return {
             "ticket_id": int(ticket.pk),
@@ -251,6 +273,7 @@ __all__ = [
     "RubricGradeResult",
     "RubricSetResult",
     "apply_grades",
+    "clear_honesty_escalation_on_pass",
     "parse_criteria",
     "parse_grades",
     "set_rubric",

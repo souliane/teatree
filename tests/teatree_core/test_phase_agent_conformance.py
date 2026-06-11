@@ -7,6 +7,8 @@ never to a single chaining orchestrator. The table is the contract — adding
 ``SUBAGENT_BY_PHASE``.
 """
 
+import ast
+import importlib.util
 import json
 from io import StringIO
 from pathlib import Path
@@ -16,7 +18,14 @@ from django.test import TestCase
 
 from teatree.core.management.commands import loop_dispatch as loop_dispatch_cmd
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.phases import CHAINING_ORCHESTRATOR, SUBAGENT_BY_PHASE, subagent_for_phase
+from teatree.core.phases import (
+    _FANOUT_N_BOUNDS,
+    CHAINING_ORCHESTRATOR,
+    FANOUT_BY_PHASE,
+    SUBAGENT_BY_PHASE,
+    fanout_for_phase,
+    subagent_for_phase,
+)
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScanSignal
 
@@ -170,3 +179,88 @@ class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
                 f"{agent_file} frontmatter 'name:' must equal {name!r} so the Agent tool "
                 f"resolves {subagent!r} dispatched for ({role}, {phase})"
             )
+
+
+class TestFanoutRegistryConformance(TestCase):
+    """``FANOUT_BY_PHASE`` parallels ``SUBAGENT_BY_PHASE`` (teatree#2229).
+
+    A fan-out can only apply to a ``(role, phase)`` pair the loop actually
+    dispatches, so every fan-out key MUST also be a dispatched key — the same
+    no-route conformance shape the orchestrator/subagent maps carry. This
+    forbids an undispatched key (e.g. a ``bughunt`` fan-out before a bughunt
+    phase is registered in ``SUBAGENT_BY_PHASE``).
+    """
+
+    def test_every_fanout_key_is_a_dispatched_pair(self) -> None:
+        orphan = set(FANOUT_BY_PHASE) - set(SUBAGENT_BY_PHASE)
+        assert orphan == set(), (
+            f"FANOUT_BY_PHASE keys must each be a SUBAGENT_BY_PHASE key (a fan-out can "
+            f"only apply to a dispatched (role, phase) pair); orphans: {orphan}"
+        )
+
+    def test_no_bughunt_fanout_until_a_bughunt_phase_is_dispatched(self) -> None:
+        # bughunt is deferred (no bughunt phase in SUBAGENT_BY_PHASE); the
+        # conformance subset above already forbids it, this names the case.
+        bughunt_keys = {(role, phase) for (role, phase) in FANOUT_BY_PHASE if phase == "bughunt"}
+        assert bughunt_keys == set(), (
+            f"bughunt fan-out is deferred until a bughunt phase is registered in "
+            f"SUBAGENT_BY_PHASE; found undispatched bughunt fan-out keys: {bughunt_keys}"
+        )
+
+    def test_default_fanout_n_is_within_bounds(self) -> None:
+        low, high = _FANOUT_N_BOUNDS
+        for key, spec in FANOUT_BY_PHASE.items():
+            assert low <= spec.fanout_n <= high, (
+                f"FANOUT_BY_PHASE[{key}].fanout_n={spec.fanout_n} outside bounds {_FANOUT_N_BOUNDS}"
+            )
+
+    def test_directive_template_substitutes_n(self) -> None:
+        # Every template must consume the {n} placeholder so an int override
+        # actually renders the requested width (not a hard-coded number).
+        for key, spec in FANOUT_BY_PHASE.items():
+            rendered = spec.directive_template.format(n=4)
+            assert "N=4" in rendered or " 4 " in rendered or "4 " in rendered, (
+                f"FANOUT_BY_PHASE[{key}].directive_template must substitute {{n}}; "
+                f"rendered with n=4 it does not surface 4: {rendered!r}"
+            )
+
+    def test_fanout_for_phase_normalizes_short_verb_spelling(self) -> None:
+        # A task stored with the short verb resolves the same as the canonical
+        # gerund (mirrors subagent_for_phase normalization).
+        assert fanout_for_phase("author", "review") is FANOUT_BY_PHASE["author", "reviewing"]
+        assert fanout_for_phase("author", "plan") is FANOUT_BY_PHASE["author", "planning"]
+        assert fanout_for_phase("reviewer", "REVIEWING ") is FANOUT_BY_PHASE["reviewer", "reviewing"]
+
+    def test_fanout_for_phase_returns_none_for_unregistered_pair(self) -> None:
+        assert fanout_for_phase("author", "coding") is None
+        assert fanout_for_phase("author", "shipping") is None
+
+
+class TestCorePhasesImportIsolation(TestCase):
+    """``core.phases`` keeps NO runtime import of ``config_agent`` (teatree#2229).
+
+    The fan-out resolver takes a resolved ``AgentConfig`` as a parameter so the
+    domain ``core`` layer never imports UP into the platform ``config_agent``
+    module at runtime — the ``AgentConfig`` annotation is ``TYPE_CHECKING``-only.
+    tach's layered config would actually permit a domain->platform edge, so this
+    deterministic guard (not tach) is what upholds the decoupling the module's
+    docstring + comment claim.
+    """
+
+    def test_core_phases_has_no_runtime_config_agent_import(self) -> None:
+        spec = importlib.util.find_spec("teatree.core.phases")
+        assert spec is not None
+        assert spec.origin is not None
+        tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))
+        offenders: list[int] = []
+        for stmt in tree.body:
+            if isinstance(stmt, ast.ImportFrom) and (stmt.module or "").startswith("teatree.config_agent"):
+                offenders.append(stmt.lineno)
+            if isinstance(stmt, ast.Import):
+                offenders.extend(
+                    s.lineno for s in [stmt] for alias in stmt.names if alias.name.startswith("teatree.config_agent")
+                )
+        assert offenders == [], (
+            f"core.phases must not import teatree.config_agent at runtime "
+            f"(domain must not depend on platform here); top-level import lines: {offenders}"
+        )

@@ -177,6 +177,32 @@ class TestMustAllow:
         cmd = 'gh pr create -R internalcorp/private-svc --title "feat: acmecorp" --body "acmecorp internal"'
         assert _verdict(cmd, None, config) == "allow"
 
+    def test_clean_description_cat_subst_to_public_repo_allows(self, config: Path, tmp_path: Path) -> None:
+        # A clean ``--description "$(cat <file>)"`` toward a PUBLIC repo must be
+        # READ and ALLOWED -- the resolver scans the cat'd file, not the literal
+        # ``$(cat ...)`` token (which other gates would treat as an unresolved
+        # body and over-block). The companion must-DENY proves the same path
+        # BLOCKS when the file carries a banned term -- resolution is not a hole.
+        body = tmp_path / "body.md"
+        body.write_text("## What\na clean release note about the docs refresh\n", encoding="utf-8")
+        cmd = f'glab mr create -R souliane/teatree --title fix --description "$(cat {body})"'
+        assert _verdict(cmd, None, config) == "allow"
+
+    def test_clean_body_env_var_to_public_repo_allows(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A clean ``--body "$VAR"`` toward a PUBLIC repo, the var present in the
+        # hook env, is resolved + allowed.
+        monkeypatch.setenv("PUBLISH_BODY", "a clean status update")
+        cmd = 'gh pr create -R souliane/teatree --title fix --body "$PUBLISH_BODY"'
+        assert _verdict(cmd, None, config) == "allow"
+
+    def test_read_only_grep_of_publish_tokens_allows(self, config: Path) -> None:
+        # The recurring false positive: a read-only ``grep`` that merely QUOTES
+        # ``glab mr create`` + ``--description`` is NOT a publish, so the gate
+        # does not scan it. ``acmecorp`` in the grep pattern would have blocked
+        # a legitimate inspection command pre-fix.
+        cmd = 'grep -rn "glab mr create" --include="*.py" . | grep -- --description'
+        assert _verdict(cmd, None, config) == "allow"
+
     def test_internal_gh_pr_short_body_file(self, config: Path, tmp_path: Path) -> None:
         # Over-block guard for the ``gh`` short ``-F`` (``--body-file``) form: a
         # private ``-R`` target is skipped before the file body is scanned, so a
@@ -260,6 +286,36 @@ class TestMustDeny:
 
     def test_substitution_public_post_inside_internal_body(self, config: Path) -> None:
         cmd = 'glab mr create -R acme-internal/x --description "$(gh pr create -R souliane/teatree --body acmecorp)"'
+        assert _verdict(cmd, None, config) == "block"
+
+    def test_banned_description_cat_subst_to_public_repo_blocks(self, config: Path, tmp_path: Path) -> None:
+        # The cmd-subst resolver is NOT a hole: a banned term inside the cat'd
+        # file toward a PUBLIC repo is read and BLOCKS, exactly like an inline
+        # ``--description "acmecorp"``.
+        body = tmp_path / "body.md"
+        body.write_text("ship to acmecorp next week\n", encoding="utf-8")
+        cmd = f'glab mr create -R souliane/teatree --title fix --description "$(cat {body})"'
+        assert _verdict(cmd, None, config) == "block"
+
+    def test_banned_body_env_var_to_public_repo_blocks(self, config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The env-var resolver is NOT a hole: a banned term in the resolved
+        # variable toward a PUBLIC repo BLOCKS.
+        monkeypatch.setenv("PUBLISH_BODY", "ship to acmecorp")
+        cmd = 'gh pr create -R souliane/teatree --title fix --body "$PUBLISH_BODY"'
+        assert _verdict(cmd, None, config) == "block"
+
+    def test_unresolvable_description_cat_subst_to_public_repo_fails_closed(self, config: Path) -> None:
+        # A ``$(cat <missing>)`` toward a PUBLIC repo cannot be read, so it fails
+        # closed (the sentinel blocks) rather than slipping an unread body.
+        cmd = 'glab mr create -R souliane/teatree --title fix --description "$(cat /no/such/cat-xyz.md)"'
+        assert _verdict(cmd, None, config) == "block"
+
+    def test_unresolvable_body_env_var_to_public_repo_fails_closed(
+        self, config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A ``$VAR`` absent from the hook env toward a PUBLIC repo fails closed.
+        monkeypatch.delenv("PUBLISH_BODY_ABSENT", raising=False)
+        cmd = 'gh pr create -R souliane/teatree --title fix --body "$PUBLISH_BODY_ABSENT"'
         assert _verdict(cmd, None, config) == "block"
 
     def test_raw_rest_api_to_public(self, config: Path) -> None:

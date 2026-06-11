@@ -91,6 +91,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 40. [Never Slim Skills](#never-slim-skills)
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
+43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
 
 ## Invoke Skills Before ANY Response
 
@@ -701,3 +702,20 @@ Don't let sessions grow unbounded. After completing 3–4 distinct features in o
 ## Skill Auto-Loading Must Work
 
 The user should never have to manually call a teatree or overlay skill. Skills must either auto-load or be explicitly called by the teatree mechanism. When reviewing teatree, check that the hook/autoloading mechanism covers all cases: Django projects auto-load `ac-django`, overlay projects auto-load their overlay skill, lifecycle skills chain-load companions. Fix gaps in the autoloading mechanism rather than documenting manual workarounds.
+
+## Escalate Honesty-Critical Verification to the Most-Honest Model
+
+When ANY of these holds, record an honesty escalation **before the next verification/review/grading spawn**, so that work routes to the most-honest model (today Fable):
+
+1. the user explicitly asks you to be honest;
+2. you judge you have been dishonest;
+3. the user accuses you of lying or of having "successfully failed" a task;
+4. you shipped a job you cannot verify is complete.
+
+Record it with:
+
+```bash
+t3 <overlay> honesty escalate --reason <user_asked|self_assessed_dishonest|accused_of_lying|shipped_incomplete> [--task <id>]
+```
+
+The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → kill-switch → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.

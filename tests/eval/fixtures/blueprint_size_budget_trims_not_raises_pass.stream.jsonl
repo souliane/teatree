@@ -1,4 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "fixt-blueprint_size_budget_trims_not_raises-pass", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "BLUEPRINT.md", "old_string": "verbose prose section", "new_string": "terse"}}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

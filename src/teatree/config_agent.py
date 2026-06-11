@@ -93,6 +93,23 @@ class AgentConfig:
         Default ``"opus"`` (which the tier/cost machinery maps to
         ``claude-opus-4-8``), so Opus 4.8 compatibility is preserved by
         construction. Normalised through :func:`_normalize_model`.
+    *   ``honesty_model`` — the most-honest model a situational honesty-critical
+        escalation routes verification spawns to (teatree#2263). Default
+        ``"fable"`` so "today Fable, tomorrow the most-honest model" is a one-line
+        config edit. Normalised through :func:`_normalize_model`; an absent key
+        or a sentinel value falls back to ``"fable"`` (a concrete model id, never
+        the inherit sentinel — the escalation must route to a real model). The
+        escalation still passes through :func:`teatree.agents.model_tiering._downgrade_fable`,
+        so the ``fable_enabled`` kill-switch reverts an escalated Fable too.
+    *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
+        keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
+        ``bool`` value enables the registry default ``fanout_n`` (``True``) or
+        disables (``False``); an ``int`` value enables and overrides the panel
+        width. Empty by default → ``core.phases.resolve_fanout_directive``
+        renders nothing → dispatch is byte-identical to today until a pair is
+        opted in. Mirrors the ``skill_models`` precedent (a typed
+        ``[agent.phase_fanout]`` sub-table); the int range is validated at
+        directive-render time (``core.phases._resolved_fanout_n``), fail-loud.
     """
 
     skill_models: dict[str, str | None] = field(default_factory=dict)
@@ -100,6 +117,33 @@ class AgentConfig:
     session_effort: str | None = None
     fable_enabled: bool = True
     fable_fallback: str = "opus"
+    phase_fanout: dict[str, bool | int] = field(default_factory=dict)
+    honesty_model: str = "fable"
+
+
+def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
+    """Normalise the ``[agent.phase_fanout]`` table into a ``"role:phase" → opt-in`` map.
+
+    Each value is a ``bool`` (enable at registry default / disable) or an
+    ``int`` (enable + override the panel width). ``bool`` is checked before
+    ``int`` because ``bool`` is an ``int`` subclass — a bare ``true``/``false``
+    must stay a bool, not collapse to ``1``/``0``. A non-table value (a
+    malformed scalar) yields an empty map, and any non-bool/non-int entry value
+    is skipped, matching the ``skill_models`` loader's tolerance. The int range
+    is NOT validated here — it is validated fail-loud at render time
+    (``core.phases._resolved_fanout_n``) so a bad N surfaces with the rendering
+    context, not as a silent drop at parse time.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    resolved: dict[str, bool | int] = {}
+    for pair, opt_in in raw.items():
+        # ``bool | int`` accepts both (``bool`` is an ``int`` subclass); a
+        # ``bool`` value stays a ``bool`` because it is the runtime type, never
+        # coerced to ``1``/``0``. Non-bool/non-int values are skipped.
+        if isinstance(opt_in, bool | int):
+            resolved[str(pair)] = opt_in
+    return resolved
 
 
 def _skill_models_from(raw: object) -> dict[str, str | None]:
@@ -127,6 +171,19 @@ def _fable_fallback_from(raw: object) -> str:
     return _normalize_model(raw) or "opus"
 
 
+def _honesty_model_from(raw: object) -> str:
+    """Normalise the ``[agent] honesty_model`` value to a non-empty model id.
+
+    Shares :func:`_normalize_model`'s boundary (whitespace strip + sentinel
+    handling). An absent key or a sentinel value (which normalises to ``None``)
+    falls back to ``"fable"`` — the escalation target must always be a concrete
+    model id, never the inherit sentinel.
+    """
+    if raw is None:
+        return "fable"
+    return _normalize_model(raw) or "fable"
+
+
 def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
     """Build an :class:`AgentConfig` from the parsed ``[agent]`` table.
 
@@ -140,6 +197,8 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         session_effort=parse_effort(agent.get("session_effort")),
         fable_enabled=bool(agent.get("fable_enabled", True)),
         fable_fallback=_fable_fallback_from(agent.get("fable_fallback")),
+        phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
+        honesty_model=_honesty_model_from(agent.get("honesty_model")),
     )
 
 

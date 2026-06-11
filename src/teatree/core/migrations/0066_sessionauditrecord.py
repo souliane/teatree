@@ -7,7 +7,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0064_rubric_rubriccriterion"),
+        ("core", "0065_honestyescalation"),
     ]
 
     operations = [

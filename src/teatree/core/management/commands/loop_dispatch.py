@@ -16,7 +16,7 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Task
-from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, subagent_for_phase
+from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, resolve_fanout_directive, subagent_for_phase
 
 # The phase → sub-agent authority is the single canonical map in
 # ``teatree.core.phases``. Each author phase dispatches to its OWN agent
@@ -48,7 +48,7 @@ def _dispatchable_q() -> Q:
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
     ticket = task.ticket
-    model, skill_bundle = _resolve_model_and_bundle(task.phase)
+    model, skill_bundle = _resolve_model_and_bundle(task)
     return {
         "task_id": int(task.pk),
         "ticket_id": int(ticket.pk),
@@ -66,10 +66,35 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # user's default tier (no ``--model`` override).
         "model": model,
         "skill_bundle": skill_bundle,
+        # Per-phase fan-out directive (teatree#2229), resolved loop-side beside
+        # model/skill_bundle. Empty string by default (no opt-in) → the slot
+        # appends nothing → byte-identical to today; the chokepoint renders the
+        # directive only when the user opts the ``(role, phase)`` pair in via
+        # ``[agent.phase_fanout]``.
+        "fanout_directive": _resolve_fanout_directive(task),
     }
 
 
-def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
+def _resolve_fanout_directive(task: Task) -> str:
+    """Resolve the fan-out directive for a dispatch, loop-side; empty by default.
+
+    The ``[agent]`` config is read here (the local import keeps ``teatree.core``
+    free of a top-level ``teatree.config_agent`` dependency edge — core is the
+    lower layer, same pattern as ``_resolve_model_and_bundle``'s local import).
+    ``resolve_agent_config`` itself fails-to-defaults on a missing/malformed
+    file (returning ``AgentConfig()`` with an empty ``phase_fanout``), so a
+    config read problem degrades to ``""`` without blocking the dispatch. The
+    chokepoint ``resolve_fanout_directive`` returns ``""`` when the pair has no
+    registered fan-out OR no opt-in — empty until a pair is opted in. An
+    explicitly out-of-range ``N`` raises ``ValueError`` (fail-loud), surfacing
+    the misconfiguration rather than silently dropping it.
+    """
+    from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
+
+    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
+
+
+def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     """Resolve the spawn model tier and skill bundle for a dispatch, loop-side.
 
     Moved out of the detached headless-SDK run (``run_headless``) so the
@@ -83,12 +108,23 @@ def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
     failures degrade to an empty bundle so a dispatch is never blocked on
     resolution — the model then collapses to the phase tier and the slot falls
     back to base skills.
+
+    The task's session id + pk are threaded into ``resolve_spawn_model`` so a
+    situational honesty-critical escalation (teatree#2263) can raise a
+    verification spawn to the most-honest model. Both default to absent on a
+    session-less task → byte-identical to today when no escalation is active.
     """
     from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
     from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
-    skill_bundle = _resolve_skill_bundle(phase)
-    model = resolve_spawn_model(normalize_phase(phase), skills=skill_bundle)
+    skill_bundle = _resolve_skill_bundle(task.phase)
+    session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
+    model = resolve_spawn_model(
+        normalize_phase(task.phase),
+        skills=skill_bundle,
+        session_id=session_id or None,
+        task_id=int(task.pk),
+    )
     return model, skill_bundle
 
 

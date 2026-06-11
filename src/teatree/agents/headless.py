@@ -320,13 +320,23 @@ def _build_options(task: Task, system_context: str, *, phase: str, skills: list[
     cwd = _resolve_task_cwd(task)
     add_dirs = [cwd] if cwd else []
     resume_session_id = _get_resume_session_id(task)
+    # session_id + task pk are threaded so a situational honesty-critical
+    # escalation (teatree#2263) can raise a verification spawn to the most-honest
+    # model; both default absent → byte-identical to today when none is active.
+    escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
     return ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it: a plain-str
         # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
         # used --append-system-prompt), which would drop the Claude Code preset
         # on every production headless run.
         system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
-        model=resolve_spawn_model(phase, skills=skills) or None,
+        model=resolve_spawn_model(
+            phase,
+            skills=skills,
+            session_id=escalation_session_id or None,
+            task_id=int(task.pk),
+        )
+        or None,
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,

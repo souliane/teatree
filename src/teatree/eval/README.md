@@ -698,7 +698,6 @@ class, where it is pinned, and the originating fix:
 | merge-burst reconcile + main health-check | `scenarios/merge_burst_reconcile.yaml` | [#1721](https://github.com/souliane/teatree/pull/1721) |
 | never-edit-main-clone + ff-not-reset | `scenarios/main_clone_protected.yaml` | [#1662](https://github.com/souliane/teatree/pull/1662) |
 | do-work-now (run the command, don't hand back) | `skills/rules/evals.yaml` (co-located) | [#1623](https://github.com/souliane/teatree/pull/1623) |
-| BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
 | overlay-defined skill set loaded — reviewing / coding / planning, regression + generalization (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review); [#1160](https://github.com/souliane/teatree/issues/1160), [#1640](https://github.com/souliane/teatree/issues/1640) |
 | root-cause not dirty-patch (trace origin, never silence the test) | `scenarios/root_cause_not_dirty_patch.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |

@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0066_evalscenarioresult_cost_usd"),
+        ("core", "0067_evalscenarioresult_cost_usd"),
     ]
 
     operations = [

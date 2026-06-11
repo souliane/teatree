@@ -183,11 +183,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
     repo_name = cwd_path.name
     existing = Worktree.objects.filter(branch=branch, repo_path=repo_name).first()
     if existing is not None:
-        extra = existing.extra or {}
-        if extra.get("worktree_path") != str(cwd_path):
-            extra["worktree_path"] = str(cwd_path)
-            existing.extra = extra
-            existing.save(update_fields=["extra"])
+        _refresh_reused_row(existing, branch, cwd_path)
         return existing
 
     ticket = (
@@ -199,7 +195,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
             defaults={"variant": "", "repos": [repo_name]},
         )[0]
     )
-    wt, _wt_created = Worktree.objects.get_or_create(
+    wt, wt_created = Worktree.objects.get_or_create(
         ticket=ticket,
         repo_path=repo_name,
         defaults={
@@ -207,7 +203,34 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
             "extra": {"worktree_path": str(cwd_path)},
         },
     )
+    if not wt_created:
+        _refresh_reused_row(wt, branch, cwd_path)
     return wt
+
+
+def _refresh_reused_row(worktree: Worktree, branch: str, cwd_path: Path) -> None:
+    """Re-point a reused row at the git worktree actually being resolved.
+
+    Both reuse arms above hand back an existing row whose recorded
+    ``branch``/``extra.worktree_path`` may describe a PREVIOUS worktree of
+    the same ticket+repo (the dir was re-created elsewhere, or the work
+    moved to a new branch). ``get_or_create`` ignores its ``defaults`` on
+    reuse, so without this refresh every downstream consumer (run
+    commands, provision steps) keeps acting on the stale path — e.g. a
+    frontend build silently lands in a different ticket's worktree
+    directory while the user is sitting in the current one.
+    """
+    update_fields: list[str] = []
+    if worktree.branch != branch:
+        worktree.branch = branch
+        update_fields.append("branch")
+    extra = worktree.extra or {}
+    if extra.get("worktree_path") != str(cwd_path):
+        extra["worktree_path"] = str(cwd_path)
+        worktree.extra = extra
+        update_fields.append("extra")
+    if update_fields:
+        worktree.save(update_fields=update_fields)
 
 
 def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:

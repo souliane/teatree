@@ -22,6 +22,7 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
+from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
@@ -100,6 +101,7 @@ __all__ = [
     "EvalScenarioResult",
     "EvalVerdict",
     "Finding",
+    "HonestyEscalation",
     "ImplementedIssueMarker",
     "IncomingEvent",
     "IntentClassification",

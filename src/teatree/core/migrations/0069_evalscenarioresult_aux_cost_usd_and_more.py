@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0067_evalscenarioresult_cache_creation_tokens_and_more"),
+        ("core", "0068_evalscenarioresult_cache_creation_tokens_and_more"),
     ]
 
     operations = [
