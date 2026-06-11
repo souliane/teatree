@@ -259,6 +259,8 @@ t3 speak                        # read text aloud on local speakers per [teatree
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
+t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
+t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
