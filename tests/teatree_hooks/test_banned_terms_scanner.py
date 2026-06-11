@@ -471,6 +471,139 @@ class TestBodyFileWriteThenPostResolution:
         assert FAIL_CLOSED_SENTINEL in payload
 
 
+class TestCommandSubstitutionBodyResolution:
+    """A ``--description``/``--body`` ``$(cat <path>)`` resolves to the file content.
+
+    Agents pass a body as ``--description "$(cat <path>)"`` (glab) or
+    ``--body "$(cat <path>)"`` (gh). The gate previously read the literal
+    ``$(cat ...)`` string -- so a clean file was rejected (the literal was
+    not the body) and a banned term inside the file slipped through unread.
+    The resolver reads the cat'd file so the scan runs against the ACTUAL
+    body; an unreadable file fails closed.
+    """
+
+    def test_glab_description_cat_subst_resolves_clean_body(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("a clean release note about the docs refresh\n", encoding="utf-8")
+        cmd = f'glab mr create -R o/r --title t --description "$(cat {body})"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "a clean release note" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_glab_description_cat_subst_carries_banned_term(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("ship to acmecorp soon\n", encoding="utf-8")
+        cmd = f'glab mr create -R o/r --title t --description "$(cat {body})"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_gh_body_cat_subst_resolves_clean_body(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("a clean release note about the docs refresh\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "$(cat {body})"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "a clean release note" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_cat_subst_quoted_path_resolves(self, tmp_path: Path) -> None:
+        body = tmp_path / "spaced body.md"
+        body.write_text("a clean release note here\n", encoding="utf-8")
+        cmd = f"glab mr create -R o/r --title t --description \"$(cat '{body}')\""
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "a clean release note" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_cat_subst_missing_file_fails_closed(self) -> None:
+        cmd = 'glab mr create -R o/r --title t --description "$(cat /no/such/cat-body-xyz.md)"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
+class TestEnvVarBodyResolution:
+    """A ``--description``/``--body`` ``$VAR`` best-effort resolves from the hook env.
+
+    The agent may pass a body via a shell variable
+    (``--description "$BODY"``). The hook subprocess inherits the agent's
+    environment, so a present variable resolves to its value; an absent
+    variable is genuinely unresolvable and fails closed (the gate must scan
+    the real body or block, never read the literal ``$VAR`` token).
+    """
+
+    def test_present_env_var_resolves_clean_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PUBLISH_BODY", "a clean body from an env var")
+        cmd = 'glab mr create -R o/r --title t --description "$PUBLISH_BODY"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "a clean body from an env var" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_present_env_var_carries_banned_term(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PUBLISH_BODY", "ship to acmecorp soon")
+        cmd = 'gh pr create -R o/r --title t --body "$PUBLISH_BODY"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_absent_env_var_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PUBLISH_BODY_ABSENT", raising=False)
+        cmd = 'glab mr create -R o/r --title t --description "$PUBLISH_BODY_ABSENT"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
+class TestReadOnlyCommandsAreNotPublishes:
+    """A read-only command that merely QUOTES a publish substring is NOT a post.
+
+    The contiguous-substring publish detector re-emits every token of the
+    whole command, so a ``grep "glab mr create"`` / ``rg "git commit -m"`` /
+    ``cat | grep "gh issue create"`` argument used to be misread as a real
+    publish -- the recurring false positive that blocked legitimate read-only
+    inspection commands. Detection is keyed to a segment whose LEADING
+    executable is an actual forge/publish tool, so a non-mutating
+    grep/rg/cat/sed/awk/ls/head/tail that mentions the tokens is not scanned.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'grep -rn "glab mr" --include="*.py" . | grep -- --description',
+            'cat somefile | grep "glab mr create" | grep -- --description',
+            'rg "glab mr create" src/',
+            'grep -n "glab mr update" file.py',
+            'sed -n "s/glab mr create/x/" file',
+            'awk "/gh pr create/" file',
+            'ls | grep "gh issue create"',
+            'head -5 file | grep "glab mr note create"',
+            'tail -n 20 log | grep "git commit -m"',
+            'grep -rn "chat.postMessage" src/',
+            'grep -rn "git commit --message" .',
+        ],
+    )
+    def test_read_only_command_is_not_a_publish(self, command: str) -> None:
+        assert _command_parser.is_publish_command(command) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab mr create -R o/r --title t --body x",
+            "cd /wt && glab mr create -R o/r --title t",
+            "gh issue create --title t --body x",
+            'git commit -m "msg"',
+            'git -C /wt commit -m "msg"',
+            "curl -X POST https://slack.com/api/chat.postMessage -d text=hi",
+            "t3 teatree notify send --message x",
+        ],
+    )
+    def test_real_publish_command_stays_detected(self, command: str) -> None:
+        assert _command_parser.is_publish_command(command) is True
+
+
 class TestOverride:
     def test_flag_in_first_segment_bypasses(self) -> None:
         cmd = 'gh issue create --title t --body "acmecorp" --allow-banned-term'
