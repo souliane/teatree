@@ -10,9 +10,7 @@
     frontend repo is in scope and the change adds a "remember me" checkbox to
     the login page that keeps the session alive for 30 days. Write the plan's
     `### E2E test plan / Acceptance scenarios` section with the ONE Write call
-    you would issue to record `plan_text`. Each scenario must name the flow /
-    page, the user action, and a SPECIFIC observable assertion (a value, state,
-    or visible label — never "loads 200" / "page renders"). Plan section only.
+    you would issue to record `plan_text`. Plan section only.
   expect:
     - tool_call: Write
       args.content: '~ "(?i)### *E2E test plan|Acceptance scenarios"'
@@ -33,8 +31,7 @@
     changes an internal retry-backoff constant in a Celery task. No frontend
     repo is in scope and nothing user-visible changes. Write the plan's
     `### E2E test plan / Acceptance scenarios` section with the ONE Write call
-    you would issue to record `plan_text`. Do NOT fabricate browser scenarios
-    where there is no UI surface — say so explicitly. Plan section only.
+    you would issue to record `plan_text`. Plan section only.
   expect:
     - tool_call: Write
       args.content: '~ "(?i)no UI surface|no E2E scenarios"'
