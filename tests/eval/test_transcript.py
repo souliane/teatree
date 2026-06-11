@@ -194,6 +194,21 @@ class TestRequestedModelPresent:
         events = parse_stream_json(stream)
         assert requested_model_present(events, "claude-opus-4-8@xhigh") is True
 
+    def test_short_alias_request_matches_full_model_usage_key(self) -> None:
+        # The documented `--models opus,sonnet,haiku` short aliases must normalize
+        # to their full ids at the comparison chokepoint, or alias matching breaks
+        # (the requested `opus` never matches the `claude-opus-4-8` usage key).
+        stream = '{"type":"result","subtype":"success","model_usage":{"claude-opus-4-8":{"input_tokens":80}}}\n'
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "opus") is True
+
+    def test_short_alias_with_effort_request_matches_full_key(self) -> None:
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":{"claude-sonnet-4-6-20251001":{"input_tokens":80}}}\n'
+        )
+        events = parse_stream_json(stream)
+        assert requested_model_present(events, "sonnet@high") is True
+
     def test_unobservable_model_usage_is_none_not_a_fallback(self) -> None:
         events = parse_stream_json('{"type":"result","subtype":"success"}\n')
         assert requested_model_present(events, "claude-opus-4-8") is None
@@ -238,6 +253,19 @@ class TestExtractModelCostSplit:
         split = extract_model_cost_split(events, "claude-opus-4-8@xhigh")
         assert split.main_cost_usd == pytest.approx(0.5)
         assert split.aux_cost_usd == pytest.approx(0.0)
+
+    def test_short_alias_request_splits_main_from_aux(self) -> None:
+        # A `--models opus` short-alias request must key the `claude-opus-4-8`
+        # usage entry as MAIN, not lump it into AUXILIARY (which would zero the
+        # main cost and double-count the requested model as background).
+        stream = (
+            '{"type":"result","subtype":"success","model_usage":'
+            '{"claude-haiku-4-5":{"costUSD":0.02},"claude-opus-4-8":{"costUSD":0.5}}}\n'
+        )
+        events = parse_stream_json(stream)
+        split = extract_model_cost_split(events, "opus")
+        assert split.main_cost_usd == pytest.approx(0.5)
+        assert split.aux_cost_usd == pytest.approx(0.02)
 
     def test_main_aux_token_split_captured(self) -> None:
         stream = (

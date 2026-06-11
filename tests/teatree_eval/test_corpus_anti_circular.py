@@ -39,11 +39,23 @@ class TestAssertIndependentOracle:
         label = dataclasses.replace(_judge_label(), labelled_by="skills/code", rule_author="skills/code")
         assert_independent_oracle(label)
 
-    def test_both_oracle_with_same_author_passes(self) -> None:
+    def test_both_oracle_same_author_with_judge_present_passes(self) -> None:
+        # ``both`` with a judge actually present introduces an independent grader,
+        # so a same-author label is not circular.
         label = dataclasses.replace(
             _matcher_label(), oracle="both", labelled_by="skills/rules", rule_author="skills/rules"
         )
-        assert_independent_oracle(label)
+        assert_independent_oracle(label, judge_present=True)
+
+    def test_both_oracle_same_author_without_judge_is_refused(self) -> None:
+        # Under the no-judge default, ``both`` grades MATCHER-ONLY — so a same-author
+        # label is exactly as circular as a ``matcher`` oracle and must be refused,
+        # not laundered through the ``both`` bypass.
+        label = dataclasses.replace(
+            _matcher_label(), oracle="both", labelled_by="skills/rules", rule_author="skills/rules"
+        )
+        with pytest.raises(CircularOracleError, match="rule author"):
+            assert_independent_oracle(label, judge_present=False)
 
     def test_empty_rule_author_passes(self) -> None:
         label = dataclasses.replace(_matcher_label(), labelled_by="skills/rules", rule_author="")

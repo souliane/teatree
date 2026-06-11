@@ -150,6 +150,37 @@ class TestLabelAdd:
         assert "REFUSED" in result.output
         assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
 
+    def test_anthropic_api_key_shape_refuses_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A real Anthropic API key `sk-ant-api03-…` has a hyphen after `sk-ant`,
+        # so the generic `sk-[A-Za-z0-9]{16,}` pattern stops at the hyphen and
+        # MISSES it — the default block set must catch the real `sk-ant-` shape.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-anthropic-api")
+        # Assembled at runtime so the source carries no static key literal.
+        key = "sk-ant-api03-" + "A" * 40
+        _write_session(tmp_path, "sess-anthropic-api", _assistant_bash(f"export ANTHROPIC_API_KEY={key}"))
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-anthropic-api", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
+    def test_anthropic_oauth_token_shape_refuses_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Claude Code OAuth token `sk-ant-oat01-…` is the same shape gap.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        corpus_dir = tmp_path / "corpus"
+        _record("sess-anthropic-oat")
+        token = "sk-ant-oat01-" + "B" * 40
+        _write_session(tmp_path, "sess-anthropic-oat", _assistant_bash(f"export CLAUDE_CODE_OAUTH_TOKEN={token}"))
+        result = CliRunner().invoke(app, ["eval", "label", "add", "sess-anthropic-oat", "--dir", str(corpus_dir)])
+        assert result.exit_code == 1, result.output
+        assert "REFUSED" in result.output
+        assert not corpus_dir.exists() or not list(corpus_dir.glob("*"))
+
     def test_active_overlay_redact_term_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
         corpus_dir = tmp_path / "corpus"

@@ -70,14 +70,19 @@ def grade(label: CorpusLabel, events: list[SessionEvent], *, judge: JudgeGrader 
     return evaluate(spec, captured_run(label, events), judge=judge)
 
 
-def assert_independent_oracle(label: CorpusLabel) -> None:
+def assert_independent_oracle(label: CorpusLabel, *, judge_present: bool = False) -> None:
     """Refuse a matcher-only label graded by the same identity that authored the rule.
 
-    A matcher label whose ground-truth labeller equals the rule's author is a
-    circular oracle. A judge/``both`` oracle introduces an independent grader,
-    and a distinct (or absent) author is not circular — both pass.
+    A label graded ONLY by matchers whose ground-truth labeller equals the rule's
+    author is a circular oracle (the label cannot disagree with the rule). The
+    independent grader that breaks the circle is the LLM judge — so the refusal
+    applies to a ``matcher`` oracle AND to a ``both`` oracle graded with no judge
+    present (the no-judge default grades ``both`` matcher-only, so the ``both``
+    label is exactly as circular as a ``matcher`` one). A ``both`` oracle WITH a
+    judge, a pure ``judge`` oracle, and a distinct (or absent) author all pass.
     """
-    if label.oracle != "matcher" or not label.rule_author:
+    matcher_only = label.oracle == "matcher" or (label.oracle == "both" and not judge_present)
+    if not matcher_only or not label.rule_author:
         return
     if _strip_role(label.labelled_by) == _strip_role(label.rule_author):
         msg = (

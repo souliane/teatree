@@ -55,7 +55,12 @@ _PUBLIC_CORPUS_BLOCK_PATTERNS: tuple[str, ...] = (
     r"/home/[^/\s]+",  # Linux host home path (e.g. /home/alice/...)
     r"\bgh[posru]_[A-Za-z0-9]{20,}",  # GitHub PAT / OAuth / refresh / server token
     r"\bgithub_pat_[A-Za-z0-9_]{20,}",  # GitHub fine-grained PAT
-    r"\bsk-[A-Za-z0-9]{16,}",  # OpenAI/Anthropic-style secret key
+    # Anthropic keys/tokens have a hyphen after `sk-ant`, so the generic
+    # `sk-[A-Za-z0-9]{16,}` below (whose char class excludes `-`) stops at the
+    # hyphen and never matches the REAL `sk-ant-api03-…` / `sk-ant-oat01-…` shapes.
+    # Catch them explicitly first, then keep the generic OpenAI-style fallback.
+    r"\bsk-ant-(?:api03|oat01)-[A-Za-z0-9_-]{16,}",  # Anthropic API key / OAuth token
+    r"\bsk-[A-Za-z0-9]{16,}",  # OpenAI-style secret key (generic fallback)
     r"\bxox[baprs]-[A-Za-z0-9-]{10,}",  # Slack token
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----",  # PEM private key block
 )
@@ -148,8 +153,11 @@ def review(
 
 
 def _circular_failure(label: CorpusLabel) -> str | None:
+    # Static validation: a ``both`` label can be graded matcher-only in the
+    # no-judge default lane, so review it as the worst case (no judge present) —
+    # a same-author ``both`` label that would be circular without a judge fails here.
     try:
-        assert_independent_oracle(label)
+        assert_independent_oracle(label, judge_present=False)
     except CircularOracleError as exc:
         return str(exc)
     return None

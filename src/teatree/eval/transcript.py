@@ -45,16 +45,29 @@ _MODEL_COST_KEY = "costUSD"
 #: for fallback detection and the cost split.
 _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 
+#: The documented short aliases (`--models opus,sonnet,haiku`, README/app.py) map
+#: onto their full base ids. A requested tag may arrive as a short alias, so it is
+#: normalized UP to the canonical full id at the same chokepoint a dated
+#: ``model_usage`` key is normalized DOWN — otherwise ``opus`` never matches the
+#: ``claude-opus-4-8`` usage key and fallback detection / the cost split break.
+_SHORT_ALIAS_TO_BASE: dict[str, str] = {
+    "opus": "claude-opus-4-8",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
+}
+
 
 def _base_model_id(model: str) -> str:
-    """Normalize a model id to its base form: drop an ``@effort`` tag and a ``-YYYYMMDD`` date suffix.
+    """Normalize a model id to its base form: short alias, ``@effort`` tag, and ``-YYYYMMDD`` date suffix.
 
-    The requested tag is ``model[@effort]`` (effort is not a model); a
-    ``model_usage`` key is the dated model id. Both sides normalize through here
-    so a dated ``model_usage`` key matches an undated requested model.
+    The requested tag is ``model[@effort]`` (effort is not a model) and may be a
+    documented short alias (``opus``/``sonnet``/``haiku``); a ``model_usage`` key
+    is the dated full model id. Both sides normalize through here — short aliases
+    are mapped UP to the canonical full id, the date suffix is stripped — so a
+    short-alias or dated request matches the full ``model_usage`` key.
     """
-    base = model.split("@", 1)[0]
-    return _DATE_SUFFIX_RE.sub("", base)
+    base = _DATE_SUFFIX_RE.sub("", model.split("@", 1)[0])
+    return _SHORT_ALIAS_TO_BASE.get(base, base)
 
 
 @dataclasses.dataclass(frozen=True)

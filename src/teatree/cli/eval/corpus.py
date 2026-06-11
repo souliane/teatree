@@ -138,7 +138,7 @@ def grade_entries(
 
 def _grade_row(label: CorpusLabel, *, directory: Path, judge: JudgeGrader | None) -> CorpusGradeRow:
     try:
-        assert_independent_oracle(label)
+        assert_independent_oracle(label, judge_present=judge is not None)
     except CircularOracleError:
         return CorpusGradeRow(entry_id=label.entry_id, oracle=label.oracle, verdict="fail", detail=_CIRCULAR_NOTE)
     if label.oracle == "judge" and judge is None:
