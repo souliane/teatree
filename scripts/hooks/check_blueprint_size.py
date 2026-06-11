@@ -4,9 +4,9 @@ The BLUEPRINT is architectural, not a prose mirror of the code. The
 companion #1128 corpus-budget gate sets per-file soft budgets that only
 fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
-file changes and exceeds 116 KB.
+file changes and exceeds 117 KB.
 
-Threshold: 116 KB (116 * 1024 bytes). The hook is scoped to commits
+Threshold: 117 KB (117 * 1024 bytes). The hook is scoped to commits
 that touch ``BLUEPRINT.md`` (via ``files:`` in
 ``.pre-commit-config.yaml``), so it gates every growth event without
 re-running on unrelated commits. Escape hatch:
@@ -42,7 +42,15 @@ _BLUEPRINT_FILE = "BLUEPRINT.md"
 # Raised 115 -> 116 KB: #2240 (planner E2E section) + #2241 (rubric-gate appendix)
 # merged in one wave; each passed the absolute cap alone but combined main to
 # 117,788 B (28 B over 115 KB) — the merge-order size fork. Restores headroom.
-_THRESHOLD_BYTES = 116 * 1024
+# Raised 116 -> 117 KB (#2229): the selective per-phase fan-out registry
+# (`core.phases.FANOUT_BY_PHASE` + `resolve_fanout_directive` chokepoint) and
+# its `[agent.phase_fanout]` opt-in (the §5 dispatch payload field `fanout_directive`
+# + config) — a new declarative registry + a new dispatch-payload field, legit
+# architecture. The §5 paragraph (registry, chokepoint+dependency-direction,
+# default-OFF spine, route-b/deferred-route-a, both injection points, the
+# route-invariance composer guard) is ~1.8 KB of irreducible architecture once
+# trimmed; stacked on #2240+#2241's 116 KB after rebasing onto main it lands at 117 KB.
+_THRESHOLD_BYTES = 117 * 1024
 _OVERRIDE_ENV_VAR = "T3_BLUEPRINT_SIZE_OVERRIDE"
 
 

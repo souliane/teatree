@@ -196,6 +196,78 @@ class TestComposesWithPhaseModels:
         assert resolved.skill_models == {"code-review": "opus"}
 
 
+class TestPhaseFanoutParse:
+    """``[agent.phase_fanout]`` opt-in parsing (teatree#2229)."""
+
+    def test_bool_opt_in_parsed_as_bool(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.phase_fanout]\n"reviewer:reviewing" = true\n"author:planning" = false\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.phase_fanout == {"reviewer:reviewing": True, "author:planning": False}
+        # bool must stay bool, never collapse to 1/0 (bool is an int subclass).
+        assert resolved.phase_fanout["reviewer:reviewing"] is True
+        assert resolved.phase_fanout["author:planning"] is False
+
+    def test_int_opt_in_overrides_width(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.phase_fanout]\n"author:planning" = 5\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.phase_fanout == {"author:planning": 5}
+        assert resolved.phase_fanout["author:planning"] == 5
+
+    def test_out_of_bounds_int_is_not_rejected_at_parse_time(self, tmp_path: Path) -> None:
+        # Parse keeps the value; the out-of-range guard is fail-loud at render
+        # time (core.phases._resolved_fanout_n), so the misconfiguration
+        # surfaces with the rendering context, not silently dropped at parse.
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.phase_fanout]\n"author:planning" = 9\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.phase_fanout == {"author:planning": 9}
+
+    def test_absent_phase_fanout_is_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        assert resolve_agent_config(config_path=cfg).phase_fanout == {}
+
+    def test_non_table_phase_fanout_falls_back_to_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nphase_fanout = "oops"\n')
+        assert resolve_agent_config(config_path=cfg).phase_fanout == {}
+
+    def test_non_bool_non_int_entry_values_are_skipped(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(
+            cfg,
+            '[agent.phase_fanout]\n"reviewer:reviewing" = true\n"author:planning" = "nonsense"\n',
+        )
+        # The string value is tolerated and skipped (matches skill_models
+        # tolerance), the valid bool survives.
+        assert resolve_agent_config(config_path=cfg).phase_fanout == {"reviewer:reviewing": True}
+
+    def test_composes_with_phase_models_and_skill_models(self, tmp_path: Path) -> None:
+        # The user's real config shape: phase_fanout alongside the existing
+        # skill_models + phase_models sub-tables, all under [agent].
+        cfg = tmp_path / ".teatree.toml"
+        _write(
+            cfg,
+            "[agent]\n"
+            'session_model = "fable"\n'
+            'phase_models.planning = "fable"\n'
+            "[agent.skill_models]\n"
+            'code-review = "opus"\n'
+            "[agent.phase_fanout]\n"
+            '"reviewer:reviewing" = true\n'
+            '"author:planning" = 4\n',
+        )
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.session_model == "fable"
+        assert resolved.skill_models == {"code-review": "opus"}
+        assert resolved.phase_fanout == {"reviewer:reviewing": True, "author:planning": 4}
+
+    def test_default_config_has_empty_phase_fanout(self) -> None:
+        assert AgentConfig().phase_fanout == {}
+
+
 class TestMalformedAndMissing:
     def test_missing_file_returns_defaults(self, tmp_path: Path) -> None:
         assert resolve_agent_config(config_path=tmp_path / "nope.toml") == AgentConfig()
