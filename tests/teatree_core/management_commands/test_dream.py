@@ -11,13 +11,15 @@ import datetime as dt
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, LoopLease, MiniLoopMarker
 from teatree.loops.dream.engine import DreamRunResult
-from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LOOP_NAME
+from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
 
 
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
@@ -73,6 +75,41 @@ class DreamDryRunTestCase(TestCase):
         assert called["dry_run"] is True
         assert not DreamRunMarker.objects.exists()
         assert ConsolidatedMemory.objects.count() == 0
+
+    def test_dry_run_writes_no_marker_when_engine_raises(self) -> None:
+        # A dry-run promises "no rows or marker written" — even an attempt
+        # marker must not be stamped when the engine raises under --dry-run.
+        stdout = StringIO()
+        with patch(
+            "teatree.loops.dream.engine.run_consolidation",
+            side_effect=RuntimeError("engine boom"),
+        ):
+            call_command("dream", "run", "--dry-run", stdout=stdout)
+        assert "FAIL" in stdout.getvalue()
+        assert not DreamRunMarker.objects.exists()
+
+
+class DreamLeaseTtlTestCase(TestCase):
+    def test_run_acquires_lease_sized_to_the_pass_budget(self) -> None:
+        # The default 120s lease would expire under a wall-clock-capped pass and
+        # let a concurrent pass win the CAS. The command must size the lease to
+        # the pass budget so "no two overlapping passes" holds for the whole pass.
+        captured: dict[str, object] = {}
+        real_acquire = LoopLease.objects.acquire
+
+        def _spy(name: str, *, owner: str, lease_seconds: int = 120) -> bool:
+            captured["name"] = name
+            captured["lease_seconds"] = lease_seconds
+            return real_acquire(name, owner=owner, lease_seconds=lease_seconds)
+
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch.object(type(LoopLease.objects), "acquire", side_effect=_spy),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+
+        assert captured["name"] == DREAM_LEASE_NAME
+        assert captured["lease_seconds"] == DREAM_LEASE_SECONDS
 
 
 class DreamInFlightLockTestCase(TestCase):
@@ -142,3 +179,27 @@ class DreamSinceTestCase(TestCase):
         since = captured["since"]
         assert isinstance(since, dt.datetime)
         assert since == dt.datetime(2026, 6, 1, tzinfo=dt.UTC)
+
+    def test_naive_since_is_normalized_to_aware(self) -> None:
+        # `--since 2026-06-01` (no tz) would flow into the USE_TZ engine as a
+        # naive datetime and TypeError on comparison with timezone.now().
+        captured: dict[str, object] = {}
+
+        def _capture(*, overlay: str, since: dt.datetime | None, dry_run: bool) -> DreamRunResult:
+            captured["since"] = since
+            return _ok_result()
+
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_capture):
+            call_command("dream", "run", "--since", "2026-06-01", stdout=StringIO())
+
+        since = captured["since"]
+        assert isinstance(since, dt.datetime)
+        assert timezone.is_aware(since)
+
+    def test_malformed_since_raises_command_error(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation") as engine,
+            pytest.raises(CommandError),
+        ):
+            call_command("dream", "run", "--since", "not-a-date", stdout=StringIO())
+        engine.assert_not_called()

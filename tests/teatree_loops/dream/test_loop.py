@@ -10,16 +10,19 @@ fan-out (``build_registry_jobs``) and the orchestrator's normal dispatch.
 """
 
 import datetime as dt
-from unittest.mock import MagicMock
+import inspect
+from dataclasses import replace
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.loop_lease_manager import LoopLeaseManager
 from teatree.core.models import MiniLoopMarker
 from teatree.loops.base import MiniLoop
 from teatree.loops.config import LoopsConfig
-from teatree.loops.dream.loop import DREAM_LOOP_NAME, MINI_LOOP
+from teatree.loops.dream.loop import DREAM_LEASE_SECONDS, DREAM_LOOP_NAME, DREAM_PASS_BUDGET_SECONDS, MINI_LOOP
 from teatree.loops.fanout import build_registry_jobs
 from teatree.loops.orchestrator import Orchestrator
 from teatree.loops.orchestrator import TickRequest as OrchestratorTickRequest
@@ -72,12 +75,18 @@ class DreamLoopRegistrationTestCase(TestCase):
         assert "dream" in names
 
     def test_dream_excluded_from_live_tick_fanout(self) -> None:
+        # An off-live-tick loop must NOT be marked fired by the live tick — its
+        # cadence ledger is owned by its own cron. The anti-vacuous contrast:
+        # the SAME loop without the skip flag IS fired by the live fan-out.
         MiniLoopMarker.objects.all().delete()
-        jobs = build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
-        assert all(job.overlay != "dream" for job in jobs)
-        # An off-live-tick loop must NOT be marked fired by the live tick —
-        # its cadence ledger is owned by its own cron.
+        build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
         assert not MiniLoopMarker.objects.filter(name="dream").exists()
+
+        MiniLoopMarker.objects.all().delete()
+        live_dream = replace(MINI_LOOP, off_live_tick=False)
+        with patch("teatree.loops.fanout.iter_loops", return_value=[live_dream]):
+            build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
+        assert MiniLoopMarker.objects.filter(name="dream").exists()
 
     def test_dream_excluded_from_orchestrator_dispatch(self) -> None:
         MiniLoopMarker.objects.all().delete()
@@ -104,3 +113,15 @@ class OffLiveTickFieldTestCase(TestCase):
     def test_default_off_live_tick_is_false(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=lambda **_: [])
         assert loop.off_live_tick is False
+
+
+class DreamLeaseSizingTestCase(TestCase):
+    def test_lease_outlives_the_pass_budget(self) -> None:
+        # A default 120s lease would expire mid-pass and let a concurrent pass
+        # win the CAS. The lease must outlive the longest pass so "no two
+        # overlapping passes" holds.
+        assert DREAM_LEASE_SECONDS > DREAM_PASS_BUDGET_SECONDS
+
+    def test_lease_exceeds_the_acquire_default(self) -> None:
+        default_ttl = inspect.signature(LoopLeaseManager.acquire).parameters["lease_seconds"].default
+        assert default_ttl < DREAM_LEASE_SECONDS

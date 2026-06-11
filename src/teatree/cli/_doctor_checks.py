@@ -253,8 +253,10 @@ def _check_dream_staleness() -> bool:
     alarm keys on the last *successful* run (``DreamRunMarker.is_stale``, 48h):
     a run that keeps failing bumps only the attempt timestamp, so staleness
     keeps firing, and bootstrap (never succeeded) is stale by construction. A
-    fresh successful run (``t3 dream run``) clears it. Mirrors the
-    SelfUpdateMarker/MiniLoopMarker-style marker-staleness alarms.
+    fresh successful pass clears it; the remedy points at scheduling
+    ``t3 dream tick`` (which advances the cadence ledger) rather than a one-off
+    ``t3 dream run``. Mirrors the SelfUpdateMarker/MiniLoopMarker-style
+    marker-staleness alarms.
 
     Crash-proof: any error (DB offline, unmigrated self-DB) degrades to OK so a
     doctor run never aborts on this check — same posture as the other
@@ -272,7 +274,8 @@ def _check_dream_staleness() -> bool:
     if not stale:
         return True
     typer.echo(
-        "WARN  Dream consolidation is stale — no successful `t3 dream run` in 48h. "
-        "Memories pile up unpromoted; run `t3 dream run` to consolidate (#1933).",
+        "WARN  Dream consolidation is stale — no successful pass in 48h. "
+        "Memories pile up unpromoted; schedule `t3 dream tick` (~04:00 cron) so "
+        "the cadence ledger advances, not just a one-off `t3 dream run` (#1933).",
     )
     return False

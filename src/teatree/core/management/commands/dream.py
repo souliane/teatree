@@ -57,7 +57,7 @@ class Command(TyperCommand):
 
         from teatree.core.models import DreamRunMarker, LoopLease, MiniLoopMarker  # noqa: PLC0415
         from teatree.loops.config import LoopsConfig  # noqa: PLC0415
-        from teatree.loops.dream.loop import DREAM_LEASE_NAME, MINI_LOOP  # noqa: PLC0415
+        from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, MINI_LOOP  # noqa: PLC0415
         from teatree.loops.gating import elapsed_and_enabled  # noqa: PLC0415
 
         now = timezone.now()
@@ -68,7 +68,7 @@ class Command(TyperCommand):
                 return
 
         owner = f"pid-{os.getpid()}"
-        if not LoopLease.objects.acquire(DREAM_LEASE_NAME, owner=owner):
+        if not LoopLease.objects.acquire(DREAM_LEASE_NAME, owner=owner, lease_seconds=DREAM_LEASE_SECONDS):
             self.stdout.write("SKIP  another dream pass is already running — dream-tick lease held.")
             return
 
@@ -95,7 +95,9 @@ class Command(TyperCommand):
         except Exception as exc:  # noqa: BLE001
             # A failed pass bumps only the attempt timestamp — staleness keeps
             # firing until a clean run lands (the alarm IS the fallback signal).
-            DreamRunMarker.objects.mark_attempted(now)
+            # A dry-run writes nothing, marker included, even on engine raise.
+            if not dry_run:
+                DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
             return
 
@@ -114,8 +116,23 @@ class Command(TyperCommand):
 
 
 def _parse_since(raw: str) -> dt.datetime | None:
-    """Parse the ``--since`` ISO-8601 string; empty → ``None`` (engine default)."""
+    """Parse the ``--since`` ISO-8601 string; empty → ``None`` (engine default).
+
+    A naive value (``--since 2026-06-01``) is normalized to the current
+    timezone so the ``USE_TZ`` engine never compares naive against aware. A
+    malformed value raises ``CommandError`` instead of a raw traceback.
+    """
+    from django.core.management.base import CommandError  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415
+
     value = raw.strip()
     if not value:
         return None
-    return dt.datetime.fromisoformat(value)
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        msg = f"--since is not a valid ISO-8601 datetime: {value!r}"
+        raise CommandError(msg) from exc
+    if timezone.is_naive(parsed):
+        return timezone.make_aware(parsed)
+    return parsed

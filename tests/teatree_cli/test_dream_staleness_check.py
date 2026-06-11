@@ -10,6 +10,7 @@ marker-staleness alarms.
 import datetime as dt
 import io
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -53,3 +54,23 @@ class DreamStalenessOutputTestCase(TestCase):
         out = buf.getvalue()
         assert "WARN" in out
         assert "dream" in out.lower()
+
+
+class DreamStalenessCrashTestCase(TestCase):
+    def test_is_stale_crash_degrades_to_ok_with_warn(self) -> None:
+        # A DB read error (offline / unmigrated self-DB) must never abort the
+        # doctor run — it degrades to True with a WARN naming the crash.
+        buf = io.StringIO()
+        with (
+            patch.object(
+                DreamRunMarker.objects,
+                "is_stale",
+                side_effect=RuntimeError("db offline"),
+            ),
+            redirect_stdout(buf),
+        ):
+            result = _check_dream_staleness()
+        assert result is True
+        out = buf.getvalue()
+        assert "WARN" in out
+        assert "RuntimeError" in out

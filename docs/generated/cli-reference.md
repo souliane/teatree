@@ -6522,8 +6522,15 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 
  Upsert the DB override row for *key* to the JSON-parsed *value*.
 
- Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` and a *value* that
- is not valid JSON, leaving the store untouched on either error.
+ Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
+ not valid JSON, and a *value* that JSON-parses but is invalid for the
+ setting's type, leaving the store untouched on any error.
+
+ The type check runs the **same** registry parser the resolver applies on
+ read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
+ bool-typed setting is rejected here, at WRITE time, so a value that would
+ raise on every later config resolution can never be stored. Validating
+ on write is what keeps a bad row from bricking all reads.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key        TEXT  UserSettings field name (must be overridable).         │
