@@ -377,6 +377,38 @@ require_rubric_verification = true
 
         assert get_effective_settings().require_rubric_verification is True
 
+    def test_overlay_can_override_require_spec_coverage(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#2232: spec-coverage DoD gate is per-overlay overridable.
+
+        A spec-heavy overlay can require every acceptance criterion to carry a
+        backing test before a ticket reaches DELIVERED while the global default
+        stays off — runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
+        registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "specheavy")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+require_spec_coverage = false
+
+[overlays.specheavy]
+class = "x.y:Z"
+require_spec_coverage = true
+""",
+        )
+
+        assert get_effective_settings().require_spec_coverage is True
+
     def test_overlay_can_override_orchestrator_bash_gate_enabled(
         self,
         config_file: Path,
