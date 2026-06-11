@@ -3,6 +3,41 @@
 import django.db.models.deletion
 import django.utils.timezone
 from django.db import migrations, models
+from django.db.backends.base.schema import BaseDatabaseSchemaEditor
+from django.db.migrations.state import ProjectState
+
+# db_table this migration owns — kept as one constant so the existence guard and
+# the CreateModel option below cannot drift apart.
+_AUDIT_TABLE = "teatree_session_audit"
+
+
+class CreateModelIfTableAbsent(migrations.CreateModel):
+    """``CreateModel`` that no-ops the DB create when the table already exists.
+
+    The ``teatree_session_audit`` table was renamed-then-renumbered while two
+    migration forks were healed (``0064_`` -> ``0065_`` -> ``0066_sessionauditrecord``,
+    #2192). A persistent DB that applied an earlier name recorded that old label
+    AND already holds the table, so the renamed migration looks pending and a
+    plain ``CreateModel`` re-run raises ``table "teatree_session_audit" already
+    exists``. This subclass keeps the model in migration STATE (so the
+    autodetector and ``makemigrations --check`` stay clean and the model is
+    registered) while skipping the DATABASE create when the table is present —
+    idempotent for a fresh DB, a recorder-only no-op for any old-name DB. Reuses
+    Django's own ``CreateModel.database_forwards`` for the create path, so there
+    is no hand-written SQL to drift from the model definition.
+    """
+
+    def database_forwards(
+        self,
+        app_label: str,
+        schema_editor: BaseDatabaseSchemaEditor,
+        from_state: ProjectState,
+        to_state: ProjectState,
+    ) -> None:
+        existing = set(schema_editor.connection.introspection.table_names(schema_editor.connection.cursor()))
+        if _AUDIT_TABLE in existing:
+            return
+        super().database_forwards(app_label, schema_editor, from_state, to_state)
 
 
 class Migration(migrations.Migration):
@@ -11,7 +46,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.CreateModel(
+        CreateModelIfTableAbsent(
             name="SessionAuditRecord",
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
@@ -43,7 +78,7 @@ class Migration(migrations.Migration):
                 ),
             ],
             options={
-                "db_table": "teatree_session_audit",
+                "db_table": _AUDIT_TABLE,
                 "ordering": ["-audited_at"],
                 "indexes": [
                     models.Index(fields=["session_id", "audited_at"], name="session_audit_session_idx"),
