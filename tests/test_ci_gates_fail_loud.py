@@ -6,9 +6,9 @@ that never runs so the diff gate has nothing to catch. Each test here pins the
 loud-on-failure shape of a CI YAML gate so a future edit that re-introduces the
 skip-as-pass / fail-open swallow turns red HERE.
 
-The script-level fail-loud fixes (banned-terms, blueprint-size, blueprint
-cross-PR, doc-update, mutation-diff) have their RED tests beside their own
-modules; this file covers the gates whose contract lives in the workflow YAML.
+The script-level fail-loud fixes (banned-terms, blueprint cross-PR,
+doc-update, mutation-diff) have their RED tests beside their own modules;
+this file covers the gates whose contract lives in the workflow YAML.
 """
 
 from pathlib import Path

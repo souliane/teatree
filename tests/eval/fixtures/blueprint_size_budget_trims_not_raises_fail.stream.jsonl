@@ -1,4 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "fixt-blueprint_size_budget_trims_not_raises-fail", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "BLUEPRINT_SIZE_OVERRIDE=1 git commit -am wip", "description": "override"}}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
