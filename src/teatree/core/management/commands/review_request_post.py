@@ -2,16 +2,21 @@
 
 The post-half of #1084/#1094. One classifier-legible transaction:
 
-1.  #1094 ``review_request_guard`` live-channel dedup (``resolve_guard_target``
-    + ``should_post_review_request`` — the latter takes the atomic
-    ``ReviewRequestPost`` claim internally). ``suppress`` → no post.
-2.  #960 ``require_on_behalf_approval`` — the single chokepoint. No recorded,
+1.  ``resolve_guard_target`` — resolves the postable review channel. When it
+    returns ``None`` (e.g. a Slack Connect channel the bot token cannot post
+    to — #2231), a bot→user DM draft is sent via ``notify_user`` and the
+    command exits with ``action=draft`` / ``reason=no_review_channel_or_token``
+    (exit 0). No channel post is made; no dedup claim is taken.
+2.  #1094 ``review_request_guard`` live-channel dedup
+    (``should_post_review_request`` — takes the atomic ``ReviewRequestPost``
+    claim internally). ``suppress`` → no post.
+3.  #960 ``require_on_behalf_approval`` — the single chokepoint. No recorded,
     unconsumed, exactly-scoped ``OnBehalfApproval`` → ``OnBehalfPostBlockedError``
     (its ``str`` already names the exact ``t3 review approve-on-behalf``
     remediation). On that refusal the just-created guard claim is rolled
     back (Risk-c: an orphan claim would make every future legitimate post
     suppress with ``already_claimed`` forever).
-3.  Only then post to the review channel, persist the permalink record.
+4.  Only then post to the review channel, persist the permalink record.
 
 ``action``/``target`` are the canonical strings, derived once via
 ``canonical_mr_url`` so the dedup claim and the #960 approval scope are

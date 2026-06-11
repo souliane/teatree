@@ -94,7 +94,8 @@ This is the **only** sanctioned post path. **Never** post a review request with 
 
 - runs `review_request_check`'s live-channel dedup internally and prints `{"action": "suppress", ...}` + exits 0 with **no post** on a live duplicate;
 - requires a matching, unconsumed, exactly-scoped #960 `OnBehalfApproval`. With none it prints the exact `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <id>` remediation, refuses (`{"action": "refused", "reason": "on_behalf_not_approved"}`, exit 2), and **rolls back** the dedup claim so a later approved retry is not wedged;
-- on success posts once, consumes the approval (single-use), writes the #960 audit row, records the permalink, and prints `{"action": "post", "permalink": ...}`.
+- on success posts once, consumes the approval (single-use), writes the #960 audit row, records the permalink, and prints `{"action": "post", "permalink": ...}`;
+- when the review channel is unpostable (e.g. a Slack Connect channel that requires a user xoxp token the bot doesn't hold), emits a bot→user DM draft the user can forward manually and prints `{"action": "draft", "reason": "no_review_channel_or_token", ...}` + exits 0. **No channel post is made.** Surface the DM to the user so they can forward the review request; do not treat this as a silent success.
 
 The user records the approval (no terminal required) with `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <their-id>`; then re-run the post command. `--approver` is the user id that recorded it. The approver can never be the executing agent/loop (maker≠checker, enforced at record time).
 
