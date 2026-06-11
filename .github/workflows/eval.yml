@@ -151,7 +151,7 @@ jobs:
         run: uv run t3 eval all --backend "$EVAL_BACKEND" --html eval-report.html || true
       - name: Upload the HTML eval report
         if: always() && steps.gate.outputs.run_eval == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: eval-report
           path: eval-report.html
