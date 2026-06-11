@@ -1,27 +1,38 @@
 """``t3 eval run`` multi-trial (pass@k) and model-matrix execution paths.
 
 Held apart from the single-trial ``run`` body in :mod:`teatree.cli.eval.app`: a
-multi-trial / matrix run always shells the metered sdk runner and aggregates
-across trials/models, a distinct concern from the default single-pass grade.
+multi-trial / matrix run always drives the metered in-process sdk runner and
+aggregates across trials/models, a distinct concern from the default
+single-pass grade.
 """
 
 import json
 import sys
 
 import typer
+from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.run_modes import (
+    DEFAULT_COST_REGRESSION_TOLERANCE,
+    RegressionGates,
     RunGuards,
-    gate_run_regressions,
     persist_matrix_run,
     persist_pass_at_k_run,
     with_model,
 )
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
+from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
+
+#: How many extra attempts a single matrix/benchmark cell gets after its first
+#: failure. A clean-room scenario is idempotent (re-running costs only extra
+#: metered $), so a bounded retry rides out a transient CLI non-zero exit —
+#: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
+#: ERRORED so the rest of the comparison table is still produced.
+MAX_MATRIX_CELL_RETRIES = 2
 
 
 def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
@@ -34,15 +45,30 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     persist: bool = False,
     baseline: bool = False,
     gate_regressions: bool = False,
+    gate_cost_regression: bool = False,
+    cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> bool:
-    """Run the pass@k path; return ``True`` when any scenario failed or regressed."""
+    """Run the pass@k path; return ``True`` when any scenario failed or regressed.
+
+    ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
+    ``METERED_DEFAULT_EFFORT`` calibration). It is the runner-wide default applied
+    to scenarios that declare no ``model@effort`` of their own; a scenario's own
+    tag still wins at the runner's per-scenario seam.
+    """
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
+    runner = SdkInProcessRunner(
+        max_turns_override=max_turns,
+        require_executed=require_executed,
+        max_budget_usd=max_budget_usd,
+        effort=effort,
+    )
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
         return evaluate(spec, runner.run(spec), judge=grader)
@@ -80,11 +106,15 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )
     regressed = False
+    cost_regressed = False
     if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
         record = persist_pass_at_k_run(results, model=model_name, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    failed = any(not r.ok for r in results) or regressed
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
+            record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
+        )
+    failed = any(not r.ok for r in results) or regressed or cost_regressed
     if failed and model_override is None:
         sys.exit(1)
     return failed
@@ -101,20 +131,28 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     persist: bool,
     baseline: bool,
     gate_regressions: bool,
+    gate_cost_regression: bool = False,
+    cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
+    max_budget_usd: float = float(MAX_BUDGET_USD),
+    effort: EffortLevel | None = None,
 ) -> None:
-    """Run the suite once per model and render a per-model comparison."""
-    model_list = [m.strip() for m in models.split(",") if m.strip()]
-    if not model_list:
-        typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
-        raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
-    rows: list[MatrixRow] = []
-    for model in model_list:
-        for spec in specs:
-            scoped = with_model(spec, model)
-            rows.append(_matrix_trial(runner, scoped, trials=trials, require=require, grader=grader))
+    """Run the suite once per model and render a per-model comparison.
+
+    ``effort`` is the resolved lane-level reasoning effort (the ``--effort`` /
+    ``METERED_DEFAULT_EFFORT`` calibration), the runner-wide default for scenarios
+    declaring no ``model@effort``. A matrix variant's own ``model@effort`` tag (and
+    a scenario's own) still win over this lane default at the runner's seam.
+    """
+    model_list = parse_model_tags(models)
+    runner = SdkInProcessRunner(
+        max_turns_override=max_turns,
+        require_executed=require_executed,
+        max_budget_usd=max_budget_usd,
+        effort=effort,
+    )
+    rows = collect_matrix_rows(specs, model_list, runner=runner, trials=trials, require=require, grader=grader)
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
@@ -123,15 +161,114 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed
     )
     regressed = False
+    cost_regressed = False
     if persist:
         record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    if any(not row.passed and not row.skipped for row in rows) or regressed:
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
+            record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
+        )
+    # An errored cell is NOT a graded FAIL, but the lane still exits non-zero on
+    # it for visibility — a transient blip should be seen, just not counted as a
+    # model failure in the comparison.
+    failed = any(not row.passed and not row.skipped and not row.errored for row in rows)
+    errored = any(row.errored for row in rows)
+    if failed or errored or regressed or cost_regressed:
         sys.exit(1)
 
 
+def parse_model_tags(models: str) -> list[str]:
+    """Parse ``--models`` into validated variant tags, or exit 2 with the parse error.
+
+    Each entry is a ``model[@effort]`` variant (`teatree.eval.model_variant`);
+    the rendered tag is the identity string the matrix/benchmark machinery
+    threads through ``MatrixRow.model`` and the run-store ledger.
+    """
+    try:
+        variants = parse_model_variants(models)
+    except ModelVariantError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    if not variants:
+        typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
+        raise typer.Exit(code=2)
+    return [variant.tag for variant in variants]
+
+
+def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benchmark CLI flag through the shared loop.
+    specs: list[EvalSpec],
+    model_tags: list[str],
+    *,
+    runner: SdkInProcessRunner,
+    trials: int,
+    require: str,
+    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+) -> list[MatrixRow]:
+    """Run every scenario against every variant tag — the shared matrix/benchmark loop.
+
+    Each cell goes through :func:`_resilient_matrix_trial`, so one cell's
+    transient runner exception is isolated (retried, then recorded as an ERRORED
+    row) and never aborts the whole comparison — the full table is always
+    produced.
+    """
+    return [
+        _resilient_matrix_trial(runner, with_model(spec, tag), trials=trials, require=require, grader=grader)
+        for tag in model_tags
+        for spec in specs
+    ]
+
+
+def _resilient_matrix_trial(
+    runner: SdkInProcessRunner,
+    spec: EvalSpec,
+    *,
+    trials: int,
+    require: str,
+    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+) -> MatrixRow:
+    """Run one cell with bounded retries; on persistent failure, an ERRORED row.
+
+    Only an *unexpected* ``Exception`` from the runner is caught — a genuine SDK
+    error the single-scenario ``t3 eval run`` path re-raises (``run()`` keeps
+    that fail-loud). ``KeyboardInterrupt``/``SystemExit`` are ``BaseException``s
+    and propagate; ``typer.Exit`` subclasses ``RuntimeError`` (an ``Exception``)
+    but is a control-flow signal, so it is re-raised explicitly rather than
+    isolated. (``_TerminalResultError``/``TimeoutError`` are already handled
+    inside ``run()`` and never reach here.) After :data:`MAX_MATRIX_CELL_RETRIES`
+    retries still fail, the cell is logged loudly to stderr and recorded
+    ``errored=True`` so the rest of the matrix survives.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(MAX_MATRIX_CELL_RETRIES + 1):
+        try:
+            return _matrix_trial(runner, spec, trials=trials, require=require, grader=grader)
+        except typer.Exit:
+            raise
+        except Exception as exc:  # noqa: BLE001 — isolate THIS cell; genuine errors already re-raised in run().
+            last_exc = exc
+            print(  # noqa: T201 — loud per-attempt visibility on stderr, never swallowed.
+                f"WARNING cell {spec.name} @ {spec.model} attempt {attempt + 1}/"
+                f"{MAX_MATRIX_CELL_RETRIES + 1} raised: {exc}",
+                file=sys.stderr,
+            )
+    print(  # noqa: T201 — give-up record is loud; the cell becomes ERRORED, not lost.
+        f"ERROR cell {spec.name} @ {spec.model} failed after {MAX_MATRIX_CELL_RETRIES + 1} attempts: {last_exc}",
+        file=sys.stderr,
+    )
+    return MatrixRow(
+        scenario=spec.name,
+        model=spec.model,
+        passed=False,
+        score=0.0,
+        trials=1,
+        skipped=False,
+        cost_usd=0.0,
+        errored=True,
+    )
+
+
 def _matrix_trial(
-    runner: ClaudePRunner,
+    runner: SdkInProcessRunner,
     spec: EvalSpec,
     *,
     trials: int,
@@ -147,8 +284,17 @@ def _matrix_trial(
             score=0.0 if result.skipped else result.pass_rate,
             trials=result.trials,
             skipped=result.skipped,
+            cost_usd=result.cost_usd,
+            usage=result.usage,
+            fell_back=_fell_back(signal=result.fell_back),
+            terminal_reason=result.terminal_reason,
+            main_cost_usd=result.main_cost_usd,
+            aux_cost_usd=result.aux_cost_usd,
+            main_usage=result.main_usage,
+            aux_usage=result.aux_usage,
         )
     scenario_result = evaluate(spec, runner.run(spec), judge=grader)
+    run = scenario_result.run
     return MatrixRow(
         scenario=spec.name,
         model=spec.model,
@@ -156,4 +302,23 @@ def _matrix_trial(
         score=0.0 if scenario_result.skipped else (1.0 if scenario_result.passed else 0.0),
         trials=1,
         skipped=scenario_result.skipped,
+        cost_usd=run.cost_usd,
+        usage=run.usage,
+        fell_back=_fell_back(signal=run.fell_back),
+        terminal_reason=run.terminal_reason,
+        main_cost_usd=run.main_cost_usd,
+        aux_cost_usd=run.aux_cost_usd,
+        main_usage=run.main_usage,
+        aux_usage=run.aux_usage,
     )
+
+
+def _fell_back(*, signal: bool | None) -> bool:
+    """Collapse the run's requested-model-presence ``fell_back`` signal onto the cell.
+
+    The run carries ``True`` (the requested main model was substituted), ``False``
+    (it was present — a haiku auxiliary beside it is NORMAL, not a fallback), or
+    ``None`` (subscription/offline — unobservable). An unobservable cell is NOT a
+    fallback, so ``None`` collapses to ``False``.
+    """
+    return signal is True

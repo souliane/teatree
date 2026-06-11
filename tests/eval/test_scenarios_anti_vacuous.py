@@ -24,17 +24,17 @@ A YAML that ships without an anti-vacuous fail fixture is silently
 toothless, so this test runs on every PR.
 """
 
-import dataclasses
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from teatree.eval.backends import SubscriptionTranscriptRunner
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.report import evaluate
-from teatree.eval.runner import ClaudePRunner
+from teatree.eval.sdk_runner import load_agent_definition
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -65,24 +65,10 @@ def _fixtureless_behavioral_specs() -> list[EvalSpec]:
     ]
 
 
-@dataclasses.dataclass
-class _FakeCompleted:
-    stdout: str
-    stderr: str = ""
-    returncode: int = 0
-
-
 def _run_against_fixture(spec: EvalSpec, fixture_text: str, tmp_path: Path) -> bool:
     """Return ``True`` when the scenario passed against ``fixture_text``."""
-
-    def _fake_run(cmd: list[str], **kwargs: Any) -> _FakeCompleted:
-        return _FakeCompleted(stdout=fixture_text)
-
-    with (
-        patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-        patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-    ):
-        run = ClaudePRunner(workspace=tmp_path).run(spec)
+    (tmp_path / f"{spec.name}.jsonl").write_text(fixture_text, encoding="utf-8")
+    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 
@@ -248,7 +234,7 @@ def test_every_declared_agent_section_resolves_against_its_skill() -> None:
     for spec in discover_specs():
         if not spec.agent_sections:
             continue
-        text = ClaudePRunner._load_agent_definition(spec.agent_path)
+        text = load_agent_definition(spec.agent_path)
         try:
             extract_sections(text, spec.agent_sections)
         except MissingSectionError as exc:

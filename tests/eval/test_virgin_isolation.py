@@ -1,38 +1,36 @@
 """The core eval harness must run ``claude`` in a virgin environment.
 
-Both entry points that shell out to ``claude -p`` — ``ClaudePRunner`` (produces
-a run) and ``ClaudeJudge`` (grades one) — must isolate the child process from
-the developer's personal context: ``~/.claude/CLAUDE.md``, auto-memory, and the
+Both entry points that drive the Agent SDK — ``SdkInProcessRunner`` (produces a
+run) and ``ClaudeJudge`` (grades one) — must isolate the child process from the
+developer's personal context: ``~/.claude/CLAUDE.md``, auto-memory, and the
 project ``CLAUDE.md`` discovered from the parent cwd. A leak biases every real
 eval result (the agent passes by remembering a rule, not because a gate fires).
 
 The isolation is provided by a non-inherited ``env`` whose ``HOME`` points at a
-``.claude``-free directory plus a neutral ``cwd`` that is not the parent's cwd
-(belt), reinforced by the explicit ``--settings``, ``--strict-mcp-config``,
-``--system-prompt`` and ``--add-dir`` flags the command already carries
-(suspenders). The command must NOT carry ``--bare``: in claude-code 2.x
-``--bare`` forces "Anthropic auth is strictly ANTHROPIC_API_KEY … OAuth and
-keychain are never read", so it disables ``CLAUDE_CODE_OAUTH_TOKEN`` auth — the
-exact auth the metered sdk lane uses (we have no ``sk-ant-api03`` API key). The
-absence is asserted here so a future edit cannot reintroduce the flag and
-silently break metered execution back to ``$0 / no tool calls``.
+``.claude``-free directory plus a neutral ``cwd`` (belt), reinforced by the SDK
+options' clean-room flags: ``setting_sources=[]`` (no user/project/local
+settings), a plain-string ``system_prompt`` (the scenario's own definition, not
+the ``claude_code`` preset), and an empty ``settings`` (no hooks) (suspenders).
+The options must carry ``setting_sources=[]`` so a future edit cannot reintroduce
+the developer's settings and silently bias a result; a planted ``CLAUDE.md`` is
+asserted unreachable through the constructed env.
 """
 
+import asyncio
 import os
 import shutil
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk import ResultMessage
 
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.eval.runner import ClaudePRunner
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-CREDENTIAL_VARS = ("ANTHROPIC_API_KEY", "PATH")
+from teatree.eval.sdk_runner import SdkInProcessRunner
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -75,26 +73,32 @@ def _judge_run() -> EvalRun:
     )
 
 
-class _FakeCompleted:
-    def __init__(self, stdout: str = "") -> None:
-        self.stdout = stdout
-        self.stderr = ""
-        self.returncode = 0
+def _result(*, structured_output: Any = None) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=5,
+        duration_api_ms=4,
+        is_error=False,
+        num_turns=1,
+        session_id="s1",
+        total_cost_usd=0.001,
+        result="ok",
+        structured_output=structured_output,
+    )
 
 
-class _Seen:
-    """Captures the ``env`` and ``cwd`` the harness passes to the child process."""
+def _capturing_query(messages: list[Any]) -> tuple[Any, dict[str, Any]]:
+    """A ``query`` stand-in recording the options (env/cwd/setting_sources/system_prompt)."""
+    captured: dict[str, Any] = {}
 
-    def __init__(self) -> None:
-        self.env: dict[str, str] | None = None
-        self.cwd: str | None = None
+    async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+        await asyncio.sleep(0)
+        captured["prompt"] = prompt
+        captured["options"] = options
+        for message in messages:
+            yield message
 
-    def capture(self, cmd: list[str], **kwargs: object) -> _FakeCompleted:
-        env = kwargs.get("env")
-        cwd = kwargs.get("cwd")
-        self.env = dict(env) if isinstance(env, dict) else None
-        self.cwd = cwd if isinstance(cwd, str) else None
-        return _FakeCompleted(stdout='{"type":"result","subtype":"success"}\n')
+    return _query, captured
 
 
 class TestIsolatedClaudeEnv:
@@ -113,7 +117,7 @@ class TestIsolatedClaudeEnv:
     def test_preserves_credential_and_path_vars(self) -> None:
         sentinel = {"ANTHROPIC_API_KEY": "sk-test-sentinel", "PATH": os.environ.get("PATH", "/usr/bin")}
         with patch.dict(os.environ, sentinel, clear=False), isolated_claude_env() as (env, _cwd):
-            for var in CREDENTIAL_VARS:
+            for var in ("ANTHROPIC_API_KEY", "PATH"):
                 assert env.get(var) == os.environ.get(var)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-sentinel"
 
@@ -135,117 +139,69 @@ class TestIsolatedClaudeEnv:
 
 
 class TestRunnerIsolation:
-    def test_command_omits_bare_flag_so_oauth_token_auth_works(self, tmp_path: Path) -> None:
-        # --bare forces ANTHROPIC_API_KEY-only auth (OAuth + keychain never read),
-        # which kills CLAUDE_CODE_OAUTH_TOKEN auth — the metered lane's only auth.
-        # Isolation is provided by isolated_claude_env + the explicit flags below.
-        spec = _runner_spec(tmp_path)
-        captured: dict[str, object] = {}
-
-        def _fake_run(cmd, **kwargs):
-            captured["cmd"] = list(cmd)
-            captured["kwargs"] = kwargs
-            return _FakeCompleted(stdout='{"type":"result","subtype":"success"}\n')
-
+    def _run(self, spec: EvalSpec, tmp_path: Path) -> dict[str, Any]:
+        query, captured = _capturing_query([_result()])
         with (
-            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
         ):
-            ClaudePRunner(workspace=tmp_path).run(spec)
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        return captured
 
-        assert "--bare" not in captured["cmd"]
-        # The isolation --bare used to provide is still carried explicitly:
-        assert "--strict-mcp-config" in captured["cmd"]
-        assert "--settings" in captured["cmd"]
-        assert "--system-prompt" in captured["cmd"]
+    def test_options_carry_empty_setting_sources(self, tmp_path: Path) -> None:
+        # setting_sources=[] is the clean-room flag: no user/project/local
+        # settings reach the child, so the developer's context can't bias a run.
+        captured = self._run(_runner_spec(tmp_path), tmp_path)
+        assert captured["options"].setting_sources == []
 
-    def test_invoke_passes_sanitized_env_and_neutral_cwd(self, tmp_path: Path) -> None:
-        spec = _runner_spec(tmp_path)
-        seen = _Seen()
+    def test_options_use_plain_system_prompt_not_preset(self, tmp_path: Path) -> None:
+        captured = self._run(_runner_spec(tmp_path), tmp_path)
+        system_prompt = captured["options"].system_prompt
+        assert isinstance(system_prompt, str)
+        assert system_prompt.startswith("# fake skill")
+        assert captured["options"].settings == '{"hooks":{}}'
 
-        with (
-            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False),
-            patch("teatree.utils.run.subprocess.run", side_effect=seen.capture),
-        ):
-            ClaudePRunner(workspace=tmp_path).run(spec)
+    def test_options_carry_sanitized_env_and_neutral_cwd(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False):
+            captured = self._run(_runner_spec(tmp_path), tmp_path)
+        options = captured["options"]
+        assert options.env["HOME"] != "/parent/home"
+        assert not (Path(options.env["HOME"]) / ".claude").exists()
+        assert Path(options.cwd) != Path.cwd()
 
-        assert seen.env is not None, "runner must pass an explicit env to the child claude process"
-        assert seen.env["HOME"] != "/parent/home"
-        assert not (Path(seen.env["HOME"]) / ".claude").exists()
-        assert seen.cwd is not None, "runner must pass a neutral cwd to the child claude process"
-        assert Path(seen.cwd) != Path.cwd()
-
-    def test_invoke_preserves_api_key_in_env(self, tmp_path: Path) -> None:
-        spec = _runner_spec(tmp_path)
-        captured_env: dict[str, str] = {}
-
-        def _fake_run(cmd, **kwargs):
-            captured_env.update(kwargs["env"])
-            return _FakeCompleted(stdout='{"type":"result","subtype":"success"}\n')
-
-        with (
-            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-runner"}, clear=False),
-            patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-        ):
-            ClaudePRunner(workspace=tmp_path).run(spec)
-
-        assert captured_env["ANTHROPIC_API_KEY"] == "sk-runner"
+    def test_options_preserve_api_key_in_env(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-runner"}, clear=False):
+            captured = self._run(_runner_spec(tmp_path), tmp_path)
+        assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-runner"
 
 
 class TestJudgeIsolation:
-    def test_command_omits_bare_flag_so_oauth_token_auth_works(self) -> None:
-        # Same auth constraint as the runner: the judge also authenticates via
-        # CLAUDE_CODE_OAUTH_TOKEN, which --bare would disable.
-        captured: dict[str, object] = {}
-
-        def _fake_run(cmd, **kwargs):
-            captured["cmd"] = list(cmd)
-            captured["kwargs"] = kwargs
-            return _FakeCompleted(stdout="PASS ok")
-
+    def _grade(self) -> dict[str, Any]:
+        query, captured = _capturing_query([_result(structured_output={"verdict": "PASS", "reason": "ok"})])
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
-            patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
+            patch("teatree.eval.judge.query", query),
         ):
             ClaudeJudge().grade(_judge_spec(), _judge_run())
+        return captured
 
-        assert "--bare" not in captured["cmd"]
-        assert "--strict-mcp-config" in captured["cmd"]
-        assert "--settings" in captured["cmd"]
+    def test_options_carry_empty_setting_sources(self) -> None:
+        captured = self._grade()
+        assert captured["options"].setting_sources == []
+        assert captured["options"].settings == '{"hooks":{}}'
 
-    def test_grade_passes_sanitized_env_and_neutral_cwd(self) -> None:
-        seen = _Seen()
+    def test_options_carry_sanitized_env_and_neutral_cwd(self) -> None:
+        with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False):
+            captured = self._grade()
+        options = captured["options"]
+        assert options.env["HOME"] != "/parent/home"
+        assert not (Path(options.env["HOME"]) / ".claude").exists()
+        assert Path(options.cwd) != Path.cwd()
 
-        with (
-            patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
-            patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False),
-            patch("teatree.utils.run.subprocess.run", side_effect=seen.capture),
-        ):
-            ClaudeJudge().grade(_judge_spec(), _judge_run())
-
-        assert seen.env is not None, "judge must pass an explicit env to the child claude process"
-        assert seen.env["HOME"] != "/parent/home"
-        assert not (Path(seen.env["HOME"]) / ".claude").exists()
-        assert seen.cwd is not None, "judge must pass a neutral cwd to the child claude process"
-        assert Path(seen.cwd) != Path.cwd()
-
-    def test_grade_preserves_api_key_in_env(self) -> None:
-        captured_env: dict[str, str] = {}
-
-        def _fake_run(cmd, **kwargs):
-            captured_env.update(kwargs["env"])
-            return _FakeCompleted(stdout="PASS ok")
-
-        with (
-            patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-judge"}, clear=False),
-            patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
-        ):
-            ClaudeJudge().grade(_judge_spec(), _judge_run())
-
-        assert captured_env["ANTHROPIC_API_KEY"] == "sk-judge"
+    def test_options_preserve_api_key_in_env(self) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-judge"}, clear=False):
+            captured = self._grade()
+        assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-judge"
 
 
 CANARY = "T3-CANARY-DO-NOT-LEAK-7f3a2b"
@@ -270,6 +226,34 @@ class TestCanaryNeverReachesChild:
             assert not (child_home / ".claude" / "CLAUDE.md").exists()
             assert Path(cwd) != project
             assert not (Path(cwd) / "CLAUDE.md").exists()
+
+    def test_planted_claude_md_does_not_reach_runner_options(self, tmp_path: Path, monkeypatch) -> None:
+        # End-to-end clean room: with a biasing CLAUDE.md planted under a fake
+        # HOME and the project cwd, the runner's options point HOME/cwd away from
+        # both AND carry setting_sources=[] — the planted context is unreachable.
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / "CLAUDE.md").write_text(CANARY, encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text(CANARY, encoding="utf-8")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.chdir(project)
+
+        spec = _runner_spec(tmp_path)
+        query, captured = _capturing_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=project).run(spec)
+
+        options = captured["options"]
+        assert options.setting_sources == []
+        assert Path(options.env["HOME"]) != fake_home
+        assert not (Path(options.env["HOME"]) / ".claude" / "CLAUDE.md").exists()
+        assert Path(options.cwd) != project
+        assert CANARY not in options.system_prompt
 
     @pytest.mark.skipif(
         shutil.which("claude") is None or not os.environ.get("ANTHROPIC_API_KEY"),
@@ -304,6 +288,6 @@ class TestCanaryNeverReachesChild:
             max_turns=1,
             tools=(),
         )
-        result = ClaudePRunner(workspace=project).run(spec)
+        result = SdkInProcessRunner(workspace=project).run(spec)
         assert CANARY not in result.raw_stdout
         assert CANARY not in result.raw_stderr

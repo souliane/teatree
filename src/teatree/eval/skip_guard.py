@@ -57,8 +57,10 @@ def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
         return
     msg = (
         f"sdk eval run executed {executed} scenario(s) but metered $0.00 (no metered "
-        "calls). A metered run that bills nothing never actually executed — `claude -p` "
-        "made zero tool calls, almost always an auth failure (CLAUDE_CODE_OAUTH_TOKEN "
-        "not reaching the CLI). This fails loud rather than reporting a vacuous green."
+        "calls). A metered run that bills nothing never actually executed — the SDK made "
+        "zero billable tool calls. The two common causes: an auth failure "
+        "(CLAUDE_CODE_OAUTH_TOKEN not reaching the CLI), or a subscription usage/weekly "
+        "limit so every scenario short-circuited before doing real work. This fails loud "
+        "rather than reporting a vacuous green."
     )
     raise UnmeteredSdkRunError(msg)

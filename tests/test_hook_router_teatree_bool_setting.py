@@ -32,11 +32,12 @@ _FAIL_OPEN_READERS: tuple[tuple[str, str], ...] = (
     ("_mcp_privacy_gate_enabled", "mcp_privacy_gate_enabled"),
     ("_self_dm_gate_enabled", "self_dm_gate_enabled"),
     ("_orchestrator_bash_gate_enabled", "orchestrator_bash_gate_enabled"),
+    # #1733: flipped to default-ON (fail-open) once the Agent matcher was wired.
+    ("_orchestrator_boundary_agent_gate_enabled", "orchestrator_boundary_agent_gate_enabled"),
 )
 
 _FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = (
     ("_dispatch_quote_gate_on_task_create_enabled", "dispatch_quote_gate_on_task_create_enabled"),
-    ("_orchestrator_boundary_agent_gate_enabled", "orchestrator_boundary_agent_gate_enabled"),
 )
 
 

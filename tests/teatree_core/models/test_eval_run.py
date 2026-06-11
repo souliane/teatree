@@ -41,6 +41,33 @@ class TestRecordScenario(TestCase):
         result = run.record_scenario(scenario_name="doc_update", verdict=EvalVerdict.FAIL)
         assert result.trial == 0
 
+    def test_persists_token_columns_when_given(self) -> None:
+        run = _record()
+        result = run.record_scenario(
+            scenario_name="worktree_first",
+            verdict=EvalVerdict.PASS,
+            input_tokens=120,
+            cache_creation_tokens=340,
+            cache_read_tokens=6500,
+            output_tokens=80,
+        )
+        result.refresh_from_db()
+        assert result.input_tokens == 120
+        assert result.cache_creation_tokens == 340
+        assert result.cache_read_tokens == 6500
+        assert result.output_tokens == 80
+
+    def test_token_columns_default_to_null_for_legacy_rows(self) -> None:
+        # NULL (not 0) distinguishes a legacy/subscription row with no usage
+        # signal from a real metered 0.
+        run = _record()
+        result = run.record_scenario(scenario_name="doc_update", verdict=EvalVerdict.FAIL)
+        result.refresh_from_db()
+        assert result.input_tokens is None
+        assert result.cache_creation_tokens is None
+        assert result.cache_read_tokens is None
+        assert result.output_tokens is None
+
 
 class TestRunCounts(TestCase):
     def test_counts_partition_by_verdict(self) -> None:
@@ -141,6 +168,61 @@ class TestRegressionDiff(TestCase):
         assert diff["dropped"].regressed is True
         assert diff["added"].baseline_pass_rate == pytest.approx(0.0)
         assert diff["added"].regressed is False
+
+
+class TestScenarioCost(TestCase):
+    def test_cost_usd_round_trips_and_defaults_to_zero(self) -> None:
+        run = _record()
+        metered = run.record_scenario(scenario_name="metered", verdict=EvalVerdict.PASS, cost_usd=0.42)
+        free = run.record_scenario(scenario_name="free", verdict=EvalVerdict.PASS)
+
+        metered.refresh_from_db()
+        free.refresh_from_db()
+        assert metered.cost_usd == pytest.approx(0.42)
+        assert free.cost_usd == pytest.approx(0.0)
+
+
+class TestCostRegressionDiff(TestCase):
+    def test_flags_scenario_whose_cost_rose(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="cheap", verdict=EvalVerdict.PASS, cost_usd=0.10)
+        baseline.record_scenario(scenario_name="spiking", verdict=EvalVerdict.PASS, cost_usd=0.10)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="cheap", verdict=EvalVerdict.PASS, cost_usd=0.10)
+        candidate.record_scenario(scenario_name="spiking", verdict=EvalVerdict.PASS, cost_usd=0.30)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["cheap"].delta == pytest.approx(0.0)
+        assert diff["cheap"].pct_increase == pytest.approx(0.0)
+        assert diff["spiking"].delta == pytest.approx(0.20)
+        assert diff["spiking"].pct_increase == pytest.approx(2.0)
+
+    def test_cost_decrease_is_negative_pct_not_a_regression(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="cheaper", verdict=EvalVerdict.PASS, cost_usd=0.40)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="cheaper", verdict=EvalVerdict.PASS, cost_usd=0.20)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["cheaper"].delta == pytest.approx(-0.20)
+        assert diff["cheaper"].pct_increase == pytest.approx(-0.5)
+
+    def test_zero_baseline_cost_yields_undefined_pct_no_div_by_zero(self) -> None:
+        baseline = _record(model="haiku", is_baseline=True)
+        baseline.record_scenario(scenario_name="free_baseline", verdict=EvalVerdict.PASS, cost_usd=0.0)
+
+        candidate = _record(model="opus")
+        candidate.record_scenario(scenario_name="free_baseline", verdict=EvalVerdict.PASS, cost_usd=0.25)
+
+        diff = {d.scenario_name: d for d in EvalRunRecord.cost_regression_diff(baseline=baseline, candidate=candidate)}
+
+        assert diff["free_baseline"].baseline_cost_usd == pytest.approx(0.0)
+        assert diff["free_baseline"].delta == pytest.approx(0.25)
+        assert diff["free_baseline"].pct_increase is None
 
 
 class TestStr(TestCase):

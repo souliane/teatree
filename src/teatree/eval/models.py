@@ -4,6 +4,24 @@ import dataclasses
 from pathlib import Path
 from typing import Any
 
+#: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
+#: cost does NOT match the clean billed identity (it paid a partial-or-cap cost).
+#: A clean completion (``success``/``end_turn``/empty) is NOT in this set. The
+#: canonical home: both the benchmark's clean-cell fit (``benchmark.py``) and the
+#: pass@k aggregator (``pass_at_k.py``) classify against this one definition.
+CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
+    {"budget_exceeded", "max_turns", "timeout", "error_max_turns", "error_max_budget_usd", "aborted"}
+)
+
+#: GENEROUS default per-scenario turn budget for a scenario that declares no
+#: ``max_turns`` of its own. The old default of ``4`` force-FAILed multi-step /
+#: sub-agent-spawning scenarios (delegate/spawn trajectories need many turns), so
+#: a truncated run measured the cap, not behaviour. Raised generously; a scenario
+#: still declares its own lower value, and the lane reads an env override
+#: (:func:`teatree.eval.sdk_runner.resolve_default_max_turns`,
+#: ``T3_EVAL_MAX_TURNS``).
+DEFAULT_MAX_TURNS = 30
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:
@@ -74,7 +92,7 @@ class EvalSpec:
     matchers: tuple[ExpectItem, ...]
     source_path: Path
     model: str = "claude-sonnet-4-6"
-    max_turns: int = 4
+    max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
@@ -87,9 +105,68 @@ class EvalToolCall:
     turn: int
 
 
+#: Anthropic's fixed cache-pricing multipliers on input tokens, relative to the
+#: model's base input rate: uncached input bills 1.00x, a 5-minute cache *write*
+#: bills 1.25x, and a cache *read* bills 0.10x. They are a property of the API,
+#: not of any model, so they are constants here — see :class:`TokenUsage`.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.10
+
+
+@dataclasses.dataclass(frozen=True)
+class TokenUsage:
+    """One run's token usage, split by cache class, with billed-input derivations.
+
+    The four fields mirror the SDK ``ResultMessage.usage`` keys: ``input``
+    (uncached input), ``cache_creation`` (tokens written cold into the cache —
+    a 1.25x write), ``cache_read`` (tokens served from cache — a 0.10x read),
+    and ``output``. They default to ``0`` so a subscription/offline/capped run
+    with no usage yields an all-zero instance rather than a missing one.
+
+    The derived properties answer the cache-cost questions price-table-free:
+    ``cache_hit_rate`` (how much input was served warm), ``cold_write_tokens``
+    (the share that did NOT benefit from cache), and ``effective_billed_input``
+    (the API's billed-input regressor under Anthropic's fixed multipliers).
+    ``__add__`` lets trials and cells sum.
+    """
+
+    input: int = 0
+    cache_creation: int = 0
+    cache_read: int = 0
+    output: int = 0
+
+    @property
+    def total_input(self) -> int:
+        return self.input + self.cache_creation + self.cache_read
+
+    @property
+    def cache_hit_rate(self) -> float:
+        """Fraction of input served from cache (``cache_read / total_input``); 0.0 when no input."""
+        total = self.total_input
+        return self.cache_read / total if total else 0.0
+
+    @property
+    def cold_write_tokens(self) -> int:
+        """Tokens written cold into the cache — input that did NOT benefit from a prior read."""
+        return self.cache_creation
+
+    @property
+    def effective_billed_input(self) -> float:
+        """The API's billed-input regressor: ``input + 1.25*cache_creation + 0.10*cache_read``."""
+        return self.input + _CACHE_WRITE_MULTIPLIER * self.cache_creation + _CACHE_READ_MULTIPLIER * self.cache_read
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(
+            input=self.input + other.input,
+            cache_creation=self.cache_creation + other.cache_creation,
+            cache_read=self.cache_read + other.cache_read,
+            output=self.output + other.output,
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class EvalRun:
-    """Captured output of one ``claude -p`` invocation against a spec."""
+    """Captured output of one eval-runner invocation against a spec."""
 
     spec_name: str
     tool_calls: tuple[EvalToolCall, ...]
@@ -99,3 +176,19 @@ class EvalRun:
     raw_stdout: str
     raw_stderr: str
     cost_usd: float = 0.0
+    usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    billed_model: str | None = None
+    #: Whether the REQUESTED main model was substituted (a fallback). ``True`` =
+    #: the requested model is ABSENT from ``model_usage`` (Claude Code's haiku
+    #: auxiliary sitting beside the requested model is NORMAL, not a fallback);
+    #: ``False`` = present; ``None`` = unobservable (subscription/offline run).
+    fell_back: bool | None = None
+    #: Metered cost of the requested MAIN model (the comparison number) and the
+    #: AUXILIARY background (Claude Code's haiku), split from per-model
+    #: ``model_usage.costUSD``. ``0.0`` on a non-metered/unobservable run.
+    main_cost_usd: float = 0.0
+    aux_cost_usd: float = 0.0
+    #: Token usage of the MAIN model vs the AUXILIARY background, split from the
+    #: per-model ``model_usage`` token counts (all-zero when unobservable).
+    main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)

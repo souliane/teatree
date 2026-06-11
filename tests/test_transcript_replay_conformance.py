@@ -33,6 +33,7 @@ from teatree.eval.transcript_conformance import INVARIANT_REGISTRY, Invariant, r
 
 _FIXTURES: Final[Path] = Path(__file__).parent / "fixtures" / "transcripts"
 _PASS_FIXTURE: Final[Path] = _FIXTURES / "all_pass.session.jsonl"
+_CORPUS: Final[Path] = Path(__file__).parent.parent / "src" / "teatree" / "eval" / "corpus"
 _IDS: Final[list[str]] = [inv.id for inv in INVARIANT_REGISTRY]
 
 
@@ -144,18 +145,30 @@ def test_report_clears_publication_scanner() -> None:
         assert not verdict.refused, f"report for {fixture.name} tripped the publication scanner: {verdict.matches}"
 
 
-def test_fixtures_contain_no_redact_anchor() -> None:
-    """The fixtures themselves must carry no privacy redact-anchor pattern.
+def _session_fixture_paths() -> list[Path]:
+    """Every committed ``*.session.jsonl`` that must be synthetic / fully redacted.
 
-    Guards against a real session log being committed as a fixture: the
-    default quote/blockquote anchors the publication gate fires on must not
-    appear in any synthetic fixture.
+    The conformance fixtures AND the ground-truth corpus captures
+    (``src/teatree/eval/corpus/*.session.jsonl``) — a real session log
+    committed as a corpus capture would leak just as a fixture one would.
+    """
+    return sorted(_FIXTURES.glob("*.session.jsonl")) + sorted(_CORPUS.glob("*.session.jsonl"))
+
+
+def test_fixtures_contain_no_redact_anchor() -> None:
+    """The fixtures and corpus captures carry no privacy redact-anchor pattern.
+
+    Guards against a real session log being committed as a fixture or a corpus
+    capture: the default quote/blockquote anchors the publication gate fires on
+    must not appear in any synthetic session jsonl.
     """
     anchors = re.compile(
         r"\b(?:verbatim|user said|User mandate)\b|^>\s+.*\b(?:I|my|me)\b",
         re.IGNORECASE | re.MULTILINE,
     )
-    for fixture in _FIXTURES.glob("*.session.jsonl"):
+    paths = _session_fixture_paths()
+    assert paths, "no session jsonl found — redact-anchor guard would be vacuous"
+    for fixture in paths:
         body = fixture.read_text(encoding="utf-8")
         assert not anchors.search(body), f"{fixture.name} contains a privacy redact-anchor pattern"
 
