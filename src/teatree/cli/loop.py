@@ -219,7 +219,10 @@ def start_command(
         " for the returned entry call the Agent tool with subagent_type=entry.subagent,"
         " model=entry.model (omit to inherit the default tier), description=entry.execution_reason,"
         " and a prompt that includes entry.issue_url and instructs the sub-agent to load the"
-        " skills in entry.skill_bundle first. When the sub-agent returns, record its JSON result"
+        " skills in entry.skill_bundle first. When entry.fanout_directive is non-empty, append"
+        " it verbatim to that prompt (it directs the sub-agent to fan its work out — e.g."
+        " adversarial-verify on review, judge-panel on planning); when it is empty, append"
+        " nothing. When the sub-agent returns, record its JSON result"
         " envelope back with `t3 <overlay> tasks record-attempt entry.task_id '<result-json>'`"
         " so the task completes and the ticket advances. Subscription-covered: never `claude -p`."
     )

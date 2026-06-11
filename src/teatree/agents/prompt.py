@@ -3,7 +3,9 @@
 from pathlib import Path
 from typing import cast
 
+from teatree.config_agent import resolve_agent_config
 from teatree.core.models import Task, Ticket
+from teatree.core.phases import resolve_fanout_directive
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
@@ -340,6 +342,91 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     return "\n".join(lines)
 
 
+def _phase_fanout_directive(task: Task) -> str:
+    """Render the opt-in fan-out directive for *task*'s ``(role, phase)``, or ``""``.
+
+    Headless parity with the interactive composer
+    (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
+    ``core.phases.resolve_fanout_directive`` so flipping
+    ``LOOP_ALLOW_HEADLESS_DISPATCH`` keeps the directive identical. Empty by
+    default — ``resolve_fanout_directive`` renders nothing until the user opts
+    the pair in via ``[agent.phase_fanout]`` — so a headless dispatch is
+    byte-identical to today out of the box.
+    """
+    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
+
+
+def _planning_phase_lines(task: Task) -> tuple[str, ...]:
+    """The headless ``PHASE: planning`` block — only the fan-out directive today.
+
+    Planning carries no other headless-specific instruction (the planner skill
+    bundle handles the work); the block exists solely to surface an opted-in
+    judge-panel directive. Empty when the pair is not opted in (default-OFF).
+    """
+    fanout = _phase_fanout_directive(task)
+    if not fanout:
+        return ()
+    return ("", "PHASE: planning", fanout)
+
+
+def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
+    """The headless ``PHASE: reviewing`` block, plus an opted-in fan-out directive."""
+    lines = [
+        "",
+        "PHASE: reviewing",
+        "1. Do a thorough code review of all changes on this ticket's branch.",
+        "2. Run /t3:next when done — it handles retro + structured result + handoff.",
+    ]
+    if fanout := _phase_fanout_directive(task):
+        lines.append(fanout)
+    return tuple(lines)
+
+
+def _shipping_phase_lines() -> tuple[str, ...]:
+    """The headless ``PHASE: shipping`` auto-review-gate block."""
+    reviewer_dispatch = build_reviewer_dispatch_prompt(
+        review_instruction="Review the diff on this ticket's branch and report findings."
+    )
+    return (
+        "",
+        "PHASE: shipping — auto-review gate",
+        "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
+        "If the result shows `reviewing` in the `missing` list:",
+        "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
+        "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
+        reviewer_dispatch,
+        (
+            "2. After the sub-agent completes, mark reviewing as visited:"
+            " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
+        ),
+        "3. Retry `t3 <overlay> pr create <ticket_id>`.",
+        "If the result shows `retro` in the `missing` list:",
+        "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
+        "2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`.",
+        "3. Retry `t3 <overlay> pr create <ticket_id>`.",
+        "Do NOT create a new session for the review — use a sub-agent within this session.",
+    )
+
+
+def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
+    """The per-phase trailing block for ``build_system_context``, or ``()``.
+
+    Dispatches on the canonical phase token. coding/shipping carry their
+    existing directives; planning/reviewing additionally surface an opted-in
+    fan-out directive (default-OFF). One ``(role, phase)`` pair maps to one
+    block — they are mutually exclusive on ``task.phase``.
+    """
+    if task.phase == "coding":
+        return ("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive(skills))
+    if task.phase == "planning":
+        return _planning_phase_lines(task)
+    if task.phase == "reviewing":
+        return _reviewing_phase_lines(task)
+    if task.phase == "shipping":
+        return _shipping_phase_lines()
+    return ()
+
+
 def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
     """Build the system context for headless (SDK) execution.
 
@@ -385,44 +472,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
         if skill_content:
             lines.extend(("", "# Loaded Skills", "", skill_content))
 
-    if task.phase == "coding":
-        lines.extend(("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive(skills)))
-
-    if task.phase == "reviewing":
-        lines.extend(
-            (
-                "",
-                "PHASE: reviewing",
-                "1. Do a thorough code review of all changes on this ticket's branch.",
-                "2. Run /t3:next when done — it handles retro + structured result + handoff.",
-            ),
-        )
-
-    if task.phase == "shipping":
-        reviewer_dispatch = build_reviewer_dispatch_prompt(
-            review_instruction="Review the diff on this ticket's branch and report findings."
-        )
-        lines.extend(
-            (
-                "",
-                "PHASE: shipping — auto-review gate",
-                "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
-                "If the result shows `reviewing` in the `missing` list:",
-                "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
-                "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
-                reviewer_dispatch,
-                (
-                    "2. After the sub-agent completes, mark reviewing as visited:"
-                    " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."
-                ),
-                "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-                "If the result shows `retro` in the `missing` list:",
-                "1. Run `/t3:retro` to capture lessons from this session and commit any skill fixes.",
-                ("2. Mark retro as visited: `t3 <overlay> lifecycle visit-phase <ticket_id> retro`."),
-                "3. Retry `t3 <overlay> pr create <ticket_id>`.",
-                "Do NOT create a new session for the review — use a sub-agent within this session.",
-            ),
-        )
+    lines.extend(_phase_specific_lines(task, skills))
 
     lines.extend(
         (
