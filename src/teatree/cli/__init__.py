@@ -51,6 +51,7 @@ from teatree.cli.codex import codex_app
 from teatree.cli.config import config_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.dogfood import dogfood_app
+from teatree.cli.dream import dream_app
 from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.infra import infra_app
@@ -156,6 +157,7 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
 app.add_typer(recover_app, name="recover")
 app.add_typer(dogfood_app, name="dogfood")
+app.add_typer(dream_app, name="dream")
 app.add_typer(mutation_app, name="mutation")
 
 
