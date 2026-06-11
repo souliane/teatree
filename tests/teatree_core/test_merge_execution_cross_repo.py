@@ -199,6 +199,84 @@ class TestCrossRepoCandidateProbe(TestCase):
         assert _OVERLAY_REPO in message
         assert "candidate" in message.lower()
 
+    def test_empty_initial_live_falls_through_to_cross_repo_probe(self) -> None:
+        """#1335: an empty head on the initial (wrong) repo still probes candidates.
+
+        The cross-repo trap (CLEAR 248 / #1335): the CLEAR resolves to the
+        running clone's ``origin`` (the wrong repo) for a PR that actually
+        lives in a downstream overlay's repo. The clone-origin repo has no
+        PR #N at all, so the forge returns an EMPTY head SHA for it — not a
+        mismatching one. The buggy early-return treated empty as a transient
+        auth/network failure and returned the wrong initial slug, never
+        reaching the probe. The fix must fall through: the overlay repo's
+        PR #N head matches ``reviewed_sha``, so the probe recovers it.
+        """
+        clear = _cross_repo_clear()
+        calls: list[list[str]] = []
+        candidate_entries = [
+            OverlayEntry(name="downstream", overlay_class="", project_path=Path("/clones/downstream-overlay")),
+        ]
+
+        def _gh_empty_on_clone_origin(argv: list[str]) -> tuple[int, str, str]:
+            calls.append(argv)
+            joined = " ".join(argv)
+            repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
+            if "headRefOid" in joined:
+                # The clone-origin repo has NO PR #159 -> empty head; only the
+                # overlay repo owns the reviewed PR at _RIGHT_SHA.
+                return (0, _RIGHT_SHA if repo == _OVERLAY_REPO else "", "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "state,mergeCommit" in joined:
+                return (0, '{"state": "OPEN", "mergeCommit": null}', "")
+            if "pulls" in joined and "merge" in joined:
+                return (0, '{"sha": "merged0deadbeef"}', "")
+            return (0, "", "")
+
+        def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
+            del remote
+            if repo == "/clones/downstream-overlay":
+                return _OVERLAY_REPO
+            return ""
+
+        with (
+            patch(
+                "teatree.backends.forge_merge_rpc.gh_runner",
+                return_value=_gh_empty_on_clone_origin,
+            ),
+            patch(
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
+                return_value=_CLONE_ORIGIN,
+            ),
+            patch(
+                "teatree.core.merge.pr_slug_resolution.discover_overlays",
+                return_value=candidate_entries,
+            ),
+            patch(
+                "teatree.core.merge.pr_slug_resolution.git.remote_slug",
+                side_effect=_remote_slug_for_path,
+            ),
+        ):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert outcome.merged_sha
+        assert outcome.slug == _OVERLAY_REPO, (
+            f"empty head on the initial repo must fall through to the cross-repo probe; got slug={outcome.slug!r}"
+        )
+        merge_endpoints = [
+            arg
+            for argv in calls
+            if "merge" in " ".join(argv) and "pulls" in " ".join(argv)
+            for arg in argv
+            if "pulls/" in arg
+        ]
+        assert merge_endpoints
+        assert all(_OVERLAY_REPO in endpoint for endpoint in merge_endpoints), (
+            f"merge endpoint targeted the wrong repo: {merge_endpoints}"
+        )
+
     def test_resolved_repo_matches_skip_probe(self) -> None:
         """Happy path: when the resolved repo's PR matches, no probe runs.
 
