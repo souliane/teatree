@@ -2,8 +2,7 @@
 
 Regenerates the Mermaid dependency diagram in docs/dependency-graph.md
 whenever ``tach.toml`` or source module structure changes. The diagram
-lives outside BLUEPRINT.md so structural growth never inflates the
-BLUEPRINT byte-budget corpus.
+lives outside BLUEPRINT.md so structural growth never bloats BLUEPRINT.md.
 
 See: souliane/teatree#1837
 """
