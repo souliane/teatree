@@ -1338,14 +1338,41 @@ class TestPrivateRepoCarveOut:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_commit_bodyfile_genuinely_missing_still_blocks(
+    def test_commit_bodyfile_genuinely_missing_on_private_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # A ``-F`` path that exists NOWHERE (not in cwd, not in the repo dir)
-        # is a genuinely unresolvable body: it must keep failing closed even on
-        # a private repo, so the resolution fallback never masks an unscannable
-        # body. This preserves the #1207 fail-closed sentinel contract.
+        # A ``-F`` path that exists NOWHERE (not in cwd, not in the repo dir) is a
+        # genuinely unresolvable body. On a known-PRIVATE landing repo this must
+        # DOWNGRADE to warn, not hard-block (#1415): the commit lands in private
+        # history regardless of whether the gate could read the body, so an unread
+        # body cannot leak. The #1207 fail-closed sentinel contract is preserved
+        # only where it protects against a leak -- a PUBLIC destination (the paired
+        # public guards below + ``test_public_repo_commit_bodyfile_relative_path_
+        # still_blocks``); a private destination is not a public surface.
         repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F does_not_exist.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_commit_bodyfile_genuinely_missing_on_public_repo_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard for the private downgrade above: the SAME genuinely-
+        # missing ``-F`` path landing in a PUBLIC repo must STILL fail closed --
+        # an unscannable body must never slip into public history. This preserves
+        # the #1207 fail-closed sentinel contract on the public surface.
+        repo = tmp_path / "pub"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         monkeypatch.chdir(tmp_path)
         data = {
             "tool_name": "Bash",

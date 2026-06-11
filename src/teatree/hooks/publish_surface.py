@@ -501,6 +501,13 @@ def carve_out_applies(
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
 
+# Re-exported so the hook router imports the body-independent private-destination
+# decision from ``publish_surface`` alongside ``carve_out_applies``; the
+# implementation lives in ``_commit_carve_out`` (it shares the commit landing
+# logic and the gh/glab-post predicate is reached by a lazy import there).
+command_targets_private_only = _commit_carve_out.command_targets_private_only
+
+
 def own_slug_term_downgrades(
     command: str,
     term: str,
