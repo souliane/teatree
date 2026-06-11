@@ -164,6 +164,14 @@ class DreamTickCadenceTestCase(TestCase):
             call_command("dream", "run", stdout=StringIO())
         engine.assert_called_once()
 
+    def test_tick_failed_engine_does_not_advance_cadence_ledger(self) -> None:
+        with patch(
+            "teatree.loops.dream.engine.run_consolidation",
+            side_effect=RuntimeError("engine boom"),
+        ):
+            call_command("dream", "tick", stdout=StringIO())
+        assert not MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
+
 
 class DreamSinceTestCase(TestCase):
     def test_run_passes_since_to_engine(self) -> None:
