@@ -156,6 +156,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         review_skill=str(teatree.get("review_skill", "")),
         require_review_context=bool(teatree.get("require_review_context", False)),
         require_anti_vacuity_attestation=bool(teatree.get("require_anti_vacuity_attestation", False)),
+        require_rubric_verification=bool(teatree.get("require_rubric_verification", False)),
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),

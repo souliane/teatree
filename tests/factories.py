@@ -16,6 +16,8 @@ from teatree.core.models import (
     ImplementedIssueMarker,
     MergeClear,
     ReviewVerdict,
+    Rubric,
+    RubricCriterion,
     Ticket,
 )
 
@@ -67,6 +69,42 @@ class ReviewVerdictFactory(DjangoModelFactory[ReviewVerdict]):
         hold = factory.Trait(
             verdict=ReviewVerdict.Verdict.HOLD,
             gh_verify_result=MergeClear.VerifyResult.FAILED,
+        )
+
+
+class RubricFactory(DjangoModelFactory[Rubric]):
+    class Meta:
+        model = Rubric
+
+    ticket = factory.SubFactory(TicketFactory)
+
+
+class RubricCriterionFactory(DjangoModelFactory[RubricCriterion]):
+    """A criterion row built directly via the ORM (bypassing the guarded factory).
+
+    ``RubricCriterion.record_grade`` refuses an invalid grade; building directly lets
+    a test construct one (maker grader / stale SHA / ungraded) and prove the done-gate
+    refuses it independently of the record-time guard.
+    """
+
+    class Meta:
+        model = RubricCriterion
+
+    rubric = factory.SubFactory(RubricFactory)
+    ordinal = factory.Sequence(int)
+    text = factory.Sequence(lambda n: f"criterion {n}")
+    status = RubricCriterion.Status.PENDING
+
+    class Params:
+        passed = factory.Trait(
+            status=RubricCriterion.Status.PASS,
+            grader_identity="cold-reviewer",
+            reviewed_sha=_FORTY_HEX,
+        )
+        failed = factory.Trait(
+            status=RubricCriterion.Status.FAIL,
+            grader_identity="cold-reviewer",
+            reviewed_sha=_FORTY_HEX,
         )
 
 

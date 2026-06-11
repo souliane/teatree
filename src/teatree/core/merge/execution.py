@@ -24,7 +24,12 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.core.backend_protocols import ForgeMergeResult
-from teatree.core.merge.authorization import MergePrecheck, _assert_anti_vacuity, _assert_clear_authorized
+from teatree.core.merge.authorization import (
+    MergePrecheck,
+    _assert_anti_vacuity,
+    _assert_clear_authorized,
+    _assert_rubric_satisfied,
+)
 from teatree.core.merge.ci_rollup import (
     _code_host_for,
     fetch_live_head_sha,
@@ -211,6 +216,11 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     # §17.4.3 + #1829: bound to the just-verified ``live_sha`` so a force-push
     # invalidates the CLEAR and the attestation together (see _assert_anti_vacuity).
     _assert_anti_vacuity(authorized_clear, live_sha)
+
+    # §17.4.3 + #2241: the rubric->verifier done-gate, bound to the same just-verified
+    # ``live_sha`` — the ticket's acceptance-criteria rubric must be fully PASS by an
+    # independent verifier at the head, or the merge is refused (see _assert_rubric_satisfied).
+    _assert_rubric_satisfied(authorized_clear, live_sha)
 
     reconcile = _reconcile_if_already_merged(
         slug=slug,
