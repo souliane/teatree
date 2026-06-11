@@ -254,7 +254,7 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_no_head),
-            pytest.raises(MergePreconditionError, match="could not resolve the live head"),
+            pytest.raises(MergePreconditionError, match=r"live=\(unresolved\)"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
