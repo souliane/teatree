@@ -143,6 +143,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "idle_stack_reaper_disabled": bool,
     "idle_stack_idle_minutes": int,
     "idle_stack_reaper_cadence_minutes": int,
+    "stale_stack_min_age_minutes": int,
     "local_stack_queue_disabled": bool,
     "local_stack_queue_max_attempts": int,
     "clean_ignore": _parse_excluded_skills,
@@ -497,6 +498,19 @@ class UserSettings:
     idle_stack_reaper_disabled: bool = False
     idle_stack_idle_minutes: int = 30
     idle_stack_reaper_cadence_minutes: int = 5
+    # #2207 Stale-stack reaper — tears down docker compose stacks that NO
+    # Worktree row owns (hand-rolled test stacks, failed-teardown leftovers)
+    # once their newest container lifecycle event (created/started/finished)
+    # is older than this many minutes. Age-keyed so a parallel session's
+    # fresh manual stack is never reaped; an unknown age fails safe (keep).
+    # Runs automatically before ``worktree start`` / ``workspace start`` /
+    # ``workspace provision`` and on demand via
+    # ``t3 <overlay> workspace reap-stale``. Default ``0`` keeps the sweep
+    # OPT-IN (mirroring ``max_concurrent_local_stacks``): a positive value
+    # (e.g. ``240``) enables it. Opt-in also keeps the suite hermetic — a
+    # default-on sweep would let unit tests of start/provision reach the
+    # developer's real docker daemon. Per-overlay overridable.
+    stale_stack_min_age_minutes: int = 0
     # #2190/#44 Acquisition queue — when ``worktree start`` / ``workspace
     # start`` hits the cap, it reaps idle, retries, then ENQUEUES (no
     # SystemExit). A loop scanner drains the queue each tick with a
