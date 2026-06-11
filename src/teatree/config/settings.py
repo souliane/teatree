@@ -29,8 +29,23 @@ class E2ERepo:
     e2e_dir: str = "e2e"
 
 
-def _parse_excluded_skills(raw: object) -> list[str]:
-    return [str(s) for s in raw] if isinstance(raw, list) else []
+def _parse_str_list(raw: object) -> list[str]:
+    """Coerce a list-typed overridable setting to ``list[str]``, strictly.
+
+    A real list (TOML/JSON array) coerces each element to ``str``; ANY non-list
+    scalar — a bool, an int, a bare string — RAISES ``TypeError`` rather than
+    silently degrading to ``[]`` (#258). The old defaulting behaviour
+    (``return [] if not a list``) let ``config_setting set excluded_skills true``
+    pass write-time validation and persist the raw ``True``: a corrupt override
+    masked as an empty list with no signal. The strict parser is the single
+    coercer for every list-typed overridable setting, so the write path
+    (validation) and the read path (DB-tier coercion) reject a scalar
+    identically.
+    """
+    if not isinstance(raw, list):
+        msg = f"Invalid list value {raw!r}; expected a JSON/TOML array, not a scalar"
+        raise TypeError(msg)
+    return [str(s) for s in raw]
 
 
 _DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
@@ -42,10 +57,10 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
     A missing key (``None``) yields the curated default set of regenerable
     caches; an explicit list (even empty) is honoured verbatim so a user can
     narrow the allow-list to nothing. Non-list scalars degrade to the default
-    rather than raising.
+    rather than raising. This is the FILE-tier parser (used only by
+    ``load_config``); the override tier (per-overlay / DB) uses the strict
+    ``_parse_str_list`` which raises on a non-list scalar.
     """
-    if raw is None:
-        return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
     if not isinstance(raw, list):
         return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
     return [str(s) for s in raw]
@@ -85,19 +100,84 @@ def _parse_strict_bool(raw: object) -> bool:
     raise ValueError(msg)
 
 
+def _parse_strict_int(raw: object) -> int:
+    """Coerce a TOML/JSON value for an int-typed overridable setting, strictly.
+
+    Accepts a real ``int`` (TOML/JSON integer) and a numeric ``str`` (the read
+    tier may store ``"5"``). REJECTS a ``bool`` — ``bool`` is a subclass of
+    ``int``, so the old bare ``int`` parser made ``int(True) == 1`` and silently
+    accepted a JSON ``true`` for an int-typed setting (#258), persisting the raw
+    ``True``. Also rejects a ``float`` and any other non-int-coercible type
+    rather than truncating (a TOML ``5.0`` for an int setting is a type error,
+    raising ``TypeError``).
+    The ``isinstance(raw, bool)`` guard runs BEFORE the ``int`` coercion so the
+    bool short-circuits to a raise. Single coercer for every int-typed
+    overridable setting, applied identically on the write and read paths.
+    """
+    if isinstance(raw, bool):
+        msg = f"Invalid int value {raw!r}; a boolean is not an integer setting value"
+        raise TypeError(msg)
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        return int(raw.strip())
+    msg = f"Invalid int value {raw!r}; expected a JSON/TOML integer"
+    raise TypeError(msg)
+
+
+def _parse_strict_float(raw: object) -> float:
+    """Coerce a TOML/JSON value for a float-typed overridable setting, strictly.
+
+    Accepts a real ``float``, an ``int`` (a TOML ``25`` for a float setting is
+    legitimate), and a numeric ``str``. REJECTS a ``bool`` — ``float(True) ==
+    1.0`` would otherwise silently accept a JSON ``true`` for a float setting,
+    the same coercion-instead-of-reject class as the int parser (#258). The
+    ``isinstance(raw, bool)`` guard runs BEFORE the ``int``/``float`` checks.
+    Single coercer for every float-typed overridable setting, applied
+    identically on the write and read paths.
+    """
+    if isinstance(raw, bool):
+        msg = f"Invalid float value {raw!r}; a boolean is not a float setting value"
+        raise TypeError(msg)
+    if isinstance(raw, int | float):
+        return float(raw)
+    if isinstance(raw, str):
+        return float(raw.strip())
+    msg = f"Invalid float value {raw!r}; expected a JSON/TOML number"
+    raise TypeError(msg)
+
+
+def _parse_strict_str(raw: object) -> str:
+    """Coerce a TOML/JSON value for a str-typed overridable setting, strictly.
+
+    Accepts only a real ``str``; REJECTS a ``bool``/``int``/``float``/``list``
+    rather than stringifying it via ``str(...)`` (#258). The bare ``str`` parser
+    accepted anything (``str(True) == "True"``, ``str(5) == "5"``), so a
+    type-mismatched value for a str-typed setting was silently coerced into a
+    nonsense string instead of being rejected. Single coercer for every
+    str-typed overridable setting, applied identically on the write and read
+    paths.
+    """
+    if not isinstance(raw, str):
+        msg = f"Invalid str value {raw!r}; expected a JSON/TOML string"
+        raise TypeError(msg)
+    return raw
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
     Returns a deduped list of non-empty alias handles, in insertion order.
-    Non-list inputs (a stray scalar) degrade to an empty list rather than
-    raising — keeps the loader robust to a malformed override while leaving
-    the suppression off by default. Consumed by the ticket-disposition
+    A non-list SCALAR raises ``TypeError`` (#258) — a scalar for a list-typed
+    setting is a type error that must be loud, never silently degraded to an
+    empty list (which would mask a corrupt override). Consumed by the ticket-disposition
     scanner (#975) to suppress reassign signals between the operator's own
     identities, and by the loop's PR/MR scanners (#976) to union-query each
     alias so cross-forge work surfaces in the statusline.
     """
     if not isinstance(raw, list):
-        return []
+        msg = f"Invalid user_identity_aliases value {raw!r}; expected a JSON/TOML array, not a scalar"
+        raise TypeError(msg)
     return list(dict.fromkeys(str(s) for s in raw if isinstance(s, str) and s))
 
 
@@ -117,11 +197,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
-    "branch_prefix": str,
-    "privacy": str,
+    "branch_prefix": _parse_strict_str,
+    "privacy": _parse_strict_str,
     "contribute": _parse_strict_bool,
-    "excluded_skills": _parse_excluded_skills,
-    "loop_cadence_seconds": int,
+    "excluded_skills": _parse_str_list,
+    "loop_cadence_seconds": _parse_strict_int,
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
@@ -130,65 +210,65 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "notify_on_post_on_behalf": _parse_strict_bool,
     "user_identity_aliases": _parse_user_identity_aliases,
     "architectural_review_disabled": _parse_strict_bool,
-    "architectural_review_skill": str,
-    "architectural_review_cadence_hours": int,
-    "architectural_review_after_merge_count": int,
-    "review_skill": str,
+    "architectural_review_skill": _parse_strict_str,
+    "architectural_review_cadence_hours": _parse_strict_int,
+    "architectural_review_after_merge_count": _parse_strict_int,
+    "review_skill": _parse_strict_str,
     "require_review_context": _parse_strict_bool,
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
     "require_anti_vacuity_attestation": _parse_strict_bool,
     "require_rubric_verification": _parse_strict_bool,
     "scanning_news_disabled": _parse_strict_bool,
-    "scanning_news_skill": str,
-    "scanning_news_cadence_hours": int,
+    "scanning_news_skill": _parse_strict_str,
+    "scanning_news_cadence_hours": _parse_strict_int,
     "ask_before_creating_news_tickets": _parse_strict_bool,
     "eval_local_disabled": _parse_strict_bool,
-    "eval_local_skill": str,
-    "eval_local_cadence_hours": int,
+    "eval_local_skill": _parse_strict_str,
+    "eval_local_cadence_hours": _parse_strict_int,
     "dogfood_smoke_disabled": _parse_strict_bool,
-    "dogfood_smoke_skill": str,
-    "dogfood_smoke_cadence_hours": int,
-    "dogfood_smoke_overlay": str,
+    "dogfood_smoke_skill": _parse_strict_str,
+    "dogfood_smoke_cadence_hours": _parse_strict_int,
+    "dogfood_smoke_overlay": _parse_strict_str,
     "self_update_disabled": _parse_strict_bool,
-    "self_update_cadence_hours": int,
+    "self_update_cadence_hours": _parse_strict_int,
     "auto_update_reinstall": _parse_strict_bool,
     "auto_update_require_green_main": _parse_strict_bool,
     "resource_pressure_disabled": _parse_strict_bool,
-    "resource_pressure_cadence_minutes": int,
-    "resource_pressure_min_free_interval_minutes": int,
-    "disk_warn_free_gb": float,
-    "disk_crit_free_gb": float,
-    "ram_warn_avail_gb": float,
-    "ram_crit_avail_gb": float,
-    "disk_cache_allowlist": _parse_excluded_skills,
+    "resource_pressure_cadence_minutes": _parse_strict_int,
+    "resource_pressure_min_free_interval_minutes": _parse_strict_int,
+    "disk_warn_free_gb": _parse_strict_float,
+    "disk_crit_free_gb": _parse_strict_float,
+    "ram_warn_avail_gb": _parse_strict_float,
+    "ram_crit_avail_gb": _parse_strict_float,
+    "disk_cache_allowlist": _parse_str_list,
     "allow_destructive_disk": _parse_strict_bool,
-    "worktree_stale_days": int,
-    "max_worktree_gc_per_tick": int,
+    "worktree_stale_days": _parse_strict_int,
+    "max_worktree_gc_per_tick": _parse_strict_int,
     "allow_destructive_ram": _parse_strict_bool,
-    "ram_kill_allowlist": _parse_excluded_skills,
+    "ram_kill_allowlist": _parse_str_list,
     "todo_sweep_disabled": _parse_strict_bool,
-    "todo_sweep_recheck_interval_hours": int,
-    "max_concurrent_local_stacks": int,
-    "provision_step_timeout_seconds": int,
+    "todo_sweep_recheck_interval_hours": _parse_strict_int,
+    "max_concurrent_local_stacks": _parse_strict_int,
+    "provision_step_timeout_seconds": _parse_strict_int,
     "idle_stack_reaper_disabled": _parse_strict_bool,
-    "idle_stack_idle_minutes": int,
-    "idle_stack_reaper_cadence_minutes": int,
-    "stale_stack_min_age_minutes": int,
+    "idle_stack_idle_minutes": _parse_strict_int,
+    "idle_stack_reaper_cadence_minutes": _parse_strict_int,
+    "stale_stack_min_age_minutes": _parse_strict_int,
     "local_stack_queue_disabled": _parse_strict_bool,
-    "local_stack_queue_max_attempts": int,
-    "clean_ignore": _parse_excluded_skills,
+    "local_stack_queue_max_attempts": _parse_strict_int,
+    "clean_ignore": _parse_str_list,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": _parse_strict_bool,
-    "pull_main_clone_cadence_hours": int,
+    "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_enabled": _parse_strict_bool,
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
-    "mr_title_regex": str,
+    "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
-    "issue_implementer_label": str,
-    "issue_implementer_max_concurrent": int,
-    "issue_implementer_cadence_hours": int,
+    "issue_implementer_label": _parse_strict_str,
+    "issue_implementer_max_concurrent": _parse_strict_int,
+    "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
-    "auto_disposition_max_closes_per_tick": int,
+    "auto_disposition_max_closes_per_tick": _parse_strict_int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the

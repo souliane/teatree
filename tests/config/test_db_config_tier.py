@@ -115,3 +115,29 @@ issue_implementer_enabled = false
         ConfigSetting.objects.set_value("allow_destructive_disk", "false")
         with pytest.raises(ValueError, match="allow_destructive_disk"):
             get_effective_settings()
+
+    def test_bool_row_for_int_setting_is_rejected_loud(self) -> None:
+        # #258 fix round 2, blocker 1.1 at the READ tier: a row storing JSON
+        # ``true`` for an int-typed setting (an out-of-band corruption, since the
+        # write gate now rejects it) must be raised LOUD with the offending key,
+        # never silently coerced via ``int(True) == 1``.
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=True)
+        with pytest.raises(ValueError, match="issue_implementer_max_concurrent"):
+            get_effective_settings()
+
+    def test_scalar_row_for_list_setting_is_rejected_loud(self) -> None:
+        # #258 fix round 2, blocker 1.2 at the READ tier: a row storing a scalar
+        # for a list-typed setting must be raised LOUD, never silently degraded
+        # to ``[]`` (which would mask a corrupt override with no signal).
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("excluded_skills", value=True)
+        with pytest.raises(ValueError, match="excluded_skills"):
+            get_effective_settings()
+
+    def test_list_row_resolves_canonical_list(self) -> None:
+        # No-regression GREEN guard: a real stored list resolves to the canonical
+        # coerced list.
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
+        assert get_effective_settings().excluded_skills == ["foo", "bar"]

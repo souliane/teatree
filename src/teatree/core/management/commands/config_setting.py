@@ -54,11 +54,18 @@ class Command(TyperCommand):
             raise SystemExit(2) from exc
         parser = OVERLAY_OVERRIDABLE_SETTINGS[key]
         try:
-            parser(parsed)
+            canonical = parser(parsed)
         except (ValueError, TypeError, AttributeError) as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        ConfigSetting.objects.set_value(key, parsed)
+        # Persist the CANONICAL parsed value, not the raw user value, so the DB
+        # row and the read-time coercion agree (#258): a numeric string ``"5"``
+        # is stored as the int ``5`` and an upper-case enum ``"AUTO"`` as the
+        # normalised ``"auto"``. Every registry parser returns a JSON-storable
+        # type — scalar, list, or a ``StrEnum`` (which a ``JSONField`` persists as
+        # its string value) — so the parsed value round-trips through the store
+        # and the read tier re-coerces it to the same value.
+        ConfigSetting.objects.set_value(key, canonical)
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key)
         self.stdout.write(f"  set {key} = {stored!r}")

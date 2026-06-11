@@ -131,10 +131,22 @@ setting) is rejected loudly and never stored — a bad write can therefore never
 poison reads. Bool-typed settings use a strict parser (`_parse_strict_bool`)
 that accepts only real JSON/TOML booleans (`true`/`false`) and rejects a quoted
 `"false"` rather than truthy-coercing it via `bool(...)` (the old `bool("false")
-== True` footgun that would silently enable an opt-in safety setting). Because
+== True` footgun that would silently enable an opt-in safety setting). The other
+typed parsers are **strict in the same spirit**: `_parse_strict_int` rejects a
+JSON `true` (a `bool` is a subclass of `int`, so the old bare `int` made
+`int(True) == 1` and accepted a bool for an int setting), `_parse_strict_float`
+rejects a bool, `_parse_strict_str` rejects a non-string rather than stringifying
+it, and `_parse_str_list` **raises** on a non-list scalar rather than silently
+degrading to `[]` (the old `excluded_skills true` footgun). Write validation
+**persists the canonical parsed value**, not the raw user value — a numeric
+string `"5"` is stored as the int `5`, an upper-case `"AUTO"` as the normalised
+`"auto"` — so the DB row and the read-time re-coercion always agree. Because
 writes are validated, a per-row coercion failure at read time can only mean an
 out-of-band DB corruption — so it is raised loud with the offending key named,
-not silently dropped back to the file value.
+not silently dropped back to the file value. The spoken-DM path
+(`speak._resolve_speak_safe`) honours that loudness: a `ValueError` from a corrupt
+config row is logged at **error** (the text DM still degrades gracefully), never
+swallowed at debug.
 
 The model reaches the
 resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime

@@ -13,6 +13,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import get_effective_settings
+from teatree.config.enums import Mode
 from teatree.core.models import ConfigSetting
 
 
@@ -72,6 +73,55 @@ class TestConfigSettingSet(TestCase):
         # to Python ``False`` and the opt-in setting stays disabled.
         call_command("config_setting", "set", "allow_destructive_disk", "false")
         assert ConfigSetting.objects.get_effective("allow_destructive_disk") is False
+
+    def test_set_rejects_bool_for_int_setting(self) -> None:
+        # #258 fix round 2, blocker 1.1: JSON ``true`` decodes to Python ``True``,
+        # and ``int(True) == 1`` (bool is a subclass of int), so the lenient
+        # ``int`` registry parser silently ACCEPTED a bool for an int-typed
+        # setting and the raw ``True`` was persisted. The strict int parser must
+        # REJECT a bool at WRITE time, leaving the store untouched.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "issue_implementer_max_concurrent", "true")
+        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").exists() is False
+
+    def test_set_rejects_scalar_for_list_setting(self) -> None:
+        # #258 fix round 2, blocker 1.2: ``_parse_excluded_skills`` returned ``[]``
+        # for ANY non-list scalar, so ``set excluded_skills true`` passed
+        # validation and stored the raw ``True``. The strict list parser must
+        # RAISE on a non-list scalar so the bad value is rejected at write time.
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "excluded_skills", "true")
+        assert ConfigSetting.objects.filter(key="excluded_skills").exists() is False
+
+    def test_set_int_persists_canonical_value(self) -> None:
+        # No-regression GREEN guard + canonical-value invariant: a JSON numeric
+        # STRING ``"5"`` parses to the int ``5``, and the CANONICAL parsed value
+        # (the int, not the raw ``"5"`` string) is persisted — so the DB row and
+        # the read-time coercion agree on the int.
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", '"5"')
+        row = ConfigSetting.objects.get(key="issue_implementer_max_concurrent")
+        assert row.value == 5
+        assert isinstance(row.value, int)
+        assert get_effective_settings().issue_implementer_max_concurrent == 5
+
+    def test_set_list_persists_canonical_value(self) -> None:
+        # No-regression GREEN guard for blocker 1.2: a real JSON list is accepted
+        # and stored as the canonical parsed list, readable back unchanged.
+        call_command("config_setting", "set", "excluded_skills", '["foo"]')
+        row = ConfigSetting.objects.get(key="excluded_skills")
+        assert row.value == ["foo"]
+        assert get_effective_settings().excluded_skills == ["foo"]
+
+    def test_set_enum_persists_normalised_canonical_value(self) -> None:
+        # The canonical-persistence change normalises an enum value: an UPPER-case
+        # ``"AUTO"`` parses to ``Mode.AUTO`` whose ``StrEnum`` value is the
+        # lower-case ``"auto"``. The CANONICAL (normalised) value is stored — not
+        # the raw ``"AUTO"`` — so the row and the read tier agree, and the read
+        # tier re-parses it to the same enum.
+        call_command("config_setting", "set", "mode", '"AUTO"')
+        row = ConfigSetting.objects.get(key="mode")
+        assert row.value == "auto"
+        assert get_effective_settings().mode is Mode.AUTO
 
 
 class TestConfigSettingClear(TestCase):
