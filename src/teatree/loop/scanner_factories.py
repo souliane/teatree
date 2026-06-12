@@ -239,7 +239,8 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
 
     The scanner polls the overlay's configured review channel for
-    MR-link broadcasts so a reviewer-role tag in a Slack-Connect review team triggers the same downstream dispatch as a direct ``:eyes:``
+    MR-link broadcasts so a reviewer-role tag in a Slack-Connect review team
+    triggers the same downstream dispatch as a direct ``:eyes:``
     reaction. Returns ``None`` when the overlay has no Python class
     (TOML-only), no messaging backend resolved, or no review channel
     configured — those three combinations make the scanner a no-op.
