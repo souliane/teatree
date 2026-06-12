@@ -58,7 +58,8 @@ def _make_alias(tmp_path: Path) -> str:
         "TEST": {},
     }
     with connections[alias].cursor() as cur:
-        # Hand-maintained mirror of the Ticket schema — add any new Ticket column here too.
+        # Hand-maintained mirrors of the schemas queried by allocate_redis_slot
+        # and _reclaim_ghost_slots — add any new column here too.
         cur.execute(
             """
             CREATE TABLE teatree_ticket (
@@ -75,6 +76,21 @@ def _make_alias(tmp_path: Path) -> str:
                 short_description VARCHAR(80) NOT NULL DEFAULT '',
                 redis_db_index INTEGER NULL UNIQUE,
                 remote_missing BOOLEAN NOT NULL DEFAULT 0
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE teatree_worktree (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                overlay VARCHAR(255) NOT NULL DEFAULT '',
+                ticket_id INTEGER NOT NULL REFERENCES teatree_ticket(id),
+                repo_path VARCHAR(500) NOT NULL DEFAULT '',
+                branch VARCHAR(255) NOT NULL DEFAULT '',
+                state VARCHAR(32) NOT NULL DEFAULT 'created',
+                db_name VARCHAR(255) NOT NULL DEFAULT '',
+                extra TEXT NOT NULL DEFAULT '{}',
+                last_used_at DATETIME NULL
             )
             """
         )
@@ -175,6 +191,17 @@ class TestAllocateRedisSlotConcurrentExhaustion:
             taken = [Ticket.objects.using(alias).create() for _ in range(count - 1)]
             for ticket in taken:
                 Ticket.objects.using(alias).allocate_redis_slot(ticket)
+                # Give each pre-allocated ticket a live-path Worktree row so
+                # _reclaim_ghost_slots does not treat them as ghosts and reclaim
+                # them before the two racing allocators contend for the last slot.
+                from django.db import connections as _conns  # noqa: PLC0415
+
+                with _conns[alias].cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO teatree_worktree (ticket_id, overlay, repo_path, branch, extra)"
+                        " VALUES (?, '', 'org/repo', 'main', ?)",
+                        [ticket.pk, f'{{"worktree_path": "{tmp_path}"}}'],
+                    )
             a = Ticket.objects.using(alias).create()
             b = Ticket.objects.using(alias).create()
             results = _run_two_allocators(alias, (a.pk, b.pk))
