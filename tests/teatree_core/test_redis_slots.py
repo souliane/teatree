@@ -260,6 +260,44 @@ class TestGhostSlotReclaimFlushes(TestCase):
         mock_flush.assert_called_once_with(ghost_index, db_count=patched_user.redis_db_count)
         filler_dir.rmdir()
 
+    def test_reclaim_proceeds_when_flush_fails_without_docker(self) -> None:
+        """A best-effort cache flush must never block the DB-level reclaim.
+
+        ``redis_container.flushdb`` raises ``RuntimeError`` when the docker CLI
+        is absent (CI, any host without docker). The ghost slot's DB row must
+        still be reclaimed so allocation succeeds instead of propagating the
+        flush failure. Anti-vacuity: drop the swallow in ``_reclaim_ghost_slots``
+        and the ``allocate_redis_slot`` call below re-raises the RuntimeError.
+        """
+        cfg = load_config()
+        patched_user = _replace(cfg.user, redis_db_count=2)
+        patched_cfg = _replace(cfg, user=patched_user)
+        with patch("teatree.core.managers.load_config", return_value=patched_cfg):
+            ghost_a = Ticket.objects.create()
+            ghost_b = Ticket.objects.create()
+            Ticket.objects.allocate_redis_slot(ghost_a)
+            Ticket.objects.allocate_redis_slot(ghost_b)
+            for ghost in (ghost_a, ghost_b):
+                Worktree.objects.create(
+                    ticket=ghost,
+                    overlay="test",
+                    repo_path="org/repo",
+                    branch="main",
+                    extra={"worktree_path": "/nonexistent/path/that/is/gone"},
+                )
+            newcomer = Ticket.objects.create()
+            with patch(
+                "teatree.core.managers.redis_container.flushdb",
+                side_effect=RuntimeError("docker CLI not found on PATH"),
+            ):
+                index = Ticket.objects.allocate_redis_slot(newcomer)
+        assert index in {0, 1}
+        newcomer.refresh_from_db()
+        assert newcomer.redis_db_index == index
+        for ghost in (ghost_a, ghost_b):
+            ghost.refresh_from_db()
+        assert ghost_a.redis_db_index is None or ghost_b.redis_db_index is None
+
 
 class TestReleaseRedisSlot(TestCase):
     def test_clears_field_and_flushes_redis_db(self) -> None:

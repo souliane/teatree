@@ -138,7 +138,11 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         not yet written). Each ghost slot's Redis DB is flushed before the
         field is cleared, matching ``Ticket.release_redis_slot``'s contract so
         the next ticket assigned the reclaimed slot starts with a clean
-        cache/queue. Returns the count of reclaimed slots.
+        cache/queue. The flush is best-effort: when redis/docker is
+        unavailable (``flushdb`` raises ``RuntimeError`` because the docker
+        CLI is absent, e.g. CI) the DB row is still reclaimed so allocation
+        never fails on a missing cache backend. Returns the count of
+        reclaimed slots.
         """
         from pathlib import Path  # noqa: PLC0415
 
@@ -151,7 +155,14 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             else:
                 is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
             if is_ghost:
-                redis_container.flushdb(candidate.redis_db_index, db_count=load_config().user.redis_db_count)
+                try:
+                    redis_container.flushdb(candidate.redis_db_index, db_count=load_config().user.redis_db_count)
+                except RuntimeError as exc:
+                    logger.warning(
+                        "ghost slot %s flush skipped (%s); reclaiming DB row anyway",
+                        candidate.redis_db_index,
+                        exc,
+                    )
                 candidate.redis_db_index = None
                 candidate.save(update_fields=["redis_db_index"], using=using)
                 reclaimed += 1
