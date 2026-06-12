@@ -1,0 +1,74 @@
+# ============================================================
+# WEEKLY uv.lock REFRESH — closes the Dependabot pip gap
+# ============================================================
+#
+# Dependabot's ``pip`` ecosystem proposes bumps to pyproject.toml version
+# constraints but does NOT regenerate uv.lock.  After a dependabot PR merges,
+# the lockfile still pins the old hashes — the actual installed versions only
+# move when someone runs ``uv lock --upgrade``.
+#
+# This workflow closes that structural gap: once a week it runs
+# ``uv lock --upgrade``, and if the lockfile changed it opens (or updates) a
+# PR against main so a human can review and merge the hash refresh.
+#
+# Cadence: Sunday 03:00 UTC — offset from the dependabot weekly window so the
+# lock refresh sees any constraint bumps that landed during the week.
+# Also triggerable on-demand via workflow_dispatch.
+# ============================================================
+
+name: Weekly uv.lock refresh
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          # Full history so the PR branch can be force-pushed cleanly on reruns.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Upgrade the lockfile
+        run: uv lock --upgrade
+      - name: Check whether the lockfile changed
+        id: diff
+        run: |
+          if git diff --quiet uv.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open or update the lock-refresh PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="chore/uv-lock-upgrade-$(date +%Y-%W)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add uv.lock
+          git commit -m "chore(deps): weekly uv.lock upgrade"
+          git push --force-with-lease origin "$BRANCH"
+          # Open a PR if one does not already exist for this branch.
+          if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
+            PR_BODY="Automated weekly lockfile refresh via \`uv lock --upgrade\`.\n\nDependabot's \`pip\` ecosystem updates \`pyproject.toml\` constraints but does not regenerate \`uv.lock\`. This PR closes that gap by re-resolving all hashes after any constraint bumps that landed during the week.\n\nReview the diff, run CI, and merge when green."
+            gh pr create \
+              --title "chore(deps): weekly uv.lock upgrade" \
+              --body "$PR_BODY" \
+              --base main \
+              --label "dependencies"
+          fi

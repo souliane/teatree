@@ -1,0 +1,11 @@
+# pip-audit allowlist — unfixable transitive CVEs
+#
+# Add one entry per line in the format:
+#   VULN-ID  # package==version: one-line justification + link
+#
+# Example:
+#   GHSA-xxxx-xxxx-xxxx  # somepackage==1.2.3: upstream fix pending, no exploit vector in our use; see https://…
+#
+# Keep this list as short as possible. Every entry here is a conscious decision
+# to ship with a known vulnerability; document the reasoning and revisit when
+# a fixed version becomes available.
