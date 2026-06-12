@@ -31,7 +31,15 @@ _TACH = _REPO / "tach.toml"
 # four new nodes already imported teatree.core inside the monolithic
 # teatree.backends node — the split makes that pre-existing coupling visible as
 # four separate fan-in entries; it adds no new coupling.
-_CORE_FANIN_BASELINE = 17
+# Bumped 17 → 18 (#1838 agent-teams Track-B PR#7a): teatree.teams is promoted
+# from a foundation leaf to a domain-layer consumer of teatree.core — the maker-
+# only pane layer (panes / pane_reaper / guardrails) legitimately reads the
+# Task/Session lease + LoopLease ownership via teatree.core. One reviewed new
+# fan-in entry (teatree.teams), the correct lower→higher direction mirroring
+# teatree.agents / teatree.backends; nothing in core/loop/loops/agents imports
+# teams back (the #2320 inertness scan + the no-core→agents/backends test still
+# hold).
+_CORE_FANIN_BASELINE = 18
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

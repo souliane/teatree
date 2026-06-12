@@ -95,6 +95,26 @@ def _parse_env_bool(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_env_positive_int(default: int) -> Callable[[str], int]:
+    """A ``T3_*`` env coercer that fails SAFE to *default* on a bad value.
+
+    Returns a parser that accepts a positive integer string and degrades to
+    *default* for anything non-positive or non-integer. A pane-budget env var
+    (``T3_TEAMS_MAX_PANES`` / ``T3_TEAMS_IDLE_MINUTES``) must never silently
+    disable the safety bound by parsing to ``0`` or raising into the resolver —
+    the conservative bound cannot be configured away by a typo.
+    """
+
+    def parse(raw: str) -> int:
+        try:
+            value = int(raw.strip())
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    return parse
+
+
 def _parse_env_str_list(raw: str) -> list[str]:
     """Coerce a ``T3_*`` comma-separated env string to ``list[str]`` for the env tier.
 
@@ -151,6 +171,32 @@ def _parse_strict_int(raw: object) -> int:
         return int(raw.strip())
     msg = f"Invalid int value {raw!r}; expected a JSON/TOML integer"
     raise TypeError(msg)
+
+
+def _parse_overridable_positive_int(default: int) -> Callable[[object], int]:
+    """An overridable-int coercer that fails SAFE to *default* (mirrors ``_parse_env_positive_int``).
+
+    Used for the pane-budget settings (``teams_max_panes`` / ``teams_idle_minutes``)
+    in ``OVERLAY_OVERRIDABLE_SETTINGS``: a per-overlay or DB-tier value that is
+    non-positive, a ``bool``, a ``float``, or a non-numeric string degrades to
+    *default* rather than raising into the config resolver. The safety bound the
+    setting encodes cannot be disabled by a mistyped override.
+    """
+
+    def parse(raw: object) -> int:
+        if isinstance(raw, bool):
+            return default
+        if isinstance(raw, int):
+            return raw if raw > 0 else default
+        if isinstance(raw, str):
+            try:
+                value = int(raw.strip())
+            except ValueError:
+                return default
+            return value if value > 0 else default
+        return default
+
+    return parse
 
 
 def _parse_strict_float(raw: object) -> float:
@@ -232,6 +278,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "loop_cadence_seconds": _parse_strict_int,
     "dedicated_loops": _parse_strict_bool,
     "teams_enabled": _parse_strict_bool,
+    "teams_max_panes": _parse_overridable_positive_int(1),
+    "teams_idle_minutes": _parse_overridable_positive_int(30),
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
@@ -317,6 +365,8 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_DEDICATED_LOOPS": ("dedicated_loops", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
+    "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
+    "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
 }
 
 
@@ -399,6 +449,19 @@ class UserSettings:
     # reads from the top-level `[teams] enabled` table; per-overlay overridable
     # via `[overlays.<name>].teams_enabled`; `T3_TEAMS_ENABLED` env wins.
     teams_enabled: bool = False
+    # #1838 Track-B PR#7a — the inert maker-only pane budget. `teams_max_panes`
+    # caps how many concurrent maker panes a lead may run; `teams_idle_minutes`
+    # is the idle-pane reaper threshold (a pane with no live Session/Task past
+    # this many minutes is demoted to stopped). Both ship inert with the rest of
+    # the pane layer (referenced by nothing until `teams_enabled` flips on and a
+    # consumer lands). Global values read from the top-level `[teams] max_panes`
+    # / `[teams] idle_minutes` table (the feature namespace, alongside
+    # `enabled`); per-overlay overridable via `[overlays.<name>].teams_max_panes`
+    # / `teams_idle_minutes`; `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES` env
+    # win. A non-positive or non-int value FAILS SAFE to the default at every
+    # tier — the safety bound cannot be configured away by a typo.
+    teams_max_panes: int = 1
+    teams_idle_minutes: int = 30
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
     # human reaction (👍 or `/merge`). The user flips this off only once

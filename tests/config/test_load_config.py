@@ -423,6 +423,115 @@ class TestTeamsEnabledSetting:
         assert load_config(cfg).user.teams_enabled is False
 
 
+class TestTeamsPaneBudgetSettings:
+    """Config surface for the inert maker-only pane budget (#1838 PR#7a).
+
+    ``teams_max_panes`` caps how many concurrent maker panes a lead may run;
+    ``teams_idle_minutes`` is the idle-pane reaper threshold. Both read from the
+    top-level ``[teams]`` table (the feature's namespace, alongside ``enabled``)
+    with fail-safe defaults. They ship inert behind ``[teams] enabled`` like the
+    rest of PR#7a.
+    """
+
+    def test_max_panes_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        assert load_config(cfg).user.teams_max_panes == 1
+
+    def test_idle_minutes_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        assert load_config(cfg).user.teams_idle_minutes == 30
+
+    def test_defaults_with_no_config_file(self, tmp_path: Path) -> None:
+        settings = load_config(tmp_path / "absent.toml").user
+        assert settings.teams_max_panes == 1
+        assert settings.teams_idle_minutes == 30
+
+    def test_teams_table_values_are_read(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teams]\nmax_panes = 3\nidle_minutes = 45\n", encoding="utf-8")
+        settings = load_config(cfg).user
+        assert settings.teams_max_panes == 3
+        assert settings.teams_idle_minutes == 45
+
+    def test_non_int_value_fails_safe_to_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teams]\nmax_panes = "lots"\nidle_minutes = true\n', encoding="utf-8")
+        settings = load_config(cfg).user
+        assert settings.teams_max_panes == 1
+        assert settings.teams_idle_minutes == 30
+
+    def test_non_positive_value_fails_safe_to_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teams]\nmax_panes = 0\nidle_minutes = -5\n", encoding="utf-8")
+        settings = load_config(cfg).user
+        assert settings.teams_max_panes == 1
+        assert settings.teams_idle_minutes == 30
+
+
+class TestPaneBudgetParsers:
+    """Pure-logic coverage of the fail-safe positive-int coercers (#1838 PR#7a)."""
+
+    def test_env_parser_accepts_positive_int(self) -> None:
+        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
+
+        assert _parse_env_positive_int(1)("4") == 4
+
+    def test_env_parser_fails_safe_on_non_positive(self) -> None:
+        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
+
+        parse = _parse_env_positive_int(7)
+        assert parse("0") == 7
+        assert parse("-3") == 7
+
+    def test_env_parser_fails_safe_on_non_int(self) -> None:
+        from teatree.config.settings import _parse_env_positive_int  # noqa: PLC0415
+
+        parse = _parse_env_positive_int(9)
+        assert parse("garbage") == 9
+        assert parse("") == 9
+
+    def test_overridable_parser_accepts_positive_int(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        assert _parse_overridable_positive_int(1)(5) == 5
+
+    def test_overridable_parser_rejects_bool(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        # ``bool`` is an ``int`` subclass — it must NOT slip through as 1/0.
+        parse = _parse_overridable_positive_int(1)
+        truthy: object = True
+        falsy: object = False
+        assert parse(truthy) == 1
+        assert parse(falsy) == 1
+
+    def test_overridable_parser_non_positive_int_fails_safe(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        assert _parse_overridable_positive_int(3)(0) == 3
+        assert _parse_overridable_positive_int(3)(-1) == 3
+
+    def test_overridable_parser_accepts_numeric_string(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        # The DB tier may store ``"6"``; a positive numeric string is honoured.
+        assert _parse_overridable_positive_int(1)("6") == 6
+        assert _parse_overridable_positive_int(1)("0") == 1
+
+    def test_overridable_parser_non_numeric_string_fails_safe(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        assert _parse_overridable_positive_int(4)("lots") == 4
+
+    def test_overridable_parser_other_types_fail_safe(self) -> None:
+        from teatree.config.settings import _parse_overridable_positive_int  # noqa: PLC0415
+
+        assert _parse_overridable_positive_int(2)([3]) == 2
+        assert _parse_overridable_positive_int(2)(None) == 2
+
+
 class TestRequireReviewContextSetting:
     """The deep-retrieval gate knob loads from toml; default is opt-in OFF."""
 
