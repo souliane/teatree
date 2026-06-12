@@ -152,6 +152,22 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory.
 
+## Test-Plan Authoring
+
+A test plan is for a human testing in a browser. Write it so the reviewer can skim and verify fast: terse steps, exact URLs and accounts, one expected result per step, minimal prose. Cut narration, repeated caveats, and analysis essays — a plan is not a report.
+
+**Modality — classify each AC before writing a single step.** The right modality depends on what the AC actually tests:
+
+- **Route-guard / RBAC / redirect / backend boundary** (e.g. "advisor is blocked from the admin portal"): the verification IS a URL to navigate + an expected redirect or HTTP status. Write a clickable URL and the expected response code or redirect destination. A screenshot adds nothing here — the URL and the curl transcript ARE the evidence. Do not over-screenshot.
+- **UI feature** (e.g. a dropdown appearing, a computed field, a generated document): the verification is **browser click steps** — open this page, click this, expect this visible result. Screenshots are the per-step compare-against reference. **Never substitute API checks for UI steps.** When the FE branch is not yet on the dev environment, write the steps against a local stack that has the FE branch, or mark the AC "⏳ blocked until deployed" — do not replace clicks with curl.
+- **Genuinely backend-only AC** (a webhook, a background job, a data migration): API/curl evidence is correct and sufficient. Keep it as a copy-pasteable code block, not a terminal screenshot.
+
+**Never put a terminal screenshot in a test plan.** A screenshot must show a browser UI. An API response belongs as a text code block (or a browser URL the tester opens), not an image of a terminal window.
+
+**Conciseness** — a plan that exceeds what a reviewer needs to verify fast is too long. Aim for the minimum: exact URL, exact account, one expected outcome per step. A 30k-character test plan buries the actual steps in narration; keep it short enough to skim.
+
+**Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
+
 ## Post Testing Evidence on the Ticket
 
 **Use `t3 <overlay> e2e post-evidence --manifest <json>`.** It maintains ONE structured evidence note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.

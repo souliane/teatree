@@ -99,6 +99,21 @@ exception (with a comment) can stand. When you find a real bug or a hard-fail, t
 **hold / changes-requested**, not approve-with-follow-ups (see `t3:review` for how a real bug means
 hold, and how to post the finding inline on the diff rather than as a monolithic note).
 
+## Test-plan review checks
+
+When reviewing a test plan (the `steps` list inside the evidence note, or a standalone plan posted on a ticket), apply these three checks. Each is a distinct **hold** finding if violated.
+
+**Modality match.** Confirm the plan used the right evidence type for each AC:
+
+- Route-guard / RBAC / redirect / backend-boundary ACs should use a URL + expected redirect or curl code block, not screenshots.
+- UI-feature ACs should use browser click steps and screenshots as the compare-against reference, not API substitutes.
+- A terminal screenshot in a test plan is always wrong — it must be a browser screenshot or a text code block.
+If the plan substituted API evidence for an undeployed FE step (curl instead of clicks), flag it: ask for click steps against a local stack or an explicit "⏳ blocked until deployed" marker.
+
+**Conciseness.** A plan that reads more like a report than a checklist is a hold. Flag plans with repeated caveats, narrative analysis, or steps that do not resolve to a URL/click/expected-outcome tuple. A reviewer should be able to skim it in under two minutes.
+
+**Field-context evidence for generated documents.** When a step asserts a term in a PDF, export, or rendered document, verify the step names the expected **field or labelled row**, not just a substring anywhere in the document. "The PDF contains X" is insufficient — "the Security row shows X" is the required form. Flag any evidence claim whose verification probe is a page-wide substring match; also flag test steps whose fixture names embed the feature keyword (a borrower named "E2E FeatureName" defeats a naive full-text check for "FeatureName").
+
 ## Locator hygiene — the one rule worth its own paragraph
 
 The single most common E2E review failure is a locator that is not a stable contract:
