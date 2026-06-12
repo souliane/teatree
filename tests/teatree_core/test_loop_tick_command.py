@@ -417,6 +417,166 @@ class TestLoopOwnerGate(TestCase):
             assert _loop_owner_ttl_seconds() == 1800
 
 
+class TestScopedTickClaimsPerLoopSlot(TestCase):
+    """``t3 loop tick --slot <name>`` claims ``loop:<name>``, not ``loop-owner`` (#1838).
+
+    The dedicated-loop slot generator drives N scoped ticks, each owning its
+    own ``loop:<group>`` slot via the SAME pid-anchored, hijack-guarded
+    ``claim_ownership`` machinery the global ``loop-owner`` uses. A scoped
+    tick MUST NOT touch the global ``loop-owner`` row, and the global-owner
+    gate MUST NOT block a scoped tick (mutually-independent slots).
+    """
+
+    def test_scoped_tick_claims_per_loop_slot_and_runs_only_members(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loops.orchestrator import TickOutcome  # noqa: PLC0415
+
+        outcome = TickOutcome(
+            started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            dispatched_loops=["dispatch"],
+            skipped_loops={},
+            errors={},
+            actions_count=0,
+        )
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "dispatch-sess"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.scoped_tick.run_scoped_tick", return_value=outcome) as scoped_mock,
+            patch("teatree.loop.tick.run_tick") as fat_run_tick,
+        ):
+            call_command("loop_tick", "--slot", "dispatch", stdout=stdout)
+
+        # The scoped path ran; the fat run_tick did NOT.
+        scoped_mock.assert_called_once()
+        assert scoped_mock.call_args.args[0] == "dispatch"
+        fat_run_tick.assert_not_called()
+        # The per-loop owner row was claimed; the global owner row was NOT.
+        assert LoopLease.objects.get(name="loop:dispatch").session_id == "dispatch-sess"
+        assert not LoopLease.objects.filter(name="loop-owner", session_id="dispatch-sess").exists()
+
+    def test_scoped_tick_pid_anchors_the_per_loop_claim(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loops.orchestrator import TickOutcome  # noqa: PLC0415
+
+        outcome = TickOutcome(
+            started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            dispatched_loops=[],
+            skipped_loops={},
+            errors={},
+            actions_count=0,
+        )
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "dispatch-sess"}),
+            patch("teatree.loop.session_identity.current_session_pid", return_value=os.getpid()),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.scoped_tick.run_scoped_tick", return_value=outcome),
+        ):
+            call_command("loop_tick", "--slot", "review", stdout=StringIO())
+
+        assert LoopLease.objects.get(name="loop:review").owner_pid == os.getpid()
+
+    def test_global_owner_does_not_block_scoped_tick(self) -> None:
+        """A live global ``loop-owner`` (different session) never SKIPs a scoped tick."""
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loops.orchestrator import TickOutcome  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="global-owner-session")
+        outcome = TickOutcome(
+            started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            dispatched_loops=["dispatch"],
+            skipped_loops={},
+            errors={},
+            actions_count=0,
+        )
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "dispatch-sess"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.scoped_tick.run_scoped_tick", return_value=outcome) as scoped_mock,
+        ):
+            call_command("loop_tick", "--slot", "dispatch", stdout=StringIO())
+
+        scoped_mock.assert_called_once()
+
+    def test_scoped_tick_skips_when_per_loop_slot_held_by_another_session(self) -> None:
+        """A live foreign owner of ``loop:<name>`` SKIPs the scoped tick (per-loop hijack guard)."""
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop:dispatch", session_id="owner-session")
+        stdout = StringIO()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
+            patch("teatree.loops.scoped_tick.run_scoped_tick") as scoped_mock,
+        ):
+            call_command("loop_tick", "--slot", "dispatch", stdout=stdout)
+
+        scoped_mock.assert_not_called()
+        assert "SKIP" in stdout.getvalue()
+        assert "loop:dispatch" in stdout.getvalue()
+
+    def test_two_scoped_ticks_for_two_groups_both_run(self) -> None:
+        """Disjoint dedicated loops own disjoint ``loop:<name>`` slots — no cross-block."""
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loops.orchestrator import TickOutcome  # noqa: PLC0415
+
+        outcome = TickOutcome(
+            started_at=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            dispatched_loops=[],
+            skipped_loops={},
+            errors={},
+            actions_count=0,
+        )
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.scoped_tick.run_scoped_tick", return_value=outcome) as scoped_mock,
+        ):
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "dispatch-sess"}):
+                call_command("loop_tick", "--slot", "dispatch", stdout=StringIO())
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "review-sess"}):
+                call_command("loop_tick", "--slot", "review", stdout=StringIO())
+
+        assert scoped_mock.call_count == 2
+        assert LoopLease.objects.get(name="loop:dispatch").session_id == "dispatch-sess"
+        assert LoopLease.objects.get(name="loop:review").session_id == "review-sess"
+
+    def test_unknown_slot_is_rejected(self) -> None:
+        """A ``--slot`` that names no dedicated loop fails loudly, not a silent no-op."""
+        from django.core.management.base import CommandError  # noqa: PLC0415
+
+        with (
+            patch("teatree.loops.scoped_tick.run_scoped_tick") as scoped_mock,
+            pytest.raises(CommandError, match="unknown dedicated loop"),
+        ):
+            call_command("loop_tick", "--slot", "no-such-group", stdout=StringIO())
+        scoped_mock.assert_not_called()
+
+
+class TestNoSlotPathIsByteIdentical(TestCase):
+    """Default (no ``--slot``) ⇒ byte-identical to today: claim ``loop-owner``, full ``run_tick``.
+
+    Pins the #1838 hard invariant — the dedicated-loop layer is purely
+    additive. With no ``--slot`` the command claims the GLOBAL ``loop-owner``
+    slot and drives the fat ``run_tick``, never the scoped path.
+    """
+
+    def test_no_slot_claims_global_owner_and_runs_fat_tick(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        report = _build_report()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report) as fat_run_tick,
+            patch("teatree.loops.scoped_tick.run_scoped_tick") as scoped_mock,
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        fat_run_tick.assert_called_once()
+        scoped_mock.assert_not_called()
+        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-session"
+        assert not LoopLease.objects.filter(name__startswith="loop:").exists()
+
+
 class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
     """The lease ``owner_pid`` must be the persistent session pid (#1706 root cause).
 
