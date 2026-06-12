@@ -67,6 +67,11 @@ def _deny_with_errors(errors: list[str]) -> None:
 def validate_mr(
     title: str = typer.Option("", "--title", help="MR/PR title"),
     description: str = typer.Option("", "--description", help="MR/PR description"),
+    repo: str = typer.Option(
+        "",
+        "--repo",
+        help="MR TARGET repo (owner/repo slug, path, or URL); keys overlay resolution to the target, not the cwd.",
+    ),
 ) -> None:
     """Validate MR/PR title+description against the active overlay's rules.
 
@@ -75,6 +80,16 @@ def validate_mr(
     the metadata is invalid. The pre-push hook invokes this by default so a
     bad title/description is rejected BEFORE the push — no env-var opt-in
     (#119).
+
+    ``--repo`` keys overlay resolution to the MR's TARGET repo (the ``-R``
+    slug / the ``glab api`` namespace / the ``gh api repos/<o>/<r>`` path),
+    not the agent's cwd. When the target maps to exactly one overlay, that
+    overlay's rules govern with NO any-overlay-pass fallback — and a crash in
+    that overlay's validator FAILS CLOSED (deny), never silently skips. This
+    closes the gap where an MR targeting an overlay with stricter title rules,
+    created with cwd in a repo owned by a more-lenient overlay, was graded
+    against the cwd overlay and slipped through. A blank or unmatched ``--repo``
+    falls back to the cwd-keyed resolution below.
 
     Overlay resolution is deterministic and never crashes on ambiguity
     (#1526). Order:
@@ -96,6 +111,14 @@ def validate_mr(
     """
     ensure_django()
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+    if repo:
+        target_overlay = get_overlay_for_repo(repo)
+        if target_overlay is not None:
+            errors = _validation_errors_fail_closed(target_overlay, title, description)
+            if errors:
+                _deny_with_errors(errors)
+            return
 
     try:
         overlay = get_overlay()
@@ -124,6 +147,21 @@ def _validation_errors(overlay: "OverlayBase", title: str, description: str) -> 
     """Return the overlay's ``validate_pr`` errors for ``title``/``description``."""
     result = overlay.metadata.validate_pr(title, description)
     return list(result.get("errors", []))
+
+
+def _validation_errors_fail_closed(overlay: "OverlayBase", title: str, description: str) -> list[str]:
+    """Target-keyed verdict that FAILS CLOSED when the overlay's validator crashes.
+
+    Once the MR's target maps to exactly one known overlay, that overlay's
+    rules are authoritative — a validator that cannot load or raises must DENY
+    (a synthesised error), never silently pass. A bad title slipping onto the
+    remote because the target overlay's validator threw is exactly the
+    lockout-inverse this gate exists to prevent.
+    """
+    try:
+        return _validation_errors(overlay, title, description)
+    except Exception as exc:  # noqa: BLE001 — fail closed on any validator fault.
+        return [f"validate-mr: target overlay validator failed ({exc}); denying (fail closed)."]
 
 
 @tool_app.command("repo-mode")
