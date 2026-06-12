@@ -114,74 +114,51 @@ class TestBuildTriggerIndex:
 
 
 class TestDetectIntent:
+    """Intent-detection mechanics exercised against the REAL trigger index.
+
+    The fixture is built from the production ``SKILL.md`` frontmatter
+    (``build_trigger_index([SKILLS_DIR])``) rather than fabricated entries.
+    A fabricated index gave false confidence — earlier revisions invented
+    keyword triggers for ``ship``/``test``/``code`` (e.g. ``commit|push`` ->
+    ``ship``) that production does NOT carry, so the unit tests "passed"
+    against routing that never fires for a real prompt. Deriving the fixture
+    from disk means every assertion below reflects what the hook actually
+    does. ``test_fixture_is_not_fabricated`` pins that the fixture is the
+    production index, not a hand-written stand-in.
+    """
+
     @pytest.fixture
     def trigger_index(self):
-        """Minimal trigger index for testing."""
-        return [
-            {
-                "skill": "ship",
-                "priority": 10,
-                "exclude": r"\breview\b",
-                "keywords": [r"\b(commit|push)\b"],
-                "urls": [],
-                "end_of_session": False,
-            },
-            {
-                "skill": "test",
-                "priority": 20,
-                "exclude": "",
-                "keywords": [r"\b(pytest|run.*tests?)\b"],
-                "urls": [],
-                "end_of_session": False,
-            },
-            {
-                "skill": "review",
-                "priority": 40,
-                "exclude": "",
-                "keywords": [r"\breview\b"],
-                "urls": [],
-                "end_of_session": False,
-            },
-            {
-                "skill": "debug",
-                "priority": 50,
-                "exclude": "",
-                "keywords": [r"\b(broken|error)\b"],
-                "urls": ["https?://[^\\s]*sentry\\.[^\\s]+/issues/"],
-                "end_of_session": False,
-            },
-            {
-                "skill": "ticket",
-                "priority": 60,
-                "exclude": "",
-                "keywords": [r"([a-z]+-\d+)"],
-                "urls": ["https?://gitlab\\.[^\\s]+/-/issues/\\d+"],
-                "end_of_session": False,
-            },
-            {
-                "skill": "code",
-                "priority": 70,
-                "exclude": "",
-                "keywords": [r"\b(implement|refactor)\b"],
-                "urls": [],
-                "end_of_session": False,
-            },
-            {
-                "skill": "retro",
-                "priority": 100,
-                "exclude": "",
-                "keywords": [r"\bretro\b"],
-                "urls": [],
-                "end_of_session": True,
-            },
-        ]
+        if not SKILLS_DIR.is_dir():
+            pytest.skip("skills directory not found")
+        return build_trigger_index([SKILLS_DIR])
+
+    def test_fixture_is_not_fabricated(self, trigger_index):
+        # The fixture must equal the index built from the real skill tree —
+        # this is the guard that the test below exercise production routing.
+        assert trigger_index == build_trigger_index([SKILLS_DIR])
+        skills = {e["skill"] for e in trigger_index}
+        # Skills that carry real keyword/url triggers in production.
+        assert {"debug", "ticket", "retro", "workspace", "teatree"} <= skills
 
     def test_explicit_slash_command_overrides_url(self, trigger_index):
+        # ``review`` is an indexed skill name, so a leading ``review`` token
+        # short-circuits via the slash pass before any URL match — even though
+        # the trailing gitlab merge-request URL would otherwise route to
+        # ``ticket`` (the production ticket trigger catches merge_requests URLs).
         result = detect_intent(
-            "/t3:review https://gitlab.com/org/repo/-/merge_requests/190",
+            "review https://gitlab.com/org/repo/-/merge_requests/190",
             trigger_index=trigger_index,
         )
         assert result == "review"
+
+    def test_colon_qualified_slash_does_not_short_circuit(self, trigger_index):
+        # The slash pass splits on the first non-word char, so ``/t3:review``
+        # yields the candidate ``t3`` (not ``review``); ``t3`` is not an indexed
+        # skill, so the slash pass does NOT fire. With no other signal the
+        # prompt does not route. (The fabricated fixture hid this by inventing a
+        # ``review`` keyword that matched the trailing word.)
+        assert detect_intent("/t3:review foo", trigger_index=trigger_index) == ""
 
     def test_explicit_slash_command_without_leading_slash(self, trigger_index):
         assert detect_intent("ship some args", trigger_index=trigger_index) == "ship"
@@ -190,10 +167,15 @@ class TestDetectIntent:
         assert detect_intent("/unknown-skill do something", trigger_index=trigger_index) != "unknown-skill"
 
     def test_keyword_match(self, trigger_index):
-        assert detect_intent("commit and push", trigger_index=trigger_index) == "ship"
+        # ``debug`` carries a real keyword trigger (``broken``); this is the
+        # genuine production keyword path.
+        assert detect_intent("the page is broken", trigger_index=trigger_index) == "debug"
 
-    def test_exclude_prevents_match(self, trigger_index):
-        assert detect_intent("review the commit", trigger_index=trigger_index) == "review"
+    def test_ship_has_no_production_keyword_trigger(self, trigger_index):
+        # Production ``ship`` carries NO keyword triggers, so a bare
+        # "commit and push" does not route to it — the fabricated fixture
+        # used to claim it did. Slash-prefix invocation is the real path.
+        assert detect_intent("commit and push", trigger_index=trigger_index) == ""
 
     def test_url_match_takes_priority(self, trigger_index):
         assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=trigger_index) == "ticket"
@@ -201,17 +183,21 @@ class TestDetectIntent:
     def test_sentry_url(self, trigger_index):
         assert detect_intent("https://sentry.io/issues/999", trigger_index=trigger_index) == "debug"
 
-    def test_test_intent(self, trigger_index):
-        assert detect_intent("run the tests", trigger_index=trigger_index) == "test"
+    def test_test_has_no_production_keyword_trigger(self, trigger_index):
+        # Production ``test`` carries no keyword triggers; "run the tests"
+        # does not route (the fabricated fixture wrongly claimed it did).
+        assert detect_intent("run the tests", trigger_index=trigger_index) == ""
 
-    def test_code_intent(self, trigger_index):
-        assert detect_intent("implement the login feature", trigger_index=trigger_index) == "code"
+    def test_code_has_no_production_keyword_trigger(self, trigger_index):
+        # Production ``code`` carries no keyword triggers; "implement …" does
+        # not route via keyword (fabricated-fixture false confidence).
+        assert detect_intent("implement the login feature", trigger_index=trigger_index) == ""
 
     def test_ticket_intent(self, trigger_index):
         assert detect_intent("start working on PROJ-123", trigger_index=trigger_index) == "ticket"
 
     def test_no_match(self, trigger_index):
-        assert detect_intent("hello", trigger_index=trigger_index) == ""
+        assert detect_intent("hello there friend", trigger_index=trigger_index) == ""
 
     def test_end_of_session(self, trigger_index):
         result = detect_intent(

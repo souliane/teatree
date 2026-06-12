@@ -58,7 +58,7 @@ _STATUS_TO_SKILL: dict[str, str] = {
 _PHASE_TO_SKILL: dict[str, str] = {
     "ticket-intake": "ticket",
     "scoping": "ticket",
-    "planning": "planner",
+    "planning": "teatree-plan",
     "coding": "code",
     "testing": "test",
     "e2e": "e2e",
