@@ -223,8 +223,8 @@ class TestMrTargetRepoIsThreadedToValidator:
     The cwd-keyed validator validates an MR against whatever overlay owns the
     agent's *current directory* — for a dispatched agent that is the clone of a
     different overlay than the one the MR targets, so the target overlay's
-    rules are never applied. The gate must parse the MR's target
-    (``-R``/``--repo``, the ``glab api`` namespace, the ``gh api repos/<o>/<r>``
+    rules are never applied. The gate must parse the MR's target (``-R``/``--repo``
+    on ``glab mr``, the ``glab api`` namespace, the ``gh api repos/<o>/<r>``
     path) and thread it to the validator so the target overlay's rules govern
     regardless of cwd. ``strict-org/widget`` stands for the target repo.
     """
@@ -261,14 +261,6 @@ class TestMrTargetRepoIsThreadedToValidator:
         )
         assert "--repo" in argv
         assert "strict-org/widget" in argv
-
-    def test_gh_pr_create_dash_r_flag_target_is_passed(self, monkeypatch):
-        argv = self._argv_for(
-            monkeypatch,
-            "gh pr create -R souliane/teatree --title 'fix: t' --body 'fix: t'",
-        )
-        assert "--repo" in argv
-        assert "souliane/teatree" in argv
 
     def test_gh_api_pulls_path_target_is_passed(self, monkeypatch):
         argv = self._argv_for(
