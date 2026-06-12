@@ -44,6 +44,32 @@ class TestPrivacyScanScriptEntrypoint:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+class TestPrivacyScanOpaqueId:
+    """Fix #3: the publish surface also flags real-shaped Slack/forge IDs.
+
+    A channel/DM/user/app/team id (``C0…``/``D0…``/``U0…``/``A0…``/``T0…``)
+    pushed to a public surface is a leak with no dictionary word, so the
+    banned-term pass never caught it. The synthetic-placeholder allowlist
+    keeps fixtures/examples from tripping.
+    """
+
+    def test_real_shaped_slack_id_is_a_finding(self) -> None:
+        # Invented random-looking id — not a real channel id.
+        result = _run("channel = C0ZX91QWERT\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "opaque_id" in result.stdout
+        assert "C0ZX91QWERT" in result.stdout
+
+    def test_synthetic_placeholder_id_is_clean(self) -> None:
+        result = _run("channel = C0DEMOCHAN1 and user U01ABCD1234\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_id_in_slack_archive_url_is_a_finding(self) -> None:
+        result = _run("https://slack.com/archives/D0KP47MNBVC/p1717603200123456\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "D0KP47MNBVC" in result.stdout
+
+
 class TestPrivacyScanDedicatedFindingsExitCode:
     """A genuine finding exits on a dedicated code distinct from any crash (#126 gap 3).
 

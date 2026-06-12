@@ -5,24 +5,32 @@ The diff/payload banned-terms gate (``check-banned-terms.sh`` →
 commit message, or a publish-surface body. A customer/tenant brand name
 that is ALREADY committed is invisible to it forever — it never appears
 in a post-landing diff. This module is the backstop the diff-only gate
-cannot provide: it enumerates every git-tracked file and scans its full
-CONTENT for the high-confidence brand list, so a pre-existing committed
-brand name is caught on push-to-main and on a schedule.
+cannot provide: it enumerates every git-tracked file and scans the
+COMMITTED blob's content for the high-confidence brand list, so a
+pre-existing committed brand name is caught on push-to-main and on a
+schedule.
 
 Two design choices distinguish it from the fast diff gate.
 
-High-confidence list only: the matcher is underscore-tolerant. ``\b``
-treats ``_`` as a word char, so a brand glued into ``wt_777_<brand>`` is
-never bounded by ``\b`` and slips through. The boundary is replaced with
-one that treats ``_`` (and the other word joiners) as a separator. That
-loosening is safe ONLY for high-confidence brand tokens; applying it to
-common-word entries would surface substring noise, so the common-word
-``banned_terms`` list keeps its ``\b`` matching in the unchanged shell
-scanner.
+One shared matcher: the brand pass routes through
+:func:`teatree.hooks.term_match.matched_term` — the SAME whole-token
+matcher the ``[teatree].banned_terms`` posting gate and the
+``[overlay_leak].terms`` core-leak gate use. ``-``, ``_``, whitespace,
+punctuation AND camelCase boundaries all separate tokens, so a brand
+glued into ``wt_777_<brand>`` or a camelCase ``AcmeConfig`` is caught
+where a plain ``\b(term)\b`` regex would miss it. Routing through the one
+matcher means the four banned-terms entry points cannot drift (pinned by
+``tests/teatree_hooks/test_banned_terms_parity.py``).
+
+Committed-blob read: a brand name may be committed but later edited out
+of the working tree (or staged) — a working-tree-only edit must not hide
+a committed leak from the backstop. The scan reads the ``HEAD`` blob via
+``git show HEAD:<path>`` and falls back to the working-tree file only
+when the blob is unavailable (a freshly-added, not-yet-committed file).
 
 Email carve-out preserved: a brand that appears only inside an email
-address (author/contact metadata) is allowed, exactly as the shell
-scanner does, so legitimate addresses are not flagged.
+address (author/contact metadata) is allowed — :func:`term_match.strip_emails`
+blanks emails before matching, exactly as the shell scanner does.
 
 The brand list is read from ``[teatree].banned_brands`` in
 ``~/.teatree.toml`` (a NEW optional high-confidence key, distinct from
@@ -31,12 +39,12 @@ ships with no brands configured — each operator extends it locally.
 """
 
 import os
-import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.utils.run import CommandFailedError, TimeoutExpired, run_checked
+from teatree.hooks import term_match
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
 # Comma-separated brand list, used by CI where ``~/.teatree.toml`` is
 # absent. Mirrors ``$TEATREE_OVERLAY_LEAK_TERMS`` for the overlay-leak
@@ -44,17 +52,8 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_checked
 # without committing any brand name. Takes precedence over the config.
 _BRANDS_ENV = "TEATREE_BANNED_BRANDS"
 
-# Word joiners that ``\b`` wrongly treats as part of the word, hiding a
-# brand glued onto an identifier (``wt_777_<brand>``, ``<brand>_x``). The
-# tree matcher treats each as a separator so the brand is caught on
-# either side. ``\b`` already handles whitespace/punctuation boundaries.
-_JOINERS = "_"
-
-# Mirrors check-banned-terms.sh: a brand that appears only inside an email
-# address is author/contact metadata and is allowed.
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
 _GIT_LS_TIMEOUT_S = 30
+_GIT_SHOW_TIMEOUT_S = 30
 
 # Suffixes that hold scannable text. A tracked binary (image, archive)
 # is skipped — it cannot carry a readable brand name and may not decode.
@@ -131,41 +130,18 @@ def load_brand_terms(config_path: Path) -> tuple[str, ...]:
     return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())
 
 
-def build_brand_pattern(terms: tuple[str, ...]) -> re.Pattern[str] | None:
-    r"""Compile an underscore-tolerant pattern over the high-confidence brands.
+def scan_text(text: str, terms: tuple[str, ...]) -> list[tuple[int, str, str]]:
+    """Scan *text* line by line for brand hits; return ``(lineno, term, line)``.
 
-    Each side of the term is bounded by EITHER a regular ``\b`` boundary
-    OR a word-joiner (``_``) — so ``wt_777_<brand>`` and ``<brand>_x`` are
-    caught where a plain ``\b(term)\b`` would miss them. Longer terms sort
-    first so an alternation prefers the most specific match.
+    Routes through the shared :func:`term_match.matched_term` with the
+    email carve-out applied per line, so the brand pass matches the other
+    banned-terms entry points exactly. Empty *terms* is a clean no-op.
     """
-    cleaned = [t for t in terms if t]
-    if not cleaned:
-        return None
-    cleaned.sort(key=len, reverse=True)
-    escaped = "|".join(re.escape(t) for t in cleaned)
-    joiners = re.escape(_JOINERS)
-    # A boundary that is satisfied by a word boundary OR an adjacent joiner.
-    left = rf"(?:\b|(?<=[{joiners}]))"
-    right = rf"(?:\b|(?=[{joiners}]))"
-    return re.compile(rf"{left}(?:{escaped}){right}", re.IGNORECASE)
-
-
-def _line_has_non_email_match(line: str, pattern: re.Pattern[str]) -> str | None:
-    """Return the first brand hit on *line* that is not inside an email, else None."""
-    email_spans = [m.span() for m in _EMAIL_RE.finditer(line)]
-    for match in pattern.finditer(line):
-        if any(start <= match.start() and match.end() <= end for start, end in email_spans):
-            continue
-        return match.group(0)
-    return None
-
-
-def scan_text(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str, str]]:
-    """Scan *text* line by line; return ``(lineno, matched_term, line)`` hits."""
+    if not terms:
+        return []
     hits: list[tuple[int, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        term = _line_has_non_email_match(line, pattern)
+        term = term_match.matched_term(term_match.strip_emails(line), terms)
         if term is not None:
             hits.append((lineno, term, line))
     return hits
@@ -190,27 +166,68 @@ def git_tracked_files(repo_root: Path) -> list[Path]:
     return [repo_root / n for n in names if (repo_root / n).suffix.lower() in _TEXT_SUFFIXES]
 
 
+def committed_blob_text(repo_root: Path, rel_path: str) -> str | None:
+    """Return the ``HEAD`` blob content of *rel_path*, or ``None`` if unavailable.
+
+    Reading the COMMITTED blob (not the working tree) is what makes the
+    backstop hold against a staged/working-tree edit that removes a brand
+    name from the file but leaves it in the last commit: the working-tree
+    file would look clean while the committed leak persists. ``None`` is
+    returned when ``git show`` cannot resolve the blob — a freshly-added
+    file with no commit yet, a detached/empty ``HEAD``, or git being
+    unavailable — so the caller can fall back to the working-tree content.
+    """
+    try:
+        result = run_allowed_to_fail(
+            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_path}"],
+            expected_codes=None,
+            timeout=_GIT_SHOW_TIMEOUT_S,
+        )
+    except (TimeoutExpired, OSError, UnicodeDecodeError):
+        # A binary blob does not decode as text — treat it as unscannable
+        # (caller skips it), exactly as the working-tree binary read does.
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _scannable_text(repo_root: Path, path: Path, rel: str) -> str | None:
+    """The text to scan for *path*: the committed blob, else the working tree.
+
+    Prefer the committed ``HEAD`` blob so a working-tree-only edit cannot
+    hide a committed brand. Fall back to the working-tree file only when no
+    committed blob exists (a newly-added, not-yet-committed tracked file).
+    """
+    blob = committed_blob_text(repo_root, rel)
+    if blob is not None:
+        return blob
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
     """Scan every tracked text file for committed brands and conflated terminology.
 
-    Two passes per file: the operator-supplied high-confidence brand list
-    (a clean no-op when none is configured) and the built-in terminology
-    gate (``terminology_gate``), which flags teatree-internal vocabulary
-    conflations regardless of any operator config.
+    Two passes per file, both over the COMMITTED blob (so a working-tree
+    edit cannot hide a committed leak): the operator-supplied
+    high-confidence brand list (a clean no-op when none is configured) and
+    the built-in terminology gate (``terminology_gate``), which flags
+    teatree-internal vocabulary conflations regardless of any operator
+    config.
     """
     from teatree.hooks import terminology_gate  # noqa: PLC0415
 
-    pattern = build_brand_pattern(terms)
     findings: list[TreeFinding] = []
     for path in git_tracked_files(repo_root):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        rel = path.relative_to(repo_root).as_posix()
+        text = _scannable_text(repo_root, path, rel)
+        if text is None:
             continue
         lines = text.splitlines()
-        rel = path.relative_to(repo_root).as_posix()
-        if pattern is not None:
-            findings.extend(TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, pattern))
+        findings.extend(TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, terms))
         if not terminology_gate.path_is_exempt(rel):
             for lineno, finding in terminology_gate.scan_text(text):
                 term = f"{finding.phrase} — {finding.correction}"

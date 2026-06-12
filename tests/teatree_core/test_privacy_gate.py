@@ -86,6 +86,37 @@ def test_redact_terms_skip_blank_entries() -> None:
     assert len(result.matches) == 1
 
 
+def test_redact_term_substring_inside_a_word_is_not_flagged() -> None:
+    """Fix #4: redact uses the SHARED whole-token matcher, not substring.
+
+    A short redact term (here ``op``) must not surface inside a longer
+    unbroken word (``cooperative``/``operation``) — the substring
+    false-positive the old ``re.escape`` matching produced.
+    """
+    result = scan_for_publication(
+        text="A cooperative operation by the operator.",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        redact_terms=["op"],
+    )
+    assert not result.refused
+    assert result.matches == ()
+
+
+def test_redact_term_matches_whole_token_and_camelcase() -> None:
+    """A redact term matches a whole token, incl. a camelCase/snake split."""
+    result = scan_for_publication(
+        text="Touches acme flow via acmeClient and acme_helper.",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        redact_terms=["acme"],
+    )
+    assert result.refused
+    assert all(m.pattern_name == "redact:acme" for m in result.matches)
+    # The bare token, the camelCase split, and the snake split each match.
+    assert len(result.matches) == 3
+
+
 def test_custom_block_patterns_match() -> None:
     """Caller-supplied regexes are evaluated alongside the default set."""
     result = scan_for_publication(

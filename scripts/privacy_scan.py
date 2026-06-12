@@ -24,6 +24,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 
 _DIFF_DETECTORS = (_scan_diff_comments,)
@@ -97,6 +98,9 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
     findings.extend(("home_path", m.group()) for m in _HOME_PATH_RE.finditer(line))
     findings.extend(("private_ip", m.group()) for m in _IP_RE.finditer(line))
     findings.extend(("api_key", m.group()[:20] + "...") for m in _API_KEY_RE.finditer(line))
+    # Opaque Slack/forge IDs (real-shaped only; synthetic placeholders are
+    # allowlisted in teatree.hooks.opaque_id).
+    findings.extend(("opaque_id", opaque) for opaque in find_opaque_ids(line))
     findings.extend(
         ("internal_hostname", m.group())
         for m in _HOSTNAME_RE.finditer(line)

@@ -552,6 +552,33 @@ jobs:
           TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
         run: uv run t3 banned-terms scan-tree --repo-root . --require-brands
 
+  # GATE (push + schedule only): full-tree overlay-leak scan. The pre-commit
+  # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a
+  # real-shaped Slack/forge opaque id ALREADY committed never appears in a
+  # staged diff. This job walks every scanned root (src/teatree, docs, skills,
+  # agents, tests, scripts + top-level README/BLUEPRINT/AGENTS) for the
+  # configured term list AND the always-on opaque-ID pass. `--require-terms`
+  # makes a MISSING TEATREE_OVERLAY_LEAK_TERMS secret a LOUD failure (exit 2 =
+  # misconfigured) instead of a silent inert no-op — the job stays RED until the
+  # secret is wired (intended); the opaque-ID pass runs regardless. Local dev
+  # omits the flag and stays green.
+  overlay-leak-tree:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Full-tree overlay-leak scan
+        env:
+          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+        run: uv run python scripts/hooks/check_no_overlay_leak.py --require-terms
+
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 
   # GATE: dependency vulnerability audit via pip-audit (OSV backend). Job key

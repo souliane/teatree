@@ -23,13 +23,14 @@ customer term; ``widget-margin`` for a glued multiword term. No real
 customer/overlay value appears, so this public test leaks nothing.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from teatree.hooks import banned_terms_scanner
+from teatree.hooks import banned_terms_scanner, banned_terms_tree_scan
 from teatree.hooks.term_match import matched_term
 
 # Anchor the script under test to THIS repo (the one carrying the test), not
@@ -114,11 +115,51 @@ def _term_match_verdict(_tmp_path: Path, text: str) -> bool:
     return matched_term(text, _TERMS) is not None
 
 
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        },
+    )
+
+
+def _tree_verdict(tmp_path: Path, text: str) -> bool:
+    """Whether the full-tree brand backstop ``scan_tree`` flags *text*.
+
+    The tree scan's brand pass MUST share ``term_match`` with the other
+    entry points (fix #1) — this verdict pins it to the same golden corpus
+    so the fourth entry point cannot drift to a private regex matcher.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    if not (repo / ".git").exists():
+        _git(repo, "init", "-b", "main")
+    sample = repo / "sample.txt"
+    sample.write_text(text + "\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "corpus")
+    findings = banned_terms_tree_scan.scan_tree(repo, _TERMS)
+    # Only the brand pass is under parity test; the always-on terminology gate
+    # never fires on the synthetic corpus, so any finding here is a brand hit.
+    return any(f.path == "sample.txt" for f in findings)
+
+
 _ENTRY_POINTS = {
     "shell-hook": _shell_verdict,
     "banned_terms_cli": _cli_verdict,
     "posting-gate": _scanner_verdict,
     "overlay-leak-matcher": _term_match_verdict,
+    "tree-scan": _tree_verdict,
 }
 
 

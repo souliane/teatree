@@ -204,3 +204,34 @@ class TestLineMatches:
         # glued multi-word match of ``acme-corp`` is intentional and covered
         # in TestCamelCaseAndGluedMatching, so it is excluded here.
         assert term_match.line_matches("pacme is a word", ("acme",)) is False
+
+
+class TestIterTermMatches:
+    """Position-tracked whole-token matches (consumed by the privacy gate)."""
+
+    def test_empty_tokenizing_term_yields_nothing(self) -> None:
+        assert term_match.iter_term_matches("anything here", "--") == []
+
+    def test_no_hit_yields_empty(self) -> None:
+        assert term_match.iter_term_matches("a clean sentence", "acme") == []
+
+    def test_substring_only_yields_nothing(self) -> None:
+        assert term_match.iter_term_matches("cooperative operation", "op") == []
+
+    def test_single_token_yields_one_per_occurrence(self) -> None:
+        matches = term_match.iter_term_matches("acme then acme again", "acme")
+        assert [m[0] for m in matches] == ["acme", "acme"]
+        assert matches[0][1] < matches[1][1]
+
+    def test_camelcase_split_token_is_matched(self) -> None:
+        matches = term_match.iter_term_matches("value = acmeClient", "acme")
+        assert [m[0] for m in matches] == ["acme"]
+
+    def test_multi_token_run_is_matched(self) -> None:
+        matches = term_match.iter_term_matches("uses acme-corp here", "acme-corp")
+        assert len(matches) == 1
+        assert matches[0][0] == "acmecorp"
+
+    def test_multi_token_glued_single_token_is_matched(self) -> None:
+        matches = term_match.iter_term_matches("uses acmecorp here", "acme-corp")
+        assert [m[0] for m in matches] == ["acmecorp"]
