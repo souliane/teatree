@@ -18,6 +18,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from teatree.hooks import term_match
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,12 +85,17 @@ def scan_for_publication(  # noqa: PLR0913 — gate entry-point; each kwarg is a
     for term in redact_terms or []:
         if not term:
             continue
-        for match in re.finditer(re.escape(term), text, flags=re.IGNORECASE):
-            matches.append(  # noqa: PERF401 — accumulating across multiple sources
+        # Whole-token matching via the SHARED matcher (the same one every other
+        # banned-terms/overlay-leak gate uses), NOT substring ``re.escape`` —
+        # so a short redact term no longer surfaces inside a longer word
+        # (``op`` inside ``cooperative``) while a camelCase/snake split token
+        # still matches.
+        for matched_text, position in term_match.iter_term_matches(text, term):
+            matches.append(
                 PrivacyMatch(
                     pattern_name=f"redact:{term}",
-                    matched_text=match.group(0),
-                    position=match.start(),
+                    matched_text=matched_text,
+                    position=position,
                 ),
             )
     pattern_sources: list[tuple[str, str]] = list(_DEFAULT_QUOTE_PATTERNS)
