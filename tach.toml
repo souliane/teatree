@@ -54,6 +54,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.teams"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.config"
 layer = "platform"
 depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check", "teatree.config_speak", "teatree.config_mr_reminder"]

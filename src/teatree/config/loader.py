@@ -119,6 +119,23 @@ def _file_str_list(raw: object) -> list[str]:
     return [str(s) for s in raw] if isinstance(raw, list) else []
 
 
+def _resolve_teams_enabled(raw: dict) -> bool:
+    """Resolve the global ``teams_enabled`` value from the top-level ``[teams]`` table.
+
+    The inert agent-teams WORK layer reads its enable flag from
+    ``[teams] enabled`` — the natural namespace for the feature, mirroring how
+    ``[mr_reminder]`` / ``[teatree.speak]`` read a dedicated table into a
+    ``UserSettings`` field. An absent ``[teams]`` table or an absent ``enabled``
+    key resolves to ``False`` (ships dark). The per-overlay / env tiers key on
+    the ``teams_enabled`` field name and are layered by
+    ``get_effective_settings``.
+    """
+    table = raw.get("teams")
+    if isinstance(table, dict):
+        return bool(table.get("enabled", False))
+    return False
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
@@ -160,6 +177,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         speed=_resolve_enum_setting(teatree, "speed", Speed, Speed.MEDIUM),
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         dedicated_loops=bool(teatree.get("dedicated_loops", False)),
+        teams_enabled=_resolve_teams_enabled(raw),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=ask_before_post_on_behalf,

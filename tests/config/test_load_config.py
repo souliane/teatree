@@ -390,6 +390,39 @@ class TestOrchestrateClaimEnabledSetting:
         assert get_effective_settings().orchestrate_claim_enabled is False
 
 
+class TestTeamsEnabledSetting:
+    """Config surface for the inert agent-teams arm (#1838 PR#6).
+
+    The WORK-team layer ships DARK behind ``[teams] enabled``. Default OFF means
+    nothing in the registry is ever consulted; the top-level ``[teams]`` table
+    is the natural namespace for the feature while the per-overlay / env tiers
+    key on the ``teams_enabled`` field name (mirroring ``dedicated_loops``).
+    """
+
+    def test_default_is_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        assert load_config(cfg).user.teams_enabled is False
+
+    def test_default_is_off_with_no_config_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        assert load_config(tmp_path / "absent.toml").user.teams_enabled is False
+
+    def test_teams_table_enabled_is_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A top-level ``[teams] enabled = true`` must reach ``UserSettings``."""
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teams]\nenabled = true\n", encoding="utf-8")
+        assert load_config(cfg).user.teams_enabled is True
+
+    def test_teams_table_absent_enabled_key_is_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teams]\n", encoding="utf-8")
+        assert load_config(cfg).user.teams_enabled is False
+
+
 class TestRequireReviewContextSetting:
     """The deep-retrieval gate knob loads from toml; default is opt-in OFF."""
 

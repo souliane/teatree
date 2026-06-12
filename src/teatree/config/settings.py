@@ -231,6 +231,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
     "dedicated_loops": _parse_strict_bool,
+    "teams_enabled": _parse_strict_bool,
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
@@ -315,6 +316,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_DEDICATED_LOOPS": ("dedicated_loops", _parse_env_bool),
+    "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
 }
 
 
@@ -388,6 +390,15 @@ class UserSettings:
     # byte-identical to today (BLUEPRINT § 5.6 "Per-loop owning-session
     # layer"). Per-overlay overridable; `T3_DEDICATED_LOOPS` env wins.
     dedicated_loops: bool = False
+    # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
+    # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
+    # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
+    # WORK-team ships DARK. When flipped on, a LATER PR wires the
+    # `team:<role>` claim namespace + the overlay-seam claim filters into a
+    # pane-backed teammate; this PR adds only the config surface. Global value
+    # reads from the top-level `[teams] enabled` table; per-overlay overridable
+    # via `[overlays.<name>].teams_enabled`; `T3_TEAMS_ENABLED` env wins.
+    teams_enabled: bool = False
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
     # human reaction (👍 or `/merge`). The user flips this off only once

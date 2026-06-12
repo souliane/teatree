@@ -167,6 +167,7 @@ graph TD
     teatree.quality --> teatree.utils
     teatree.paths
     teatree.types
+    teatree.teams
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
