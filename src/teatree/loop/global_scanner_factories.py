@@ -10,7 +10,7 @@ of the loop tick fan-out to stay under the module-health LOC cap.
 import os
 from pathlib import Path
 
-from teatree.config import discover_active_overlay, discover_overlays, load_config
+from teatree.config import discover_active_overlay, discover_overlays, get_effective_settings, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
@@ -22,6 +22,7 @@ from teatree.loop.scanners import (
     LocalStackQueueDrainerScanner,
     MyPrsScanner,
     NotionViewScanner,
+    PaneReaperScanner,
     RedCardScanner,
     ResourcePressureScanner,
     ReviewerPrsScanner,
@@ -217,6 +218,23 @@ def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None
     active = discover_active_overlay()
     overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
     return LocalStackQueueDrainerScanner(overlay=overlay_name)
+
+
+def _pane_reaper_scanner() -> PaneReaperScanner | None:
+    """Build the global idle-maker-pane reaper scanner from teatree config (#1838 PR#7b).
+
+    Returns ``None`` when ``teams_enabled`` is false — the DEFAULT-OFF path, so
+    installing the pane-reaper mini-loop changes no behaviour until the user
+    flips the feature on. The reaper is a global concern (it demotes any idle
+    ``team:<role>`` claim regardless of overlay), so it carries no overlay
+    anchor; the idle threshold is ``teams_idle_minutes``. The in-scanner
+    ``teams_enabled`` guard is belt-and-braces with this ``None``-when-off
+    return, so neither the mini-loop nor the scanner can act while teams is off.
+    """
+    settings = get_effective_settings()
+    if not settings.teams_enabled:
+        return None
+    return PaneReaperScanner(teams_enabled=True, idle_minutes=settings.teams_idle_minutes)
 
 
 def _scanning_news_scanner() -> ScanningNewsScanner | None:

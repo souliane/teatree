@@ -4,6 +4,9 @@
 graph TD
     teatree.project --> teatree.paths
     teatree.teams --> teatree.core
+    teatree.teams --> teatree.config
+    teatree.teams --> teatree.agents
+    teatree.teams --> teatree.skill_support
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -141,6 +144,7 @@ graph TD
     teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
     teatree.loop --> teatree.loop_enabled
+    teatree.loop --> teatree.teams
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop

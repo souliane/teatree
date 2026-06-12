@@ -56,7 +56,7 @@ depends_on = []
 [[modules]]
 path = "teatree.teams"
 layer = "domain"
-depends_on = ["teatree.core"]
+depends_on = ["teatree.core", "teatree.config", "teatree.agents", "teatree.skill_support"]
 
 [[modules]]
 path = "teatree.config"
@@ -321,7 +321,8 @@ depends_on = [
   "teatree.backends.slack",
   "teatree.notify",
   "teatree.messaging",
-  "teatree.loop_enabled"
+  "teatree.loop_enabled",
+  "teatree.teams"
 ]
 
 [[modules]]

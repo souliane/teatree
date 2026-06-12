@@ -131,3 +131,31 @@ class TestClaimFilterPartition:
         everything = set(Ticket.objects.values_list("pk", flat=True))
         assert core.isdisjoint(overlay)
         assert core | overlay == everything
+
+
+class TestTaskClaimFilter:
+    """The Task-level overlay-seam filter re-roots ``claim_filter`` at ``Task.ticket``."""
+
+    def test_maker_roles_carry_a_task_claim_filter(self) -> None:
+        assert TeamRole.CORE_MAKER.task_claim_filter is not None
+        assert TeamRole.OVERLAY_MAKER.task_claim_filter is not None
+
+    def test_reviewer_has_no_task_claim_filter(self) -> None:
+        assert TeamRole.REVIEWER.task_claim_filter is None
+
+    @pytest.mark.django_db
+    def test_task_filter_partitions_tasks_along_the_overlay_seam(self) -> None:
+        from teatree.core.models import Session, Task  # noqa: PLC0415
+
+        def _task(overlay: str) -> Task:
+            ticket = TicketFactory(overlay=overlay)
+            session = Session.objects.create(ticket=ticket, agent_id="a")
+            return Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
+
+        core_task = _task("")
+        overlay_task = _task("some-overlay")
+        core_pks = set(Task.objects.filter(TeamRole.CORE_MAKER.task_claim_filter).values_list("pk", flat=True))
+        overlay_pks = set(Task.objects.filter(TeamRole.OVERLAY_MAKER.task_claim_filter).values_list("pk", flat=True))
+        assert core_task.pk in core_pks
+        assert overlay_task.pk in overlay_pks
+        assert core_pks.isdisjoint(overlay_pks)
