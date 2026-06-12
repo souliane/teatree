@@ -644,6 +644,74 @@ dedicated_loops = true
 
         assert get_effective_settings().dedicated_loops is False
 
+    def test_teams_enabled_defaults_off(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838 PR#6: ``teams_enabled`` is default-OFF (ships dark)."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\n")
+        assert get_effective_settings().teams_enabled is False
+
+    def test_overlay_can_override_teams_enabled(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838 PR#6: ``teams_enabled`` is per-overlay overridable.
+
+        The override key is the field name ``teams_enabled`` (the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry), while the global value reads
+        from the top-level ``[teams] enabled`` table.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[teams]
+enabled = false
+
+[overlays.dogfood]
+class = "x.y:Z"
+teams_enabled = true
+""",
+        )
+
+        assert get_effective_settings().teams_enabled is True
+
+    def test_env_teams_enabled_beats_overlay_override(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838 PR#6: ``T3_TEAMS_ENABLED`` env wins over a per-overlay enable."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_TEAMS_ENABLED", "false")
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[overlays.dogfood]
+class = "x.y:Z"
+teams_enabled = true
+""",
+        )
+
+        assert get_effective_settings().teams_enabled is False
+
     def test_overlay_can_override_mr_title_regex(
         self,
         config_file: Path,
