@@ -270,3 +270,102 @@ class RunTickRegistrySeamTestCase(TestCase):
     def test_loop_tick_builder_marks_loops_fired(self) -> None:
         _registry_jobs_builder(TickRequest(backends=_backends()), NOW)
         assert MiniLoopMarker.objects.filter(name="dispatch").exists()
+
+
+class FanoutIsolationTestCase(TestCase):
+    """Fix (1)+(2): per-loop error isolation and mark-fired ordering.
+
+    A loop whose build_jobs raises must not abort the whole fan-out and
+    must NOT be marked fired.  Other loops still yield their jobs.
+    """
+
+    def _make_exploding_loop(self, name: str = "boom") -> object:
+        """Return a MiniLoop whose build_jobs always raises."""
+        from teatree.loops.base import MiniLoop  # noqa: PLC0415
+
+        def _raise(**_: object) -> list[object]:
+            msg = "build_jobs exploded"
+            raise RuntimeError(msg)
+
+        return MiniLoop(
+            name=name,
+            default_cadence_seconds=1,
+            build_jobs=_raise,
+        )
+
+    def _make_fixed_loop(self, name: str) -> object:
+        """Return a MiniLoop whose build_jobs returns one job keyed to *name*."""
+        from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
+        from teatree.loop.scanners.base import ScanSignal  # noqa: PLC0415
+        from teatree.loops.base import MiniLoop  # noqa: PLC0415
+
+        @dataclass(slots=True)
+        class _FixedScannerLocal:
+            name: str
+
+            def scan(self) -> list[ScanSignal]:
+                return []
+
+        scanner = _FixedScannerLocal(name=name)
+        fixed_jobs: list[object] = [_ScannerJob(scanner=scanner, overlay="")]
+
+        def _build(**_: object) -> list[object]:
+            return list(fixed_jobs)
+
+        return MiniLoop(
+            name=name,
+            default_cadence_seconds=1,
+            build_jobs=_build,
+        )
+
+    def test_exploding_loop_does_not_abort_other_loops(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
+
+        ok_loop = self._make_fixed_loop("ok_loop")
+        boom_loop = self._make_exploding_loop("boom_loop")
+
+        from teatree.loops.gating import GateDecision  # noqa: PLC0415
+
+        with (
+            patch("teatree.loops.fanout.iter_loops", return_value=(boom_loop, ok_loop)),
+            patch("teatree.loops.fanout.elapsed_and_enabled", return_value=GateDecision(should_fire=True)),
+        ):
+            jobs = build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
+
+        # The ok_loop's one job is present; the boom_loop contributed nothing
+        scanner_names = {job.scanner.name for job in jobs}
+        assert "ok_loop" in scanner_names
+
+    def test_exploding_loop_is_not_marked_fired(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
+        from teatree.loops.gating import GateDecision  # noqa: PLC0415
+
+        boom_loop = self._make_exploding_loop("boom_explodes")
+
+        with (
+            patch("teatree.loops.fanout.iter_loops", return_value=(boom_loop,)),
+            patch("teatree.loops.fanout.elapsed_and_enabled", return_value=GateDecision(should_fire=True)),
+        ):
+            build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
+
+        assert not MiniLoopMarker.objects.filter(name="boom_explodes").exists()
+
+    def test_successful_loop_is_still_marked_fired(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
+        from teatree.loops.gating import GateDecision  # noqa: PLC0415
+
+        ok_loop = self._make_fixed_loop("ok_fires")
+
+        with (
+            patch("teatree.loops.fanout.iter_loops", return_value=(ok_loop,)),
+            patch("teatree.loops.fanout.elapsed_and_enabled", return_value=GateDecision(should_fire=True)),
+        ):
+            build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
+
+        assert MiniLoopMarker.objects.filter(name="ok_fires").exists()
