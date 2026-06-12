@@ -24,6 +24,46 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
+#: The single machine-wide loop-owner slot (#1073). This is the DEFAULT
+#: that the fat ``loop_tick`` gate claims; its pid-anchored, hijack-guarded
+#: semantics are unchanged. Per-loop owners live in the ``loop:<name>``
+#: namespace below — a disjoint key space, so a per-loop claim can never
+#: collide with or evict the global owner.
+GLOBAL_OWNER_SLOT = "loop-owner"
+
+#: Prefix for the additive per-loop owning-session layer (#1834). A
+#: dedicated loop (PR#3) claims ``loop:<name>`` (e.g. ``loop:dispatch``)
+#: so two dedicated loops can be owned by two different sessions
+#: concurrently. The prefix keeps the per-loop keys in their own namespace,
+#: disjoint from ``GLOBAL_OWNER_SLOT`` and from the infra-slot leases
+#: (``loop-tick`` / ``loop-self-improve`` / …), which use ``-`` not ``:``.
+PER_LOOP_OWNER_PREFIX = "loop:"
+
+
+def per_loop_owner_slot(loop_name: str) -> str:
+    """Canonical owner-slot key for a dedicated per-loop owning session (#1834).
+
+    The fully-qualified form ``loop:<loop_name>`` is the canonical key —
+    every per-loop claim/read/compare normalizes UP to it at the boundary
+    so a bare ``dispatch`` and a qualified ``loop:dispatch`` can never be
+    treated as two different slots. The global single-owner slot is the
+    reserved :data:`GLOBAL_OWNER_SLOT` constant, never produced by this
+    function, so the two layers occupy disjoint key space.
+
+    An already-qualified ``loop:dispatch`` is returned unchanged
+    (idempotent), so call sites may pass either the bare loop name or the
+    qualified slot without double-prefixing.
+    """
+    name = loop_name.strip()
+    if name.startswith(PER_LOOP_OWNER_PREFIX):
+        return name
+    return f"{PER_LOOP_OWNER_PREFIX}{name}"
+
+
+def is_per_loop_owner_slot(slot: str) -> bool:
+    """Whether ``slot`` is a per-loop owner key (``loop:<name>``), not the global one."""
+    return slot.startswith(PER_LOOP_OWNER_PREFIX)
+
 
 class OwnershipStatus(NamedTuple):
     """Read-only snapshot of a session-scoped loop-owner claim (#1073/#1604).

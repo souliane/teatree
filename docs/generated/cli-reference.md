@@ -3199,10 +3199,14 @@ Usage: t3 loop list [OPTIONS]
 
  Read-only: it computes the report from the DB and prints it — never ticks,
  claims, or mutates anything. Unlike ``t3 loop status`` (the cached
- statusline view), every countdown here is recomputed at call time.
+ statusline view), every countdown here is recomputed at call time. With
+ ``--all`` it additionally lists each per-loop owning session — the
+ cross-session observability view for the dedicated-loop layer (#1834).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the live loop status as JSON.                           │
+│ --all           Also show the per-loop owning sessions (cross-session health │
+│                 view, #1834).                                                │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
