@@ -797,3 +797,58 @@ def test_live_hook_allows_workitem_url_inline_commit_in_private_worktree(
 
     assert blocked is False
     assert captured.out == ""  # no deny JSON
+
+
+# ── #1415: kill-switch ───────────────────────────────────────────────────────
+#
+# A ``[teatree] banned_terms_gate_enabled = false`` config line disables the
+# whole gate (NEVER-LOCKOUT). With it set, a command that would otherwise
+# hard-block -- a banned term toward a PUBLIC repo -- is allowed straight
+# through, and the gate emits no deny.
+
+
+_GATE_DISABLED_CONFIG = '[teatree]\nbanned_terms = ["acmewidget"]\nbanned_terms_gate_enabled = false\n'
+
+
+def test_kill_switch_off_allows_a_would_be_blocked_public_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The SAME public-repo banned-term post that hard-blocks with the gate ON
+    # must be ALLOWED with ``banned_terms_gate_enabled = false`` -- the kill-
+    # switch returns before any scan, so no deny is emitted.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _GATE_DISABLED_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue comment 5 --repo souliane/teatree --body "rolling out acmewidget"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_kill_switch_default_on_still_blocks_a_public_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # ANTI-VACUITY guard: with the kill-switch absent (default ON), the SAME
+    # public-repo banned-term post still hard-blocks -- proving the off-test
+    # above measures the switch, not an unconditionally-allowed command.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue comment 5 --repo souliane/teatree --body "rolling out acmewidget"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    assert json.loads(captured.out)["permissionDecision"] == "deny"
