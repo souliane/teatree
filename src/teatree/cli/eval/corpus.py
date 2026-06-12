@@ -66,16 +66,43 @@ def grade_shipped_corpus() -> list[CorpusGradeRow]:
     return grade_corpus_rows(discover_corpus(), directory=CORPUS_DIR, judge=None)
 
 
+#: Surfaced when the corpus deterministically graded ZERO entries — the lane is
+#: unrunnable for setup reasons (an all-judge / empty corpus under ``--no-judge``),
+#: so it reads as needs-setup (``--strict`` fails on it), never a vacuous green.
+CORPUS_NO_GRADED_HINT = (
+    "no matcher-gradable corpus entries (all judge-oracle / empty) — add a matcher/both entry "
+    "or run with --judge; nothing was deterministically validated"
+)
+
+
 def corpus_grade_lane(rows: list[CorpusGradeRow]) -> LaneResult:
-    """Fold graded rows into the free ``corpus-grade`` lane for ``t3 eval all``."""
+    """Fold graded rows into the free ``corpus-grade`` lane for ``t3 eval all``.
+
+    ``graded == 0`` (every entry judge-skipped, or an empty corpus) is NOT a
+    green pass — there is nothing deterministically validated, so a green row
+    would be vacuous. It surfaces as a setup-skip (``setup_hint`` set →
+    ``needs_setup`` → ``--strict`` fails, the verdict flags it not-yet-validated),
+    mirroring the AI lane's no-transcripts skip.
+    """
     failed = sum(1 for row in rows if row.verdict == "fail")
     skipped = sum(1 for row in rows if row.verdict == "skip")
+    graded = len(rows) - skipped
+    detail = f"{graded} graded, {failed} failed, {skipped} judge-skipped"
+    if graded == 0:
+        return LaneResult(
+            name="corpus-grade",
+            cost="free",
+            passed=True,
+            skipped=True,
+            detail=detail,
+            setup_hint=CORPUS_NO_GRADED_HINT,
+        )
     return LaneResult(
         name="corpus-grade",
         cost="free",
         passed=failed == 0,
         skipped=False,
-        detail=f"{len(rows) - skipped} graded, {failed} failed, {skipped} judge-skipped",
+        detail=detail,
     )
 
 

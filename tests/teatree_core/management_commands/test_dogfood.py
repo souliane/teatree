@@ -8,35 +8,41 @@ require Docker / overlay infra.
 We also verify the DM-on-failure plumbing (``notify_user`` is called
 with a body naming the failing step and command) without making a real
 Slack call.
+
+The exit-code assertions go through Django's ``call_command`` (the real
+production entry path for ``t3 dogfood``) so they pin the *propagated*
+code. django-typer swallows a ``typer.Exit`` into a returned value (exit
+0); the command therefore ``raise SystemExit(code)`` and these tests use
+``pytest.raises(SystemExit)`` to read the genuine code — a ``typer.Exit``
+here would regress to a silent exit 0.
 """
 
 from unittest.mock import patch
 
 import pytest
-import typer
+from django.core.management import call_command
 
-from teatree.core.management.commands.dogfood import Command as DogfoodCommand
 from teatree.loop.dogfood_smoke import SmokeOutcomeKind, SmokeReport, SmokeStep, StepResult
 
 pytestmark = pytest.mark.django_db
 
 
 def _call_smoke(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[str, int]:
-    """Invoke the inner ``overlay_provision_smoke`` subcommand directly.
+    """Invoke ``t3 dogfood overlay-provision-smoke`` via ``call_command``.
 
-    django-typer wraps the bound command in a proxy that swallows
-    ``typer.Exit`` codes (normalising every non-zero outcome to 1), so we
-    can't assert the categorised exit codes via the proxy's ``CliRunner``
-    path. Calling the method directly preserves the
-    ``typer.Exit(code=N)`` raise so the test can inspect the actual code.
+    This is the production entry path — django-typer runs the subcommand
+    under Django's ``call_command``, which swallows a ``typer.Exit`` into a
+    returned value (process exits 0). The command therefore raises
+    ``SystemExit(code)`` on a non-zero outcome, so the harness reads the
+    propagated code off ``SystemExit`` (and treats a clean return — the PASS
+    and dry-run paths — as code 0).
     """
-    cmd = DogfoodCommand()
     kwargs = _parse_args(args)
     code = 0
     try:
-        cmd.overlay_provision_smoke(**kwargs)
-    except typer.Exit as exc:
-        code = int(exc.exit_code or 0)
+        call_command("dogfood", "overlay-provision-smoke", **kwargs)
+    except SystemExit as exc:
+        code = int(exc.code or 0)
     captured = capsys.readouterr()
     return captured.out, code
 

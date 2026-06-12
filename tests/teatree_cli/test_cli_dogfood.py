@@ -34,14 +34,15 @@ def test_dogfood_overlay_provision_smoke_forwards_extra_args() -> None:
 
 
 def test_dogfood_top_level_no_args_exits_cleanly_with_help_hint() -> None:
-    """``t3 dogfood`` (no args) triggers the auto-help path — ``no_args_is_help`` is on."""
+    """``t3 dogfood`` (no args) prints help and exits 0 — never runs a sub-command."""
     runner = CliRunner()
     result = runner.invoke(dogfood_app, [])
-    # The Typer app is configured with ``no_args_is_help=True`` so a bare
-    # invocation must not crash — the help renderer prints to a Rich
-    # stream that may not land on ``result.output``, so we assert on the
-    # clean exit code, not the captured text.
+    # The ``invoke_without_command`` callback keeps the app a real group (a
+    # single-command Typer app would collapse into that command and run
+    # ``overlay-provision-smoke`` on a bare invocation). A no-args call lands
+    # in the callback, prints help, and exits 0 for the cron/loop recipe.
     assert result.exit_code == 0
+    assert "Usage" in result.output
 
 
 def test_dogfood_overlay_provision_smoke_help_renders_without_crashing() -> None:
