@@ -6,13 +6,22 @@ the user's identity to a colleague/customer surface — a PR/MR comment, an
 issue comment, a Slack channel/thread message, a Notion post, a PR/MR
 approval, or a reaction on someone else's message.
 
-The gate governs colleague-visible posts ONLY. A *draft*-form action
-(:data:`_DRAFT_FORM_ACTIONS`, e.g. ``post_draft_note``) is the ungated
-safe-by-default: a draft is never visible to colleagues — only the user
-can submit it — so it needs no approval under any mode and is exempt from
-the gate entirely. That exemption is the whole purpose of the
-``on_behalf_post_mode`` setting: it keeps the user in control of their
-colleague-visible voice while letting the agent draft freely.
+The gate governs colleague-visible posts ONLY. Two carve-outs let the
+agent proceed without an approval under the blocking modes:
+
+*   A *draft*-form action (:data:`_DRAFT_FORM_ACTIONS`, e.g.
+    ``post_draft_note``) is the ungated safe-by-default: a draft is never
+    visible to colleagues — only the user can submit it — so it needs no
+    approval under any mode and resolves to AUTO_DRAFT.
+*   An action in the user's ``on_behalf_auto_actions`` allowlist (default
+    ``["post_e2e_evidence"]``) resolves straight to PROCEED: it is the
+    user's routine self-documentation on their OWN ticket (E2E evidence),
+    not a colleague-facing voice, so the user does not have to approve
+    their own evidence posts. Clearing the list re-gates those actions.
+
+Those carve-outs are the whole purpose of the ``on_behalf_post_mode``
+setting: it keeps the user in control of their colleague-visible voice
+while letting the agent draft freely and self-document on its own work.
 
 The setting is ``[teatree] on_behalf_post_mode`` (default
 :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, per-overlay
@@ -84,18 +93,23 @@ _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     """Return the verdict for *action* under the effective on-behalf mode.
 
-    The gate covers colleague-**VISIBLE** posts only. A draft-form action
-    (one of :data:`_DRAFT_FORM_ACTIONS`) is colleague-invisible and
-    revocable, so it is exempt under every mode and never BLOCKs:
+    The gate covers colleague-**VISIBLE** posts only. Two carve-outs proceed
+    without an approval even under the blocking modes:
 
-    *   draft-form action → :attr:`OnBehalfVerdict.AUTO_DRAFT` under
+    *   an action in the resolved ``on_behalf_auto_actions`` allowlist
+        (default ``["post_e2e_evidence"]``) → :attr:`OnBehalfVerdict.PROCEED`
+        under every mode (the user's own self-documentation, never a
+        colleague-facing voice).
+    *   a draft-form action (one of :data:`_DRAFT_FORM_ACTIONS`) is
+        colleague-invisible and revocable, so it is exempt under every mode
+        and never BLOCKs → :attr:`OnBehalfVerdict.AUTO_DRAFT` under
         :attr:`~teatree.config.OnBehalfPostMode.ASK` /
         :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (post the
         draft autonomously and DM the user the publish/delete commands),
         and :attr:`OnBehalfVerdict.PROCEED` under
         :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
 
-    For every colleague-visible action:
+    For every other colleague-visible action:
 
     *   :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` →
         :attr:`OnBehalfVerdict.PROCEED`.
@@ -107,8 +121,13 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     active-overlay → global → default chain via
     :func:`teatree.config.get_effective_settings`.
     """
-    mode = get_effective_settings().on_behalf_post_mode
-    if mode is OnBehalfPostMode.IMMEDIATE:
+    settings = get_effective_settings()
+    if settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE:
+        return OnBehalfVerdict.PROCEED
+    # Auto-proceed actions are the user's routine self-documentation on their
+    # OWN ticket (E2E evidence) — not a colleague-facing voice — so they need
+    # no per-post approval and proceed directly under every blocking mode.
+    if action in settings.on_behalf_auto_actions:
         return OnBehalfVerdict.PROCEED
     # Draft-form actions are colleague-invisible — exempt from the gate
     # under every blocking mode (ASK and DRAFT_OR_ASK alike). They never

@@ -239,36 +239,24 @@ def render_mrs_line(mrs: tuple[str, ...]) -> str:
     return "Repos & MRs: " + ", ".join(parts)
 
 
-def parse_manifest(raw: str) -> EvidenceManifest:
+def parse_manifest(raw: str, *, base_dir: Path | None = None) -> EvidenceManifest:
     """Parse the ``--manifest`` JSON into a validated :class:`EvidenceManifest`.
 
-    The manifest is a JSON object carrying the ticket, MRs, the per-side
+    The manifest is a JSON object carrying ``ticket``, ``mrs``, the per-side
     ``dev``/``local`` commit metadata, and a ``workflows`` array whose entries
-    carry each side's captures::
-
-        {
-            "ticket": "8521",
-            "mrs": ["...!6331"],
-            "dev": {"commits": {"repo": "<sha>"}, "missing_on_dev": ["...!6331 (unmerged)"]},
-            "local": {"commits": {"repo": "<sha>"}},
-            "workflows": [
-                {
-                    "workflow": "<name>",
-                    "steps": ["open the app", "click Login", "expect the dashboard"],
-                    "dev": {"video": null, "images": []},
-                    "local": {"video": "v.webm", "images": ["a.png"]}
-                }
-            ]
-        }
+    carry each side's captures (each workflow object: ``workflow`` name, optional
+    ``steps``, and a per-env ``{"video": ..., "images": [...]}`` block). The
+    shape of each field is documented on :class:`EvidenceManifest`,
+    :class:`SideManifest`, and :class:`WorkflowArtifacts`.
 
     A side is "present" when the manifest carries it (its ``commits`` block or
     any workflow captures for it), so a single-env manifest updates only that
-    column. A workflow's optional ``steps`` array is the written test plan (the
-    "how to test / where to click" list); it is workflow-level — shared across
-    dev/local — and rendered above that workflow's comparison table. Validates
-    every referenced file exists and is the right media kind; a missing file or
-    wrong kind raises :class:`EvidenceValidationError` so no upload runs on bad
-    input.
+    column. A workflow's optional workflow-level ``steps`` array is the written
+    test plan, rendered above that workflow's comparison table. Validates every
+    referenced file exists and is the right media kind, raising
+    :class:`EvidenceValidationError` so no upload runs on bad input. ``base_dir``
+    is the manifest file's directory: a RELATIVE image/video path resolves
+    against it (an absolute path is unchanged; ``None`` keeps cwd-relative).
     """
     try:
         data = json.loads(raw)
@@ -283,7 +271,7 @@ def parse_manifest(raw: str) -> EvidenceManifest:
         msg = "--manifest 'workflows' must be a non-empty array."
         raise EvidenceValidationError(msg)
     mrs = tuple(str(m).strip() for m in data.get("mrs", []) if str(m).strip())
-    sides = {env: _parse_side(data, raw_workflows, env=env) for env in _ENVS}
+    sides = {env: _parse_side(data, raw_workflows, env=env, base_dir=base_dir) for env in _ENVS}
     if not sides["dev"].present and not sides["local"].present:
         msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
         raise EvidenceValidationError(msg)
@@ -313,12 +301,16 @@ def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, .
     return out
 
 
-def _parse_side(data: Mapping[str, object], raw_workflows: list[object], *, env: str) -> SideManifest:
+def _parse_side(
+    data: Mapping[str, object], raw_workflows: list[object], *, env: str, base_dir: Path | None
+) -> SideManifest:
     """Validate one side (dev/local): its commit block + its per-workflow captures."""
     side_meta = data.get(env)
     workflows = {
         wf.workflow: wf
-        for wf in (_parse_side_workflow(entry, env=env, index=i) for i, entry in enumerate(raw_workflows))
+        for wf in (
+            _parse_side_workflow(entry, env=env, index=i, base_dir=base_dir) for i, entry in enumerate(raw_workflows)
+        )
         if wf is not None
     }
     has_meta = isinstance(side_meta, dict)
@@ -332,7 +324,7 @@ def _parse_side(data: Mapping[str, object], raw_workflows: list[object], *, env:
     return SideManifest(present=True, commits=commits, missing_on_dev=missing, workflows=workflows)
 
 
-def _parse_side_workflow(entry: object, *, env: str, index: int) -> WorkflowArtifacts | None:
+def _parse_side_workflow(entry: object, *, env: str, index: int, base_dir: Path | None) -> WorkflowArtifacts | None:
     """Validate one workflow's captures for *env*, or ``None`` when this side is empty.
 
     Returns ``None`` (no captures this side) when the workflow object omits the
@@ -355,16 +347,22 @@ def _parse_side_workflow(entry: object, *, env: str, index: int) -> WorkflowArti
     if not images_list and not raw_video:
         return None
     where = f"{workflow} ({env})"
-    images = tuple(_validated_file(str(img), kind=MediaKind.IMAGE, workflow=where) for img in images_list)
-    video = _validated_file(str(raw_video), kind=MediaKind.VIDEO, workflow=where) if raw_video else None
+    images = tuple(
+        _validated_file(str(img), kind=MediaKind.IMAGE, workflow=where, base_dir=base_dir) for img in images_list
+    )
+    video = (
+        _validated_file(str(raw_video), kind=MediaKind.VIDEO, workflow=where, base_dir=base_dir) if raw_video else None
+    )
     return WorkflowArtifacts(workflow=workflow, images=images, video=video)
 
 
-def _validated_file(path_str: str, *, kind: MediaKind, workflow: str) -> Path:
-    """Confirm *path_str* exists on disk and is *kind*, returning the resolved path."""
+def _validated_file(path_str: str, *, kind: MediaKind, workflow: str, base_dir: Path | None) -> Path:
+    """Confirm *path_str* exists on disk and is *kind*; resolve a relative path against *base_dir*."""
     path = Path(path_str)
+    if base_dir is not None and not path.is_absolute():
+        path = base_dir / path
     if not path.is_file():
-        msg = f"workflow {workflow!r}: artifact not found: {path_str}"
+        msg = f"workflow {workflow!r}: artifact not found: {path}"
         raise EvidenceValidationError(msg)
     if media_kind(path) is not kind:
         msg = f"workflow {workflow!r}: {path.name} is not a recognised {kind.value} file."

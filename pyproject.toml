@@ -29,6 +29,11 @@ dependencies = [
   "django-tasks-db>=0.12",
   "django-typer>=3.3",
   "httpx>=0.27",
+  # ``teatree.core.evidence_validation`` opens evidence PNGs with Pillow to
+  # detect the highlightAndShoot red box before ``e2e post-evidence`` uploads.
+  # A RUNTIME command path, so it must be in the installed tool env, not only
+  # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
+  "pillow>=11",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
