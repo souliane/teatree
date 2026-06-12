@@ -518,6 +518,160 @@ class TestValidateMrMultipleOverlays:
         assert result.exit_code == 0
 
 
+class _CrashingOverlay(OverlayBase):
+    """Overlay owning fixed repos whose ``validate_pr`` raises (loader can't grade)."""
+
+    def __init__(self, repos: list[str]) -> None:
+        self._repos = repos
+        self.metadata = _OverlayMeta([])
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _CrashingMeta(OverlayMetadata):
+    def validate_pr(self, title: str, description: str):
+        del title, description
+        msg = "validator import boom"
+        raise RuntimeError(msg)
+
+
+class TestValidateMrTargetRepoKeyed:
+    """`t3 tool validate-mr --repo <slug>` resolves the overlay from the MR TARGET.
+
+    The cwd-keyed resolution validates an MR against whatever overlay owns the
+    *current directory*. For a dispatched agent whose cwd is the more-lenient
+    overlay's clone, that lenient overlay grades the MR — even when the MR
+    targets a STRICTER overlay (one requiring, say, a trailing ``(url)``
+    parenthetical). ``--repo`` keys resolution to the MR's target repo so the
+    target overlay's rules apply regardless of cwd. ``strict-org/widget`` stands
+    for the stricter target overlay; ``lenient-org/tool`` for the cwd overlay.
+    """
+
+    def _register(self, monkeypatch, overlays: dict):
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        return patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays)
+
+    def test_target_repo_overlay_denies_even_when_another_overlay_would_accept(self, monkeypatch):
+        # The compounding bug: the any-overlay-pass fallback let a title pass
+        # because the lenient overlay accepts it. Keyed to the strict target,
+        # ONLY the strict overlay's verdict counts — no any-pass escape.
+        overlays = {
+            "lenient": _AcceptingOverlay(["lenient-org/tool"]),
+            "strict": _RejectingOverlay(["strict-org/widget"], ["missing (url)"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "fix(x): missing url",
+                    "--description",
+                    "fix(x): missing url",
+                    "--repo",
+                    "strict-org/widget",
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "missing (url)" in result.output
+
+    def test_compliant_title_targeting_strict_repo_is_allowed(self, monkeypatch):
+        overlays = {
+            "lenient": _AcceptingOverlay(["lenient-org/tool"]),
+            "strict": _AcceptingOverlay(["strict-org/widget"]),
+        }
+        compliant = "fix(x): real change (https://example.com/strict-org/bugs/-/work_items/42)"
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    compliant,
+                    "--description",
+                    compliant,
+                    "--repo",
+                    "strict-org/widget",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_known_target_overlay_whose_validator_crashes_fails_closed(self, monkeypatch):
+        crashing = _CrashingOverlay(["strict-org/widget"])
+        crashing.metadata = _CrashingMeta()
+        overlays = {
+            "lenient": _AcceptingOverlay(["lenient-org/tool"]),
+            "strict": crashing,
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "x",
+                    "--description",
+                    "x",
+                    "--repo",
+                    "strict-org/widget",
+                ],
+            )
+        assert result.exit_code == 1, result.output
+
+    def test_unmatched_target_repo_falls_back_to_cwd_behaviour(self, monkeypatch):
+        # A target that maps to no overlay must NOT hard-deny — fall back to the
+        # cwd-keyed (here ambiguous-lenient) resolution, preserving never-lockout.
+        overlays = {
+            "alpha": _RejectingOverlay(["acme/alpha"], ["nope"]),
+            "bravo": _AcceptingOverlay(["acme/bravo"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "fix: x",
+                    "--description",
+                    "fix: x",
+                    "--repo",
+                    "unknown-org/unknown-repo",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_lenient_target_does_not_require_strict_url(self, monkeypatch):
+        # No regression: an MR targeting the lenient overlay validates against
+        # the lenient rules, which do NOT demand the strict (url) parenthetical.
+        overlays = {
+            "lenient": _AcceptingOverlay(["lenient-org/tool"]),
+            "strict": _RejectingOverlay(["strict-org/widget"], ["missing (url)"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "fix: lenient change",
+                    "--description",
+                    "fix: lenient change",
+                    "--repo",
+                    "lenient-org/tool",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+
 class TestToMarkdownCommand:
     """`t3 tool to-markdown` converts an attachment to Markdown via markitdown.
 

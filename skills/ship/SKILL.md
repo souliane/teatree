@@ -25,6 +25,14 @@ Optional [obra/superpowers](https://github.com/obra/superpowers) companions prov
 
 From "code is done" to "PR is merged."
 
+### Dispatching a t3:shipper sub-agent (Non-Negotiable)
+
+When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry the **exact MR/PR title** and a **description skeleton** — never leave the subject for the sub-agent to improvise. The title format is gated (the active overlay's `validate_pr` rejects a non-conforming first line at push), so an improvised subject is the real cause of off-target titles and failed pre-push validation: the sub-agent guesses a subject, it fails the gate, and the run burns a retry. Compose the title in the orchestrator from the ticket data and hand it over verbatim.
+
+- **Title** — supply the full first line in the active overlay's format: `type(scope): description [flag] (TICKET_URL)`. Use only the overlay's allowed `type` values and include the trailing reference only where the overlay's `require_ticket` demands it (§ 0); the orchestrator reads `TICKET_URL` from `.t3-env.cache`, never the sub-agent.
+- **Description skeleton** — supply the headers the overlay expects (e.g. What / Why, plus `Open questions & assumptions`) pre-filled with the ticket's intent, so the sub-agent fills prose, not structure.
+- The sub-agent may refine wording but MUST NOT change the `type(scope)`, the trailing reference, or invent a new subject.
+
 ## Dependencies
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
