@@ -712,6 +712,83 @@ teams_enabled = true
 
         assert get_effective_settings().teams_enabled is False
 
+    def test_overlay_can_override_pane_budget(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838 PR#7a: ``teams_max_panes`` / ``teams_idle_minutes`` per-overlay overridable."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_TEAMS_MAX_PANES", raising=False)
+        monkeypatch.delenv("T3_TEAMS_IDLE_MINUTES", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[teams]
+max_panes = 1
+idle_minutes = 30
+
+[overlays.dogfood]
+class = "x.y:Z"
+teams_max_panes = 4
+teams_idle_minutes = 60
+""",
+        )
+
+        settings = get_effective_settings()
+        assert settings.teams_max_panes == 4
+        assert settings.teams_idle_minutes == 60
+
+    def test_env_pane_budget_beats_overlay_override(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838 PR#7a: ``T3_TEAMS_MAX_PANES`` / ``T3_TEAMS_IDLE_MINUTES`` env wins."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_TEAMS_MAX_PANES", "2")
+        monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "15")
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[overlays.dogfood]
+class = "x.y:Z"
+teams_max_panes = 9
+teams_idle_minutes = 90
+""",
+        )
+
+        settings = get_effective_settings()
+        assert settings.teams_max_panes == 2
+        assert settings.teams_idle_minutes == 15
+
+    def test_env_pane_budget_non_positive_fails_safe(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-positive / non-int env value degrades to the dataclass default."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_TEAMS_MAX_PANES", "0")
+        monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "garbage")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+        _write_toml(config_file, "[teatree]\n")
+
+        settings = get_effective_settings()
+        assert settings.teams_max_panes == 1
+        assert settings.teams_idle_minutes == 30
+
     def test_overlay_can_override_mr_title_regex(
         self,
         config_file: Path,

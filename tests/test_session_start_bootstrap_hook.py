@@ -750,3 +750,97 @@ class TestNewSessionHijackFix(TestCase):
 
         row = LoopLease.objects.get(name="loop-owner")
         assert row.session_id == "incumbent", "HIJACK: new-session took over an alive owner's expired-TTL lease"
+
+
+# ── Issue #1838 PR#7a: evict-on-compact re-anchors loop-owner before any tick ──
+
+
+class TestEvictOnCompactReanchorsLoopOwner(TestCase):
+    """The lead's ``SessionStart(source=compact)`` re-anchors ``loop-owner`` synchronously.
+
+    The compaction window is the race the maker-only pane layer must close: the
+    lead's session id rotates during compaction, and a pane could try to claim
+    ``loop-owner`` in that window. The fix calls ``evict_stale_owner`` (keep the
+    lead session, current pid) SYNCHRONOUSLY on ``source == "compact"`` — BEFORE
+    any tick — so a stale same-pid ``loop-owner`` lease is re-anchored and no
+    pane can win the compaction-window CAS. ``evict_stale_owner``'s safety table
+    still applies: a LIVE foreign lease is preserved.
+
+    must-fire: on ``source == "compact"`` the synchronous eviction runs even on
+    the same-session-restart branch (where the rotation-only path does not).
+    must-not-fire: a normal start does not trigger the extra synchronous
+    eviction, and a live foreign lease is never blanked.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _hook_isolation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg_dir = tmp_path / "data"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
+        monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
+
+    def test_compact_evicts_stale_same_pid_lease_on_same_session_restart(self) -> None:
+        """must-fire: a stale same-pid lease is re-anchored on a compact resume.
+
+        The registry already records the lead session as owner (the
+        same-session-restart ``else`` branch, where the rotation-only eviction
+        does NOT run). A DB ``loop-owner`` row carries an OLD rotated id with the
+        SAME pid (post-compaction same process). Without evict-on-compact the
+        stale row would linger and the lead's next tick CAS would fail. The
+        compact eviction recognises the same-pid lease as a safe self-reclaim
+        and orphans it.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "lead", "agent_id": "a", "pid": os.getpid()}})
+        LoopLease.objects.claim_ownership(
+            "loop-owner", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
+        )
+
+        handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a", "source": "compact"})
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "", "compact resume must re-anchor the stale same-pid loop-owner lease"
+        assert row.owner_pid is None
+        assert row.lease_expires_at is None
+
+    def test_normal_start_does_not_run_the_compact_eviction(self) -> None:
+        """must-not-fire: a non-compact same-session restart leaves a stale lease untouched.
+
+        Identical setup to the must-fire case but ``source`` is absent (a normal
+        start, not a compaction). The synchronous compact eviction must NOT run,
+        so the same-session-restart branch leaves the DB row exactly as it was —
+        proving the eviction is gated on ``source == "compact"``, not fired on
+        every SessionStart.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "lead", "agent_id": "a", "pid": os.getpid()}})
+        LoopLease.objects.claim_ownership(
+            "loop-owner", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
+        )
+
+        handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a"})
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "old-rotated-id", "non-compact start must NOT run the synchronous compact eviction"
+
+    def test_compact_preserves_a_live_foreign_lease(self) -> None:
+        """A LIVE foreign lease is preserved even on a compact resume (safety table).
+
+        The pane never wins by hijacking a genuinely live foreign owner. When a
+        different session holds a live (alive-pid) ``loop-owner`` lease, the
+        compact eviction's safety decision table keeps it — the lead stays idle
+        rather than stealing the claim.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "other-live-lead", "agent_id": "x", "pid": os.getpid()}})
+        LoopLease.objects.claim_ownership(
+            "loop-owner", session_id="other-live-lead", owner_pid=os.getpid(), ttl_seconds=1800
+        )
+
+        handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a", "source": "compact"})
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "other-live-lead", "a LIVE foreign lease must be preserved on a compact resume"

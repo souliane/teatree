@@ -136,6 +136,25 @@ def _resolve_teams_enabled(raw: dict) -> bool:
     return False
 
 
+def _resolve_teams_int(raw: dict, key: str, default: int) -> int:
+    """Resolve a positive-int value from the top-level ``[teams]`` table, fail-safe.
+
+    The pane-budget settings (``[teams] max_panes`` / ``[teams] idle_minutes``,
+    #1838 PR#7a) live in the ``[teams]`` namespace alongside ``enabled``. An
+    absent table/key, a non-int, a ``bool``, or a non-positive value all degrade
+    to *default* — the safety bound the setting encodes can never be disabled by
+    a mistyped config value. The per-overlay / env tiers key on the matching
+    ``teams_*`` field name and are layered by ``get_effective_settings``.
+    """
+    table = raw.get("teams")
+    if not isinstance(table, dict):
+        return default
+    value = table.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value if value > 0 else default
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
@@ -178,6 +197,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         dedicated_loops=bool(teatree.get("dedicated_loops", False)),
         teams_enabled=_resolve_teams_enabled(raw),
+        teams_max_panes=_resolve_teams_int(raw, "max_panes", 1),
+        teams_idle_minutes=_resolve_teams_int(raw, "idle_minutes", 30),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=ask_before_post_on_behalf,
