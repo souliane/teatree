@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.eval.all import AiLaneOutcome
 from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
 from teatree.cli.eval.verdict import LaneResult
@@ -86,6 +87,19 @@ def _run(
 
 
 _PASSING_CALL = (EvalToolCall(name="Bash", input={"command": "git worktree add ../wt HEAD"}, turn=1),)
+
+
+def _ai_outcome(
+    *, passed: bool = True, detail: str = "1 graded", results: tuple[ScenarioResult, ...] = ()
+) -> AiLaneOutcome:
+    """A metered-sdk AI lane outcome for `run_ai_lane` mocks.
+
+    ``results`` defaults empty — `executed == 0` short-circuits the suite's
+    unmetered-$0 guard, so a lane-only stub stays green. A test exercising the
+    guard supplies a real graded `ScenarioResult` with a non-zero/zero cost.
+    """
+    lane = LaneResult(name="ai-eval", cost="metered (sdk)", passed=passed, skipped=False, detail=detail)
+    return AiLaneOutcome(lane=lane, results=list(results))
 
 
 class TestEvalList:
@@ -1578,11 +1592,10 @@ class TestEvalSuiteSdkBackendDockerByDefault:
         docker.assert_called_once()
 
     def test_sdk_backend_local_escape_runs_on_host_with_warning(self, tmp_path: Path) -> None:
-        ai_pass = LaneResult(name="ai-eval", cost="metered (sdk)", passed=True, skipped=False, detail="1 graded")
         with (
             patch.dict("os.environ", {}, clear=True),
             _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.all.run_ai_lane", return_value=ai_pass),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
             patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
         ):
             result = CliRunner().invoke(
@@ -1593,11 +1606,10 @@ class TestEvalSuiteSdkBackendDockerByDefault:
         assert "WARNING" in result.output
 
     def test_sdk_backend_in_container_runs_in_process(self, tmp_path: Path) -> None:
-        ai_pass = LaneResult(name="ai-eval", cost="metered (sdk)", passed=True, skipped=False, detail="1 graded")
         with (
             patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
             _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.all.run_ai_lane", return_value=ai_pass),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
             patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
@@ -2190,6 +2202,28 @@ class TestEvalAllCorpusGradeLane:
         assert result.exit_code == 1, result.output
         assert "corpus-grade" in result.output
 
+    def test_all_judge_corpus_is_not_a_green_pass_and_strict_catches_it(self, tmp_path: Path) -> None:
+        # A corpus that graded nothing deterministically (all judge-skipped) must
+        # not read as a green PASS: default stays exit 0 but flags needs-setup,
+        # and --strict fails on it (the vacuous-green guard).
+        all_skip = [CorpusGradeRow(entry_id="j_entry", oracle="judge", verdict="skip", detail="judge")]
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
+        ):
+            default_run = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert default_run.exit_code == 0, default_run.output
+        assert "needs setup" in default_run.output.lower(), default_run.output
+
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
+        ):
+            strict_run = CliRunner().invoke(
+                app, ["eval", "all", "--free-only", "--strict", "--transcript-dir", str(tmp_path)]
+            )
+        assert strict_run.exit_code == 1, strict_run.output
+
 
 class TestEvalAllSkillCommandValidityLane:
     """Tier-1 (#550) runs as a free lane and FAILs on a stale `t3 …` reference."""
@@ -2215,10 +2249,9 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
         # the explicit metered opt-in (`--backend sdk`), never the default lane.
         # The metered AI lane is stubbed to a pass so the assertion isolates the
         # prose-judge lane's presence, not the AI runner's verdict.
-        ai_pass = LaneResult(name="ai-eval", cost="metered (sdk)", passed=True, skipped=False, detail="1 graded")
         with (
             _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.all.run_ai_lane", return_value=ai_pass),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
@@ -2255,11 +2288,59 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
     def test_low_prose_score_does_not_fail_the_suite(self, tmp_path: Path) -> None:
         # a weakest skill scored 0.2 is rendered + nominated but never fails the run
         weak = ProseJudgeReport(scores=(ProseScore("worst", 0.0, "advisory"),), skipped=0)
-        ai_pass = LaneResult(name="ai-eval", cost="metered (sdk)", passed=True, skipped=False, detail="1 graded")
         with (
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_prose_judge", return_value=weak),
-            patch("teatree.cli.eval.all.run_ai_lane", return_value=ai_pass),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+
+
+class TestEvalAllSdkMeteredGuard:
+    """The suite mirror of ``RunGuards.sdk_metered`` (#) — an sdk AI lane that meters $0 fails loud.
+
+    A metered (``--backend sdk``) AI lane that graded scenarios but billed $0 is
+    the vacuous-green ``$0.00 (no metered calls)`` state (the ``--bare`` OAuth
+    bug). ``t3 eval run`` already turns this RED at its boundary; ``t3 eval all``
+    must too, otherwise a green AI-lane row reads as validated when nothing ran.
+    """
+
+    def test_executed_but_unmetered_sdk_suite_fails_loud(self, tmp_path: Path) -> None:
+        # Graded (not skipped), matchers pass, but $0 metered → vacuous-green.
+        graded_zero = evaluate(_spec("alpha"), _run("alpha", tool_calls=_PASSING_CALL, cost_usd=0.0))
+        outcome = _ai_outcome(results=(graded_zero,))
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_prose_judge", return_value=_prose_report()),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "metered" in result.output.lower(), result.output
+
+    def test_metered_sdk_suite_passes(self, tmp_path: Path) -> None:
+        # The same graded run WITH real metered cost stays green — proves the
+        # guard keys on cost, not on the AI-lane verdict (anti-vacuous companion).
+        graded_cost = evaluate(_spec("alpha"), _run("alpha", tool_calls=_PASSING_CALL, cost_usd=0.0556))
+        outcome = _ai_outcome(results=(graded_cost,))
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_prose_judge", return_value=_prose_report()),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+
+    def test_subscription_suite_with_zero_cost_stays_green(self, tmp_path: Path) -> None:
+        # The default subscription backend is unmetered by design — a $0 graded
+        # run must NOT trip the sdk-only guard.
+        graded_zero = evaluate(_spec("alpha"), _run("alpha", tool_calls=_PASSING_CALL, cost_usd=0.0))
+        lane = LaneResult(name="ai-eval", cost="subscription", passed=True, skipped=False, detail="1 graded")
+        outcome = AiLaneOutcome(lane=lane, results=[graded_zero])
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output

@@ -17,6 +17,11 @@ Subcommands:
 
 The room for sibling smokes is the ``t3 dogfood`` namespace itself —
 add subcommands here.
+
+Non-zero exits use ``raise SystemExit(N)``, never ``typer.Exit`` — these
+commands run under Django's ``call_command`` (django-typer), which swallows a
+``typer.Exit`` into a *returned* code and exits 0, so a categorised failure
+would silently report success to cron/CI/the loop. ``SystemExit`` propagates.
 """
 
 from typing import Annotated
@@ -116,14 +121,15 @@ class Command(TyperCommand):
         """Run the overlay provision smoke against a fixture ticket.
 
         Exits 0 on PASS, 11-19 on categorised failure (see
-        :func:`_exit_code_for`). DMs the user via
+        :func:`_exit_code_for`) via ``raise SystemExit(code)`` so the code
+        propagates under ``call_command``. DMs the user via
         :func:`teatree.notify.notify_user` on any non-PASS outcome
         unless ``--no-notify-on-failure`` is passed (CI hook).
         """
         target_overlay = overlay or _resolve_active_overlay()
         if not target_overlay:
             typer.echo("error: no overlay resolved — pass --overlay <name>.", err=True)
-            raise typer.Exit(code=2)
+            raise SystemExit(2)
 
         steps = default_steps(
             overlay=target_overlay,
@@ -156,7 +162,7 @@ class Command(TyperCommand):
 
         code = _exit_code_for(report.outcome)
         if code != 0:
-            raise typer.Exit(code=code)
+            raise SystemExit(code)
 
 
 def _resolve_active_overlay() -> str:

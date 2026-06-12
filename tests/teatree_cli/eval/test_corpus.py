@@ -12,7 +12,8 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.eval.corpus import CorpusGradeRow, grade_shipped_corpus
+from teatree.cli.eval.corpus import CORPUS_NO_GRADED_HINT, CorpusGradeRow, corpus_grade_lane, grade_shipped_corpus
+from teatree.eval.corpus_loader import discover_corpus
 from teatree.eval.report import JudgeOutcome
 
 _WORKTREE_COMMAND = "git worktree add ../wt HEAD"
@@ -220,3 +221,55 @@ class TestShippedCorpusLaneBody:
         row = grade_shipped_corpus()[0]
         assert isinstance(row, CorpusGradeRow)
         assert row.oracle in {"matcher", "judge", "both"}
+
+    def test_shipped_corpus_has_a_deterministically_gradable_entry(self) -> None:
+        """The free corpus-grade lane must validate >=1 matcher/both entry deterministically.
+
+        If the corpus ever became all-judge (or empty), the ``--no-judge`` free
+        lane would grade nothing and read green for free — decorative, vacuous.
+        """
+        deterministic = [label for label in discover_corpus() if label.oracle in {"matcher", "both"}]
+        assert deterministic, (
+            "shipped corpus has no matcher/both entry — the free corpus-grade lane would grade "
+            "ZERO entries under --no-judge and read as a vacuous green. Add a deterministically-"
+            "gradable entry."
+        )
+        # And it actually grades (not skips) in the free lane.
+        graded_ids = {label.entry_id for label in deterministic}
+        rows = {row.entry_id: row for row in grade_shipped_corpus()}
+        assert any(rows[entry_id].verdict in {"pass", "fail"} for entry_id in graded_ids)
+
+
+class TestCorpusGradeLane:
+    """The free ``corpus-grade`` lane folding of graded rows (vacuous-green guard)."""
+
+    def test_zero_graded_is_a_setup_skip_not_a_green_pass(self) -> None:
+        # An all-judge corpus under --no-judge: every row SKIPs, so the lane
+        # graded nothing. It must surface as needs-setup, never a green pass.
+        all_judge = [CorpusGradeRow(entry_id="j", oracle="judge", verdict="skip", detail="judge")]
+        lane = corpus_grade_lane(all_judge)
+        assert lane.skipped is True
+        assert lane.needs_setup is True
+        assert lane.setup_hint == CORPUS_NO_GRADED_HINT
+        # status must NOT be the green PASS — it is the needs-setup skip.
+        assert lane.status == "SKIPPED — needs setup"
+
+    def test_empty_corpus_is_a_setup_skip(self) -> None:
+        lane = corpus_grade_lane([])
+        assert lane.needs_setup is True
+
+    def test_one_graded_entry_makes_it_a_real_pass(self) -> None:
+        rows = [CorpusGradeRow(entry_id="m", oracle="matcher", verdict="pass", detail="1 matcher(s) ok")]
+        lane = corpus_grade_lane(rows)
+        assert lane.skipped is False
+        assert lane.needs_setup is False
+        assert lane.passed is True
+
+    def test_a_failing_graded_entry_still_fails(self) -> None:
+        rows = [
+            CorpusGradeRow(entry_id="m", oracle="matcher", verdict="fail", detail="1/1 matchers failed"),
+            CorpusGradeRow(entry_id="j", oracle="judge", verdict="skip", detail="judge"),
+        ]
+        lane = corpus_grade_lane(rows)
+        assert lane.skipped is False
+        assert lane.passed is False
