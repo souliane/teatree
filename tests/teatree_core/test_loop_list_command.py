@@ -176,5 +176,90 @@ class TestLoopListIsReadOnly(django.test.TestCase):
         with _registry(_stub_loop("dispatch", 300)):
             _run()
             _run("--json")
+            _run("--all")
         assert MiniLoopMarker.objects.count() == 0
         assert not LoopLease.objects.exclude(session_id="").exists()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopListAllPerLoopOwners(django.test.TestCase):
+    """``t3 loop list --all`` — the cross-session per-loop owner health view (#1834)."""
+
+    def _seed_per_loop_owners(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="sess-dispatch",
+            owner_pid=_LIVE_PID,
+            acquired_at=now,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        LoopLease.objects.create(
+            name="loop:review",
+            session_id="sess-review",
+            owner_pid=_DEAD_PID,
+            acquired_at=now - dt.timedelta(hours=2),
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+
+    def test_default_view_omits_per_loop_block(self) -> None:
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)):
+            output = _run()
+        assert "per-loop owners:" not in output
+        assert "loop:dispatch" not in output
+
+    def test_all_renders_each_per_loop_owner(self) -> None:
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)):
+            output = _run("--all")
+        assert "per-loop owners:" in output
+        dispatch_line = next(ln for ln in output.splitlines() if "loop:dispatch" in ln)
+        assert "sess-dispatch" in dispatch_line
+        assert "alive" in dispatch_line
+        assert "live" in dispatch_line
+        review_line = next(ln for ln in output.splitlines() if "loop:review" in ln)
+        assert "sess-review" in review_line
+        assert "dead/unknown" in review_line
+        assert "stale" in review_line
+
+    def test_all_with_no_per_loop_owners_shows_no_block(self) -> None:
+        with _registry(_stub_loop("dispatch", 300)):
+            output = _run("--all")
+        assert "per-loop owners:" not in output
+
+    def test_default_text_byte_identical_with_and_without_per_loop_rows(self) -> None:
+        """The single-owner default text is unchanged whether per-loop rows exist."""
+        with _registry(_stub_loop("dispatch", 300)):
+            before = _run()
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)):
+            after = _run()
+        assert before == after
+
+    def test_all_json_includes_per_loop_owners(self) -> None:
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)):
+            payload = json.loads(_run("--all", "--json"))
+        assert "per_loop_owners" in payload
+        slots = {o["slot"] for o in payload["per_loop_owners"]}
+        assert slots == {"loop:dispatch", "loop:review"}
+        dispatch = next(o for o in payload["per_loop_owners"] if o["slot"] == "loop:dispatch")
+        assert dispatch["session_id"] == "sess-dispatch"
+        assert dispatch["pid_is_alive"] is True
+        assert dispatch["is_live"] is True
+
+    def test_default_json_owner_block_byte_identical(self) -> None:
+        """Without ``--all`` the ``owner`` JSON block keeps its #1744 shape (no per_loop_owners)."""
+        self._seed_per_loop_owners()
+        LoopLease.objects.create(
+            name="loop-owner",
+            session_id="sess-global",
+            owner_pid=_LIVE_PID,
+            acquired_at=timezone.now(),
+            lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
+        )
+        with _registry(_stub_loop("dispatch", 300)):
+            payload = json.loads(_run("--json"))
+        assert "per_loop_owners" not in payload
+        assert set(payload["owner"].keys()) == {"session_id", "owner_pid", "pid_is_alive", "is_live"}

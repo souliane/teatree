@@ -23,3 +23,17 @@ class TestLoopListCommand:
 
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_list", json_output=True)
+
+    def test_passes_all_flag(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["list", "--all"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_list", show_all=True)
+
+    def test_passes_all_and_json_flags(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["list", "--all", "--json"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_list", json_output=True, show_all=True)

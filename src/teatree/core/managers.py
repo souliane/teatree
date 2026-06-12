@@ -7,7 +7,15 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.config import load_config
-from teatree.core.loop_lease_manager import LoopLeaseManager, LoopLeaseQuerySet, OwnershipStatus
+from teatree.core.loop_lease_manager import (
+    GLOBAL_OWNER_SLOT,
+    PER_LOOP_OWNER_PREFIX,
+    LoopLeaseManager,
+    LoopLeaseQuerySet,
+    OwnershipStatus,
+    is_per_loop_owner_slot,
+    per_loop_owner_slot,
+)
 from teatree.core.models.errors import RedisSlotsExhaustedError
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
@@ -16,6 +24,8 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 __all__ = [
+    "GLOBAL_OWNER_SLOT",
+    "PER_LOOP_OWNER_PREFIX",
     "IncomingEventManager",
     "LoopLeaseManager",
     "LoopLeaseQuerySet",
@@ -27,6 +37,8 @@ __all__ = [
     "TaskManager",
     "TicketManager",
     "WorktreeManager",
+    "is_per_loop_owner_slot",
+    "per_loop_owner_slot",
 ]
 
 

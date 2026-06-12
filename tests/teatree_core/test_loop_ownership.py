@@ -28,7 +28,13 @@ from django.db import connections
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.managers import OwnershipStatus
+from teatree.core.managers import (
+    GLOBAL_OWNER_SLOT,
+    PER_LOOP_OWNER_PREFIX,
+    OwnershipStatus,
+    is_per_loop_owner_slot,
+    per_loop_owner_slot,
+)
 from teatree.core.models import LoopLease
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
@@ -496,3 +502,156 @@ class TestEvictStaleOwner(TestCase):
         assert won is False
         assert owner == "busy"
         assert LoopLease.objects.get(name="loop-owner").session_id == "busy"
+
+
+# ── Per-loop owning-session layer (#1834, agent-teams Track-A PR#2) ──
+
+
+class TestPerLoopOwnerSlot:
+    """The canonical ``loop:<name>`` key derivation for the additive per-loop layer.
+
+    The per-loop owner keys occupy a namespace disjoint from the global
+    ``loop-owner`` slot and the infra-slot leases (``loop-tick`` etc., which
+    use ``-`` not ``:``), so a per-loop claim can never collide with the
+    machine-wide single-owner lease.
+    """
+
+    def test_bare_name_is_qualified_up(self) -> None:
+        assert per_loop_owner_slot("dispatch") == "loop:dispatch"
+
+    def test_already_qualified_is_idempotent(self) -> None:
+        assert per_loop_owner_slot("loop:review") == "loop:review"
+
+    def test_whitespace_is_stripped(self) -> None:
+        assert per_loop_owner_slot("  ship  ") == "loop:ship"
+
+    def test_per_loop_key_is_never_the_global_slot(self) -> None:
+        # The reserved global slot is distinct from any per-loop key, so the
+        # default single-owner path and the new layer can never share a row.
+        assert per_loop_owner_slot("owner") != GLOBAL_OWNER_SLOT
+        assert not per_loop_owner_slot("dispatch").startswith(GLOBAL_OWNER_SLOT + "-")
+
+    def test_is_per_loop_owner_slot_predicate(self) -> None:
+        assert is_per_loop_owner_slot("loop:dispatch") is True
+        assert is_per_loop_owner_slot(GLOBAL_OWNER_SLOT) is False
+        assert is_per_loop_owner_slot("loop-tick") is False
+
+    def test_prefix_constant_matches_derivation(self) -> None:
+        assert per_loop_owner_slot("x").startswith(PER_LOOP_OWNER_PREFIX)
+
+
+class TestPerLoopOwnershipReusesGlobalMachinery(TestCase):
+    """Per-loop claims reuse the SAME CAS + pid-anchor + TTL machinery (#1834).
+
+    No parallel weaker path: the manager is name-parameterized, so a
+    per-loop slot gets identical empty-owner, pid-liveness, and take-over
+    guards as the global ``loop-owner``.
+    """
+
+    def test_two_loops_owned_by_two_sessions_concurrently(self) -> None:
+        """No false cross-loop hijack — disjoint loops, disjoint sessions."""
+        dispatch = per_loop_owner_slot("dispatch")
+        review = per_loop_owner_slot("review")
+        won_d, owner_d = LoopLease.objects.claim_ownership(dispatch, session_id="sess-dispatch")
+        won_r, owner_r = LoopLease.objects.claim_ownership(review, session_id="sess-review")
+        assert (won_d, owner_d) == (True, "sess-dispatch")
+        assert (won_r, owner_r) == (True, "sess-review")
+        assert LoopLease.objects.get(name=dispatch).session_id == "sess-dispatch"
+        assert LoopLease.objects.get(name=review).session_id == "sess-review"
+
+    def test_per_loop_does_not_evict_global_owner(self) -> None:
+        """Claiming a per-loop slot never touches the global single-owner row."""
+        LoopLease.objects.claim_ownership(GLOBAL_OWNER_SLOT, session_id="global-sess")
+        LoopLease.objects.claim_ownership(per_loop_owner_slot("dispatch"), session_id="dispatch-sess")
+        assert LoopLease.objects.get(name=GLOBAL_OWNER_SLOT).session_id == "global-sess"
+
+    def test_per_loop_foreign_live_session_is_blocked(self) -> None:
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.claim_ownership(slot, session_id="sess-A")
+        won, owner = LoopLease.objects.claim_ownership(slot, session_id="sess-B")
+        assert won is False
+        assert owner == "sess-A"
+
+    def test_per_loop_owner_reclaim_after_expiry(self) -> None:
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.claim_ownership(slot, session_id="dead-sess", ttl_seconds=1)
+        row = LoopLease.objects.get(name=slot)
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        won, owner = LoopLease.objects.claim_ownership(slot, session_id="successor")
+        assert won is True
+        assert owner == "successor"
+
+    def test_per_loop_alive_pid_blocks_reclaim_past_ttl(self) -> None:
+        """pid-liveness guard fires per-loop too (busy owner past TTL is protected)."""
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.claim_ownership(slot, session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name=slot)
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        won, owner = LoopLease.objects.claim_ownership(slot, session_id="newcomer")
+        assert won is False
+        assert owner == "busy"
+
+    def test_per_loop_anonymous_claim_does_not_write_owner(self) -> None:
+        """Empty-owner guard holds per-loop: anonymous claim runs but never persists a session."""
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.get_or_create(name=slot)
+        won, owner = LoopLease.objects.claim_ownership(slot, session_id="")
+        assert won is True
+        assert owner == ""
+        assert LoopLease.objects.get(name=slot).session_id == ""
+
+    def test_per_loop_dead_pid_evicted(self) -> None:
+        """evict_stale_owner decision table applies per-loop (dead pid → EVICT)."""
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.claim_ownership(slot, session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        evicted = LoopLease.objects.evict_stale_owner(slot, keep_session_id="new", current_pid=None)
+        assert evicted == 1
+        assert LoopLease.objects.get(name=slot).session_id == ""
+
+    def test_per_loop_take_over_evicts_live_owner(self) -> None:
+        slot = per_loop_owner_slot("dispatch")
+        LoopLease.objects.claim_ownership(slot, session_id="hijacker")
+        won, owner = LoopLease.objects.claim_ownership(slot, session_id="main", take_over=True)
+        assert won is True
+        assert owner == "main"
+
+
+class TestPerLoopClaimThroughManagementCommand(TestCase):
+    """The existing ``loop_owner --slot`` CLI surface claims a per-loop slot (#1834).
+
+    The dedicated-loop slot generator (PR#3) drives this exact path; here we
+    prove a ``loop:<name>`` slot is claimable through the management command
+    without touching the global ``loop-owner`` row.
+    """
+
+    def test_claim_per_loop_slot_via_command(self) -> None:
+        import io  # noqa: PLC0415
+
+        from django.core.management import call_command  # noqa: PLC0415
+
+        slot = per_loop_owner_slot("dispatch")
+        with mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"):
+            out = io.StringIO()
+            call_command("loop_owner", "claim", slot=slot, json_output=True, stdout=out)
+        import json as _json  # noqa: PLC0415
+
+        payload = _json.loads(out.getvalue())
+        assert payload == {"ok": True, "slot": "loop:dispatch", "owner_session": "sess-dispatch"}
+        assert LoopLease.objects.get(name=slot).session_id == "sess-dispatch"
+        assert not LoopLease.objects.filter(name="loop-owner", session_id="sess-dispatch").exists()
+
+    def test_per_loop_claim_is_pid_anchored(self) -> None:
+        """A per-loop owner records owner_pid (hijack guard), not the None weaker path."""
+        import io  # noqa: PLC0415
+
+        from django.core.management import call_command  # noqa: PLC0415
+
+        slot = per_loop_owner_slot("dispatch")
+        with (
+            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
+            mock.patch("teatree.loop.session_identity.current_session_pid", return_value=os.getpid()),
+        ):
+            call_command("loop_owner", "claim", slot=slot, stdout=io.StringIO())
+        assert LoopLease.objects.get(name=slot).owner_pid == os.getpid()

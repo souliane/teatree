@@ -30,6 +30,7 @@ from django_typer.management import TyperCommand, command
 def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> None:  # noqa: ANN001
     import os  # noqa: PLC0415
 
+    from teatree.core.loop_lease_manager import is_per_loop_owner_slot  # noqa: PLC0415
     from teatree.core.models import LoopLease  # noqa: PLC0415
     from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
@@ -41,19 +42,22 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
         else:
             stdout_write(f"ERROR  {msg}")
         raise SystemExit(2)
-    # Record the durable SESSION pid for the ``loop-owner`` slot so
-    # ``evict_stale_owner`` / the pid-anchored liveness check can tell a
-    # post-compaction same-process self-reclaim from a genuinely foreign
-    # live lease. It MUST be the long-lived session process, not
-    # ``os.getppid()``: ``t3 loop claim`` runs in a Bash-tool shell torn
+    # Record the durable SESSION pid for the ``loop-owner`` slot — and for a
+    # per-loop ``loop:<name>`` owner (#1834), which is a persistent
+    # session-scoped owner of the same kind — so ``evict_stale_owner`` / the
+    # pid-anchored liveness check can tell a post-compaction same-process
+    # self-reclaim from a genuinely foreign live lease, and a busy owner past
+    # its TTL is never hijacked. It MUST be the long-lived session process,
+    # not ``os.getppid()``: ``t3 loop claim`` runs in a Bash-tool shell torn
     # down seconds later, so anchoring on its pid stored a dead pid — the
     # take-over then "only held until the next fresh session" (the new
     # session saw a dead pid + lapsed TTL and stole the loop). The durable
     # pid comes from the loop-registry record the SessionStart hook wrote;
     # ``os.getppid()`` is the fallback only for a direct in-session call.
-    # Other slots (e.g. ``loop-slack-answer-owner``) are per-tick ephemeral
-    # and don't need it.
-    owner_pid = (current_session_pid() or os.getppid()) if slot == "loop-owner" else None
+    # Other infra slots (e.g. ``loop-slack-answer-owner``) are per-tick
+    # ephemeral and don't need it.
+    pid_anchored = slot == "loop-owner" or is_per_loop_owner_slot(slot)
+    owner_pid = (current_session_pid() or os.getppid()) if pid_anchored else None
     won, owner = LoopLease.objects.claim_ownership(
         slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
     )
