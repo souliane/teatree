@@ -34,6 +34,7 @@ from teatree.config.settings import (
     UserSettings,
     _default_handover_mirror_path,
     _parse_disk_cache_allowlist,
+    _parse_on_behalf_auto_actions,
 )
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
@@ -162,6 +163,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=ask_before_post_on_behalf,
         on_behalf_post_mode=on_behalf_post_mode,
+        on_behalf_auto_actions=_parse_on_behalf_auto_actions(teatree.get("on_behalf_auto_actions")),
         notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
         notify_on_post_on_behalf=bool(teatree.get("notify_on_post_on_behalf", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),

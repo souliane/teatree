@@ -40,6 +40,9 @@ _NON_DRAFT_ACTIONS = [
     "post_in_thread",
 ]
 _DRAFT_FORM_ACTIONS = ["post_draft_note"]
+# Actions that resolve to PROCEED even under a blocking mode because they are
+# the user's routine self-documentation on their OWN ticket (default allowlist).
+_AUTO_ACTIONS = ["post_e2e_evidence"]
 
 
 class TestImmediateMode:
@@ -93,6 +96,65 @@ class TestDraftExemptUnderEveryBlockingMode:
     def test_draft_auto_drafts_under_both_blocking_modes(self, config_file: Path, mode: str, action: str) -> None:
         _write(config_file, f'[teatree]\non_behalf_post_mode = "{mode}"\n')
         assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.AUTO_DRAFT
+
+
+class TestAutoActionsAllowlist:
+    """An action in ``on_behalf_auto_actions`` PROCEEDs under every blocking mode.
+
+    These are the user's routine self-documentation on their OWN ticket (E2E
+    evidence), not a colleague-facing voice — so the gate auto-proceeds them
+    without an approval, identical to IMMEDIATE for that one action.
+    """
+
+    @pytest.mark.parametrize("mode", ["ask", "draft_or_ask"])
+    @pytest.mark.parametrize("action", _AUTO_ACTIONS)
+    def test_auto_action_proceeds_under_both_blocking_modes(self, config_file: Path, mode: str, action: str) -> None:
+        _write(config_file, f'[teatree]\non_behalf_post_mode = "{mode}"\n')
+        assert resolve_on_behalf_verdict(action) is OnBehalfVerdict.PROCEED
+
+    @pytest.mark.parametrize("mode", ["ask", "draft_or_ask"])
+    def test_colleague_visible_action_still_blocks(self, config_file: Path, mode: str) -> None:
+        _write(config_file, f'[teatree]\non_behalf_post_mode = "{mode}"\n')
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+
+    def test_default_allowlist_includes_post_e2e_evidence(self, config_file: Path) -> None:
+        """No explicit ``on_behalf_auto_actions`` → the default carve-out still applies."""
+        _write(config_file, '[teatree]\non_behalf_post_mode = "ask"\n')
+        assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.PROCEED
+
+    def test_empty_allowlist_re_gates_evidence(self, config_file: Path) -> None:
+        """A user can clear the allowlist to re-gate evidence under a blocking mode."""
+        _write(
+            config_file,
+            '[teatree]\non_behalf_post_mode = "ask"\non_behalf_auto_actions = []\n',
+        )
+        assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.BLOCK
+
+    def test_custom_allowlist_overrides_default(self, config_file: Path) -> None:
+        """An explicit allowlist replaces the default — evidence re-gates, the named action proceeds."""
+        _write(
+            config_file,
+            '[teatree]\non_behalf_post_mode = "ask"\non_behalf_auto_actions = ["post_comment"]\n',
+        )
+        assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.BLOCK
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
+
+    def test_per_overlay_allowlist_override(self, config_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write(
+            config_file,
+            "[teatree]\n"
+            'on_behalf_post_mode = "ask"\n'
+            "[overlays.trusted]\n"
+            'overlay_class = "x.Y"\n'
+            "on_behalf_auto_actions = []\n",
+        )
+        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.BLOCK
+
+    def test_env_allowlist_override(self, config_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write(config_file, '[teatree]\non_behalf_post_mode = "ask"\n')
+        monkeypatch.setenv("T3_ON_BEHALF_AUTO_ACTIONS", "")
+        assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.BLOCK
 
 
 class TestDefaults:
