@@ -17,7 +17,6 @@ from teatree.cli.overlay import managepy_core
 
 dogfood_app = typer.Typer(
     name="dogfood",
-    no_args_is_help=True,
     help="Overlay-smoke commands — exercise CLI paths so bugs surface in the loop, not in E2E.",
     context_settings={
         "allow_extra_args": True,
@@ -25,6 +24,22 @@ dogfood_app = typer.Typer(
         "ignore_unknown_options": True,
     },
 )
+
+
+@dogfood_app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context) -> None:
+    """Print help and exit 0 when invoked with no sub-command.
+
+    The callback (rather than the app's ``no_args_is_help``) is what forces a
+    real Typer *group*: a single-command Typer app collapses into that command,
+    so bare ``t3 dogfood`` would run ``overlay-provision-smoke`` instead of
+    showing help. With the callback present the app stays a group, and a bare
+    invocation lands here. ``no_args_is_help`` is not used because a Click group
+    exits 2 on the no-command help path; the cron/loop recipe wants a clean 0.
+    """
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=0)
 
 
 @dogfood_app.command(
