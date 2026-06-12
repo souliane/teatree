@@ -2272,6 +2272,17 @@ _API_FIELD_RE = re.compile(
     r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
     re.DOTALL,
 )
+# The MR TARGET repo flag — ``-R <slug>`` / ``--repo <slug>`` on ``glab mr``
+# (owner/repo, optionally host-qualified). The slug runs to the next whitespace;
+# an optional surrounding quote is tolerated.
+_MR_TARGET_REPO_FLAG_RE = re.compile(r"""(?:-R|--repo)[ =]+['"]?(?P<slug>[^\s'"]+)['"]?""")
+# ``glab api .../projects/<url-encoded-namespace>/merge_requests…`` — the
+# namespace is URL-encoded (``acme-group%2Fwidget``); decoded below. A leading
+# slash is optional (``glab api projects/…`` vs ``/api/v4/projects/…``).
+_GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests")
+# ``gh api repos/<owner>/<repo>/pulls…`` — the slug is the two path segments
+# after ``repos/``.
+_GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
 
 
 def _extract_inline_or_file_desc(command: str) -> str:
@@ -2352,7 +2363,7 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     the kind of bad metadata the gate must reject, not silently pass (#119).
 
     Covers four surfaces so a non-compliant title/description cannot slip onto
-    GitLab through any of them:
+    the forge through any of them:
 
     1.  ``glab mr create/update --title/--description`` (inline quotes).
     2.  The same command's file-based / heredoc / ``$(...)`` description
@@ -2361,8 +2372,15 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
         multi-line prose description whose first line was not the
         ``type(scope): … (ticket_url)`` form).
     3.  Out-of-band ``glab api``/``gh api`` PUT/POST to an MR/PR endpoint —
-        the web-UI-equivalent description edit that bypasses ``glab mr``.
+        the web-UI-equivalent description edit that bypasses the CLI (this is
+        the GitHub PR-create path: ``gh api repos/<o>/<r>/pulls``).
     4.  The ``mcp__glab__glab_mr_create``/``_update`` MCP tools.
+
+    The ``gh pr create/edit`` CLI is intentionally NOT a surface here: it is
+    already governed by the AI-signature gate (`handle_block_ai_signature`) in
+    the same PreToolUse chain, and double-gating it would let the metadata deny
+    preempt that gate's body scan. GitHub PR creation reaches this gate via the
+    ``gh api .../pulls`` REST path instead.
     """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
@@ -2378,6 +2396,41 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
 
     if tool_name in _MR_TOOLS:
         return tool_input.get("title", ""), tool_input.get("description", "")
+
+    return None
+
+
+def _extract_mr_target_repo(data: dict) -> str | None:
+    """Return the MR's TARGET repo slug (``owner/repo``), or ``None`` if absent.
+
+    Parses the target from whichever surface the gate watches so the validator
+    can be keyed to the MR's target overlay instead of the agent's cwd. The
+    ``-R``/``--repo`` flag on ``glab mr`` gives the slug directly; the
+    ``glab api .../projects/<ns>/merge_requests…`` namespace is URL-decoded
+    (``acme-group%2Fwidget`` → ``acme-group/widget``); a ``gh api
+    repos/<owner>/<repo>/pulls…`` path yields the two segments after ``repos/``.
+
+    ``None`` when no target is parseable — the validator then keeps its
+    cwd-keyed resolution (the established never-lockout fallback).
+    """
+    tool_name = data.get("tool_name", "")
+    if tool_name != "Bash":
+        return None
+    command = data.get("tool_input", {}).get("command", "")
+
+    flag_match = _MR_TARGET_REPO_FLAG_RE.search(command)
+    if flag_match:
+        return flag_match.group("slug")
+
+    project_match = _GLAB_API_PROJECT_RE.search(command)
+    if project_match:
+        from urllib.parse import unquote  # noqa: PLC0415
+
+        return unquote(project_match.group("ns"))
+
+    gh_api_match = _GH_API_REPO_RE.search(command)
+    if gh_api_match:
+        return gh_api_match.group("slug")
 
     return None
 
@@ -2425,11 +2478,19 @@ def _handle_broken_validate_env(data: dict) -> bool:
     return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
 
 
-def _run_mr_validator(argv: list[str], title: str, description: str) -> "subprocess.CompletedProcess[str] | None":
-    """Run the validator, or ``None`` if the env is broken (timeout/missing)."""
+def _run_mr_validator(
+    argv: list[str], title: str, description: str, target_repo: str | None = None
+) -> "subprocess.CompletedProcess[str] | None":
+    """Run the validator, or ``None`` if the env is broken (timeout/missing).
+
+    ``target_repo`` (when parseable from the command) is forwarded as
+    ``--repo <slug>`` so the validator keys overlay resolution to the MR's
+    TARGET, not the agent's cwd — the whole point of the target-keyed gate.
+    """
+    repo_args = ["--repo", target_repo] if target_repo else []
     try:
         return subprocess.run(  # noqa: S603
-            [*argv, "--title", title, "--description", description],
+            [*argv, "--title", title, "--description", description, *repo_args],
             capture_output=True,
             text=True,
             check=False,
@@ -2440,25 +2501,31 @@ def _run_mr_validator(argv: list[str], title: str, description: str) -> "subproc
 
 
 def handle_validate_mr_metadata(data: dict) -> bool:
-    """Block a non-compliant ``glab mr create/update`` before it runs.
+    """Block a non-compliant ``glab mr``/``gh pr`` create/update before it runs.
 
-    Validates by default via the active overlay's ``validate_pr`` (no
-    env-var opt-in) so the pre-push gate is always live (#119 Part 3). When
-    the validator cannot be resolved or crashes, the gate FAILS CLOSED — a
-    non-compliant title must never slip onto GitLab on a broken env. The
-    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open as
-    a deliberate self-rescue.
+    Validates by default via the TARGET overlay's ``validate_pr`` (no env-var
+    opt-in) so the pre-push gate is always live (#119 Part 3). The MR's TARGET
+    repo is parsed from the command (``-R``/``--repo``, the ``glab api``
+    namespace, the ``gh api repos/<o>/<r>`` path) and threaded as ``--repo`` so
+    an MR targeting a stricter-rule overlay, created with cwd in a repo owned by
+    a more-lenient overlay, is graded against the TARGET overlay's rules — not
+    the cwd overlay's weaker ones. When the validator cannot be resolved or
+    crashes, the gate FAILS CLOSED — a non-compliant
+    title must never slip onto the forge on a broken env. The explicit
+    ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open as a
+    deliberate self-rescue.
     """
     fields = _extract_mr_fields(data)
     if fields is None:
         return False
     title, description = fields
+    target_repo = _extract_mr_target_repo(data)
 
     argv = _mr_validate_argv()
     if argv is None:
         return _handle_broken_validate_env(data)
 
-    result = _run_mr_validator(argv, title, description)
+    result = _run_mr_validator(argv, title, description, target_repo)
     if result is None:
         return _handle_broken_validate_env(data)
 

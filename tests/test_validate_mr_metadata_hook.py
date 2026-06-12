@@ -217,6 +217,69 @@ class TestOutOfBandApiEditIsGated:
         assert blocked is True
 
 
+class TestMrTargetRepoIsThreadedToValidator:
+    """The MR TARGET repo is parsed and passed as ``validate-mr --repo <slug>``.
+
+    The cwd-keyed validator validates an MR against whatever overlay owns the
+    agent's *current directory* — for a dispatched agent that is the clone of a
+    different overlay than the one the MR targets, so the target overlay's
+    rules are never applied. The gate must parse the MR's target (``-R``/``--repo``
+    on ``glab mr``, the ``glab api`` namespace, the ``gh api repos/<o>/<r>``
+    path) and thread it to the validator so the target overlay's rules govern
+    regardless of cwd. ``strict-org/widget`` stands for the target repo.
+    """
+
+    def _argv_for(self, monkeypatch, command: str) -> list[str]:
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": command}})
+        return list(run.call_args[0][0])
+
+    def test_glab_mr_create_dash_r_flag_target_is_passed(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "glab mr create -R strict-org/widget --title 'fix(x): t' --description 'fix(x): t'",
+        )
+        assert "--repo" in argv
+        assert "strict-org/widget" in argv
+
+    def test_glab_mr_create_long_repo_flag_target_is_passed(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "glab mr create --repo strict-org/widget --title 'fix(x): t' --description 'fix(x): t'",
+        )
+        assert argv.count("--repo") == 1
+        assert "strict-org/widget" in argv
+
+    def test_glab_api_namespace_is_decoded_and_passed(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "glab api --method POST projects/strict-org%2Fwidget/merge_requests "
+            "--field 'title=fix(x): t' --field 'description=fix(x): t'",
+        )
+        assert "--repo" in argv
+        assert "strict-org/widget" in argv
+
+    def test_gh_api_pulls_path_target_is_passed(self, monkeypatch):
+        argv = self._argv_for(
+            monkeypatch,
+            "gh api repos/souliane/teatree/pulls --method POST -f 'title=fix: t' -f 'body=fix: t'",
+        )
+        assert "--repo" in argv
+        assert "souliane/teatree" in argv
+
+    def test_no_parseable_target_appends_no_repo_flag(self, monkeypatch):
+        # cwd-keyed fallback preserved: a bare create with no target flag must
+        # NOT carry a --repo, so today's behaviour is unchanged.
+        argv = self._argv_for(
+            monkeypatch,
+            "glab mr create --title 'fix: t' --description 'fix: t'",
+        )
+        assert "--repo" not in argv
+
+
 class TestEnvVarOverrideStillWorks:
     """An explicitly-set T3_MR_VALIDATE_SCRIPT remains the override path."""
 
