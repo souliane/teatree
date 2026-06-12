@@ -61,11 +61,22 @@ def _entry_line(entry: LoopStatusEntry, now: dt.datetime) -> str:
 
 def _owner_line(owner: LoopOwnerStatus) -> str:
     if not owner.is_claimed:
-        return "loop-owner: unclaimed (no live owner)"
+        return f"{owner.slot}: unclaimed (no live owner)"
     pid = owner.owner_pid if owner.owner_pid is not None else _NEVER
     liveness = "alive" if owner.pid_is_alive else "dead/unknown"
     state = "live" if owner.is_live else "stale"
-    return f"loop-owner: session {owner.session_id} (pid {pid} {liveness}) — {state}"
+    return f"{owner.slot}: session {owner.session_id} (pid {pid} {liveness}) — {state}"
+
+
+def _per_loop_owner_lines(report: LoopStatusReport) -> list[str]:
+    """The cross-session per-loop owner block for ``--all`` (#1834).
+
+    Empty under the single-owner default (no ``loop:<name>`` lease claimed),
+    so omitting the header keeps the default view byte-identical.
+    """
+    if not report.per_loop_owners:
+        return []
+    return ["per-loop owners:", *(f"  {_owner_line(owner)}" for owner in report.per_loop_owners)]
 
 
 def _stall_lines(report: LoopStatusReport) -> list[str]:
@@ -75,13 +86,15 @@ def _stall_lines(report: LoopStatusReport) -> list[str]:
     return [f"STALLED — last tick {age} ago", f"  hint: {_REMEDIATION}"]
 
 
-def _render_text(report: LoopStatusReport) -> list[str]:
+def _render_text(report: LoopStatusReport, *, show_all: bool) -> list[str]:
     now = report.generated_at
     lines = ["infra slots:"]
     lines.extend(_entry_line(entry, now) for entry in report.infra_slots)
     lines.append("mini-loops:")
     lines.extend(_entry_line(entry, now) for entry in report.mini_loops)
     lines.append(_owner_line(report.owner))
+    if show_all:
+        lines.extend(_per_loop_owner_lines(report))
     lines.extend(_stall_lines(report))
     return lines
 
@@ -101,7 +114,17 @@ def _entry_payload(entry: LoopStatusEntry, now: dt.datetime) -> dict[str, Any]:
     }
 
 
-def _render_json(report: LoopStatusReport) -> str:
+def _owner_payload(owner: LoopOwnerStatus) -> dict[str, Any]:
+    return {
+        "slot": owner.slot,
+        "session_id": owner.session_id,
+        "owner_pid": owner.owner_pid,
+        "pid_is_alive": owner.pid_is_alive,
+        "is_live": owner.is_live,
+    }
+
+
+def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
     now = report.generated_at
     payload = {
         "generated_at": report.generated_at.isoformat(),
@@ -111,6 +134,10 @@ def _render_json(report: LoopStatusReport) -> str:
         "stalled": report.stalled,
         "infra_slots": [_entry_payload(entry, now) for entry in report.infra_slots],
         "mini_loops": [_entry_payload(entry, now) for entry in report.mini_loops],
+        # The default ``owner`` block keeps its exact #1744 shape (no ``slot``
+        # key) so the default ``--json`` output is byte-identical to today.
+        # The cross-session per-loop layer (which carries ``slot``) is added
+        # only under ``--all``.
         "owner": {
             "session_id": report.owner.session_id,
             "owner_pid": report.owner.owner_pid,
@@ -118,6 +145,8 @@ def _render_json(report: LoopStatusReport) -> str:
             "is_live": report.owner.is_live,
         },
     }
+    if show_all:
+        payload["per_loop_owners"] = [_owner_payload(owner) for owner in report.per_loop_owners]
     return json.dumps(payload, indent=2)
 
 
@@ -128,10 +157,17 @@ class Command(TyperCommand):
         self,
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+        show_all: Annotated[
+            bool,
+            typer.Option(
+                "--all",
+                help="Also show the per-loop owning sessions (cross-session health view, #1834).",
+            ),
+        ] = False,
     ) -> None:
         report = build_report()
         if json_output:
-            self.stdout.write(_render_json(report))
+            self.stdout.write(_render_json(report, show_all=show_all))
             return
-        for line in _render_text(report):
+        for line in _render_text(report, show_all=show_all):
             self.stdout.write(line)

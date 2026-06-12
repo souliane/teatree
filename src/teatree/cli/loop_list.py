@@ -16,12 +16,19 @@ from teatree.utils.django_bootstrap import ensure_django
 def list_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the live loop status as JSON."),
+    show_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Also show the per-loop owning sessions (cross-session health view, #1834).",
+    ),
 ) -> None:
     """Print LIVE loop status: each loop's enabled state, cadence, last fire, and next tick.
 
     Read-only: it computes the report from the DB and prints it — never ticks,
     claims, or mutates anything. Unlike ``t3 loop status`` (the cached
-    statusline view), every countdown here is recomputed at call time.
+    statusline view), every countdown here is recomputed at call time. With
+    ``--all`` it additionally lists each per-loop owning session — the
+    cross-session observability view for the dedicated-loop layer (#1834).
     """
     ensure_django()
 
@@ -30,6 +37,8 @@ def list_command(
     kwargs: dict[str, bool] = {}
     if json_output:
         kwargs["json_output"] = True
+    if show_all:
+        kwargs["show_all"] = True
     call_command("loop_list", **kwargs)
 
 

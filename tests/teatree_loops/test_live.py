@@ -158,6 +158,67 @@ class TestOwnerLiveness(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
+class TestPerLoopOwners(django.test.TestCase):
+    """The additive per-loop owning-session health layer (#1834).
+
+    ``build_report`` surfaces one :class:`LoopOwnerStatus` per ``loop:<name>``
+    lease, disjoint from the global ``loop-owner`` row, with the same
+    pid-anchored liveness. Empty under the single-owner default.
+    """
+
+    def test_no_per_loop_leases_means_empty(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(name="loop-owner", session_id="global", owner_pid=_LIVE_PID, lease_expires_at=now)
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        assert report.per_loop_owners == ()
+
+    def test_two_per_loop_owners_surfaced_sorted_by_slot(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:review",
+            session_id="sess-review",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="sess-dispatch",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        assert [o.slot for o in report.per_loop_owners] == ["loop:dispatch", "loop:review"]
+        assert report.per_loop_owners[0].session_id == "sess-dispatch"
+        assert all(o.is_live for o in report.per_loop_owners)
+
+    def test_per_loop_owner_pid_liveness_is_anchored(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="busy",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        owner = report.per_loop_owners[0]
+        assert owner.pid_is_alive is True
+        assert owner.is_live is True
+
+    def test_global_owner_row_is_not_a_per_loop_owner(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(name="loop-owner", session_id="g", owner_pid=_LIVE_PID, lease_expires_at=now)
+        # The infra-slot leases use ``-`` not ``:`` so they are also excluded.
+        LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=now)
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        assert report.per_loop_owners == ()
+        assert report.owner.slot == "loop-owner"
+
+
+@django.test.override_settings(USE_TZ=True)
 class TestInfraEntries(django.test.TestCase):
     def test_held_lease_marked_held(self) -> None:
         now = timezone.now()

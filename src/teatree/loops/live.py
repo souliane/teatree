@@ -21,6 +21,7 @@ from enum import StrEnum
 
 from django.utils import timezone
 
+from teatree.core.loop_lease_manager import is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
 from teatree.loop.statusline import _cadence_for_loop as cadence_for_loop
@@ -51,6 +52,7 @@ class LoopOwnerStatus:
     owner_pid: int | None
     pid_is_alive: bool
     is_live: bool
+    slot: str = OWNER_SLOT
 
     @property
     def is_claimed(self) -> bool:
@@ -93,6 +95,12 @@ class LoopStatusReport:
     owner: LoopOwnerStatus
     tick_cadence_seconds: int
     last_tick_at: dt.datetime | None
+    #: Additive per-loop owning-session layer (#1834). One entry per
+    #: ``loop:<name>`` lease row that has ever been claimed — the
+    #: cross-session health view shown by ``t3 loop list --all``. Empty
+    #: under today's single-owner default (no dedicated loop has claimed a
+    #: per-loop slot), so the default ``t3 loop list`` view is byte-identical.
+    per_loop_owners: tuple[LoopOwnerStatus, ...] = ()
 
     @property
     def last_tick_age_seconds(self) -> float | None:
@@ -113,13 +121,15 @@ def build_report(*, now: dt.datetime | None = None) -> LoopStatusReport:
     leases = {row.name: row for row in LoopLease.objects.all()}
     infra = tuple(_infra_entry(slot, leases.get(slot)) for slot in INFRA_SLOTS)
     mini = _mini_entries()
-    owner = _owner_status(leases.get(OWNER_SLOT), moment)
+    owner = _owner_status(leases.get(OWNER_SLOT), moment, slot=OWNER_SLOT)
+    per_loop_owners = _per_loop_owners(leases, moment)
     tick_cadence = cadence_for_loop(TICK_SLOT)
     return LoopStatusReport(
         generated_at=moment,
         infra_slots=infra,
         mini_loops=mini,
         owner=owner,
+        per_loop_owners=per_loop_owners,
         tick_cadence_seconds=tick_cadence,
         last_tick_at=_last_tick_at(infra, mini),
     )
@@ -162,9 +172,9 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     return tuple(sorted(entries, key=operator.attrgetter("name")))
 
 
-def _owner_status(lease: LoopLease | None, now: dt.datetime) -> LoopOwnerStatus:
+def _owner_status(lease: LoopLease | None, now: dt.datetime, *, slot: str) -> LoopOwnerStatus:
     if lease is None or not lease.session_id:
-        return LoopOwnerStatus(session_id="", owner_pid=None, pid_is_alive=False, is_live=False)
+        return LoopOwnerStatus(session_id="", owner_pid=None, pid_is_alive=False, is_live=False, slot=slot)
     pid_ok = lease.owner_pid is not None and pid_alive(lease.owner_pid)
     ttl_live = lease.lease_expires_at is not None and lease.lease_expires_at > now
     return LoopOwnerStatus(
@@ -172,7 +182,20 @@ def _owner_status(lease: LoopLease | None, now: dt.datetime) -> LoopOwnerStatus:
         owner_pid=lease.owner_pid,
         pid_is_alive=pid_ok,
         is_live=ttl_live or pid_ok,
+        slot=slot,
     )
+
+
+def _per_loop_owners(leases: dict[str, LoopLease], now: dt.datetime) -> tuple[LoopOwnerStatus, ...]:
+    """Owner status for every per-loop ``loop:<name>`` lease (#1834).
+
+    Read-only: derives one :class:`LoopOwnerStatus` per per-loop slot row
+    present in the DB, sorted by slot for a stable health view. Empty under
+    the single-owner default — no dedicated loop has claimed a per-loop slot
+    — so the default ``t3 loop list`` (which never reads this) is unchanged.
+    """
+    per_loop = [_owner_status(lease, now, slot=name) for name, lease in leases.items() if is_per_loop_owner_slot(name)]
+    return tuple(sorted(per_loop, key=operator.attrgetter("slot")))
 
 
 def _last_tick_at(infra: tuple[LoopStatusEntry, ...], mini: tuple[LoopStatusEntry, ...]) -> dt.datetime | None:
