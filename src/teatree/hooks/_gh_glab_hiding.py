@@ -154,6 +154,18 @@ def token_is_transport_construct(token: str) -> bool:
     return token in _TRANSPORT_OPENERS or token.startswith(_REDIRECTION_PREFIXES)
 
 
+def token_is_redirect_operator(token: str) -> bool:
+    """Return True iff ``token`` starts a redirection/here-doc (not a group opener).
+
+    The redirect half of :func:`token_is_transport_construct`: a token starting
+    with ``>``/``<`` (``>``, ``>>``, ``>|``, ``<``, ``<<``, ``<<<``), whether
+    bare (``> file``) or glued (``>file``). A bare group/subshell opener
+    (``(``/``{``/``)``/``}``) is excluded -- it is transport but not a redirect,
+    so it has no local-file target to classify.
+    """
+    return token.startswith(_REDIRECTION_PREFIXES)
+
+
 def _value_taking_flag(token: str) -> bool:
     """Return True iff ``token`` is a flag whose value is the NEXT token.
 

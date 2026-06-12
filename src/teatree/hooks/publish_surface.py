@@ -495,7 +495,7 @@ def carve_out_applies(
     if tool_name != "Bash" or is_fail_closed_sentinel(payload) or contains_secret(payload):
         return False
 
-    if is_git_commit_command(command):
+    if _commit_carve_out.command_has_git_commit_segment(command):
         return _commit_carve_out.commit_branch_downgrades(command, cwd, config_path=config_path)
 
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
