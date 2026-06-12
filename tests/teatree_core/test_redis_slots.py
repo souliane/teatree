@@ -224,6 +224,36 @@ class TestGhostSlotReclaim(TestCase):
         filler_dir.rmdir()
 
 
+class TestGhostSlotReclaimFlushes(TestCase):
+    """``_reclaim_ghost_slots`` must FLUSHDB each ghost slot before clearing the field.
+
+    Anti-vacuity: remove the ``redis_container.flushdb`` call from
+    ``_reclaim_ghost_slots`` and this test goes RED — ``mock_flush`` records
+    zero calls. Restoring the flush makes it GREEN.
+    """
+
+    def test_reclaim_flushes_ghost_slot_db(self) -> None:
+        cfg = load_config()
+        patched_user = _replace(cfg.user, redis_db_count=2)
+        patched_cfg = _replace(cfg, user=patched_user)
+        with patch("teatree.core.managers.load_config", return_value=patched_cfg):
+            ghost = Ticket.objects.create()
+            ghost_index = Ticket.objects.allocate_redis_slot(ghost)
+            Worktree.objects.create(
+                ticket=ghost,
+                overlay="test",
+                repo_path="org/repo",
+                branch="main",
+                extra={"worktree_path": "/nonexistent/ghost/path"},
+            )
+            _filler, filler_dir = _make_live_ticket()
+            newcomer = Ticket.objects.create()
+            with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
+                Ticket.objects.allocate_redis_slot(newcomer)
+        mock_flush.assert_called_once_with(ghost_index, db_count=patched_user.redis_db_count)
+        filler_dir.rmdir()
+
+
 class TestReleaseRedisSlot(TestCase):
     def test_clears_field_and_flushes_redis_db(self) -> None:
         ticket = Ticket.objects.create()

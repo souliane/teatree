@@ -10,6 +10,7 @@ from teatree.config import load_config
 from teatree.core.loop_lease_manager import LoopLeaseManager, LoopLeaseQuerySet, OwnershipStatus
 from teatree.core.models.errors import RedisSlotsExhaustedError
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
+from teatree.utils import redis_container
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -128,15 +129,16 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         raise RedisSlotsExhaustedError(msg)
 
     def _reclaim_ghost_slots(self, *, using: str = "default") -> int:
-        """Clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
+        """Flush and clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
 
         A slot is a ghost when the ticket has at least one Worktree row and
         every row either has no on-disk path recorded or has a path that no
         longer exists as a directory. Tickets with no Worktree rows are not
         reclaimed — they may be mid-provision (slot allocated, Worktree row
-        not yet written). Only the DB field is cleared; no Redis FLUSHDB is
-        issued (the worktrees are already gone so there is nothing to flush).
-        Returns the count of reclaimed slots.
+        not yet written). Each ghost slot's Redis DB is flushed before the
+        field is cleared, matching ``Ticket.release_redis_slot``'s contract so
+        the next ticket assigned the reclaimed slot starts with a clean
+        cache/queue. Returns the count of reclaimed slots.
         """
         from pathlib import Path  # noqa: PLC0415
 
@@ -149,6 +151,7 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             else:
                 is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
             if is_ghost:
+                redis_container.flushdb(candidate.redis_db_index, db_count=load_config().user.redis_db_count)
                 candidate.redis_db_index = None
                 candidate.save(update_fields=["redis_db_index"], using=using)
                 reclaimed += 1

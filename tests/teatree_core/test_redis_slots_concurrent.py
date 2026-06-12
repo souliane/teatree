@@ -194,7 +194,6 @@ class TestAllocateRedisSlotConcurrentExhaustion:
                 # Give each pre-allocated ticket a live-path Worktree row so
                 # _reclaim_ghost_slots does not treat them as ghosts and reclaim
                 # them before the two racing allocators contend for the last slot.
-                Ticket.objects.using(alias).filter(pk=ticket.pk).using(alias)
                 from django.db import connections as _conns  # noqa: PLC0415
 
                 with _conns[alias].cursor() as cur:
