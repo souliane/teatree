@@ -2165,6 +2165,16 @@ Usage: t3 tool validate-mr [OPTIONS]
  bad title/description is rejected BEFORE the push — no env-var opt-in
  (#119).
 
+ ``--repo`` keys overlay resolution to the MR's TARGET repo (the ``-R``
+ slug / the ``glab api`` namespace / the ``gh api repos/<o>/<r>`` path),
+ not the agent's cwd. When the target maps to exactly one overlay, that
+ overlay's rules govern with NO any-overlay-pass fallback — and a crash in
+ that overlay's validator FAILS CLOSED (deny), never silently skips. This
+ closes the gap where an MR targeting an overlay with stricter title rules,
+ created with cwd in a repo owned by a more-lenient overlay, was graded
+ against the cwd overlay and slipped through. A blank or unmatched ``--repo``
+ falls back to the cwd-keyed resolution below.
+
  Overlay resolution is deterministic and never crashes on ambiguity
  (#1526). Order:
 
@@ -2186,6 +2196,9 @@ Usage: t3 tool validate-mr [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --title              TEXT  MR/PR title                                       │
 │ --description        TEXT  MR/PR description                                 │
+│ --repo               TEXT  MR TARGET repo (owner/repo slug, path, or URL);   │
+│                            keys overlay resolution to the target, not the    │
+│                            cwd.                                              │
 │ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
