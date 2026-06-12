@@ -473,6 +473,38 @@ max_concurrent_local_stacks = 1
 
         assert get_effective_settings().max_concurrent_local_stacks == 1
 
+    def test_overlay_can_override_orchestrate_claim_enabled(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1796: the orchestrate-claim arm is per-overlay overridable.
+
+        A trusted overlay can arm the orchestrate-phase claim while the global
+        default stays OFF. Runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
+        registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.delenv("T3_ORCHESTRATE_CLAIM_ENABLED", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+orchestrate_claim_enabled = false
+
+[overlays.trusted]
+class = "x.y:Z"
+orchestrate_claim_enabled = true
+""",
+        )
+
+        assert get_effective_settings().orchestrate_claim_enabled is True
+
     def test_overlay_can_override_issue_implementer_settings(
         self,
         config_file: Path,

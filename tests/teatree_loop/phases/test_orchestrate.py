@@ -84,6 +84,38 @@ class TestOrchestratePhaseSpeed(django.test.TestCase):
         assert len(manifest.entries) == 2
 
 
+class TestOrchestratePhaseManifestGolden(django.test.TestCase):
+    """Pin the manifest shape across ``Speed`` x backlog x budget (#1796).
+
+    A golden-ish table so a regression in the speed dial -> cap -> admitted-count
+    contract turns red. Each row claims a fresh set of dispatchable tasks, runs
+    ``orchestrate_phase`` at the named speed/budget, and asserts ``(cap, admitted)``.
+    """
+
+    def test_speed_backlog_budget_table(self) -> None:
+        # Each row is speed, backlog size, summed budget, expected cap, expected admitted.
+        table = [
+            (Speed.MEDIUM, 3, 5, 0, 0),  # medium is always a no-op
+            (Speed.SLOW, 3, 5, 1, 1),  # slow clamps to one
+            (Speed.SLOW, 0, 5, 1, 0),  # slow cap is 1 but empty backlog admits 0
+            (Speed.FULL, 5, 3, 3, 3),  # full clamps to summed budget
+            (Speed.FULL, 2, 5, 5, 2),  # full budget exceeds backlog -> admit backlog
+            (Speed.FULL, 4, 0, 0, 0),  # zero budget -> empty manifest
+            (Speed.BOOST, 4, 2, 2, 2),  # boost uses the same budget as full
+        ]
+        for speed, backlog, budget, expected_cap, expected_admitted in table:
+            with self.subTest(speed=speed, backlog=backlog, budget=budget):
+                Task.objects.all().delete()
+                for _ in range(backlog):
+                    _dispatchable_task()
+                backends = [OverlayBackends(name="a", max_concurrent_auto_starts=budget)]
+                with _with_speed(speed):
+                    manifest = orchestrate_phase(backends=backends, claim=True)
+                assert manifest.cap == expected_cap, (speed, backlog, budget)
+                assert len(manifest.entries) == expected_admitted, (speed, backlog, budget)
+                assert Task.objects.filter(status=Task.Status.CLAIMED).count() == expected_admitted
+
+
 class TestOrchestratePhaseClaimSemantics(django.test.TestCase):
     def test_default_plan_is_read_only_and_claims_nothing(self) -> None:
         task = _dispatchable_task()
