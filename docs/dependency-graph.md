@@ -2,6 +2,7 @@
 
 ```mermaid
 graph TD
+    teatree.project --> teatree.paths
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -22,8 +23,10 @@ graph TD
     teatree.repo_mode --> teatree.config
     teatree.skill_support --> teatree.types
     teatree.skill_support --> teatree.utils
+    teatree.skill_support --> teatree.project
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
+    teatree.core --> teatree.project
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
@@ -42,6 +45,33 @@ graph TD
     teatree.backends --> teatree.utils
     teatree.backends --> teatree.core
     teatree.backends --> teatree.identity
+    teatree.backends --> teatree.backends.errors
+    teatree.backends --> teatree.backends.types
+    teatree.backends --> teatree.backends.forge_merge_rpc
+    teatree.backends --> teatree.backends.github
+    teatree.backends --> teatree.backends.gitlab
+    teatree.backends --> teatree.backends.slack
+    teatree.backends.forge_merge_rpc --> teatree.types
+    teatree.backends.forge_merge_rpc --> teatree.utils
+    teatree.backends.forge_merge_rpc --> teatree.core
+    teatree.backends.slack --> teatree.types
+    teatree.backends.slack --> teatree.utils
+    teatree.backends.slack --> teatree.core
+    teatree.backends.slack --> teatree.identity
+    teatree.backends.slack --> teatree.url_classify
+    teatree.backends.gitlab --> teatree.types
+    teatree.backends.gitlab --> teatree.utils
+    teatree.backends.gitlab --> teatree.core
+    teatree.backends.gitlab --> teatree.backends.errors
+    teatree.backends.gitlab --> teatree.backends.types
+    teatree.backends.gitlab --> teatree.backends.forge_merge_rpc
+    teatree.backends.gitlab --> teatree.backends.slack
+    teatree.backends.github --> teatree.types
+    teatree.backends.github --> teatree.utils
+    teatree.backends.github --> teatree.core
+    teatree.backends.github --> teatree.backends.errors
+    teatree.backends.github --> teatree.backends.types
+    teatree.backends.github --> teatree.backends.forge_merge_rpc
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.contrib --> teatree.config
@@ -49,11 +79,14 @@ graph TD
     teatree.contrib --> teatree.utils
     teatree.contrib --> teatree.visual_qa
     teatree.cli --> teatree.paths
+    teatree.cli --> teatree.project
     teatree.cli --> teatree.config
     teatree.cli --> teatree.config_agent
     teatree.cli --> teatree.core
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends
+    teatree.cli --> teatree.backends.gitlab
+    teatree.cli --> teatree.backends.slack
     teatree.cli --> teatree.eval
     teatree.cli --> teatree.skill_support
     teatree.cli --> teatree.claude_sessions
@@ -101,6 +134,9 @@ graph TD
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
+    teatree.loop --> teatree.backends.github
+    teatree.loop --> teatree.backends.gitlab
+    teatree.loop --> teatree.backends.slack
     teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
     teatree.loop --> teatree.loop_enabled
@@ -134,6 +170,8 @@ graph TD
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
+    teatree.backends.errors
+    teatree.backends.types
     teatree.cli._format_opts
     teatree.slack_mrkdwn
     teatree.memory_audit

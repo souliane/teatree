@@ -24,7 +24,14 @@ _TACH = _REPO / "tach.toml"
 # teatree.cli (the eval commands were already core-dependent before the split);
 # the split just promotes them to their own tach node — one new fan-in entry,
 # not new coupling.
-_CORE_FANIN_BASELINE = 13
+# Bumped 13 → 17 (D7 backends split): teatree.backends is split into the
+# aggregator parent + the concrete backend submodules (github / gitlab / slack)
+# and the shared forge_merge_rpc primitive, so the gitlab -> slack coupling
+# becomes a declared edge instead of being hidden inside one node. Each of the
+# four new nodes already imported teatree.core inside the monolithic
+# teatree.backends node — the split makes that pre-existing coupling visible as
+# four separate fan-in entries; it adds no new coupling.
+_CORE_FANIN_BASELINE = 17
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

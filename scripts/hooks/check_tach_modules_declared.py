@@ -33,7 +33,6 @@ TACH_TOML = REPO_ROOT / "tach.toml"
 LEAF_MODULE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "teatree._overlay_api",
-        "teatree.project",
         "teatree.urls",
     }
 )
