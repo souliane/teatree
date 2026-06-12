@@ -234,6 +234,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
         auto_disposition_enabled=bool(teatree.get("auto_disposition_enabled", False)),
         auto_disposition_max_closes_per_tick=int(teatree.get("auto_disposition_max_closes_per_tick", 5)),
+        orchestrate_claim_enabled=bool(teatree.get("orchestrate_claim_enabled", False)),
         handover_mirror_path=(
             Path(str(teatree["handover_mirror_path"])).expanduser()
             if teatree.get("handover_mirror_path")

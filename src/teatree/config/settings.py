@@ -270,6 +270,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
+    "orchestrate_claim_enabled": _parse_strict_bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -281,6 +282,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
+    "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
 }
 
 
@@ -724,6 +726,18 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
+    # #1796 / agent-teams Track-A PR#1: opt-in, default-OFF arm for the
+    # dispatch loop's ``orchestrate_phase`` claim. The phase is wired dormant
+    # (``claim=False``) in ``run_tick`` — it computes the deterministic fan-out
+    # manifest from ``speed`` + ``max_concurrent_auto_starts`` but never claims
+    # or spawns. When this is flipped on, the tick runs ``orchestrate_phase``
+    # with ``claim=True`` so the lead does the thin per-unit claim+spawn the
+    # manifest already computes (the #786-N4 claim-is-the-spawn boundary). When
+    # off (the default) the dormant ``claim=False`` path is kept EXACTLY, so the
+    # fat loop's behaviour is unchanged. Mirrors ``issue_implementer_enabled``;
+    # per-overlay overridable and ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over
+    # both.
+    orchestrate_claim_enabled: bool = False
     # #2122 Opt-in, default-OFF gate for the issue-disposition triage scanner.
     # When False (the default) no scanner is built, so the loop emits nothing
     # and never auto-closes an issue. The scanner only CLOSES high-confidence
