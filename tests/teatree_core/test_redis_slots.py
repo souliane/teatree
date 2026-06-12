@@ -145,8 +145,8 @@ class TestGhostSlotReclaim(TestCase):
         with patch("teatree.core.managers.load_config", return_value=patched_cfg):
             ghost_a = Ticket.objects.create()
             ghost_b = Ticket.objects.create()
-            Ticket.objects.allocate_redis_slot(ghost_a)
-            Ticket.objects.allocate_redis_slot(ghost_b)
+            ghost_a_index = Ticket.objects.allocate_redis_slot(ghost_a)
+            ghost_b_index = Ticket.objects.allocate_redis_slot(ghost_b)
             for ghost in (ghost_a, ghost_b):
                 Worktree.objects.create(
                     ticket=ghost,
@@ -156,7 +156,10 @@ class TestGhostSlotReclaim(TestCase):
                     extra={"worktree_path": "/nonexistent/path/that/is/gone"},
                 )
             newcomer = Ticket.objects.create()
-            index = Ticket.objects.allocate_redis_slot(newcomer)
+            with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
+                index = Ticket.objects.allocate_redis_slot(newcomer)
+        flushed_indices = {call.args[0] for call in mock_flush.call_args_list}
+        assert {ghost_a_index, ghost_b_index} <= flushed_indices
         assert index in {0, 1}
         newcomer.refresh_from_db()
         assert newcomer.redis_db_index == index
@@ -184,7 +187,7 @@ class TestGhostSlotReclaim(TestCase):
             live_tickets, live_dirs = self._fill_slots_with_live_worktrees(2)
             live_indices_before = {t.redis_db_index for t in live_tickets}
             ghost = Ticket.objects.create()
-            Ticket.objects.allocate_redis_slot(ghost)
+            ghost_index = Ticket.objects.allocate_redis_slot(ghost)
             Worktree.objects.create(
                 ticket=ghost,
                 overlay="test",
@@ -193,7 +196,9 @@ class TestGhostSlotReclaim(TestCase):
                 extra={"worktree_path": "/gone/path"},
             )
             newcomer = Ticket.objects.create()
-            index = Ticket.objects.allocate_redis_slot(newcomer)
+            with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
+                index = Ticket.objects.allocate_redis_slot(newcomer)
+        mock_flush.assert_called_once_with(ghost_index, db_count=patched_user.redis_db_count)
         assert index not in live_indices_before
         for live in live_tickets:
             live.refresh_from_db()
@@ -207,7 +212,7 @@ class TestGhostSlotReclaim(TestCase):
         patched_cfg = _replace(cfg, user=patched_user)
         with patch("teatree.core.managers.load_config", return_value=patched_cfg):
             ghost = Ticket.objects.create()
-            Ticket.objects.allocate_redis_slot(ghost)
+            ghost_index = Ticket.objects.allocate_redis_slot(ghost)
             Worktree.objects.create(
                 ticket=ghost,
                 overlay="test",
@@ -218,9 +223,11 @@ class TestGhostSlotReclaim(TestCase):
             assert ghost.redis_db_index is not None
             _filler_ticket, filler_dir = _make_live_ticket()
             newcomer = Ticket.objects.create()
-            Ticket.objects.allocate_redis_slot(newcomer)
-            ghost.refresh_from_db()
-            assert ghost.redis_db_index is None
+            with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
+                Ticket.objects.allocate_redis_slot(newcomer)
+        mock_flush.assert_called_once_with(ghost_index, db_count=patched_user.redis_db_count)
+        ghost.refresh_from_db()
+        assert ghost.redis_db_index is None
         filler_dir.rmdir()
 
 
