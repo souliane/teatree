@@ -48,6 +48,24 @@ def _write_webm(path: Path, payload: bytes) -> str:
     return str(path)
 
 
+def _red_boxed_png(path: Path, *, size: tuple[int, int] = (400, 300)) -> Path:
+    """Write a real PNG carrying a highlightAndShoot red outline box.
+
+    Used where the command path runs the image validator (which refuses a
+    no-red-box screenshot) — the fake magic-byte ``_write_png`` is reserved for
+    pure-parse tests that never reach the validator.
+    """
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+
+    img = Image.new("RGB", size, (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    w, h = size
+    for off in range(6):
+        draw.rectangle([20 + off, 20 + off, w - 40 - off, h - 50 - off], outline=(220, 20, 20))
+    img.save(path, "PNG")
+    return path
+
+
 # --- pure builder: render + merge + parse -----------------------------------
 
 
@@ -451,6 +469,98 @@ class TestParseManifest:
         assert "Search" not in parsed.steps
 
 
+class TestManifestPathResolution:
+    """Relative image/video paths resolve against the manifest file's directory (#friction)."""
+
+    def test_relative_paths_resolve_against_base_dir(self, tmp_path: Path) -> None:
+        media_dir = tmp_path / "artifacts"
+        media_dir.mkdir()
+        _write_png(media_dir / "shot.png", b"A")
+        _write_webm(media_dir / "run.webm", b"V")
+        # The manifest carries BARE relative names; base_dir is the manifest's dir.
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"video": "run.webm", "images": ["shot.png"]}}],
+            },
+        )
+        parsed = _evidence.parse_manifest(manifest, base_dir=media_dir)
+        wf = parsed.local.workflows["Login"]
+        assert wf.images[0] == media_dir / "shot.png"
+        assert wf.video == media_dir / "run.webm"
+
+    def test_absolute_paths_pass_through_unchanged(self, tmp_path: Path) -> None:
+        abs_img = _write_png(tmp_path / "abs.png", b"A")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": [abs_img]}}],
+            },
+        )
+        # A different (wrong) base_dir must NOT affect an absolute path.
+        parsed = _evidence.parse_manifest(manifest, base_dir=tmp_path / "elsewhere")
+        assert parsed.local.workflows["Login"].images[0] == Path(abs_img)
+
+    def test_relative_path_without_base_dir_still_resolves_from_cwd(self, tmp_path: Path) -> None:
+        """Back-compat: no base_dir keeps the legacy cwd-relative behaviour."""
+        _write_png(tmp_path / "shot.png", b"A")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": ["shot.png"]}}],
+            },
+        )
+        with pytest.raises(_evidence.EvidenceValidationError, match="not found"):
+            # No base_dir and cwd is not tmp_path → the bare name does not resolve.
+            _evidence.parse_manifest(manifest)
+
+
+class TestTicketFallbackFromManifest(TestCase):
+    """``--ticket`` omitted falls back to the manifest's top-level ``ticket`` field (#friction)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp = tmp_path
+        # No worktree → the resolution must come from the manifest's ticket field.
+        monkeypatch.setattr(
+            _evidence,
+            "resolve_worktree",
+            MagicMock(side_effect=_evidence.WorktreeNotFoundError("none")),
+        )
+
+    def test_manifest_ticket_field_used_when_flag_omitted(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+        img = _red_boxed_png(self._tmp / "a.png")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
+            },
+        )
+        flags = _evidence.EvidenceFlags(ticket="", manifest=manifest)
+        post = _evidence.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+    def test_missing_ticket_everywhere_raises_resolution_error(self) -> None:
+        img = _red_boxed_png(self._tmp / "a.png")
+        manifest = json.dumps(
+            {
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
+            },
+        )
+        flags = _evidence.EvidenceFlags(ticket="", manifest=manifest)
+        with pytest.raises(_evidence.EvidenceResolutionError, match="Could not determine the ticket"):
+            _evidence.build_validated_post(flags)
+
+
 class TestMrLabel:
     """The MR link rendering is a pure helper."""
 
@@ -500,7 +610,7 @@ class _EvidenceTestBase(TestCase):
         Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
 
     def _local_manifest(self) -> str:
-        img = _write_png(self._tmp / "step1.png", b"A")
+        img = str(_red_boxed_png(self._tmp / "step1.png"))
         vid = _write_webm(self._tmp / "run.webm", b"V")
         return json.dumps(
             {
@@ -605,7 +715,7 @@ class TestUploadLandsOnNoteProject(_EvidenceTestBase):
 
     def _multi_repo_manifest(self) -> str:
         """A manifest carrying TWO repos, the second matching the CI project."""
-        img = _write_png(self._tmp / "step1.png", b"A")
+        img = str(_red_boxed_png(self._tmp / "step1.png"))
         vid = _write_webm(self._tmp / "run.webm", b"V")
         return json.dumps(
             {
@@ -685,6 +795,60 @@ class TestMediaRenderGate(_EvidenceTestBase):
         host.upload_file.assert_not_called()
 
 
+class TestImagePreflightAtCommand(_EvidenceTestBase):
+    """The red-box preflight refuses a no-red-box screenshot at the command, before upload."""
+
+    def _no_red_box_manifest(self) -> str:
+        # A real (Pillow-openable) PNG with NO red highlight box.
+        from PIL import Image  # noqa: PLC0415
+
+        plain = self._tmp / "plain.png"
+        Image.new("RGB", (400, 300), (240, 240, 240)).save(plain, "PNG")
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": [str(plain)]}}],
+            },
+        )
+
+    def test_no_red_box_refused_before_upload(self) -> None:
+        self._ticket()
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        self._patch_host(host)
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest=self._no_red_box_manifest())
+        host.upload_file.assert_not_called()
+        host.post_issue_comment.assert_not_called()
+
+    def test_skip_validation_lets_a_no_red_box_post_through(self) -> None:
+        self._ticket()
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        host.post_issue_comment.return_value = {"id": 88, "web_url": "u"}
+        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
+        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
+        host.repo_for_issue_url.return_value = "org/repo"
+        self._patch_host(host)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "e2e",
+                    "post-evidence",
+                    ticket=_ISSUE_URL,
+                    manifest=self._no_red_box_manifest(),
+                    skip_validation=True,
+                ),
+            )
+        assert result["action"] == "created"
+        host.post_issue_comment.assert_called_once()
+
+
 class TestRequiresManifest(_EvidenceTestBase):
     """An empty --manifest exits non-zero with no host side effect."""
 
@@ -702,13 +866,23 @@ class TestRequiresManifest(_EvidenceTestBase):
 
 
 class TestOnBehalfGateConsulted(TestCase):
-    """The on-behalf gate stays in front of the post — no bypass."""
+    """The on-behalf gate stays in front of the post when evidence is NOT auto-allowed.
+
+    ``post_e2e_evidence`` is in the default ``on_behalf_auto_actions`` allowlist
+    (the user does not approve their own evidence posts), so this suite clears
+    that allowlist to prove the gate still blocks when a user opts back into
+    gating. The default carve-out (gate auto-proceeds) is covered by
+    :class:`TestOnBehalfEvidenceAutoProceeds`.
+    """
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
+        cfg.write_text(
+            '[teatree]\non_behalf_post_mode = "ask"\non_behalf_auto_actions = []\n',
+            encoding="utf-8",
+        )
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
 
     def _post(self, *, comments: list[dict[str, object]]) -> MagicMock:
@@ -737,6 +911,44 @@ class TestOnBehalfGateConsulted(TestCase):
 
     def test_update_branch_blocked_without_approval(self) -> None:
         self._post(comments=[{"id": 1, "body": "<!-- t3-e2e-evidence ticket=8521 -->\nx"}])
+
+
+class TestOnBehalfEvidenceAutoProceeds(TestCase):
+    """Under the DEFAULT allowlist, ``post_e2e_evidence`` proceeds even under ASK.
+
+    The user does not approve their own evidence posts — ``post_e2e_evidence``
+    is in the default ``on_behalf_auto_actions`` carve-out — so a blocking mode
+    does NOT raise the on-behalf block for the evidence path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+
+    def test_post_proceeds_without_approval_under_ask(self) -> None:
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        host.post_issue_comment.return_value = {"id": 91, "web_url": "u"}
+        host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
+        host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
+        host.repo_for_issue_url.return_value = "org/repo"
+        post = _evidence.EvidencePost(
+            issue_url=_ISSUE_URL,
+            ticket_id="8521",
+            title="t",
+            manifest=_evidence.EvidenceManifest(
+                ticket="8521",
+                mrs=(),
+                dev=_evidence.SideManifest(present=False),
+                local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+            ),
+        )
+        # No OnBehalfPostBlockedError despite ASK mode — the carve-out proceeds.
+        result = _evidence.post_evidence_comment(host, post)
+        assert result["action"] == "created"
+        host.post_issue_comment.assert_called_once()
 
 
 class TestPureHelpers:

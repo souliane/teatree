@@ -66,6 +66,24 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
     return [str(s) for s in raw]
 
 
+_DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
+
+
+def _parse_on_behalf_auto_actions(raw: object) -> list[str]:
+    """Coerce the on-behalf auto-proceed allowlist, falling back to the default carve-out.
+
+    A missing key (``None``) yields the curated default (``post_e2e_evidence`` —
+    the user's own E2E evidence posts auto-proceed); an explicit list (even
+    empty) is honoured verbatim so a user can re-gate evidence under a blocking
+    mode. Non-list scalars degrade to the default rather than raising. FILE-tier
+    parser (used only by ``load_config``); the override tier (per-overlay / DB)
+    uses the strict ``_parse_str_list``.
+    """
+    if not isinstance(raw, list):
+        return list(_DEFAULT_ON_BEHALF_AUTO_ACTIONS)
+    return [str(s) for s in raw]
+
+
 def _parse_env_bool(raw: str) -> bool:
     """Coerce a ``T3_*`` env-var string to a bool for ``ENV_SETTING_OVERRIDES``.
 
@@ -75,6 +93,16 @@ def _parse_env_bool(raw: str) -> bool:
     explicit enable reads as off.
     """
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_env_str_list(raw: str) -> list[str]:
+    """Coerce a ``T3_*`` comma-separated env string to ``list[str]`` for the env tier.
+
+    Splits on commas and trims each token; an empty string (or a string of only
+    separators/whitespace) yields ``[]`` — so ``T3_ON_BEHALF_AUTO_ACTIONS=""``
+    clears the allowlist rather than reading as one empty action.
+    """
+    return [token for token in (part.strip() for part in raw.split(",")) if token]
 
 
 def _parse_strict_bool(raw: object) -> bool:
@@ -206,6 +234,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
+    "on_behalf_auto_actions": _parse_str_list,
     "notify_user_via_bot": _parse_strict_bool,
     "notify_on_post_on_behalf": _parse_strict_bool,
     "user_identity_aliases": _parse_user_identity_aliases,
@@ -279,6 +308,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_SPEED": ("speed", Speed.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
+    "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
@@ -391,6 +421,15 @@ class UserSettings:
     # the mode as ``ASK`` (true) / ``IMMEDIATE`` (false). The default
     # when neither is set is ``DRAFT_OR_ASK``.
     on_behalf_post_mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK
+    # Carve-out from the on-behalf pre-gate: actions in this allowlist resolve
+    # to PROCEED even under ASK / DRAFT_OR_ASK, because they are the user's
+    # routine self-documentation on their OWN ticket (E2E evidence), not a
+    # colleague-facing voice that needs the user's per-post approval. Default
+    # includes ``post_e2e_evidence`` so the user never has to approve their own
+    # evidence posts; clear the list (``on_behalf_auto_actions = []``) to
+    # re-gate evidence under a blocking mode. Per-overlay overridable; env
+    # ``T3_ON_BEHALF_AUTO_ACTIONS`` (comma-separated) wins over both.
+    on_behalf_auto_actions: list[str] = field(default_factory=lambda: ["post_e2e_evidence"])
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
