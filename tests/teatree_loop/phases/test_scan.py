@@ -1,5 +1,6 @@
 """Tests for ``teatree.loop.phases.scan`` — the parallel read-then-signal stage."""
 
+import time
 from dataclasses import dataclass
 
 from teatree.loop.job_identity import _ScannerJob
@@ -58,3 +59,50 @@ def test_scan_phase_on_empty_jobs_returns_empty_outcome() -> None:
     outcome = scan_phase([])
     assert outcome.signals == []
     assert outcome.errors == {}
+
+
+@dataclass(slots=True)
+class _HungScanner:
+    name: str = "hung"
+
+    def scan(self) -> list[ScanSignal]:
+        # Sleep far longer than the test timeout; the pool must interrupt it.
+        time.sleep(60)
+        return []  # pragma: no cover — never reached under timeout
+
+
+def test_scan_phase_times_out_hung_scanner_and_records_error() -> None:
+    """A hung scanner is interrupted after per_job_timeout and its error is recorded (fix #4)."""
+    jobs = [
+        _ScannerJob(scanner=_HungScanner(), overlay=""),
+        _ScannerJob(scanner=_FixedScanner(name="ok", out=[ScanSignal(kind="my_pr.open", summary="x")]), overlay=""),
+    ]
+    outcome = scan_phase(jobs, per_job_timeout=0.1)
+    # The ok scanner's signal is present
+    assert any(s.summary == "x" for s in outcome.signals)
+    # The hung scanner's error is recorded
+    assert "hung" in outcome.errors
+    assert "timeout" in outcome.errors["hung"].lower() or "timed" in outcome.errors["hung"].lower()
+
+
+def test_scan_phase_worker_pool_is_bounded() -> None:
+    """Pool size is capped even when many jobs are present."""
+    import os  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
+
+    max_seen: list[int] = []
+
+    def _capped_tpe(*, max_workers: int | None = None, **kwargs: object) -> ThreadPoolExecutor:
+        max_seen.append(max_workers or 0)
+        return ThreadPoolExecutor(max_workers=max_workers, **kwargs)  # type: ignore[arg-type]
+
+    jobs = [_ScannerJob(scanner=_FixedScanner(name=f"s{i}", out=[]), overlay="") for i in range(200)]
+    cpu = os.cpu_count() or 4
+    expected_cap = min(200, cpu * 4)
+
+    with patch("teatree.loop.phases.scan.ThreadPoolExecutor", side_effect=_capped_tpe):
+        scan_phase(jobs)
+
+    assert max_seen, "ThreadPoolExecutor was not called"
+    assert max_seen[0] <= expected_cap

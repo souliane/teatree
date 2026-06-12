@@ -17,6 +17,6 @@ if TYPE_CHECKING:
 
 
 def act_phase(report: "TickReport") -> None:
-    report.actions = dispatch(report.signals)
+    report.actions = dispatch(report.signals, errors=report.errors)
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
