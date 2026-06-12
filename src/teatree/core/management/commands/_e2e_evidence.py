@@ -12,11 +12,13 @@ deployed-environment proof belongs to the issue the work closes and stays
 attached after the MR merges.
 """
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.evidence_validation import EvidenceImageValidationError, validate_evidence_images
 from teatree.core.management.commands._e2e_evidence_render import (
     EvidenceManifest,
     EvidenceState,
@@ -67,6 +69,8 @@ __all__ = [
 ]
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
+
+_log = logging.getLogger(__name__)
 
 
 class EvidenceResolutionError(EvidenceValidationError):
@@ -147,12 +151,20 @@ class EvidencePost:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceFlags:
-    """The raw CLI flags for ``e2e post-evidence``, before validation."""
+    """The raw CLI flags for ``e2e post-evidence``, before validation.
+
+    ``manifest_dir`` is the directory the manifest file was read from (empty when
+    the manifest was an inline string): relative artifact paths resolve against
+    it. ``skip_validation`` is the user-authorised bypass of the image preflight
+    (red-box / duplicate gates) — the agent never sets it on its own.
+    """
 
     ticket: str = ""
     manifest: str = ""
     title: str = ""
     mrs: tuple[str, ...] = field(default_factory=tuple)
+    manifest_dir: str = ""
+    skip_validation: bool = False
 
 
 def _resolve_worktree_or_none() -> Worktree | None:
@@ -163,24 +175,29 @@ def _resolve_worktree_or_none() -> Worktree | None:
         return None
 
 
-def _resolve_ticket(ticket: str, worktree: Worktree | None) -> Ticket:
-    """Resolve the Ticket the evidence posts on, from ``--ticket`` or the worktree.
+def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: str = "") -> Ticket:
+    """Resolve the Ticket the evidence posts on, from ``--ticket``, the worktree, or the manifest.
 
-    ``--ticket`` (a pk, issue number, or full issue URL) wins; otherwise the
-    resolved worktree's ticket supplies it. Raises
-    :class:`EvidenceResolutionError` when neither resolves to a ticket carrying
-    an ``issue_url``.
+    Precedence: ``--ticket`` (a pk, issue number, or full issue URL) wins; then
+    the resolved worktree's ticket; then the manifest's own top-level ``ticket``
+    field (so a manifest that names its ticket needs no ``--ticket`` flag). Raises
+    :class:`EvidenceResolutionError` when none resolves to a ticket carrying an
+    ``issue_url``.
     """
-    if ticket:
+    ref = ticket or (manifest_ticket if worktree is None or worktree.ticket is None else "")
+    if ref:
         try:
-            resolved = Ticket.objects.resolve(ticket)
+            resolved = Ticket.objects.resolve(ref)
         except Ticket.DoesNotExist:
-            msg = f"No ticket matching {ticket!r} (looked up by pk and issue_url)."
+            msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)."
             raise EvidenceResolutionError(msg) from None
     elif worktree is not None and worktree.ticket is not None:
         resolved = worktree.ticket
     else:
-        msg = "Could not determine the ticket: pass --ticket <pk|number|url> or run from inside a worktree."
+        msg = (
+            "Could not determine the ticket: pass --ticket <pk|number|url>, "
+            "set a top-level 'ticket' in the manifest, or run from inside a worktree."
+        )
         raise EvidenceResolutionError(msg)
     if not resolved.issue_url:
         msg = f"Ticket {resolved} has no issue_url to post evidence on."
@@ -188,20 +205,50 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None) -> Ticket:
     return resolved
 
 
+def _manifest_image_paths(manifest: EvidenceManifest) -> list[Path]:
+    """Every screenshot path the manifest references, across both sides + all workflows."""
+    return [
+        Path(image) for side in (manifest.dev, manifest.local) for wf in side.workflows.values() for image in wf.images
+    ]
+
+
+def _preflight_images(manifest: EvidenceManifest, *, skip: bool) -> None:
+    """Run the deterministic image preflight; re-raise a hard failure for the single catch arm.
+
+    Refuses (fail-loud) on a missing red box or a byte-identical duplicate by
+    re-raising the :class:`EvidenceImageValidationError` as an
+    :class:`EvidenceValidationError` so the command's existing single
+    ``except EvidenceValidationError`` arm exits non-zero before any upload.
+    Staleness warnings never refuse — they are logged loudly and the post
+    proceeds. ``skip`` is the user-authorised bypass (runs nothing dangerous).
+    """
+    try:
+        warnings = validate_evidence_images(_manifest_image_paths(manifest), skip=skip)
+    except EvidenceImageValidationError as exc:
+        raise EvidenceValidationError(str(exc)) from exc
+    for warning in warnings:
+        _log.warning(warning)
+
+
 def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
     """Run every validator in order and return a fully-validated :class:`EvidencePost`.
 
-    Order: manifest parse + per-file existence/media-kind → ticket resolvable.
-    Any failure raises :class:`EvidenceValidationError` (or its
+    Order: manifest parse + per-file existence/media-kind → image preflight
+    (red-box / duplicate / staleness) → ticket resolvable. Any hard failure
+    raises :class:`EvidenceValidationError` (or its
     :class:`EvidenceResolutionError` subclass) so the caller exits non-zero
-    before any host side effect. The marker id is the resolved ticket number;
-    the title falls back to the issue URL. ``--mrs`` supplements the manifest's
-    MRs. The artifact-upload project is NOT decided here — it is resolved from
-    ``issue_url`` at post time (see :class:`EvidencePost`).
+    before any host side effect. Relative artifact paths resolve against
+    ``flags.manifest_dir``; ``--ticket`` falls back to the manifest's ``ticket``
+    field. The marker id is the resolved ticket number; the title falls back to
+    the issue URL. ``--mrs`` supplements the manifest's MRs. The artifact-upload
+    project is NOT decided here — it is resolved from ``issue_url`` at post time
+    (see :class:`EvidencePost`).
     """
     worktree = _resolve_worktree_or_none()
-    manifest = parse_manifest(flags.manifest)
-    ticket = _resolve_ticket(flags.ticket, worktree)
+    base_dir = Path(flags.manifest_dir) if flags.manifest_dir else None
+    manifest = parse_manifest(flags.manifest, base_dir=base_dir)
+    _preflight_images(manifest, skip=flags.skip_validation)
+    ticket = _resolve_ticket(flags.ticket, worktree, manifest_ticket=manifest.ticket)
     issue_url = str(ticket.issue_url)
 
     mrs = manifest.mrs or _normalize_mrs(list(flags.mrs))

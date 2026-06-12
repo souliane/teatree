@@ -504,6 +504,10 @@ class Command(TyperCommand):
             "--mrs",
             help="MR/PR URL(s) the evidence covers (repeat or comma-separate). Supplements the manifest's 'mrs'.",
         ),
+        skip_validation: bool = typer.Option(
+            default=False,
+            help="User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use.",
+        ),
     ) -> _evidence.PostEvidenceResult:
         """Post (or update) the ticket's single E2E evidence note from a manifest.
 
@@ -516,23 +520,27 @@ class Command(TyperCommand):
         updates the Dev column and the deployed-commits/gap line while freezing
         the Local column, and vice versa.
 
-        ``--manifest`` is a path to (or inline string of) the JSON describing
-        the ticket, MRs, per-env commits, dev gap, and per-workflow ``dev``/
-        ``local`` captures. ``--ticket`` (pk / number / URL) selects the issue
-        to post on (auto-detected from the worktree when omitted); ``--title``
-        overrides the heading. See :mod:`._e2e_evidence` for the manifest shape.
+        ``--manifest`` is a path to (or inline string of) the JSON describing the
+        ticket, MRs, per-env commits, dev gap, and per-workflow captures; relative
+        artifact paths resolve against the manifest file's directory. ``--ticket``
+        (pk / number / URL) selects the issue (auto-detected from the worktree, or
+        the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
+        heading. ``--skip-validation`` is the user-authorised bypass of the
+        red-box / duplicate image preflight. See :mod:`._e2e_evidence`.
         """
         host = code_host_from_overlay()
         if host is None:
             self.stderr.write("No code host configured (check overlay GitLab/GitHub token).")
             raise SystemExit(1)
 
-        manifest_json = self._read_manifest(manifest)
+        manifest_json, manifest_dir = self._read_manifest(manifest)
         flags = _evidence.EvidenceFlags(
             ticket=ticket,
             manifest=manifest_json,
             title=title,
             mrs=tuple(mrs or ()),
+            manifest_dir=manifest_dir,
+            skip_validation=skip_validation,
         )
         try:
             post = _evidence.build_validated_post(flags)
@@ -546,18 +554,16 @@ class Command(TyperCommand):
         )
         return result
 
-    def _read_manifest(self, manifest: str) -> str:
-        """Return the manifest JSON text — read a path when one exists, else the literal.
+    def _read_manifest(self, manifest: str) -> tuple[str, str]:
+        """Return ``(manifest JSON text, base_dir)`` — a path read with its parent as base dir.
 
-        ``--manifest`` is required; an empty value exits non-zero. When the
-        value names an existing file the file is read, otherwise the value is
-        treated as an inline JSON string (validated downstream by
-        :func:`._e2e_evidence.parse_manifest`).
+        A non-path value is an inline JSON string with an empty base dir; an
+        empty ``--manifest`` exits non-zero.
         """
         if not manifest.strip():
             self.stderr.write("--manifest is required (a path to, or inline string of, the evidence manifest JSON).")
             raise SystemExit(1)
         path = Path(manifest)
         if path.is_file():
-            return path.read_text(encoding="utf-8")
-        return manifest
+            return path.read_text(encoding="utf-8"), str(path.resolve().parent)
+        return manifest, ""
