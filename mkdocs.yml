@@ -58,7 +58,7 @@ nav:
       - Overview: index.md
       - Installation: install.md
   - User Guide:
-      - Management Commands: management-commands.md
+      - Management Commands: generated/management-commands.md
       - Skill Triggers: skill-triggers.md
       - Security: security.md
       - Claude Code Internals: claude-code-internals.md
