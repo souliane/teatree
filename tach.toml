@@ -1,3 +1,24 @@
+# Module-boundary notes for two review findings (kept here as a file header so
+# toml-sort does not relocate them away from their tables):
+#
+# Finding #2 -- teatree.project must stay a foundation LEAF. It is re-exported
+# from teatree.__init__ as part of the overlay API (find_project_root), so an
+# overlay importing the overlay API pulls it in; it must never import back into
+# the rest of teatree. Its [[modules]] entry allows only the teatree.paths edge,
+# so tach rejects any new internal import. tests/quality/test_project_leaf.py
+# pins the same invariant at the AST level.
+#
+# Finding D7 -- the one cross-backend coupling (gitlab -> slack review-permalink
+# sync) is now a DECLARED edge instead of being hidden inside a single
+# teatree.backends node. teatree.backends is split into the aggregator parent
+# (loader / backend_provider / apps + noop/notion/sentry helpers), the concrete
+# backends (github / gitlab / slack), and the shared primitives
+# (errors / types / forge_merge_rpc). gitlab declares the slack edge; slack
+# stays a backend leaf (no outgoing sibling edge). Extracting the shared
+# primitives keeps the graph acyclic under forbid_circular_dependencies (else
+# gitlab/github <-> parent would cycle).
+# tests/quality/test_backends_explicit_coupling.py pins the explicit edge.
+
 interfaces = []
 forbid_circular_dependencies = true
 exclude = [
@@ -21,6 +42,11 @@ layers = [
 path = "teatree.paths"
 layer = "foundation"
 depends_on = []
+
+[[modules]]
+path = "teatree.project"
+layer = "foundation"
+depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.types"
@@ -95,7 +121,7 @@ depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 [[modules]]
 path = "teatree.skill_support"
 layer = "platform"
-depends_on = ["teatree.types", "teatree.utils"]
+depends_on = ["teatree.types", "teatree.utils", "teatree.project"]
 
 [[modules]]
 path = "teatree.core"
@@ -103,6 +129,7 @@ layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.paths",
+  "teatree.project",
   "teatree.config",
   "teatree.utils",
   "teatree.timeouts",
@@ -132,7 +159,64 @@ depends_on = [
   "teatree.types",
   "teatree.utils",
   "teatree.core",
-  "teatree.identity"
+  "teatree.identity",
+  "teatree.backends.errors",
+  "teatree.backends.types",
+  "teatree.backends.forge_merge_rpc",
+  "teatree.backends.github",
+  "teatree.backends.gitlab",
+  "teatree.backends.slack"
+]
+
+[[modules]]
+path = "teatree.backends.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends.types"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.backends.forge_merge_rpc"
+layer = "domain"
+depends_on = ["teatree.types", "teatree.utils", "teatree.core"]
+
+[[modules]]
+path = "teatree.backends.slack"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.identity",
+  "teatree.url_classify"
+]
+
+[[modules]]
+path = "teatree.backends.gitlab"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.backends.errors",
+  "teatree.backends.types",
+  "teatree.backends.forge_merge_rpc",
+  "teatree.backends.slack"
+]
+
+[[modules]]
+path = "teatree.backends.github"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.utils",
+  "teatree.core",
+  "teatree.backends.errors",
+  "teatree.backends.types",
+  "teatree.backends.forge_merge_rpc"
 ]
 
 [[modules]]
@@ -145,11 +229,14 @@ path = "teatree.cli"
 layer = "interface"
 depends_on = [
   "teatree.paths",
+  "teatree.project",
   "teatree.config",
   "teatree.config_agent",
   "teatree.core",
   "teatree.agents",
   "teatree.backends",
+  "teatree.backends.gitlab",
+  "teatree.backends.slack",
   "teatree.eval",
   "teatree.skill_support",
   "teatree.claude_sessions",
@@ -224,6 +311,9 @@ depends_on = [
   "teatree.config",
   "teatree.core",
   "teatree.backends",
+  "teatree.backends.github",
+  "teatree.backends.gitlab",
+  "teatree.backends.slack",
   "teatree.notify",
   "teatree.messaging",
   "teatree.loop_enabled"
