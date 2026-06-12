@@ -76,50 +76,55 @@ def _config(tmp_path: Path, *, brands: list[str], banned_terms: list[str] | None
     return cfg
 
 
-class TestBuildBrandPattern:
-    def test_empty_terms_returns_none(self) -> None:
-        assert banned_terms_tree_scan.build_brand_pattern(()) is None
+class TestScanTextSharedMatcher:
+    r"""The brand pass routes through the shared ``term_match`` matcher (fix #1).
+
+    ``scan_text`` now takes the term tuple directly (no private regex) and
+    matches whole tokens with ``-``/``_``/whitespace/camelCase separators,
+    so a brand glued into an identifier — and a camelCase one the old
+    ``\b`` regex missed — is caught while a substring is not.
+    """
+
+    def test_empty_terms_is_clean(self) -> None:
+        assert banned_terms_tree_scan.scan_text(f"a {SYNTH_BRAND} line", ()) == []
 
     def test_underscore_joined_prefix_is_matched(self) -> None:
         # The exact shape the \b matcher misses: a _ precedes the brand.
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        assert pattern.search(f"wt_777_{SYNTH_BRAND}") is not None
+        hits = banned_terms_tree_scan.scan_text(f"wt_777_{SYNTH_BRAND}", (SYNTH_BRAND,))
+        assert [h[1].lower() for h in hits] == [SYNTH_BRAND]
 
     def test_underscore_joined_suffix_is_matched(self) -> None:
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        assert pattern.search(f"{SYNTH_BRAND}_777") is not None
+        hits = banned_terms_tree_scan.scan_text(f"{SYNTH_BRAND}_777", (SYNTH_BRAND,))
+        assert [h[1].lower() for h in hits] == [SYNTH_BRAND]
 
     def test_plain_word_boundary_still_matches(self) -> None:
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        assert pattern.search(f"ship to {SYNTH_BRAND} today") is not None
+        hits = banned_terms_tree_scan.scan_text(f"ship to {SYNTH_BRAND} today", (SYNTH_BRAND,))
+        assert [h[1].lower() for h in hits] == [SYNTH_BRAND]
+
+    def test_camelcase_identifier_is_matched(self) -> None:
+        # The shared matcher splits camelCase — the old \b regex did NOT, so
+        # this is the parity gap fix #1 closes.
+        camel = SYNTH_BRAND.capitalize() + "Config"
+        hits = banned_terms_tree_scan.scan_text(f"value = {camel}", (SYNTH_BRAND,))
+        assert [h[1].lower() for h in hits] == [SYNTH_BRAND]
 
     def test_substring_inside_a_larger_word_is_not_matched(self) -> None:
-        # The brand must still be a token, not an arbitrary substring: a
-        # letter glued directly to it (no joiner, no boundary) is NOT a hit.
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        assert pattern.search(f"x{SYNTH_BRAND}y") is None
+        # The brand must still be a whole token, not an arbitrary substring: a
+        # letter glued directly to it (no separator, no case boundary) is NOT a hit.
+        assert banned_terms_tree_scan.scan_text(f"x{SYNTH_BRAND}y", (SYNTH_BRAND,)) == []
 
     def test_match_is_case_insensitive(self) -> None:
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        assert pattern.search(SYNTH_BRAND.upper()) is not None
+        hits = banned_terms_tree_scan.scan_text(SYNTH_BRAND.upper(), (SYNTH_BRAND,))
+        assert len(hits) == 1
 
 
 class TestScanTextEmailCarveOut:
     def test_brand_only_inside_email_is_allowed(self) -> None:
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        hits = banned_terms_tree_scan.scan_text(f"ping dev@{SYNTH_BRAND}.com please", pattern)
+        hits = banned_terms_tree_scan.scan_text(f"ping dev@{SYNTH_BRAND}.com please", (SYNTH_BRAND,))
         assert hits == []
 
     def test_brand_outside_email_on_same_line_is_flagged(self) -> None:
-        pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-        assert pattern is not None
-        hits = banned_terms_tree_scan.scan_text(f"{SYNTH_BRAND} ships; mail dev@{SYNTH_BRAND}.com", pattern)
+        hits = banned_terms_tree_scan.scan_text(f"{SYNTH_BRAND} ships; mail dev@{SYNTH_BRAND}.com", (SYNTH_BRAND,))
         assert len(hits) == 1
         assert hits[0][0] == 1
 
@@ -174,6 +179,60 @@ class TestScanTree:
         _git(repo, "add", "-A")
         _git(repo, "commit", "-m", "seed")
         assert banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,)) == []
+
+
+class TestScanTreeReadsCommittedBlob:
+    """Fix #5: the scan reads the COMMITTED blob, not the working tree.
+
+    A staged/working-tree edit that removes a brand from the file but
+    leaves it in the last commit must NOT hide the committed leak from the
+    backstop — the whole point of a *committed*-content backstop. So the
+    scan reads ``git show HEAD:<path>`` and only falls back to the working
+    tree for a not-yet-committed file.
+    """
+
+    def test_working_tree_edit_does_not_hide_committed_brand(self, tmp_path: Path) -> None:
+        # Commit a brand, then scrub it from the WORKING TREE only (no new
+        # commit). The committed blob still carries the brand, so the scan
+        # still catches it — a working-tree-only edit cannot launder it.
+        repo = _repo_with(tmp_path, "src/app.py", f"BRAND = '{SYNTH_BRAND}'\n")
+        (repo / "src/app.py").write_text("BRAND = 'generic'\n", encoding="utf-8")
+        findings = banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,))
+        assert len(findings) == 1
+        assert findings[0].path == "src/app.py"
+        assert findings[0].term.lower() == SYNTH_BRAND
+
+    def test_staged_only_clean_edit_does_not_hide_committed_brand(self, tmp_path: Path) -> None:
+        # Same defect via the staging area: stage a clean version but never
+        # commit it. The HEAD blob still leaks, so the scan still flags it.
+        repo = _repo_with(tmp_path, "src/app.py", f"BRAND = '{SYNTH_BRAND}'\n")
+        (repo / "src/app.py").write_text("BRAND = 'generic'\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        findings = banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,))
+        assert [f.path for f in findings] == ["src/app.py"]
+
+    def test_working_tree_brand_absent_from_commit_is_caught_via_fallback(self, tmp_path: Path) -> None:
+        # The complement: a freshly-added, NOT-yet-committed tracked file has
+        # no HEAD blob, so the scan falls back to the working-tree content and
+        # still catches a brand introduced there.
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        (repo / "src/new.py").write_text(f"BRAND = '{SYNTH_BRAND}'\n", encoding="utf-8")
+        _git(repo, "add", "src/new.py")  # tracked (staged) but not committed
+        findings = banned_terms_tree_scan.scan_tree(repo, (SYNTH_BRAND,))
+        assert [f.path for f in findings] == ["src/new.py"]
+
+    def test_committed_blob_text_returns_head_content(self, tmp_path: Path) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", f"BRAND = '{SYNTH_BRAND}'\n")
+        (repo / "src/app.py").write_text("BRAND = 'generic'\n", encoding="utf-8")
+        blob = banned_terms_tree_scan.committed_blob_text(repo, "src/app.py")
+        assert blob is not None
+        assert SYNTH_BRAND in blob
+
+    def test_committed_blob_text_is_none_for_uncommitted_path(self, tmp_path: Path) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        (repo / "src/new.py").write_text("x = 1\n", encoding="utf-8")
+        _git(repo, "add", "src/new.py")
+        assert banned_terms_tree_scan.committed_blob_text(repo, "src/new.py") is None
 
 
 class TestLoadBrandTerms:
@@ -484,6 +543,5 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
 
 @pytest.mark.parametrize("joined", ["wt_777_{b}", "{b}_777", "a_{b}_z"])
 def test_all_underscore_shapes_are_caught(joined: str) -> None:
-    pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
-    assert pattern is not None
-    assert pattern.search(joined.format(b=SYNTH_BRAND)) is not None
+    hits = banned_terms_tree_scan.scan_text(joined.format(b=SYNTH_BRAND), (SYNTH_BRAND,))
+    assert [h[1].lower() for h in hits] == [SYNTH_BRAND]

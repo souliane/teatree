@@ -114,6 +114,44 @@ def line_matches(line: str, terms: tuple[str, ...]) -> bool:
     return matched_term(line, terms) is not None
 
 
+def _token_spans(text: str) -> list[tuple[str, int, int]]:
+    """Tokenize *text* keeping each token's ``(token, start, end)`` span.
+
+    CamelCase/acronym boundaries are split the same way :func:`tokens` does
+    (a separator is inserted at each boundary), so the returned offsets are
+    into the camelCase-SPLIT text, not the original. Callers use the offset
+    only as an informational position, so the split-text offset is fine.
+    """
+    split = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
+    split = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", split).lower()
+    return [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(split)]
+
+
+def iter_term_matches(text: str, term: str) -> list[tuple[str, int]]:
+    """Every whole-token occurrence of *term* in *text* as ``(matched, position)``.
+
+    A single-token *term* yields one entry per matching token; a multi-token
+    *term* yields one entry per contiguous run (the glued-token fallback is
+    not position-tracked — a glued single token still yields its own span).
+    *position* is an informational offset into the camelCase-split text.
+    """
+    term_tokens = tokens(term)
+    if not term_tokens:
+        return []
+    spans = _token_spans(text)
+    matches: list[tuple[str, int]] = []
+    span = len(term_tokens)
+    for i in range(len(spans) - span + 1):
+        window = spans[i : i + span]
+        if [w[0] for w in window] == term_tokens:
+            matched = "".join(w[0] for w in window)
+            matches.append((matched, window[0][1]))
+    if span > 1:
+        glued = "".join(term_tokens)
+        matches.extend((tok, start) for tok, start, _ in spans if tok == glued)
+    return matches
+
+
 def strip_emails(text: str) -> str:
     """Blank every email address in *text* (the author/contact email carve-out).
 
