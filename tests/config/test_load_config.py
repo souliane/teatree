@@ -316,6 +316,28 @@ class TestIssueImplementerSettings:
         assert get_effective_settings().issue_implementer_enabled is True
 
 
+class TestDedicatedLoopsSetting:
+    """Config surface for the default-OFF dedicated-loop slot toggle (#1838)."""
+
+    def test_default_is_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        assert load_config(cfg).user.dedicated_loops is False
+
+    def test_global_toml_is_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A global-only ``dedicated_loops = true`` must reach ``UserSettings``.
+
+        Guards the loader: without an explicit field read, a global-only
+        toggle would silently default OFF — the per-overlay ``replace`` path
+        only covers ``[overlays.<name>]`` tables, not the global base.
+        """
+        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\ndedicated_loops = true\n", encoding="utf-8")
+        assert load_config(cfg).user.dedicated_loops is True
+
+
 class TestOrchestrateClaimEnabledSetting:
     """Config surface for the opt-in, default-OFF orchestrate-phase claim arm (#1796).
 

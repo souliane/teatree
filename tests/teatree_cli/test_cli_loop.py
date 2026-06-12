@@ -158,6 +158,73 @@ class TestStartCommand:
         assert "t3 loop claim-next" in argv[1]
 
 
+class TestDedicatedLoopSlots:
+    """`t3 loop start --print-slots` — the dedicated-loop slot generator (#1838).
+
+    Toggle OFF (default) ⇒ the single fat slot (byte-identical to today).
+    Toggle ON ⇒ N dedicated slots, one per dedicated loop, each driving a
+    scoped `t3 loop tick --slot <name>` at the group's cadence.
+    """
+
+    def test_print_slots_off_emits_single_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
+        result = runner.invoke(loop_app, ["start", "--print-slots"])
+
+        assert result.exit_code == 0
+        # Exactly one `/loop` slot line, the fat one.
+        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
+        assert len(slot_lines) == 1
+        assert "t3 loop tick" in slot_lines[0]
+        assert "--slot" not in slot_lines[0]
+        # No dedicated group's scoped tick is emitted in fat mode.
+        for dl in DEDICATED_LOOPS:
+            assert f"--slot {dl.name}" not in result.stdout
+
+    def test_print_slots_on_emits_one_slot_per_dedicated_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
+        result = runner.invoke(loop_app, ["start", "--print-slots"])
+
+        assert result.exit_code == 0
+        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
+        assert len(slot_lines) == len(DEDICATED_LOOPS)
+        # Every dedicated loop has its own scoped-tick slot.
+        for dl in DEDICATED_LOOPS:
+            assert f"t3 loop tick --slot {dl.name}" in result.stdout
+
+    def test_print_slots_on_uses_each_group_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.loops.dedicated import dedicated_loop_by_name  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
+        result = runner.invoke(loop_app, ["start", "--print-slots"])
+
+        assert result.exit_code == 0
+        # dispatch=300s → "5m", inbox=60s → "1m", housekeeping=3600s → "1h".
+        assert "/loop 5m Run `t3 loop tick --slot dispatch`" in result.stdout
+        assert "/loop 1m Run `t3 loop tick --slot inbox`" in result.stdout
+        assert "/loop 1h Run `t3 loop tick --slot housekeeping`" in result.stdout
+        # The 600s followup group renders as "10m".
+        followup = dedicated_loop_by_name("followup")
+        assert followup is not None
+        assert followup.cadence_seconds == 600
+        assert "/loop 10m Run `t3 loop tick --slot followup`" in result.stdout
+
+    def test_print_slots_default_off_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
+        with patch("teatree.config.resolution.get_effective_settings") as settings_mock:
+            settings_mock.return_value.dedicated_loops = False
+            settings_mock.return_value.loop_cadence_seconds = 720
+            result = runner.invoke(loop_app, ["start", "--print-slots"])
+
+        assert result.exit_code == 0
+        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
+        assert len(slot_lines) == 1
+        assert "--slot" not in result.stdout
+
+
 class TestStartCommandSessionPins:
     """`t3 loop start` injects the session model/effort pins into the interactive spawn.
 

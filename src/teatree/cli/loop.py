@@ -161,6 +161,15 @@ def spawn_claim_command(
     call_command("loop_dispatch", "spawn-claim", str(task_id), claimed_by=claimed_by)
 
 
+def _format_loop_duration(seconds: int) -> str:
+    """Format a cadence in seconds as a ``/loop <duration>`` argument."""
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
 def _cadence_for_loop_slot() -> str:
     """Return the ``/loop <duration>`` argument.
 
@@ -168,10 +177,79 @@ def _cadence_for_loop_slot() -> str:
     env first, then ``~/.teatree.toml`` ``loop_cadence_seconds`` (per-overlay
     override, then global ``[teatree]``), then the 720 default.
     """
-    seconds = cadence_seconds()
-    if seconds % 60 == 0:
-        return f"{seconds // 60}m"
-    return f"{seconds}s"
+    return _format_loop_duration(cadence_seconds())
+
+
+def _dedicated_loops_enabled() -> bool:
+    """Whether the dedicated-loop slot generator is enabled (#1838, default OFF).
+
+    Resolved through :func:`teatree.config.resolution.get_effective_settings`,
+    so the layers — ``T3_DEDICATED_LOOPS`` env, the per-overlay
+    ``[overlays.<name>]`` override, the global ``[teatree]`` value, then the
+    ``False`` default — are honoured. Fail OFF: any resolution failure leaves
+    the single fat slot in place (byte-identical to today).
+    """
+    from teatree.config.resolution import get_effective_settings  # noqa: PLC0415
+
+    return bool(get_effective_settings().dedicated_loops)
+
+
+def _fat_loop_slot() -> str:
+    """The single fat ``/loop <cadence> Run `t3 loop tick`…`` slot definition."""
+    return (
+        f"/loop {_cadence_for_loop_slot()} Run `t3 loop tick`, then repeatedly run `t3 loop claim-next"
+        " --json` until it returns nothing. Each call atomically claims ONE pending"
+        " unit (#786 WS1 — no separate post-spawn claim step, no double-dispatch);"
+        " for the returned entry call the Agent tool with subagent_type=entry.subagent,"
+        " model=entry.model (omit to inherit the default tier), description=entry.execution_reason,"
+        " and a prompt that includes entry.issue_url and instructs the sub-agent to load the"
+        " skills in entry.skill_bundle first. When entry.fanout_directive is non-empty, append"
+        " it verbatim to that prompt (it directs the sub-agent to fan its work out — e.g."
+        " adversarial-verify on review, judge-panel on planning); when it is empty, append"
+        " nothing. When the sub-agent returns, record its JSON result"
+        " envelope back with `t3 <overlay> tasks record-attempt entry.task_id '<result-json>'`"
+        " so the task completes and the ticket advances. Subscription-covered: never `claude -p`."
+    )
+
+
+def _dedicated_loop_slots() -> list[str]:
+    """One scoped-tick ``/loop`` slot per dedicated loop (#1838).
+
+    Each dedicated loop (a named group of mini-loops) gets its own
+    ``/loop <cadence> Run `t3 loop tick --slot <name>`…`` slot driving a
+    SCOPED tick that claims ``loop:<name>`` and dispatches only that group's
+    members — splitting the single fat loop into N independently-owned loops.
+    """
+    from teatree.loops.dedicated import iter_dedicated_loops  # noqa: PLC0415
+
+    slots: list[str] = []
+    for dl in iter_dedicated_loops():
+        cadence = _format_loop_duration(dl.cadence_seconds)
+        slots.append(
+            f"/loop {cadence} Run `t3 loop tick --slot {dl.name}`, then repeatedly run `t3 loop"
+            " claim-next --json` until it returns nothing. Each call atomically claims ONE pending"
+            " unit; for the returned entry call the Agent tool with subagent_type=entry.subagent,"
+            " model=entry.model (omit to inherit the default tier), description=entry.execution_reason,"
+            " and a prompt that includes entry.issue_url and instructs the sub-agent to load the"
+            " skills in entry.skill_bundle first. When entry.fanout_directive is non-empty, append it"
+            " verbatim. When the sub-agent returns, record its JSON result envelope with"
+            " `t3 <overlay> tasks record-attempt entry.task_id '<result-json>'`."
+            " Subscription-covered: never `claude -p`."
+        )
+    return slots
+
+
+def loop_slots() -> list[str]:
+    """The ``/loop`` slot definition(s) to register for this deployment.
+
+    Returns the single fat slot when ``dedicated_loops`` is OFF (default —
+    byte-identical to today), or the N dedicated scoped-tick slots when ON.
+    The two are mutually-exclusive deployment modes: in dedicated mode the
+    fat slot is NOT emitted, and vice-versa.
+    """
+    if _dedicated_loops_enabled():
+        return _dedicated_loop_slots()
+    return [_fat_loop_slot()]
 
 
 def _stdin_is_terminal() -> bool:
@@ -187,14 +265,31 @@ def start_command(
         "--print-only",
         help="Print the /loop slot definition instead of spawning a Claude Code session.",
     ),
+    print_slots: bool = typer.Option(
+        False,
+        "--print-slots",
+        help=(
+            "Print the resolved /loop slot definition(s) and exit, without spawning. "
+            "One fat slot when `dedicated_loops` is off (default); N dedicated scoped-tick "
+            "slots when on. Inspect the slot generator without registering anything."
+        ),
+    ),
 ) -> None:
-    """Spawn a Claude Code session with the fat loop pre-registered.
+    """Spawn a Claude Code session with the loop pre-registered.
 
     Looks for ``claude`` on ``PATH`` and runs it with an initial
     ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
     before the user types anything. When ``claude`` is not available or
     the caller is already inside a Claude Code session, falls back to
     printing the slash command for manual entry.
+
+    Slot topology is governed by the default-off ``[loops] dedicated_loops``
+    toggle (#1838). OFF (default): the single fat ``loop-owner`` slot drives
+    one ``t3 loop tick`` fanning across ALL mini-loops — byte-identical to
+    today. ON: ``--print-slots`` (or the manual-paste fallback) emits N
+    dedicated ``/loop <cadence> Run `t3 loop tick --slot <name>``` slots, one
+    per dedicated loop, each scoped to its own ``loop:<name>`` owner. The two
+    are mutually-exclusive deployment modes.
 
     Durability (by design; #786 WS3): the loop is session-bound and
     tick-driven. The SessionStart hook records ONE Django-free tick-owner
@@ -211,23 +306,29 @@ def start_command(
     switches; absent that, the loop remains paused until the user reopens
     Claude Code.
     """
-    cadence = _cadence_for_loop_slot()
-    register_command = (
-        f"/loop {cadence} Run `t3 loop tick`, then repeatedly run `t3 loop claim-next"
-        " --json` until it returns nothing. Each call atomically claims ONE pending"
-        " unit (#786 WS1 — no separate post-spawn claim step, no double-dispatch);"
-        " for the returned entry call the Agent tool with subagent_type=entry.subagent,"
-        " model=entry.model (omit to inherit the default tier), description=entry.execution_reason,"
-        " and a prompt that includes entry.issue_url and instructs the sub-agent to load the"
-        " skills in entry.skill_bundle first. When entry.fanout_directive is non-empty, append"
-        " it verbatim to that prompt (it directs the sub-agent to fan its work out — e.g."
-        " adversarial-verify on review, judge-panel on planning); when it is empty, append"
-        " nothing. When the sub-agent returns, record its JSON result"
-        " envelope back with `t3 <overlay> tasks record-attempt entry.task_id '<result-json>'`"
-        " so the task completes and the ticket advances. Subscription-covered: never `claude -p`."
-    )
+    slots = loop_slots()
+
+    if print_slots:
+        typer.echo("Run these in your interactive Claude Code session to register the loop:")
+        for slot in slots:
+            typer.echo(f"    {slot}")
+        return
+
+    register_command = slots[0]
+    dedicated = len(slots) > 1
 
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():
+        if dedicated:
+            typer.echo("Dedicated-loop mode — run these in your interactive Claude Code session:")
+            for slot in slots:
+                typer.echo(f"    {slot}")
+            typer.echo("")
+            typer.echo(
+                "Each scoped slot claims its own `loop:<name>` owner and dispatches only that"
+                " dedicated loop's members. Toggle off with `dedicated_loops = false` in"
+                " `~/.teatree.toml` (or `T3_DEDICATED_LOOPS=0`) for the single fat slot."
+            )
+            return
         typer.echo("Run this in your interactive Claude Code session to register the loop:")
         typer.echo(f"    {register_command}")
         typer.echo("")
