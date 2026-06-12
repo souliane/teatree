@@ -87,29 +87,35 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         """Claim the lowest free Redis DB index for the ticket, atomically.
 
         Idempotent: returns the existing index if the ticket already has one.
-        Raises RedisSlotsExhaustedError when every slot is in use.
+        Raises RedisSlotsExhaustedError when every non-ghost slot is in use.
 
-        The claim is the contention boundary: ``redis_db_index`` carries a
-        unique constraint, so the bare read-taken-set → pick-lowest-free →
-        ``save()`` shape let two concurrent worktree provisions both read the
-        same taken-set, both pick the same free index, and the loser's
-        ``save()`` raise an uncaught ``IntegrityError`` (the #804/#786 RMW
-        class on the production SQLite backend, where ``select_for_update`` is
-        a no-op). This mirrors the ``claim_next_pending`` / ``LoopLease.acquire``
-        compare-and-swap doctrine in its caught-collision form: each candidate
-        slot is claimed inside its own ``transaction.atomic`` and the unique
-        constraint is the CAS token, so a colliding loser catches the
-        ``IntegrityError`` and reselects the next free slot instead of
-        crashing. Exactly one writer wins each slot.
+        Ghost reclaim: before raising, scans for tickets that have at least
+        one Worktree row where every row's ``worktree_path`` no longer exists
+        on disk. Ghost slots are cleared and the allocation is retried once;
+        a non-ghost slot (any Worktree with a live on-disk path) is never
+        reclaimed. Tickets with no Worktree rows are not treated as ghosts
+        (they may be mid-provision).
+
+        The CAS shape is unchanged: ``redis_db_index`` carries a unique
+        constraint, so the read-taken-set → pick-lowest-free → ``save()``
+        loop lets two concurrent provisions race, the loser's ``save()``
+        raises a caught ``IntegrityError``, and exactly one writer wins each
+        slot. SQLite ``IMMEDIATE`` transaction mode serialises the write
+        window; ``select_for_update`` is a documented no-op on SQLite (#804).
         """
         if ticket.redis_db_index is not None:
             return int(ticket.redis_db_index)
         count = load_config().user.redis_db_count
+        ghost_reclaim_attempted = False
         for _ in range(count):
             taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
             index = next((i for i in range(count) if i not in taken), None)
             if index is None:
-                break
+                if ghost_reclaim_attempted:
+                    break
+                ghost_reclaim_attempted = True
+                self._reclaim_ghost_slots(using=self.db)
+                continue
             try:
                 with transaction.atomic(using=self.db):
                     ticket.redis_db_index = index
@@ -120,6 +126,34 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             return index
         msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
         raise RedisSlotsExhaustedError(msg)
+
+    def _reclaim_ghost_slots(self, *, using: str = "default") -> int:
+        """Clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
+
+        A slot is a ghost when the ticket has at least one Worktree row and
+        every row either has no on-disk path recorded or has a path that no
+        longer exists as a directory. Tickets with no Worktree rows are not
+        reclaimed — they may be mid-provision (slot allocated, Worktree row
+        not yet written). Only the DB field is cleared; no Redis FLUSHDB is
+        issued (the worktrees are already gone so there is nothing to flush).
+        Returns the count of reclaimed slots.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        candidates = list(self.using(using).filter(redis_db_index__isnull=False).prefetch_related("worktrees"))
+        reclaimed = 0
+        for candidate in candidates:
+            worktrees = list(candidate.worktrees.all())
+            if not worktrees:
+                is_ghost = False
+            else:
+                is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
+            if is_ghost:
+                candidate.redis_db_index = None
+                candidate.save(update_fields=["redis_db_index"], using=using)
+                reclaimed += 1
+                logger.info("reclaimed ghost redis slot from ticket pk=%s", candidate.pk)
+        return reclaimed
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
