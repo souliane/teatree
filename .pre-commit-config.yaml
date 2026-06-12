@@ -208,6 +208,12 @@ repos:
         entry: uv run python scripts/hooks/generate_cli_reference.py
         pass_filenames: false
         files: ^src/teatree/cli/
+      - id: generate-management-commands-doc
+        name: Generate management-commands reference doc
+        language: system
+        entry: uv run python scripts/hooks/generate_management_commands_doc.py
+        pass_filenames: false
+        files: ^src/teatree/core/management/commands/
       - id: generate-antipattern-catalog
         name: Generate anti-pattern catalog doc
         language: system

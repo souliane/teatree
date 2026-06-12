@@ -1,0 +1,809 @@
+{
+  "commands": [
+    {
+      "help": "``t3 teatree availability`` group root.",
+      "name": "availability",
+      "subcommands": [
+        {
+          "help": "Force away-mode (deferred questions) until *until* \u2014 or forever",
+          "name": "away"
+        },
+        {
+          "help": "Force present-mode (interactive questions) until *until* \u2014 or forever",
+          "name": "present"
+        },
+        {
+          "help": "Clear the manual override; the cron schedule decides again",
+          "name": "auto"
+        },
+        {
+          "help": "Print the current resolved mode and which layer decided it",
+          "name": "show"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> checking`` group root.",
+      "name": "checking",
+      "subcommands": [
+        {
+          "help": "Print a terse, grouped, clickable report of changes since the last check",
+          "name": "show"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "config_setting",
+      "subcommands": [
+        {
+          "help": "Upsert the DB override row for *key* to the JSON-parsed *value*",
+          "name": "set"
+        },
+        {
+          "help": "Delete the DB override row for *key*; falls back to the file/env source",
+          "name": "clear"
+        },
+        {
+          "help": "List every DB config override row (read-only)",
+          "name": "list"
+        }
+      ]
+    },
+    {
+      "help": "Print cycle-to-date SDK-equivalent spend vs the monthly credit.",
+      "name": "cost",
+      "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "db",
+      "subcommands": [
+        {
+          "help": "Apply pending migrations to the runtime self-DB, non-destructively",
+          "name": "migrate"
+        },
+        {
+          "help": "Re-import the worktree database from DSLR snapshot or dump",
+          "name": "refresh"
+        },
+        {
+          "help": "Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126)",
+          "name": "approve"
+        },
+        {
+          "help": "Run a read-only SQL query against the control DB; emit rows as JSON",
+          "name": "query"
+        },
+        {
+          "help": "Drop into a Django shell against the resolved (gate) control DB",
+          "name": "shell"
+        },
+        {
+          "help": "Restore the worktree database from the latest CI dump",
+          "name": "restore-ci"
+        },
+        {
+          "help": "Reset all user passwords to a known dev value",
+          "name": "reset-passwords"
+        }
+      ]
+    },
+    {
+      "help": "Dogfood overlay smokes \u2014 exercise CLI paths so bugs surface in the loop, not in E2E.",
+      "name": "dogfood",
+      "subcommands": [
+        {
+          "help": "Run the overlay provision smoke against a fixture ticket",
+          "name": "overlay-provision-smoke"
+        }
+      ]
+    },
+    {
+      "help": "Drive the idle-time memory-consolidation (dreaming) cron (#1933).",
+      "name": "dream",
+      "subcommands": [
+        {
+          "help": "Run one consolidation pass NOW (manual escape hatch; ignores cadence)",
+          "name": "run"
+        },
+        {
+          "help": "Run one consolidation pass IF the dream cadence has elapsed (cron entry)",
+          "name": "tick"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "e2e",
+      "subcommands": [
+        {
+          "help": "Run E2E tests \u2014 the one command that works for every overlay",
+          "name": "run"
+        },
+        {
+          "help": "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo)",
+          "name": "external"
+        },
+        {
+          "help": "Run E2E tests from the project's own test directory",
+          "name": "project"
+        },
+        {
+          "help": "Trigger E2E tests on a remote CI pipeline",
+          "name": "trigger-ci"
+        },
+        {
+          "help": "Post (or update) the ticket's single E2E evidence note from a manifest",
+          "name": "post-evidence"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "env",
+      "subcommands": [
+        {
+          "help": "Print the current env as the DB would render it",
+          "name": "show"
+        },
+        {
+          "help": "Delete an override row and refresh the cache",
+          "name": "unset"
+        },
+        {
+          "help": "List user-declared overrides for this worktree",
+          "name": "overrides"
+        },
+        {
+          "help": "Persist an override on the worktree and refresh the cache",
+          "name": "set-var"
+        },
+        {
+          "help": "Exit non-zero if the on-disk cache diverges from the DB render",
+          "name": "check"
+        },
+        {
+          "help": "Move ``POSTGRES_PASSWORD`` literals out of ``.t3-env.cache`` into ``pass``",
+          "name": "migrate-secrets"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "followup",
+      "subcommands": [
+        {
+          "help": "",
+          "name": "refresh"
+        },
+        {
+          "help": "",
+          "name": "sync"
+        },
+        {
+          "help": "",
+          "name": "remind"
+        },
+        {
+          "help": "List the user's open, non-draft PRs/MRs awaiting a review request",
+          "name": "discover-mrs"
+        }
+      ]
+    },
+    {
+      "help": "Generate overlay and skill documentation (CLI reference is generated by the pre-commit hook).",
+      "name": "generate_all_docs",
+      "subcommands": []
+    },
+    {
+      "help": "Generate the management-commands reference doc from the live command tree.",
+      "name": "generate_management_commands_doc",
+      "subcommands": []
+    },
+    {
+      "help": "Generate deterministic overlay extension-point documentation.",
+      "name": "generate_overlay_docs",
+      "subcommands": []
+    },
+    {
+      "help": "Generate the skills catalogue from skills/*/SKILL.md frontmatter.",
+      "name": "generate_skill_catalogue",
+      "subcommands": []
+    },
+    {
+      "help": "Generate deterministic TeaTree skill delegation documentation.",
+      "name": "generate_skill_docs",
+      "subcommands": []
+    },
+    {
+      "help": "Hand all current work from this session to another session.",
+      "name": "handover",
+      "subcommands": [
+        {
+          "help": "Hand this session's full durable state to another session",
+          "name": "create"
+        },
+        {
+          "help": "Print this Claude session's own id (the hand-off ``--to`` target)",
+          "name": "whoami"
+        },
+        {
+          "help": "Atomically claim an unclaimed hand-off for *session* and print its payload",
+          "name": "claim-on-start"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> honesty`` group root.",
+      "name": "honesty",
+      "subcommands": [
+        {
+          "help": "Record a honesty escalation so the next verification spawn routes to the most-honest model",
+          "name": "escalate"
+        }
+      ]
+    },
+    {
+      "help": "``t3 info`` group root.",
+      "name": "info",
+      "subcommands": [
+        {
+          "help": "Locate every artifact for a ticket: stack, ports, plans, run artifacts, E2E evidence",
+          "name": "artifacts"
+        }
+      ]
+    },
+    {
+      "help": "Group root \u2014 forces sub-commands to be addressed by name.",
+      "name": "lifecycle",
+      "subcommands": [
+        {
+          "help": "Mark a phase as visited and advance the ticket FSM if applicable",
+          "name": "visit-phase"
+        },
+        {
+          "help": "Clear a reused ticket's stale phase ledger (sanctioned session-retire)",
+          "name": "clear-ledger"
+        },
+        {
+          "help": "Record durable evidence that the deep-review ``skill`` ran (#1539)",
+          "name": "record-review-skill-run"
+        },
+        {
+          "help": "Record durable evidence the referenced context was retrieved + analyzed",
+          "name": "record-review-context"
+        },
+        {
+          "help": "Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967)",
+          "name": "record-e2e-run"
+        },
+        {
+          "help": "Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829)",
+          "name": "record-anti-vacuity"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "loop_dispatch",
+      "subcommands": [
+        {
+          "help": "List pending Tasks the ``/loop`` slot should spawn in-session",
+          "name": "pending-spawn"
+        },
+        {
+          "help": "Atomically claim the oldest pending dispatchable Task, then emit it",
+          "name": "claim-next"
+        },
+        {
+          "help": "Mark the Task as claimed so the next tick doesn't surface it",
+          "name": "spawn-claim"
+        }
+      ]
+    },
+    {
+      "help": "Print LIVE loop status computed from the DB (read-only; #1744).",
+      "name": "loop_list",
+      "subcommands": []
+    },
+    {
+      "help": "Claim, inspect, or release the session-scoped loop-owner slot (#1073).",
+      "name": "loop_owner",
+      "subcommands": [
+        {
+          "help": "Claim the loop-owner slot for this session",
+          "name": "claim"
+        },
+        {
+          "help": "Show which session owns the loop-owner slot",
+          "name": "owner"
+        },
+        {
+          "help": "Print this Claude session's own id",
+          "name": "whoami"
+        },
+        {
+          "help": "Release this session's loop-owner claim (CAS \u2014 non-owner is a no-op)",
+          "name": "release"
+        }
+      ]
+    },
+    {
+      "help": "Run one schedule cycle of the self-improving monitor.",
+      "name": "loop_self_improve",
+      "subcommands": []
+    },
+    {
+      "help": "Run one reactive Slack-answer cycle (the third /loop slot).",
+      "name": "loop_slack_answer",
+      "subcommands": []
+    },
+    {
+      "help": "Run one tick: scan all overlays, dispatch, render statusline.",
+      "name": "loop_tick",
+      "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "mr_reminder",
+      "subcommands": [
+        {
+          "help": "Assemble the per-channel reminder read-only (no Slack post)",
+          "name": "preview"
+        },
+        {
+          "help": "Post the per-channel reminder to Slack (one message per routed channel)",
+          "name": "send"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> notify`` group root.",
+      "name": "notify",
+      "subcommands": [
+        {
+          "help": "Send a bot\u2192user Slack DM (exit 0 on delivery, 1 otherwise)",
+          "name": "send"
+        },
+        {
+          "help": "Post to a destination, token chosen by it: self-DM\u2192bot, colleague/channel\u2192xoxp (exit 0 on ``ok``)",
+          "name": "post"
+        },
+        {
+          "help": "React on a destination, token chosen by it: self-DM\u2192bot, colleague/channel\u2192xoxp (exit 0 on ``ok``)",
+          "name": "react"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "overlay",
+      "subcommands": [
+        {
+          "help": "Show overlay configuration",
+          "name": "config"
+        },
+        {
+          "help": "Show overlay class path",
+          "name": "info"
+        },
+        {
+          "help": "Fail if compose templates reference keys with no declared producer",
+          "name": "contract-check"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> pending-chat`` group root.",
+      "name": "pending_chat",
+      "subcommands": [
+        {
+          "help": "List inbound Slack-DM rows; the last hour by default",
+          "name": "list"
+        },
+        {
+          "help": "Stamp ``answered_at = now`` on rows matching ``slack_ts``",
+          "name": "mark-answered"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "pr",
+      "subcommands": [
+        {
+          "help": "Validate ship gates and trigger the ship transition",
+          "name": "create"
+        },
+        {
+          "help": "REMOVED \u2014 FSM-incoherent post-#863; refuses with a redirect to the \u00a717.4 keystone",
+          "name": "merge"
+        },
+        {
+          "help": "List all open PRs/MRs authored by the current user across the forge",
+          "name": "sweep"
+        },
+        {
+          "help": "Create a PR for an orphan branch (idempotent, no-op when a PR already exists)",
+          "name": "ensure-pr"
+        },
+        {
+          "help": "Check whether session gates allow a phase transition (#1118: cross-session)",
+          "name": "check-gates"
+        },
+        {
+          "help": "Fetch issue details with embedded image URLs and external links",
+          "name": "fetch-issue"
+        },
+        {
+          "help": "Detect the current tenant variant from the overlay",
+          "name": "detect-tenant"
+        },
+        {
+          "help": "Post test evidence as a PR comment. Uploads files and updates existing notes",
+          "name": "post-evidence"
+        }
+      ]
+    },
+    {
+      "help": "``t3 teatree questions`` group root.",
+      "name": "questions",
+      "subcommands": [
+        {
+          "help": "Record a deferred question (called by the PreToolUse away-mode hook)",
+          "name": "record"
+        },
+        {
+          "help": "Resolve a pending question with a user answer",
+          "name": "answer"
+        },
+        {
+          "help": "Dismiss a pending question without answering it",
+          "name": "dismiss"
+        },
+        {
+          "help": "Re-post the pending backlog to the user's Slack DM (away\u2192present drain)",
+          "name": "resurface"
+        },
+        {
+          "help": "List pending deferred questions, oldest first",
+          "name": "list"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "queue",
+      "subcommands": [
+        {
+          "help": "Print the queue breakdown by status, and READY jobs by task name",
+          "name": "status"
+        },
+        {
+          "help": "Retire stale READY jobs to FAILED so a drainer never runs them",
+          "name": "expire-stale"
+        }
+      ]
+    },
+    {
+      "help": "Report (and optionally recover) work stranded by an outage.",
+      "name": "recover",
+      "subcommands": []
+    },
+    {
+      "help": "``t3 <overlay> retro`` group root.",
+      "name": "retro",
+      "subcommands": [
+        {
+          "help": "Classify a PR's review findings A/B/C and file class-C enforcement issues",
+          "name": "review-findings"
+        },
+        {
+          "help": "Extract a session's gate failures, classify them, record, and optionally escalate",
+          "name": "gate-failures"
+        }
+      ]
+    },
+    {
+      "help": "``t3 <overlay> review`` group root.",
+      "name": "review",
+      "subcommands": [
+        {
+          "help": "Persist a cold-review verdict for a PR at an exact reviewed SHA",
+          "name": "record"
+        },
+        {
+          "help": "Report whether *mr_url* is safe to approve at its CURRENT head (read-only)",
+          "name": "status"
+        }
+      ]
+    },
+    {
+      "help": "Decide POST or SUPPRESS for a review-request message.\n\nExit/output is machine-readable: ``action`` is ``post`` or\n``suppress``; ``permalink`` points at the existing message when\nsuppressed by a live-channel match. The caller MUST abort the\npost on ``suppress``.",
+      "name": "review_request_check",
+      "subcommands": []
+    },
+    {
+      "help": "Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.\n\nMachine-legible: prints a single JSON dict (``action`` is\n``post``/``draft``/``suppress``/``refused``) and uses exit codes \u2014\n``0`` post/draft/suppress, ``2`` refused (no recorded approval / no\nanti-vacuity attestation).",
+      "name": "review_request_post",
+      "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "run",
+      "subcommands": [
+        {
+          "help": "Check that dev services respond via HTTP, then advance FSM",
+          "name": "verify"
+        },
+        {
+          "help": "",
+          "name": "services"
+        },
+        {
+          "help": "Start the backend via docker-compose. Host port is auto-mapped",
+          "name": "backend"
+        },
+        {
+          "help": "Run the project test suite",
+          "name": "tests"
+        },
+        {
+          "help": "Run the overlay's lint pipeline on this worktree",
+          "name": "lint"
+        },
+        {
+          "help": "Build the frontend app for production/testing",
+          "name": "build-frontend"
+        }
+      ]
+    },
+    {
+      "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
+      "name": "speak",
+      "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "standup",
+      "subcommands": [
+        {
+          "help": "Generate the standup from existing transition + attempt data (read-only)",
+          "name": "generate"
+        },
+        {
+          "help": "List tickets with no activity past the threshold (read-only)",
+          "name": "stale"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "tasks",
+      "subcommands": [
+        {
+          "help": "Enqueue the next-phase task for a ticket",
+          "name": "create"
+        },
+        {
+          "help": "",
+          "name": "cancel"
+        },
+        {
+          "help": "Mark a claimed task COMPLETED for work finished out-of-band (#1031)",
+          "name": "complete"
+        },
+        {
+          "help": "",
+          "name": "claim"
+        },
+        {
+          "help": "Claim an interactive task and exec ``claude`` in the current terminal",
+          "name": "start"
+        },
+        {
+          "help": "Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path)",
+          "name": "record-attempt"
+        },
+        {
+          "help": "List the teatree tasks queue (not your harness TODO list)",
+          "name": "list"
+        },
+        {
+          "help": "",
+          "name": "work-next-sdk"
+        }
+      ]
+    },
+    {
+      "help": "The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritance.\n\nThe ``ticket`` :class:`~django_typer.management.TyperCommand` inherits this mixin\nso the two commands mount under it while their bodies live here, off the cap-bound\n``ticket.py``. Both resolve the ticket, run the pure parse/validate/mutate helpers,\nand translate a :class:`RubricCommandError` / :class:`RubricError` into a ``stderr``\nrefusal + a nonzero exit.",
+      "name": "ticket",
+      "subcommands": [
+        {
+          "help": "Transition a ticket to a new state",
+          "name": "transition"
+        },
+        {
+          "help": "Record a PlanArtifact and advance the ticket STARTED \u2192 PLANNED",
+          "name": "plan"
+        },
+        {
+          "help": "Durable per-ticket knowledge store (#627)",
+          "name": "context"
+        },
+        {
+          "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
+          "name": "clear"
+        },
+        {
+          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
+          "name": "merge"
+        },
+        {
+          "help": "Post a comment to an issue or work item by its URL",
+          "name": "comment"
+        },
+        {
+          "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
+          "name": "rubric-set"
+        },
+        {
+          "help": "Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241)",
+          "name": "rubric-grade"
+        },
+        {
+          "help": "Record the DoD local-E2E gate escape hatch for a ticket (#88)",
+          "name": "dod-override"
+        },
+        {
+          "help": "Record a single-use user bypass of the mandatory-E2E gate (#1967)",
+          "name": "e2e-bypass"
+        },
+        {
+          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
+          "name": "plan-bypass"
+        },
+        {
+          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
+          "name": "skip-planning"
+        },
+        {
+          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
+          "name": "plan-reconcile-inflight"
+        },
+        {
+          "help": "Create a child work item nested under a parent issue/work item",
+          "name": "create-sub"
+        },
+        {
+          "help": "List tickets, optionally filtered by state and/or overlay",
+          "name": "list"
+        },
+        {
+          "help": "Check post-ship tickets against upstream issues and advance completed ones",
+          "name": "sync-completions"
+        },
+        {
+          "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
+          "name": "reconcile-overlay"
+        }
+      ]
+    },
+    {
+      "help": "Generate Ticket.short_description (#1156).",
+      "name": "ticket_short_describe",
+      "subcommands": []
+    },
+    {
+      "help": "",
+      "name": "tool",
+      "subcommands": [
+        {
+          "help": "Run an overlay tool command by name",
+          "name": "run"
+        },
+        {
+          "help": "List available overlay tool commands",
+          "name": "list"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "workspace",
+      "subcommands": [
+        {
+          "help": "Create or update a ticket and trigger worktree provisioning",
+          "name": "ticket"
+        },
+        {
+          "help": "Provision every worktree in the current ticket workspace",
+          "name": "provision"
+        },
+        {
+          "help": "Start docker for every worktree in the current ticket workspace",
+          "name": "start"
+        },
+        {
+          "help": "Run readiness probes for every worktree in the ticket workspace",
+          "name": "ready"
+        },
+        {
+          "help": "Tear down every worktree in the current ticket workspace",
+          "name": "teardown"
+        },
+        {
+          "help": "Squash worktree commits into one, then rebase on the default branch",
+          "name": "finalize"
+        },
+        {
+          "help": "Detect state drift across every store; optionally fix it",
+          "name": "doctor"
+        },
+        {
+          "help": "Tear down every worktree whose ticket is already MERGED",
+          "name": "clean-merged"
+        },
+        {
+          "help": "Stamp the scoped noreply git identity onto an existing souliane clone (#762)",
+          "name": "stamp-identity"
+        },
+        {
+          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace",
+          "name": "list-orphans"
+        },
+        {
+          "help": "Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207)",
+          "name": "reap-stale"
+        },
+        {
+          "help": "Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots",
+          "name": "clean-all"
+        }
+      ]
+    },
+    {
+      "help": "",
+      "name": "worktree",
+      "subcommands": [
+        {
+          "help": "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree",
+          "name": "provision"
+        },
+        {
+          "help": "Boot ``docker compose up`` for one worktree",
+          "name": "start"
+        },
+        {
+          "help": "Run overlay health checks for one worktree",
+          "name": "verify"
+        },
+        {
+          "help": "Run runtime readiness probes for one worktree",
+          "name": "ready"
+        },
+        {
+          "help": "Stop docker, drop DB, remove git worktree, delete row",
+          "name": "teardown"
+        },
+        {
+          "help": "Report FSM state, branch, and allocated host ports for one worktree",
+          "name": "status"
+        },
+        {
+          "help": "Print a structured health checklist for one worktree",
+          "name": "diagnose"
+        },
+        {
+          "help": "Print a state diagram as Mermaid. Models: worktree, ticket, task",
+          "name": "diagram"
+        },
+        {
+          "help": "Quick health check: overlay loads, CLI responds, imports OK",
+          "name": "smoke-test"
+        }
+      ]
+    }
+  ]
+}
