@@ -159,6 +159,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         autonomy=_resolve_enum_setting(teatree, "autonomy", Autonomy, Autonomy.BABYSIT),
         speed=_resolve_enum_setting(teatree, "speed", Speed, Speed.MEDIUM),
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
+        dedicated_loops=bool(teatree.get("dedicated_loops", False)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=ask_before_post_on_behalf,

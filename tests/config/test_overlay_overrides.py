@@ -573,6 +573,77 @@ issue_implementer_enabled = true
 
         assert get_effective_settings().issue_implementer_enabled is False
 
+    def test_dedicated_loops_defaults_off(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838: ``dedicated_loops`` is default-OFF (fail OFF, byte-identical)."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\n")
+        assert get_effective_settings().dedicated_loops is False
+
+    def test_overlay_can_override_dedicated_loops(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838: ``dedicated_loops`` is per-overlay overridable.
+
+        A dogfooding overlay opts into the dedicated-loop split while the
+        global default stays OFF. Runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+dedicated_loops = false
+
+[overlays.dogfood]
+class = "x.y:Z"
+dedicated_loops = true
+""",
+        )
+
+        assert get_effective_settings().dedicated_loops is True
+
+    def test_env_dedicated_loops_beats_overlay_override(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1838: ``T3_DEDICATED_LOOPS`` env wins over a per-overlay enable."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
+        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+dedicated_loops = false
+
+[overlays.dogfood]
+class = "x.y:Z"
+dedicated_loops = true
+""",
+        )
+
+        assert get_effective_settings().dedicated_loops is False
+
     def test_overlay_can_override_mr_title_regex(
         self,
         config_file: Path,

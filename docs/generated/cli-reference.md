@@ -2888,7 +2888,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                     ``claim-next``).                                         │
 │ spawn-claim         Claim a Task by id (legacy — prefer atomic               │
 │                     ``claim-next``).                                         │
-│ start               Spawn a Claude Code session with the fat loop            │
+│ start               Spawn a Claude Code session with the loop                │
 │                     pre-registered.                                          │
 │ stop                Print the slot id to stop in the Claude Code session.    │
 │ claim               Claim the session-scoped loop-owner slot for this Claude │
@@ -3007,13 +3007,21 @@ Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session with the fat loop pre-registered.
+ Spawn a Claude Code session with the loop pre-registered.
 
  Looks for ``claude`` on ``PATH`` and runs it with an initial
  ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
  before the user types anything. When ``claude`` is not available or
  the caller is already inside a Claude Code session, falls back to
  printing the slash command for manual entry.
+
+ Slot topology is governed by the default-off `` dedicated_loops``
+ toggle (#1838). OFF (default): the single fat ``loop-owner`` slot drives
+ one ``t3 loop tick`` fanning across ALL mini-loops — byte-identical to
+ today. ON: ``--print-slots`` (or the manual-paste fallback) emits N
+ dedicated ``/loop <cadence> Run `t3 loop tick --slot <name>``` slots, one
+ per dedicated loop, each scoped to its own ``loop:<name>`` owner. The two
+ are mutually-exclusive deployment modes.
 
  Durability (by design; #786 WS3): the loop is session-bound and
  tick-driven. The SessionStart hook records ONE Django-free tick-owner
@@ -3031,9 +3039,14 @@ Usage: t3 loop start [OPTIONS]
  Claude Code.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only          Print the /loop slot definition instead of spawning a  │
-│                       Claude Code session.                                   │
-│ --help                Show this message and exit.                            │
+│ --print-only           Print the /loop slot definition instead of spawning a │
+│                        Claude Code session.                                  │
+│ --print-slots          Print the resolved /loop slot definition(s) and exit, │
+│                        without spawning. One fat slot when `dedicated_loops` │
+│                        is off (default); N dedicated scoped-tick slots when  │
+│                        on. Inspect the slot generator without registering    │
+│                        anything.                                             │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4755,19 +4768,32 @@ Usage: t3 teatree e2e post-evidence [OPTIONS]
  updates the Dev column and the deployed-commits/gap line while freezing
  the Local column, and vice versa.
 
- ``--manifest`` is a path to (or inline string of) the JSON describing
- the ticket, MRs, per-env commits, dev gap, and per-workflow ``dev``/
- ``local`` captures. ``--ticket`` (pk / number / URL) selects the issue
- to post on (auto-detected from the worktree when omitted); ``--title``
- overrides the heading. See :mod:`._e2e_evidence` for the manifest shape.
+ ``--manifest`` is a path to (or inline string of) the JSON describing the
+ ticket, MRs, per-env commits, dev gap, and per-workflow captures; relative
+ artifact paths resolve against the manifest file's directory. ``--ticket``
+ (pk / number / URL) selects the issue (auto-detected from the worktree, or
+ the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
+ heading. ``--skip-validation`` is the user-authorised bypass of the
+ red-box / duplicate image preflight. See :mod:`._e2e_evidence`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --manifest        TEXT                                                       │
-│ --ticket          TEXT                                                       │
-│ --title           TEXT                                                       │
-│ --mrs             TEXT  MR/PR URL(s) the evidence covers (repeat or          │
-│                         comma-separate). Supplements the manifest's 'mrs'.   │
-│ --help                  Show this message and exit.                          │
+│ --manifest                                   TEXT                            │
+│ --ticket                                     TEXT                            │
+│ --title                                      TEXT                            │
+│ --mrs                                        TEXT  MR/PR URL(s) the evidence │
+│                                                    covers (repeat or         │
+│                                                    comma-separate).          │
+│                                                    Supplements the           │
+│                                                    manifest's 'mrs'.         │
+│ --skip-validation    --no-skip-validation          User-authorised bypass of │
+│                                                    the image preflight       │
+│                                                    (red-box / duplicate      │
+│                                                    gates). Not for routine   │
+│                                                    use.                      │
+│                                                    [default:                 │
+│                                                    no-skip-validation]       │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
