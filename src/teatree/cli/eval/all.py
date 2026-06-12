@@ -42,6 +42,7 @@ from teatree.eval.negative_control import NegativeControlOutcome, run_negative_c
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
+from teatree.eval.skip_guard import UnmeteredSdkRunError, assert_sdk_run_was_metered
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerQAReport, run_trigger_qa
 from teatree.utils.django_bootstrap import ensure_django
@@ -132,9 +133,24 @@ def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class AiLaneOutcome:
+    """The AI lane's summary plus the graded per-scenario results.
+
+    ``results`` is threaded out so the suite chokepoint can sum each run's
+    ``cost_usd`` and run the unmetered-$0 guard (:func:`assert_sdk_run_was_metered`)
+    on the metered (``--backend sdk``) path — the same vacuous-green guard the
+    ``eval run`` boundary applies via ``RunGuards.sdk_metered``. It is empty when
+    the lane did not grade (no transcripts on the subscription path).
+    """
+
+    lane: LaneResult
+    results: list[ScenarioResult]
+
+
 def run_ai_lane(
     specs: list[EvalSpec], *, backend: str, target_dir: Path, parallel: int = DEFAULT_PARALLEL
-) -> LaneResult:
+) -> AiLaneOutcome:
     try:
         runner = make_runner(backend, transcript_dir=target_dir)
     except UnknownBackendError as exc:
@@ -142,10 +158,10 @@ def run_ai_lane(
         raise typer.Exit(code=2) from None
     if isinstance(runner, SubscriptionTranscriptRunner) and not _any_transcript_present(specs, runner):
         _emit_subscription_recipe(specs, target_dir)
-        return _ai_lane_result([], backend=backend, graded=False)
+        return AiLaneOutcome(lane=_ai_lane_result([], backend=backend, graded=False), results=[])
     runs = run_specs(runner, specs, parallel=parallel)
     results = list(starmap(evaluate, zip(specs, runs, strict=True)))
-    return _ai_lane_result(results, backend=backend, graded=True)
+    return AiLaneOutcome(lane=_ai_lane_result(results, backend=backend, graded=True), results=results)
 
 
 def _any_transcript_present(specs: list[EvalSpec], runner: SubscriptionTranscriptRunner) -> bool:
@@ -326,13 +342,15 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         _timed(lambda: corpus_grade_lane(grade_shipped_corpus())),
         _timed(lambda: skill_command_validity_lane(validate_shipped_skill_commands())),
     ]
+    ai_results: list[ScenarioResult] = []
     if not free_only:
         # The AI lane runs first. It is itself backend-gated: the default
         # subscription backend grades on-disk transcripts (no API spend) and never
         # shells the metered runner, so it is safe on the bare-`t3 eval` path.
-        lanes.append(
-            _timed(lambda: run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel))
-        )
+        started = time.monotonic()
+        ai_outcome = run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel)
+        ai_results = ai_outcome.results
+        lanes.append(dataclasses.replace(ai_outcome.lane, duration_s=time.monotonic() - started))
     if metered:
         # The ADVISORY Tier-3 prose-judge fires the LIVE metered ClaudeJudge, so it
         # is gated on the explicit metered opt-in (`--backend sdk`), NOT merely on
@@ -345,9 +363,30 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     print_verdict(lanes)
     if html_path is not None:
         _write_html_report(lanes, html_path)
+    # The metered (`--backend sdk`) AI lane: an sdk run that executed scenarios
+    # but billed $0 never actually executed (the `--bare` OAuth bug — `claude -p`
+    # authenticated as nothing, made zero tool calls, billed nothing). Mirror the
+    # `eval run` boundary's RunGuards.sdk_metered: fail loud rather than read the
+    # green AI lane as validated. The subscription backend is unmetered by design,
+    # so the guard short-circuits there (`backend != "sdk"`).
+    _assert_metered_sdk_ai_lane(backend=backend, results=ai_results)
     real_failure = any(not lane.passed and not lane.skipped for lane in lanes)
     strict_failure = strict and any(lane.needs_setup for lane in lanes)
     if real_failure or strict_failure:
+        sys.exit(1)
+
+
+def _assert_metered_sdk_ai_lane(*, backend: str, results: list[ScenarioResult]) -> None:
+    """Turn an executed-but-$0 sdk AI lane RED — the suite mirror of ``RunGuards.sdk_metered``."""
+    executed = sum(1 for r in results if not r.skipped)
+    try:
+        assert_sdk_run_was_metered(
+            backend=backend,
+            executed=executed,
+            total_cost_usd=sum(r.run.cost_usd for r in results),
+        )
+    except UnmeteredSdkRunError as exc:
+        typer.echo(str(exc), err=True)
         sys.exit(1)
 
 
