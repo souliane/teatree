@@ -173,6 +173,42 @@ class DreamTickCadenceTestCase(TestCase):
         assert not MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
 
 
+class DreamZeroMembersFailLoudTestCase(TestCase):
+    def test_zero_members_does_not_stamp_succeeded(self) -> None:
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is None or marker.last_succeeded_at is None
+
+    def test_zero_members_stamps_attempted(self) -> None:
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is not None
+        assert marker.last_attempted_at is not None
+
+    def test_zero_members_emits_warn(self) -> None:
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            call_command("dream", "run", stdout=stdout)
+        assert "WARN" in stdout.getvalue()
+
+    def test_zero_members_keeps_staleness_alarm_active(self) -> None:
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result):
+            call_command("dream", "run", stdout=StringIO())
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is True
+
+    def test_nonzero_members_stamps_succeeded(self) -> None:
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()):
+            call_command("dream", "run", stdout=StringIO())
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+
+
 class DreamSinceTestCase(TestCase):
     def test_run_passes_since_to_engine(self) -> None:
         captured: dict[str, object] = {}
