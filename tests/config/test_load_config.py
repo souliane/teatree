@@ -316,6 +316,58 @@ class TestIssueImplementerSettings:
         assert get_effective_settings().issue_implementer_enabled is True
 
 
+class TestOrchestrateClaimEnabledSetting:
+    """Config surface for the opt-in, default-OFF orchestrate-phase claim arm (#1796).
+
+    Agent-teams Track-A PR#1: the dispatch loop's ``orchestrate_phase`` is wired
+    dormant (``claim=False``) so it plans but never claims. This toggle arms the
+    claim (``claim=True``) so the lead does the thin per-unit claim+spawn the
+    deterministic manifest already computes. Default OFF means the fat loop's
+    dormant behaviour is unchanged until the user flips it on, mirroring
+    ``issue_implementer_enabled``.
+    """
+
+    def test_default_is_opt_in_off(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.orchestrate_claim_enabled is False
+
+    def test_enabled_reads_toml_bool(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\norchestrate_claim_enabled = true\n")
+        assert load_config(config_path).user.orchestrate_claim_enabled is True
+
+    def test_env_override_enables_without_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``T3_ORCHESTRATE_CLAIM_ENABLED`` is the operational fast-toggle.
+
+        Env wins over the toml global, so the claim can be armed (or killed)
+        without editing ``~/.teatree.toml``.
+        """
+        del config_file, elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "true")
+        assert get_effective_settings().orchestrate_claim_enabled is True
+
+    def test_env_kill_switch_overrides_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\norchestrate_claim_enabled = true\n")
+        monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "false")
+        assert get_effective_settings().orchestrate_claim_enabled is False
+
+
 class TestRequireReviewContextSetting:
     """The deep-retrieval gate knob loads from toml; default is opt-in OFF."""
 

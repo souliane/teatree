@@ -1552,3 +1552,52 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
             report = run_tick(TickRequest(scanners=[scanner]), statusline_path=sl)
             assert sl.exists()
             assert report.signal_count == 1
+
+
+class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
+    """#1796 / agent-teams Track-A PR#1: ``orchestrate_claim_enabled`` arms claim.
+
+    The toggle is read via the existing settings accessor on the dispatch
+    wiring. Default OFF keeps the dormant ``claim=False`` path EXACTLY; flipping
+    it ON runs ``orchestrate_phase`` with ``claim=True`` so the manifest rows
+    the deterministic Python already computes are claimed (the #786-N4 spawn
+    boundary).
+    """
+
+    def _full_speed_dispatchable_task(self):
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="d")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+
+    def _run(self, *, toggle: bool):
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+
+        settings = UserSettings(speed=Speed.FULL, orchestrate_claim_enabled=toggle)
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
+            patch("teatree.loop.tick.get_effective_settings", return_value=settings),
+        ):
+            scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+            run_tick(TickRequest(scanners=[scanner]), statusline_path=Path(d) / "sl.txt")
+
+    def test_toggle_off_keeps_dormant_path_no_claim(self) -> None:
+        from teatree.core.models import Task  # noqa: PLC0415
+
+        task = self._full_speed_dispatchable_task()
+        self._run(toggle=False)
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_toggle_on_claims_the_manifest_rows(self) -> None:
+        from teatree.core.models import Task  # noqa: PLC0415
+
+        task = self._full_speed_dispatchable_task()
+        self._run(toggle=True)
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED

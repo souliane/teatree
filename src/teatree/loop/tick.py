@@ -23,7 +23,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
+from teatree.config import (  # noqa: F401 — re-export kept live for test monkeypatch
+    discover_overlays,
+    get_effective_settings,
+    load_config,
+)
 from teatree.core.backend_factory import OverlayBackends
 
 # Re-exported for downstream importers. Tests monkeypatch
@@ -197,7 +201,7 @@ def run_tick(
     report.errors.update(outcome.errors)
 
     act_phase(report)
-    _orchestrate_dormant(request)
+    _orchestrate(request)
 
     zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
     _write_tick_meta(started_at, target=statusline_path)
@@ -210,18 +214,41 @@ def run_tick(
     return report
 
 
-def _orchestrate_dormant(request: TickRequest) -> None:
-    """Run :func:`orchestrate_phase` read-only, never aborting the tick.
+def _orchestrate(request: TickRequest) -> None:
+    """Run :func:`orchestrate_phase`, claiming only when the toggle is armed.
 
-    Wired dormant (``claim=False``): it computes a plan but mutates no Task
-    row, so wiring it here cannot orphan a claim. Fully fail-open — a config
-    read or budget-resolution error degrades to a no-op, like every other
-    tick phase — until the spawn half opts into ``claim=True`` in a later step.
+    The ``[teatree] orchestrate_claim_enabled`` toggle (read via the existing
+    effective-settings accessor, default OFF) decides ``claim``:
+
+    *   **OFF (default)** — ``claim=False``: read-only, mutates no Task row, so
+        the dormant behaviour is byte-identical to before the arm. The fat loop
+        stays the default.
+    *   **ON** — ``claim=True``: the lead does the thin per-unit claim+spawn the
+        deterministic manifest already computes, admitting each row through the
+        existing ``claim_next_pending`` compare-and-swap (the #786-N4
+        claim-is-the-spawn boundary) so a concurrent tick never double-dispatches.
+
+    Fully fail-open either way — a config read or budget-resolution error
+    degrades to a no-op (the toggle resolves to OFF on a settings-read error),
+    like every other tick phase.
     """
     try:
-        orchestrate_phase(backends=request.backends)
+        orchestrate_phase(backends=request.backends, claim=_orchestrate_claim_enabled())
     except Exception:
         logger.exception("orchestrate_phase failed — tick continues")
+
+
+def _orchestrate_claim_enabled() -> bool:
+    """Resolve the ``orchestrate_claim_enabled`` toggle; fail OFF (#1796).
+
+    Reads the effective setting (env -> DB -> per-overlay -> global -> default).
+    Any settings-read error degrades to ``False`` so the dormant ``claim=False``
+    path is the fail-safe — the arm can never fire on a broken config read.
+    """
+    try:
+        return get_effective_settings().orchestrate_claim_enabled
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _identity_aliases_for_request(request: TickRequest) -> tuple[tuple[str, ...], ...]:
