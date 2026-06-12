@@ -703,3 +703,43 @@ def test_one_raising_signal_does_not_abort_the_others(
     assert ("agent", "t3:reviewer") in zones
     assert all(a.kind != "agent" or a.zone != "boom" for a in actions)
     assert any("boom" in r.message for r in caplog.records)
+
+
+def test_dispatch_error_recorded_in_errors_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising signal kind is recorded under ``errors['dispatch:<kind>']`` (fix #3)."""
+    real_dispatch_one = dispatch_module._dispatch_one
+
+    def _flaky(signal: ScanSignal) -> list[DispatchAction]:
+        if signal.kind == "bang.signal":
+            msg = "dispatch exploded"
+            raise RuntimeError(msg)
+        return real_dispatch_one(signal)
+
+    monkeypatch.setattr(dispatch_module, "_dispatch_one", _flaky)
+
+    errors: dict[str, str] = {}
+    actions = dispatch(
+        [
+            ScanSignal(kind="my_pr.open", summary="PR ok"),
+            ScanSignal(kind="bang.signal", summary="this raises"),
+            ScanSignal(kind="reviewer_pr.new_sha", summary="MR x"),
+        ],
+        errors=errors,
+    )
+
+    # Other signals still routed
+    kinds = [a.kind for a in actions]
+    assert "statusline" in kinds
+    assert "agent" in kinds
+
+    # Raising signal's error is captured
+    assert "dispatch:bang.signal" in errors
+    assert "RuntimeError" in errors["dispatch:bang.signal"]
+
+
+def test_dispatch_without_errors_param_still_works() -> None:
+    """``dispatch()`` remains callable without the ``errors`` param (backward compat)."""
+    actions = dispatch([ScanSignal(kind="my_pr.open", summary="x")])
+    assert actions[0].kind == "statusline"

@@ -622,18 +622,29 @@ def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
     return [DispatchAction(kind="statusline", zone=zone, detail=signal.summary, payload=signal.payload)]
 
 
-def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
+def dispatch(
+    signals: list[ScanSignal],
+    *,
+    errors: dict[str, str] | None = None,
+) -> list[DispatchAction]:
     """Turn a flat list of signals into the actions the runtime should perform.
 
     Slack mentions/DMs that carry a PR URL also emit a derived
     ``review_channel.request`` agent action — the URL extraction lives here
     rather than in a second scanner so the messaging backend is hit once
     per tick.
+
+    Per-signal exceptions are swallowed so a bad handler never aborts the
+    tick.  When *errors* is supplied (a ``TickReport.errors`` dict), each
+    swallowed exception is recorded under ``'dispatch:<signal.kind>'`` so it
+    surfaces in the action-needed render.
     """
     actions: list[DispatchAction] = []
     for signal in signals:
         try:
             actions.extend(_dispatch_one(signal))
-        except Exception:
+        except Exception as exc:
             logger.exception("Signal %s raised during dispatch", signal.kind)
+            if errors is not None:
+                errors[f"dispatch:{signal.kind}"] = f"{type(exc).__name__}: {exc}"
     return actions

@@ -19,6 +19,7 @@ never by importing the registry down into :mod:`teatree.loop`.
 """
 
 import datetime as dt
+import logging
 
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loops.base import BuildJobsContext
@@ -26,6 +27,8 @@ from teatree.loops.cadence_ledger import MiniLoopMarker
 from teatree.loops.config import LoopsConfig
 from teatree.loops.gating import elapsed_and_enabled
 from teatree.loops.registry import iter_loops
+
+logger = logging.getLogger(__name__)
 
 
 def build_registry_jobs(
@@ -37,6 +40,11 @@ def build_registry_jobs(
             continue
         if not elapsed_and_enabled(config, loop, now).should_fire:
             continue
-        jobs.extend(loop.build_jobs(**scanner_context))
+        try:
+            new_jobs = loop.build_jobs(**scanner_context)
+        except Exception:
+            logger.exception("Mini-loop %r raised during build_jobs — skipping", loop.name)
+            continue
+        jobs.extend(new_jobs)
         MiniLoopMarker.objects.mark_fired(loop.name, now)
     return jobs
