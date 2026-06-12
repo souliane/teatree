@@ -105,6 +105,11 @@ class Command(TyperCommand):
             )
             return False
 
+        if result.members_replayed == 0:
+            DreamRunMarker.objects.mark_attempted(now)
+            self.stdout.write("WARN  dream pass found 0 transcript members — marker NOT stamped succeeded.")
+            return False
+
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
