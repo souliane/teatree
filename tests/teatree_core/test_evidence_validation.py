@@ -108,6 +108,12 @@ class TestStaleness:
         os.utime(b, (now, now))
         assert validate_evidence_images([a, b]) == []
 
+    def test_single_image_has_no_stale_peer(self, tmp_path: Path) -> None:
+        only = _red_boxed_png(tmp_path / "only.png")
+        old = time.time() - (48 * 3600)
+        os.utime(only, (old, old))
+        assert validate_evidence_images([only]) == []
+
 
 class TestSkipValidation:
     def test_skip_returns_no_warnings_and_does_not_refuse(self, tmp_path: Path) -> None:
