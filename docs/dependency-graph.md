@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.project --> teatree.paths
+    teatree.teams --> teatree.core
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils
@@ -167,7 +168,6 @@ graph TD
     teatree.quality --> teatree.utils
     teatree.paths
     teatree.types
-    teatree.teams
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init

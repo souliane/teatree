@@ -5595,13 +5595,20 @@ def handle_session_start_bootstrap(data: dict) -> None:
             emit_osc = True
 
     # #1380 / #1604: conditionally evict any stale DB ``loop-owner`` row.
-    # Only runs when the registry had no entry (fresh machine or dead-owner
-    # prune) and the DB also showed no live foreign lease. The eviction is
-    # conditional on liveness so a LIVE foreign DB lease is preserved.
-    # Outside the flock — the DB has its own CAS serialization; holding the
-    # registry flock across a Django bootstrap would needlessly stall
-    # sibling SessionStart hooks.
-    if became_owner_after_rotation:
+    # Runs when the registry had no entry (fresh machine or dead-owner prune)
+    # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
+    # compaction resume — re-anchoring ``loop-owner`` SYNCHRONOUSLY before any
+    # tick so no maker pane can win the compaction-window CAS race against the
+    # rotated lead session. The eviction is conditional on liveness either way
+    # (``evict_stale_owner``'s decision table), so a LIVE foreign DB lease is
+    # preserved — a pane never hijacks a genuinely live owner. ``current_pid``
+    # is the lead's new process and ``keep_session_id`` its (rotated) session,
+    # so a same-pid stale lease is recognised as a safe self-reclaim. Outside
+    # the flock — the DB has its own CAS serialization; holding the registry
+    # flock across a Django bootstrap would needlessly stall sibling
+    # SessionStart hooks.
+    source = data.get("source", "")
+    if became_owner_after_rotation or source == "compact":
         _evict_stale_db_lease_owner(session_id, current_pid=current_pid)
 
     # OSC write is a tty side effect, not registry state — keep it out of
@@ -5609,7 +5616,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if emit_osc:
         _emit_osc_title()
 
-    context = _merge_session_start_context(context, session_id, data.get("source", ""))
+    context = _merge_session_start_context(context, session_id, source)
 
     # #1452: the harness silently drops the legacy flat top-level
     # ``{"additionalContext": ...}`` form for SessionStart events; the
