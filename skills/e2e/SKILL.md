@@ -92,9 +92,15 @@ The resolved value is exported as **`T3_E2E_TARGET`**. The spec branches on it �
 
 **Branch-currency precheck (make it prominent).** Before any local-FULL verdict, assert the fix is actually present: `git merge-base --is-ancestor <fix-sha> HEAD`. A worktree silently behind the default branch renders the *pre-fix* value, manufacturing a "fix incomplete" false alarm. This is a precondition of the verdict, not optional discipline — see workspace `references/troubleshooting.md` § "Verify-Before-Relay".
 
+**Deployed-branch check before asserting post-fix behaviour (Non-Negotiable).** Shared DEV and staging environments may run a long-lived release branch, not the default branch. A fix merged to `main` only is NOT observable on an environment that tracks a separate release branch. Before asserting "the fix is still broken on DEV" or "the fix works on DEV", verify which branch that environment actually runs and confirm the fix is present on it. The overlay skill's reference docs identify which environments track which branch. If unverified, gate or skip the assertion with a reason — never report "still broken" for what is actually "fix not yet on the deployed branch".
+
 ## Writing Tests
 
 **Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
+
+**Access-control / role-gated E2E (Non-Negotiable):** Before asserting behaviour on any access-controlled or role-gated page, resolve the test account's REAL identity — role and group memberships — from the app's own API (e.g. `/api/me/`) and assert the expected outcome FROM that identity. The exempt/restrict contract is derived from the guard source code (what the guard actually checks), not from a ticket description or relayed narrative about which role a user supposedly has. Precondition assertion before behaviour assertion makes the test non-vacuous: if the role check fails, the test fails at the precondition rather than silently passing on an unexpected identity.
+
+**Resolve E2E credentials from the project's documented credential map by role (Non-Negotiable).** The project's overlay skill carries a credential table keyed by ROLE (not email). Before declaring a missing-credential blocker, look up the account in that table by role — the username is often a code constant, and the password is resolved from the secret store using the documented key. Do NOT grep the secret store by account email and conclude "no credentials found" — the store entry is keyed by the documented role path, not the login email.
 
 **Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in templates to find its host, then check the routing module for the URL path.
 
@@ -250,12 +256,21 @@ When an E2E test shows missing UI elements (empty form, blank section, component
 
 ### Screenshot Sanity Check (Non-Negotiable)
 
+**Condition-based settle before capture (Non-Negotiable).** Always wait for the target element to be visible AND the network to be idle before capturing a screenshot — never use a fixed `waitForTimeout` as the settle step. A screenshot captured before the page has settled either shows a blank page or the previous route's content (a transition frame); a blank-page or transition-frame capture is NOT evidence — fail the step rather than posting it.
+
+```ts
+await expect(page.locator('[data-test=expected-element]')).toBeVisible();
+await page.waitForLoadState('networkidle');
+await page.screenshot({ path: 'artifacts/...' });
+```
+
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
 - **Missing translations:** Labels show raw keys instead of human-readable text.
 - **Missing static files:** Broken images, unstyled pages, 404s for assets.
 - **Console errors:** Check for blocking JS errors.
 - **Feature element not visible:** The screenshot must show the specific UI element being tested. Use `element.scrollIntoViewIfNeeded()` before screenshots.
+- **Blank or transition-frame page:** Indicates the settle wait was insufficient — fail the step, do not post.
 
 ### Store Contamination Check
 
