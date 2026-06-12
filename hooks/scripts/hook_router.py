@@ -3246,6 +3246,19 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
 # ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
 
 
+def _banned_terms_gate_enabled() -> bool:
+    """Whether the #1415 banned-terms publish gate is enabled (default True).
+
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit ``[teatree] banned_terms_gate_enabled =
+    false`` is the one-line kill-switch (NEVER-LOCKOUT) the user flips to
+    disable the gate while its body-resolution over-block (an allowlisted
+    private-repo commit hard-blocked because the body could not be read) is
+    fixed properly. See :func:`_teatree_bool_setting` for the shared semantics.
+    """
+    return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
+
+
 def handle_banned_terms_pretool(data: dict) -> bool:
     """Refuse a non-commit publish whose body carries a banned term.
 
@@ -3269,6 +3282,8 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     session shell with no guarantee that ``teatree`` is already
     importable, #1314) and swallows any exception, returning ``False``.
     """
+    if not _banned_terms_gate_enabled():
+        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
