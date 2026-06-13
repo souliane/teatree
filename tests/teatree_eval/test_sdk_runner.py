@@ -915,6 +915,34 @@ class TestComputeDisallowedTools:
         assert "Read" in disallowed
         assert "Write" not in disallowed
 
+    def test_escape_and_punt_tools_are_disallowed_when_undeclared(self, tmp_path: Path) -> None:
+        # Metered verification showed a tools=[Bash] scenario spiral via ToolSearch
+        # (tool-hunting) and AskUserQuestion (punting) instead of issuing its one
+        # Bash command. Both are in KNOWN_BUILTIN_TOOLS, so a scenario that neither
+        # declares nor references them gets them removed from the model's toolset.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "ToolSearch" in disallowed
+        assert "AskUserQuestion" in disallowed
+
+    def test_declared_askuserquestion_stays_available(self, tmp_path: Path) -> None:
+        # comm_asks_via_askuserquestion_not_chat shape: a scenario that DECLARES
+        # AskUserQuestion keeps it available — only undeclared/unreferenced punt
+        # tools are removed. ToolSearch is never declared anywhere, so it stays
+        # disallowed even here.
+        spec = _spec_with(
+            tmp_path,
+            tools=("AskUserQuestion", "Bash"),
+            matchers=(Matcher(kind="positive", tool="AskUserQuestion", arg_path="questions", operator="~", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "AskUserQuestion" not in disallowed
+        assert "ToolSearch" in disallowed
+
     def test_negative_matcher_tool_is_never_disallowed(self, tmp_path: Path) -> None:
         # The orchestrator_delegates_test_writing shape: tools=[Bash, Edit, Task]
         # with a NEGATIVE Write matcher (the orchestrator must DELEGATE, not write

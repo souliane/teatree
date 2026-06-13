@@ -161,9 +161,12 @@ def resolve_metered_effort() -> EffortLevel:
 #: declaring ``tools: [Write]`` still sees Bash/Read/etc. and burns ``max_turns``
 #: on exploration that the matchers never asked for (a false fail). The disallowed
 #: complement of (declared union matcher-referenced) tools is computed from this
-#: set and passed as ``disallowed_tools`` (the SDK's true toolset-removal lever). The
-#: ``Skill`` tool is deliberately ABSENT — it is left untouched so a scenario can
-#: always load a skill.
+#: set and passed as ``disallowed_tools`` (the SDK's true toolset-removal lever).
+#: ``ToolSearch`` (tool-hunting) and ``AskUserQuestion`` (punting) are the
+#: escape/punt tools a metered run spiraled into instead of issuing its one
+#: declared action — included so they are removed unless a scenario declares or
+#: references them. The ``Skill`` tool is deliberately ABSENT — it is left
+#: untouched so a scenario can always load a skill.
 KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "Bash",
     "Read",
@@ -180,6 +183,8 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "BashOutput",
     "KillShell",
     "SlashCommand",
+    "ToolSearch",
+    "AskUserQuestion",
 )
 
 

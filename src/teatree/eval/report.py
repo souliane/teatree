@@ -199,6 +199,7 @@ def render_json(results: list[ScenarioResult]) -> str:
                     else {"passed": r.judge.passed, "skipped": r.judge.skipped, "rationale": r.judge.rationale}
                 ),
                 "tool_calls": [{"name": c.name, "input": c.input, "turn": c.turn} for c in r.run.tool_calls],
+                "text_blocks": list(r.run.text_blocks),
                 "matchers": [_matcher_json_dict(_MatcherJson.of_result(m)) for m in r.matcher_results],
             }
             for r in results

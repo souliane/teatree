@@ -366,6 +366,34 @@ class TestRenderJson:
         assert matcher["alternatives"][1]["arg_path"] == "run_in_background"
         assert matcher["passed"] is False
 
+    def test_serializes_text_blocks_for_diagnosability(self) -> None:
+        # A failing scenario with zero/wrong tool calls is undebuggable without the
+        # model's final prose. The run's text_blocks ship in the JSON so a reviewer
+        # can read what the model said.
+        spec = _spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(text_blocks=("Let me explore first.", "I could not find the file.")),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=False, message="missed"),),
+            skipped=False,
+        )
+        payload = json.loads(render_json([result]))
+        assert payload["scenarios"][0]["text_blocks"] == [
+            "Let me explore first.",
+            "I could not find the file.",
+        ]
+
+    def test_text_blocks_is_empty_list_when_no_prose(self) -> None:
+        spec = _spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(text_blocks=()),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+        )
+        payload = json.loads(render_json([result]))
+        assert payload["scenarios"][0]["text_blocks"] == []
+
 
 class TestRenderHtml:
     def test_emits_self_contained_document_with_inline_style(self) -> None:
