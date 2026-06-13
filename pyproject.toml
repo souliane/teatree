@@ -480,3 +480,17 @@ unresolved-attribute = "ignore"
 [tool.uv]
 managed = true
 package = true
+
+# --- uv audit advisory lane (souliane/teatree#2292) ---
+# Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
+# preview lane (CI job `uv-audit-advisory`). The advisory lane never reds the
+# build, so this list is informational today; it documents the structure the
+# lane will read once `uv audit` is promoted to blocking. The blocking gate is
+# still pip-audit (`requirements.audit.ignore`), which is the file to edit to
+# suppress a vulnerability that would otherwise fail CI.
+#
+# Add OSV / GHSA ids, one per `ignore` entry, e.g.
+#   ignore = [ "GHSA-xxxx-xxxx-xxxx" ]  # package==1.2.3: justification + link
+
+[tool.teatree.uv_audit]
+ignore = [  ]

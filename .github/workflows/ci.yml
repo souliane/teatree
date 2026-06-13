@@ -49,7 +49,7 @@
 #   5. Test suite            — test, test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree
-#   7. Security & supply chain — uv-audit, sbom
+#   7. Security & supply chain — uv-audit, sbom, uv-audit-advisory
 #
 # THE METERED AI EVAL DOES NOT RUN HERE
 #   The metered behavioral-eval suite (`t3 eval run --backend sdk`, which shells
@@ -87,8 +87,8 @@ jobs:
     # skip the HEAVY ``test`` + ``mutation-diff`` lanes. Any unrecognised
     # path, any python change, or any config/CI/semgrep change forces
     # ``run_heavy_python=true`` (run everything) — uncertainty never
-    # skips. Security/quality gates (semgrep, sbom, uv-audit) and the
-    # docs gates are NOT gated here; they always run.
+    # skips. Security/quality gates (semgrep, sbom, uv-audit, the advisory
+    # uv-audit-advisory) and the docs gates are NOT gated here; they always run.
     #
     # On push-to-main and on the schedule there is no base to diff, so
     # this job is PR-only and the downstream ``if:`` conditions run the
@@ -653,6 +653,43 @@ jobs:
         with:
           name: sbom
           path: dist/sbom.json
+
+  # ADVISORY (never blocks): uv-native, uv.lock-accurate, OSV-backed vulnerability
+  # scan via `uv audit` (https://astral.sh/blog/uv-audit). Runs ALONGSIDE — never
+  # replaces — the blocking `uv-audit` (pip-audit) gate and the `sbom` SBOM-diff
+  # gate above. Kept advisory because `uv audit` is still a PREVIEW feature with
+  # possible breaking changes (the same astral-sh/uv#19492 OSV-parser regression
+  # that moved the blocking gate to pip-audit, souliane/teatree#1264). The uv
+  # version is PINNED so preview flag churn can't break this lane out from under
+  # us; promote to a gate (drop continue-on-error, un-pin) once `uv audit` is
+  # stable. Allowlist of accepted advisories: `[tool.teatree.uv_audit].ignore`
+  # in pyproject.toml.
+  #
+  # Job key `uv-audit-advisory` is DELIBERATELY distinct from the load-bearing
+  # `uv-audit` (UV_AUDIT_CHECK_NAME in src/teatree/loop/scanners/pr_sweep.py) so
+  # the two never collide.
+  uv-audit-advisory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+          # PIN the uv version: `uv audit` is preview, so a floating `latest`
+          # could change flags out from under this lane. Bump deliberately.
+          version: "0.11.15"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # `--frozen` audits the locked `uv.lock` resolution without re-locking;
+      # `--no-default-groups` audits the SHIPPED runtime surface (mirrors the
+      # blocking gate's `--no-default-groups`, excluding dev-only tooling).
+      # `|| true` plus `continue-on-error: true` are the two independent
+      # guards keeping this lane non-blocking: a finding, a preview crash, or
+      # an offline/network hiccup is reported but never reds the build.
+      - name: uv audit (advisory; OSV; never blocks)
+        continue-on-error: true
+        run: uv audit --frozen --no-default-groups --output-format text || true
 
   # The metered behavioral-eval suite (`t3 eval run --backend sdk`, `claude -p`)
   # is NOT a job here. It runs in the standalone `.github/workflows/eval.yml`
