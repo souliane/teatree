@@ -339,18 +339,67 @@ class TestClaimNextCommand:
     """
 
     def test_loop_claim_next_command_exists_and_delegates(self) -> None:
-        with patch("django.setup"), patch("django.core.management.call_command") as call:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call,
+            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+        ):
             result = runner.invoke(loop_app, ["claim-next", "--json"])
 
         assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loop_dispatch", "claim-next", json_output=True)
+        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by_session="sess-cli", json_output=True)
 
     def test_loop_claim_next_passes_claimed_by(self) -> None:
-        with patch("django.setup"), patch("django.core.management.call_command") as call:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call,
+            patch("teatree.loop.session_identity.current_session_id", return_value="sess-cli"),
+        ):
             result = runner.invoke(loop_app, ["claim-next", "--claimed-by", "worker-7"])
 
         assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by="worker-7")
+        call.assert_called_once_with(
+            "loop_dispatch",
+            "claim-next",
+            claimed_by_session="sess-cli",
+            claimed_by="worker-7",
+        )
+
+    def test_loop_claim_next_defaults_session_to_current_session_id(self) -> None:
+        """#1917: an unset ``--claimed-by-session`` is resolved to the active session id."""
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call,
+            patch("teatree.loop.session_identity.current_session_id", return_value="sess-auto"),
+        ):
+            result = runner.invoke(loop_app, ["claim-next"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by_session="sess-auto")
+
+    def test_loop_claim_next_passes_explicit_session(self) -> None:
+        """#1917: an explicit ``--claimed-by-session`` overrides the default resolution."""
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call,
+            patch("teatree.loop.session_identity.current_session_id", return_value="should-not-be-used"),
+        ):
+            result = runner.invoke(loop_app, ["claim-next", "--claimed-by-session", "sess-explicit"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by_session="sess-explicit")
+
+    def test_loop_claim_next_empty_session_when_unresolvable(self) -> None:
+        """#1917 inert: when no session resolves, an empty session is threaded through."""
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call,
+            patch("teatree.loop.session_identity.current_session_id", return_value=""),
+        ):
+            result = runner.invoke(loop_app, ["claim-next"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by_session="")
 
 
 class TestSlackAnswerCadenceParser:

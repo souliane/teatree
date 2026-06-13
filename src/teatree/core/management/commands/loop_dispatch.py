@@ -72,6 +72,9 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # directive only when the user opts the ``(role, phase)`` pair in via
         # ``[agent.phase_fanout]``.
         "fanout_directive": _resolve_fanout_directive(task),
+        # Session that took the claim (empty until the worker session is known),
+        # orthogonal to the role-label ``claimed_by``.
+        "claimed_by_session": task.claimed_by_session,
     }
 
 
@@ -184,6 +187,13 @@ class Command(TyperCommand):
             str,
             typer.Option("--claimed-by", help="Worker identifier stored on the claim."),
         ] = "loop-slot",
+        claimed_by_session: Annotated[
+            str | None,
+            typer.Option(
+                "--claimed-by-session",
+                help="Worker session id stored on the claim (defaults to the active session, empty when none).",
+            ),
+        ] = None,
         json_output: Annotated[
             bool,
             typer.Option("--json", help="Emit the claimed dispatch as JSON instead of a table."),
@@ -200,9 +210,19 @@ class Command(TyperCommand):
         (or nothing); the slot calls its ``Agent`` tool for the emitted
         already-claimed entry. The previous inline reimplementation (N2)
         and the SQLite-ineffective ``skip_locked`` (B1) are gone.
+
+        ``--claimed-by-session`` attributes the claim to the worker session
+        that took it (#1917). Unset, it resolves to ``current_session_id()``
+        (empty when no session is resolvable); it rides the SET clause of the
+        claim only, never the CAS predicate, so the claim semantics are
+        unchanged.
         """
+        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+
+        session = current_session_id() if claimed_by_session is None else claimed_by_session
         task = Task.objects.claim_next_pending(
             claimed_by=claimed_by,
+            claimed_by_session=session,
             extra_filter=_dispatchable_q(),
         )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []

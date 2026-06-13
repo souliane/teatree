@@ -211,6 +211,42 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         call_command("loop_dispatch", "claim-next", stdout=stdout)
         assert "No pending spawn requests." in stdout.getvalue()
 
+    def test_claim_next_session_defaults_to_current_session_id(self) -> None:
+        """#1917: an unset ``--claimed-by-session`` resolves to the active session id."""
+        task = self._reviewer_task()
+        stdout = StringIO()
+        with patch("teatree.core.session_identity.current_session_id", return_value="sess-default"):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert payload[0]["claimed_by_session"] == "sess-default"
+        task.refresh_from_db()
+        assert task.claimed_by_session == "sess-default"
+
+    def test_claim_next_explicit_session_overrides_default(self) -> None:
+        """#1917: an explicit ``--claimed-by-session`` is threaded through and surfaced."""
+        task = self._reviewer_task()
+        stdout = StringIO()
+        with patch("teatree.core.session_identity.current_session_id", return_value="should-not-be-used"):
+            call_command("loop_dispatch", "claim-next", "--json", claimed_by_session="sess-explicit", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert payload[0]["claimed_by_session"] == "sess-explicit"
+        task.refresh_from_db()
+        assert task.claimed_by_session == "sess-explicit"
+
+    def test_claim_next_empty_session_surfaced_when_unresolvable(self) -> None:
+        """#1917 inert: when no session resolves, the claim carries an empty session."""
+        task = self._reviewer_task()
+        stdout = StringIO()
+        with patch("teatree.core.session_identity.current_session_id", return_value=""):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert payload[0]["claimed_by_session"] == ""
+        task.refresh_from_db()
+        assert task.claimed_by_session == ""
+
 
 class TestSpawnClaim(_LoopDispatchTest):
     def test_claims_pending_task(self) -> None:

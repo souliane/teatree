@@ -200,6 +200,30 @@ class TestTaskQuerySet(TestCase):
         assert got is not None
         assert got.pk == fresh.pk  # skipped the already-claimed one
 
+    def test_claim_next_pending_session_defaults_to_empty(self) -> None:
+        """#1917 inert default: a claim with no session leaves ``claimed_by_session`` empty."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot")
+
+        assert claimed is not None
+        assert claimed.claimed_by == "loop-slot"
+        assert claimed.claimed_by_session == ""
+
+    def test_claim_next_pending_records_session_orthogonally_to_claimed_by(self) -> None:
+        """#1917: a supplied session rides the claim; the role-label ``claimed_by`` is independent."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        claimed = Task.objects.claim_next_pending(claimed_by="loop-slot", claimed_by_session="sess-A")
+
+        assert claimed is not None
+        assert claimed.claimed_by == "loop-slot"
+        assert claimed.claimed_by_session == "sess-A"
+
 
 class TestActiveClaimExists(TestCase):
     """#1760: the deferred-reinstall drain reads this to defer while a unit runs."""
@@ -285,6 +309,34 @@ class TestReclaimOrphanedClaims(TestCase):
         assert orphan.claimed_at is None
         assert orphan.lease_expires_at is None
         assert orphan.heartbeat_at is None
+
+    def test_reclaim_clears_claimed_by_session(self) -> None:
+        """#1917: the session attribution is cleared alongside ``claimed_by`` on reclaim.
+
+        A row taken over by the orphan sweep is claimable again, so a stale
+        session attribution must not survive — symmetric with ``claimed_by``.
+        """
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        orphan = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="pid-99999",
+            claimed_by_session="sess-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        reclaimed = Task.objects.reclaim_orphaned_claims()
+
+        orphan.refresh_from_db()
+        assert reclaimed == 1
+        assert orphan.status == Task.Status.PENDING
+        assert orphan.claimed_by == ""
+        assert orphan.claimed_by_session == ""
 
     def test_a_live_claim_is_left_untouched(self) -> None:
         # Anti-vacuity: a healthy in-flight task (lease in the future)
@@ -493,6 +545,29 @@ class TestReapStaleClaimsCasOnSqlite(TestCase):
 
         stale.refresh_from_db()
         assert stale.status == Task.Status.FAILED
+
+    def test_reap_clears_claimed_by_session(self) -> None:
+        """#1917: the session attribution is cleared alongside ``claimed_by`` on reap."""
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        expired = timezone.now() - timedelta(seconds=30)
+        stale = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker-1",
+            claimed_by_session="sess-dead",
+            claimed_at=expired,
+            lease_expires_at=expired,
+            heartbeat_at=expired,
+        )
+
+        Task.objects.reap_stale_claims()
+
+        stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+        assert stale.claimed_by == ""
+        assert stale.claimed_by_session == ""
 
 
 class TestClaimNextPendingConcurrencyOnSqlite(TestCase):

@@ -294,6 +294,7 @@ class TaskQuerySet(models.QuerySet):
         self,
         *,
         claimed_by: str,
+        claimed_by_session: str = "",
         lease_seconds: int = 300,
         extra_filter: "Q | None" = None,
     ) -> "Task | None":
@@ -315,7 +316,11 @@ class TaskQuerySet(models.QuerySet):
         longer holds so it updates 0 rows and returns ``None``. Correct on
         SQLite AND Postgres. ``extra_filter`` (a ``Q``) narrows the
         candidate set (e.g. dispatchable-only) so the command and the
-        manager share ONE audited claim path.
+        manager share ONE audited claim path. ``claimed_by_session``
+        attributes the claim to the worker session that took it,
+        orthogonal to the role-label ``claimed_by``; it rides the SET
+        clause only and never the CAS WHERE predicate, so the claim
+        semantics are byte-identical with or without it.
         Returns the claimed task, or ``None`` when nothing is claimable.
         """
         from teatree.core.models.task import Task  # noqa: PLC0415
@@ -329,10 +334,13 @@ class TaskQuerySet(models.QuerySet):
             if oldest_pk is None:
                 return None
             # Compare-and-swap on status: only the writer that still sees
-            # the row PENDING wins; a concurrent tick updates 0 rows.
+            # the row PENDING wins; a concurrent tick updates 0 rows. The
+            # session attribution rides the SET clause only — the WHERE
+            # predicate is the status CAS token and stays untouched by it.
             claimed_count = self.filter(pk=oldest_pk, status=Task.Status.PENDING).update(
                 status=Task.Status.CLAIMED,
                 claimed_by=claimed_by,
+                claimed_by_session=claimed_by_session,
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),
@@ -375,6 +383,7 @@ class TaskQuerySet(models.QuerySet):
                 status=Task.Status.PENDING,
                 claimed_at=None,
                 claimed_by="",
+                claimed_by_session="",
                 lease_expires_at=None,
                 heartbeat_at=None,
             )
@@ -459,6 +468,7 @@ class TaskQuerySet(models.QuerySet):
                 status=Task.Status.FAILED,
                 claimed_at=None,
                 claimed_by="",
+                claimed_by_session="",
                 lease_expires_at=None,
                 heartbeat_at=None,
             )

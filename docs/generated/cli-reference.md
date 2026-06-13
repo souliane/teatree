@@ -3138,9 +3138,12 @@ Usage: t3 loop claim-next [OPTIONS]
  Atomically claim the oldest pending dispatchable Task, then emit it.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
-│ --json                    Emit the claimed dispatch as JSON.                 │
-│ --help                    Show this message and exit.                        │
+│ --claimed-by                TEXT  Worker identifier stored on the claim.     │
+│ --claimed-by-session        TEXT  Worker session id stored on the claim      │
+│                                   (defaults to the active session, empty     │
+│                                   when none).                                │
+│ --json                            Emit the claimed dispatch as JSON.         │
+│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
