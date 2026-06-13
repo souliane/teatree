@@ -45,8 +45,16 @@
           "name": "clear"
         },
         {
+          "help": "Print the resolved value for *key* and name its source (DB vs file/env)",
+          "name": "get"
+        },
+        {
           "help": "List every DB config override row (read-only)",
           "name": "list"
+        },
+        {
+          "help": "Seed the DB store from the operational ``[teatree]`` toml keys (one-time migration)",
+          "name": "import"
         }
       ]
     },

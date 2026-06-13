@@ -7,11 +7,13 @@ string, an int, or a list all round-trip into the override store.
 """
 
 from io import StringIO
+from pathlib import Path
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+import teatree.config as config_facade
 from teatree.config import get_effective_settings
 from teatree.config.enums import Mode
 from teatree.core.models import ConfigSetting
@@ -146,3 +148,64 @@ class TestConfigSettingList(TestCase):
         out = StringIO()
         call_command("config_setting", "list", stdout=out)
         assert "no" in out.getvalue().lower()
+
+
+class TestConfigSettingGet(TestCase):
+    def test_get_reports_stored_db_value(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 7)
+        out = StringIO()
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", stdout=out)
+        rendered = out.getvalue()
+        assert "7" in rendered
+        # The source is named so the operator knows it came from the DB tier, not
+        # the file/env fallback.
+        assert "db" in rendered.lower()
+
+    def test_get_reports_file_fallback_when_no_db_row(self) -> None:
+        # No DB row -> get reports the resolved file/env value and names the
+        # fallback source, so an absent override is visible (dual-read read-side).
+        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").exists() is False
+        out = StringIO()
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "file" in rendered or "fallback" in rendered
+
+    def test_get_rejects_non_overridable_key(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
+
+
+class TestConfigSettingImport(TestCase):
+    @pytest.fixture(autouse=True)
+    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_import_seeds_operational_keys_from_toml(self) -> None:
+        self.config_path.write_text(
+            "[teatree]\nissue_implementer_enabled = true\nissue_implementer_max_concurrent = 4\n",
+            encoding="utf-8",
+        )
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
+        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 4
+
+    def test_import_skips_bootstrap_and_unknown_keys(self) -> None:
+        # A bootstrap-file-only key (private_repos) and an unknown key must NOT be
+        # imported into the DB store — only operational overridable keys move.
+        self.config_path.write_text(
+            '[teatree]\nprivate_repos = ["acme/secret"]\nnot_a_real_setting = "x"\nmode = "auto"\n',
+            encoding="utf-8",
+        )
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.filter(key="private_repos").exists() is False
+        assert ConfigSetting.objects.filter(key="not_a_real_setting").exists() is False
+        # The one operational key did move.
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+
+    def test_import_is_idempotent(self) -> None:
+        self.config_path.write_text("[teatree]\nissue_implementer_max_concurrent = 4\n", encoding="utf-8")
+        call_command("config_setting", "import", stdout=StringIO())
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1

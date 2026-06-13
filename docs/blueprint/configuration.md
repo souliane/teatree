@@ -153,11 +153,23 @@ The model reaches the
 resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime
 lookup, not a static import) so the `config` platform layer never takes a
 backwards edge on the `core` domain layer (tach-clean). Admin path:
-`t3 <overlay> config_setting set <key> <json> | clear <key> | list`. The pilot
-migrated setting is `issue_implementer_enabled` (a default-off boolean
-kill-switch). Bootstrap-readable settings (`DATABASE_URL` / data-dir /
-`DJANGO_SETTINGS_MODULE` / the offline `private_repos` allowlist) are explicitly
-out of scope — they must resolve before Django starts.
+`t3 <overlay> config_setting set <key> <json> | get <key> | clear <key> | list | import`.
+`get` is the read side of the dual-read store — it prints a setting's resolved
+value and names its source (`db` when a row exists, else `file/env`). `import` is
+the one-time dual-read migration ([#938](https://github.com/souliane/teatree/issues/938)):
+it seeds the store from every operational `[teatree]` toml key that is a registered
+`OVERLAY_OVERRIDABLE_SETTINGS` field (coerced through that registry's parser,
+upserted so a re-run is idempotent), skipping bootstrap-file-only and unknown keys.
+The pilot migrated setting is `issue_implementer_enabled` (a default-off boolean
+kill-switch).
+
+Bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE`
+/ the offline `private_repos` allowlist) are explicitly out of scope — they must
+resolve before Django starts. That boundary is a **typed allowlist**,
+`BOOTSTRAP_FILE_ONLY_SETTINGS` in `config/settings.py`, not just prose: a fitness
+function asserts `BOOTSTRAP_FILE_ONLY_SETTINGS ∩ OVERLAY_OVERRIDABLE_SETTINGS == ∅`,
+so a bootstrap key can never be made DB-overridable (and `config_setting set` /
+`import` therefore never write a row for one) without turning a test red.
 
 The active overlay is resolved via (in order): `T3_OVERLAY_NAME` env var
 (runtime truth; matches `get_overlay()`), cwd-based discovery, then the
