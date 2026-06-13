@@ -608,7 +608,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         """Return the directory holding overlay-contributed behavioral eval scenarios.
 
         Each overlay may ship its own ``*.yaml`` scenarios alongside the
-        core catalog under ``src/teatree/eval/scenarios/``. The eval
+        core catalog under ``tests/eval_lanes/scenarios/``. The eval
         harness walks every overlay's directory at discovery time
         (`teatree.eval.discovery`), so scenarios that reference
         tenant-specific identities live in the relevant overlay and the

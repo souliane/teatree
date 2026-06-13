@@ -18,7 +18,7 @@ from pathlib import Path
 
 from teatree.cli.eval import eval_app
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _README = _REPO_ROOT / "src" / "teatree" / "eval" / "README.md"
 _PARTS_TABLE_ROW = "| CLI surface"
 
@@ -67,8 +67,8 @@ class TestPartsTablePathsResolve:
         assert "cli/eval*.py" not in row
 
     def test_scenarios_glob_resolves_to_non_empty_dir(self) -> None:
-        scenarios = _REPO_ROOT / "src" / "teatree" / "eval" / "scenarios"
-        assert "src/teatree/eval/scenarios/*.yaml" in _readme_text()
+        scenarios = _REPO_ROOT / "tests" / "eval_lanes" / "scenarios"
+        assert "tests/eval_lanes/scenarios/*.yaml" in _readme_text()
         assert scenarios.is_dir()
         assert list(scenarios.glob("*.yaml")), "no scenario yaml on disk"
 
