@@ -34,7 +34,7 @@
     },
     {
       "name": "e2e-review",
-      "summary": "Reviewer-side quality gate for frontend Playwright E2E specs \u2014 business-readable scenario names, stable selector contracts, condition-not-clock waits, one-behaviour-per-test, fixture/cleanup discipline, no hardcoded creds/URLs, POM patterns \u2014 plus the procedure for converting an externally-authored suite into a project's conventions"
+      "summary": "Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices \u2014 user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence \u2014 and tells the implementer what to fix before approval"
     },
     {
       "name": "followup",
