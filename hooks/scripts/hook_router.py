@@ -6980,7 +6980,7 @@ def handle_block_secret_file_print(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command or not _is_secret_print(command):
         return False
-    return emit_pretooluse_deny(_CREDENTIAL_PRINT_BLOCK_MSG)  # [skill-load-ok: teatree]
+    return _fail_open_or_deny(data, _CREDENTIAL_PRINT_BLOCK_MSG)
 
 
 # ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
