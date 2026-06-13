@@ -72,8 +72,15 @@ class TestPathExemption:
     def test_gate_source_is_exempt(self) -> None:
         assert terminology_gate.path_is_exempt("src/teatree/hooks/terminology_gate.py")
 
-    def test_gate_test_is_exempt(self) -> None:
-        assert terminology_gate.path_is_exempt("tests/test_terminology_gate.py")
+    def test_gate_test_old_path_is_not_exempt(self) -> None:
+        # The file moved; the old path must NOT be exempt so it cannot be used
+        # as a bypass by files planted at the stale location.
+        assert not terminology_gate.path_is_exempt("tests/test_terminology_gate.py")
+
+    def test_gate_test_at_moved_path_is_exempt(self) -> None:
+        # The test file moved to tests/teatree_hooks/ — the exempt suffix must
+        # match the real location so the gate does not self-trip on its fixtures.
+        assert terminology_gate.path_is_exempt("tests/teatree_hooks/test_terminology_gate.py")
 
     def test_other_path_is_not_exempt(self) -> None:
         assert not terminology_gate.path_is_exempt("skills/todos/SKILL.md")
