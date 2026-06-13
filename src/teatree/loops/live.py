@@ -198,6 +198,28 @@ def _per_loop_owners(leases: dict[str, LoopLease], now: dt.datetime) -> tuple[Lo
     return tuple(sorted(per_loop, key=operator.attrgetter("slot")))
 
 
+def owned_per_loop_owners(report: LoopStatusReport, session_id: str) -> tuple[LoopOwnerStatus, ...]:
+    """Per-loop owners scoped to ``session_id`` — the default-view filter (#1834 WI-2).
+
+    The shared seam both the ``t3 loop list`` default branch and the
+    statusline use so the two renderers can never drift: it filters
+    :attr:`LoopStatusReport.per_loop_owners` (every ``loop:<name>`` lease,
+    the cross-session ``--all`` set) down to the loops owned by
+    ``session_id`` via the same :attr:`LoopOwnerStatus.slot` /
+    ``session_id`` keys that built the set.
+
+    **Fail-open:** an empty ``session_id`` (a cron / anonymous tick that
+    cannot resolve a session) returns the FULL set, never an empty one — the
+    default view degrades to the cross-session health view rather than
+    hiding live loops. Empty input (the single-owner default, no ``loop:``
+    lease) returns ``()`` for any session, so the default view short-circuits
+    to today's exact output.
+    """
+    if not session_id:
+        return report.per_loop_owners
+    return tuple(owner for owner in report.per_loop_owners if owner.session_id == session_id)
+
+
 def _last_tick_at(infra: tuple[LoopStatusEntry, ...], mini: tuple[LoopStatusEntry, ...]) -> dt.datetime | None:
     fired = [entry.last_fired_at for entry in (*infra, *mini) if entry.last_fired_at is not None]
     return max(fired) if fired else None
@@ -213,4 +235,5 @@ __all__ = [
     "LoopStatusEntry",
     "LoopStatusReport",
     "build_report",
+    "owned_per_loop_owners",
 ]

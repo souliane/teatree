@@ -19,7 +19,7 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
 from teatree.loops.base import MiniLoop
 from teatree.loops.config import LoopsConfig
-from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report
+from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
 _LIVE_PID = os.getpid()
 _DEAD_PID = 2_000_000_000
@@ -216,6 +216,65 @@ class TestPerLoopOwners(django.test.TestCase):
             report = build_report(now=now)
         assert report.per_loop_owners == ()
         assert report.owner.slot == "loop-owner"
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestOwnedPerLoopOwners(django.test.TestCase):
+    """``owned_per_loop_owners`` scopes the per-loop layer to one session (#1834 WI-2).
+
+    The default ``t3 loop list`` / statusline view subtracts every per-loop
+    owner NOT owned by the current session; ``--all`` keeps the full
+    cross-session set. An empty ``session_id`` (cron / anonymous) fails open
+    to the full set so the default view is never blanked.
+    """
+
+    def _seed(self, now: dt.datetime) -> None:
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="sess-A",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        LoopLease.objects.create(
+            name="loop:review",
+            session_id="sess-B",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+
+    def test_scopes_to_owning_session(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        owned = owned_per_loop_owners(report, "sess-A")
+        assert [o.slot for o in owned] == ["loop:dispatch"]
+        assert owned[0].session_id == "sess-A"
+
+    def test_other_session_subtracted_but_present_in_full_set(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        # The default view for session A excludes B's loop ...
+        assert [o.slot for o in owned_per_loop_owners(report, "sess-A")] == ["loop:dispatch"]
+        # ... yet B's loop genuinely exists in the unfiltered cross-session set.
+        assert {o.slot for o in report.per_loop_owners} == {"loop:dispatch", "loop:review"}
+
+    def test_empty_session_fails_open_to_full_set(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        owned = owned_per_loop_owners(report, "")
+        assert {o.slot for o in owned} == {"loop:dispatch", "loop:review"}
+
+    def test_no_per_loop_rows_is_empty_for_any_session(self) -> None:
+        now = timezone.now()
+        with _registry(_stub_loop("dispatch", 300)):
+            report = build_report(now=now)
+        assert owned_per_loop_owners(report, "sess-A") == ()
+        assert owned_per_loop_owners(report, "") == ()
 
 
 @django.test.override_settings(USE_TZ=True)
