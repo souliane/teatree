@@ -623,12 +623,12 @@ def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
     return MergeClear.objects.create(**defaults)
 
 
-def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "") -> object:
+def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "", slug: str | None = None) -> object:
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
         return assert_merge_preconditions(
             clear=clear,
             executing_loop_identity="merge-loop",
-            slug=clear.slug,
+            slug=clear.slug if slug is None else slug,
             pr_id=clear.pr_id,
             human_authorized=human_authorized,
         )
@@ -776,3 +776,61 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
         clear = _substrate_clear(None, pr_id=1743, slug="unknown-owner/unknown-repo")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
+
+
+class TestBranchSlugClearResolvesOverlayFromRecoveredRepo(TestCase):
+    """A branch-name-slug CLEAR resolves its overlay from the merge's recovered repo.
+
+    The loop issues ticket-less substrate CLEARs whose stored ``slug`` is a
+    *branch name* (``merge-candidate-working-repos``), not ``owner/repo``. The
+    merge keystone recovers the real ``owner/repo`` via
+    ``resolve_pr_repo_slug`` → ``_reconcile_slug_against_reviewed_sha`` and
+    threads it into ``assert_merge_preconditions`` as the ``slug`` kwarg. The
+    autonomy carve-out must resolve its overlay from that recovered slug — not
+    the raw branch-name slug, which maps to no overlay (the global babysit
+    default) and wrongly refuses a merge the overlay genuinely stands ``full``
+    for. Fail-closed is preserved: a branch-slug CLEAR whose recovered repo is
+    NOT full (or unresolvable) still requires the per-PR human authoriser.
+    """
+
+    def test_full_autonomy_branch_slug_passes_via_recovered_repo(self) -> None:
+        """MUST-ALLOW: branch-name slug + recovered owner/repo at full satisfies the sign-off.
+
+        RED before the fix: the carve-out resolved the overlay from the raw
+        branch-name ``slug`` (→ no overlay → babysit) and refused with
+        "the overlay autonomy is not full" despite the recovered repo's overlay
+        standing at full.
+        """
+        clear = _substrate_clear(None, pr_id=1750, slug="merge-candidate-working-repos")
+        with _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear, slug="souliane/teatree")
+        assert precheck is not None
+
+    def test_full_autonomy_branch_slug_without_recovered_repo_still_refused(self) -> None:
+        """MUST-DENY: a branch-name slug with no recovered owner/repo fails closed.
+
+        When the merge cannot recover a real repo (the recovered slug is still
+        the branch name), the overlay is unresolvable — fail-closed: the per-PR
+        human authoriser stays mandatory even under a full overlay.
+        """
+        clear = _substrate_clear(None, pr_id=1751, slug="merge-candidate-working-repos")
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear, slug="merge-candidate-working-repos")
+
+    def test_branch_slug_recovered_repo_at_babysit_still_refused(self) -> None:
+        """MUST-DENY: branch slug recovers a real repo, but its overlay is below full.
+
+        The recovery succeeds (the recovered ``owner/repo`` maps to ``t3-teatree``),
+        but the overlay stands at babysit — fail-closed: the carve-out fires only
+        for a genuinely-full overlay, so the per-PR human authoriser stays mandatory.
+        This is the no-silent-widening guard: recovery never lowers the floor.
+        """
+        clear = _substrate_clear(None, pr_id=1752, slug="merge-candidate-working-repos")
+        with _overlay_autonomy("t3-teatree", "babysit"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear, slug="souliane/teatree")
+
+    def test_branch_slug_recovered_repo_maps_to_no_overlay_refused(self) -> None:
+        """MUST-DENY: a branch slug whose recovered repo maps to no overlay fails closed."""
+        clear = _substrate_clear(None, pr_id=1753, slug="merge-candidate-working-repos")
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear, slug="unknown-owner/unknown-repo")
