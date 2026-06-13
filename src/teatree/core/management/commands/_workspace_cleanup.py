@@ -6,20 +6,15 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
 import re
-import sys
 from contextlib import suppress
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.cleanup import (
-    _branch_tree_matches_squash,
-    _ref_captured_by_merge,
-    _remote_tracking_ref_exists,
-    cleanup_worktree,
-)
+from teatree.core.cleanup import _branch_tree_matches_squash, _ref_captured_by_merge, _remote_tracking_ref_exists
 from teatree.core.clone_paths import resolve_clone_path
+from teatree.core.management.commands._workspace_reap import reap_one_worktree
 from teatree.core.models import Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
@@ -31,6 +26,7 @@ if TYPE_CHECKING:
 
     from teatree.core.reconcile import Drift
     from teatree.utils.run import CompletedProcess
+
 
 # Regenerable artifacts a clean-working-tree probe must ignore: provisioning
 # writes the env cache into every worktree (``worktree_env.write_env_cache``).
@@ -99,8 +95,28 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
     ):
         return True
 
-    diff = git.run(repo=repo, args=["diff", f"origin/{default}...{branch}", "--stat"])
-    return not diff
+    return _branch_captured_upstream(repo, branch, default)
+
+
+def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
+    """Whether every unique commit of ``branch`` is already in ``origin/<default>``.
+
+    The forge-CLI-free squash-merge signal. A squash-merge rewrites the source
+    commits into one new SHA on the default branch, so ``branch`` is NOT an
+    ancestor of ``origin/<default>`` and an is-ancestor / three-dot-diff test
+    misses it. ``git cherry`` compares by patch-id instead: it prints ``- <sha>``
+    for each ``branch`` commit whose change is already upstream (the squash
+    captured it) and ``+ <sha>`` for one that is not. The branch is captured when
+    cherry finds no ``+`` line — empty output (nothing unique) or every line a
+    ``-`` (all unique commits are equivalent upstream). A probe failure (unknown
+    ref, missing ``origin/<default>``) reads as not-captured so the data-loss
+    guards downstream keep the worktree.
+    """
+    try:
+        cherry = git.run(repo=repo, args=["cherry", f"origin/{default}", branch])
+    except CommandFailedError:
+        return False
+    return all(line.startswith("-") for line in cherry.splitlines() if line.strip())
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
@@ -218,12 +234,17 @@ class WorktreeReaper:
         a non-empty diff, or any uncertain outcome reads as keep, so an uncertain
         row is reported with a SKIPPED warning and never deleted (warn-not-fail).
 
-        The teardown goes through :func:`cleanup_worktree` with the default
+        The teardown goes through :func:`reap_one_worktree` with the default
         ``strict_hygiene=True`` / ``force=False``, so the #706/#835/#1506 data-loss
         guards still refuse a branch with commits on no remote — a positive squash
         signal narrows the candidate set, it never bypasses the guards. Branches
         matching ``clean_ignore`` — resolved per the row's own overlay via
         :func:`is_clean_ignored` — are skipped before any classification.
+
+        Every step that touches a possibly-corrupt sibling repo or an
+        unregistered overlay is funnelled through :func:`reap_one_worktree` or the
+        ``CommandFailedError`` guard below, so one bad row is skipped with a
+        warning rather than aborting the whole ``clean-all`` run.
         """
         cleaned: list[str] = []
         for worktree in Worktree.objects.exclude(state=Worktree.State.CREATED).select_related("ticket"):
@@ -233,13 +254,21 @@ class WorktreeReaper:
             repo = resolve_clone_path(self.workspace, worktree)
             if repo is None or not repo.is_dir():
                 continue
-            default = git.default_branch(str(repo))
-            if not is_squash_merged(str(repo), worktree.branch, default):
-                continue
             try:
-                cleaned.append(str(cleanup_worktree(worktree)))
-            except RuntimeError as exc:
-                cleaned.append(resolve_unsynced_worktree(worktree, exc, interactive=interactive))
+                default = git.default_branch(str(repo))
+                merged = is_squash_merged(str(repo), worktree.branch, default)
+            except (RuntimeError, CommandFailedError) as exc:
+                cleaned.append(
+                    f"SKIPPED '{worktree.branch}': could not classify against {repo} ({exc}) — keeping the row."
+                )
+                continue
+            if not merged:
+                continue
+            # is_squash_merged already confirmed the branch shipped, so the
+            # origin/main-relative hygiene gate is redundant here and would
+            # re-refuse a genuinely squash-merged branch (distinct new SHA). The
+            # always-on #706 data-loss guard still protects unpushed-everywhere work.
+            cleaned.append(reap_one_worktree(worktree, interactive=interactive, strict_hygiene=False))
         return cleaned
 
     def remove_empty_ticket_dirs(self) -> list[str]:
@@ -491,70 +520,6 @@ def drop_orphan_databases() -> list[str]:
         )
         cleaned.append(f"Dropped orphan database: {db_name}")
     return cleaned
-
-
-def _is_interactive() -> bool:
-    """Whether ``clean-all`` may prompt on stdin.
-
-    True only when both stdin and stdout are confirmed TTYs. Any non-TTY
-    context — a piped stdin, an autonomous loop tick, a daemonised worker
-    whose stdin is closed (``isatty`` raises ``ValueError``) or absent
-    (``sys.stdin is None``) — resolves to ``False`` so the caller takes the
-    safe documented non-interactive path and never blocks reading stdin.
-
-    Fails closed to non-interactive: an unknown/unreadable stdin is treated
-    as not-a-TTY, never as a TTY that may be prompted.
-    """
-    try:
-        return bool(sys.stdin.isatty() and sys.stdout.isatty())
-    except (ValueError, AttributeError):
-        return False
-
-
-def resolve_unsynced_worktree(worktree: Worktree, exc: RuntimeError, *, interactive: bool) -> str:
-    """Decide what to do with a worktree whose branch has genuinely-unpushed work."""
-    if not interactive:
-        return f"Skipped: {exc}"
-
-    prompt = (
-        f"\n{worktree.repo_path} ({worktree.branch}) — genuinely unpushed work.\n"
-        f"  {exc}\n"
-        "  [P]ush to remote / [A]bandon (force delete) / [S]kip (default): "
-    )
-    try:
-        choice = input(prompt).strip().lower()
-    except EOFError:
-        return f"Skipped: {exc}"
-
-    if choice == "p":
-        return push_unsynced_branch(worktree)
-    if choice == "a":
-        return abandon_unsynced_branch(worktree)
-    return f"Skipped: {exc}"
-
-
-def push_unsynced_branch(worktree: Worktree) -> str:
-    wt_path = (worktree.extra or {}).get("worktree_path", "")
-    if not wt_path or not Path(wt_path).is_dir():
-        return f"Push failed: {worktree.repo_path} ({worktree.branch}) — worktree path missing"
-    result = run_allowed_to_fail(
-        ["git", "-C", wt_path, "push", "-u", "origin", worktree.branch],
-        expected_codes=None,
-    )
-    if result.returncode != 0:
-        return f"Push failed: {worktree.repo_path} ({worktree.branch}) — {result.stderr.strip()}"
-    overlay_name = worktree.ticket.overlay or "<overlay>"
-    return (
-        f"Pushed: {worktree.repo_path} ({worktree.branch}). "
-        f"Run `t3 {overlay_name} pr create {worktree.ticket.pk}` to open a PR."
-    )
-
-
-def abandon_unsynced_branch(worktree: Worktree) -> str:
-    try:
-        return str(cleanup_worktree(worktree, force=True))
-    except Exception as exc:  # noqa: BLE001
-        return f"Abandon failed: {worktree.repo_path} ({worktree.branch}) — {exc}"
 
 
 def _die(write_err: "Callable[[str], object]", message: str) -> None:
