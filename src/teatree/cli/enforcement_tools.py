@@ -33,9 +33,26 @@ def ai_sig_scan(
     ToolRunner.run_script("ai_signature_scan", path)
 
 
+def _source_is_newer(src: Path, cov_mtime: float) -> bool:
+    """Whether *src* is strictly newer than the coverage file's mtime.
+
+    A file removed mid-walk (``OSError`` on ``stat``) contributes nothing to
+    the staleness decision rather than crashing the whole gate — the walk
+    degrades gracefully without suppressing a genuine staleness signal from
+    the files that are still present.
+    """
+    try:
+        return src.stat().st_mtime > cov_mtime
+    except OSError:
+        return False
+
+
 def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
-    cov_mtime = coverage_file.stat().st_mtime
-    return any(src.stat().st_mtime > cov_mtime for src in repo.rglob("*.py") if src != coverage_file)
+    try:
+        cov_mtime = coverage_file.stat().st_mtime
+        return any(_source_is_newer(src, cov_mtime) for src in repo.rglob("*.py") if src != coverage_file)
+    except OSError:
+        return False
 
 
 @tool_app.command("diff-coverage")

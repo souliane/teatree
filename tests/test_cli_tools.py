@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 import teatree.cli as teatree_cli
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
+from teatree.cli.enforcement_tools import _coverage_is_stale
 from teatree.cli.tools import ToolRunner
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
@@ -171,6 +172,50 @@ class TestToolCommands:
         assert result.exit_code == 0
         assert "WARNING" in result.stderr
         assert "stale" in result.stderr.lower()
+
+    def test_coverage_is_stale_degrades_when_file_removed_mid_walk(self, tmp_path):
+        """A source file removed between rglob and stat must not crash the gate.
+
+        ``_coverage_is_stale`` walks every ``*.py`` and stats it; a file
+        vanishing mid-walk (a concurrent worktree prune, an editor swap) made
+        ``stat`` raise ``FileNotFoundError`` and crash ``diff-coverage``. The
+        per-file skip degrades to "not stale" for the vanished file instead.
+        """
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        os.utime(cov, (time.time() - 10, time.time() - 10))
+        ghost = tmp_path / "ghost.py"
+        ghost.write_text("x = 1\n", encoding="utf-8")
+
+        real_stat = Path.stat
+
+        def stat_raising_for_ghost(self, *args, **kwargs):
+            if self.name == "ghost.py":
+                raise FileNotFoundError(self)
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat_raising_for_ghost):
+            assert _coverage_is_stale(cov, tmp_path) is False
+
+    def test_coverage_is_stale_skips_only_vanished_file(self, tmp_path):
+        """A vanished file is skipped; a present newer file still flags stale."""
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        os.utime(cov, (time.time() - 10, time.time() - 10))
+        ghost = tmp_path / "ghost.py"
+        ghost.write_text("x = 1\n", encoding="utf-8")
+        fresh = tmp_path / "fresh.py"
+        fresh.write_text("y = 2\n", encoding="utf-8")  # newer than .coverage
+
+        real_stat = Path.stat
+
+        def stat_raising_for_ghost(self, *args, **kwargs):
+            if self.name == "ghost.py":
+                raise FileNotFoundError(self)
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat_raising_for_ghost):
+            assert _coverage_is_stale(cov, tmp_path) is True
 
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
