@@ -20,7 +20,8 @@ from typing import Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
-from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report
+from teatree.core.session_identity import current_session_id
+from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report, owned_per_loop_owners
 
 _NEVER = "—"
 _REMEDIATION = "register the `t3 loop tick` cron, or run `t3 loop claim` in a Claude Code session to take ownership"
@@ -68,15 +69,31 @@ def _owner_line(owner: LoopOwnerStatus) -> str:
     return f"{owner.slot}: session {owner.session_id} (pid {pid} {liveness}) — {state}"
 
 
-def _per_loop_owner_lines(report: LoopStatusReport) -> list[str]:
-    """The cross-session per-loop owner block for ``--all`` (#1834).
+def _resolve_per_loop_owners(report: LoopStatusReport, *, show_all: bool) -> tuple[LoopOwnerStatus, ...]:
+    """The per-loop owner set to render — full under ``--all``, scoped by default (#1834 WI-2).
 
-    Empty under the single-owner default (no ``loop:<name>`` lease claimed),
-    so omitting the header keeps the default view byte-identical.
+    Without ``--all`` the block scopes to the CURRENT session's owned loops
+    via :func:`owned_per_loop_owners` (which fails open to the full set when
+    no session resolves); ``--all`` keeps the cross-session health view.
+    Either way an empty report (the single-owner default, no ``loop:<name>``
+    lease) yields ``()`` so the per-loop block is absent and the output is
+    byte-identical to today.
     """
-    if not report.per_loop_owners:
+    if show_all:
+        return report.per_loop_owners
+    return owned_per_loop_owners(report, current_session_id())
+
+
+def _per_loop_owner_lines(owners: tuple[LoopOwnerStatus, ...]) -> list[str]:
+    """The per-loop owner block. Empty when there are no per-loop owners.
+
+    Under the single-owner default (no ``loop:<name>`` lease claimed) the
+    resolved set is empty, so omitting the header keeps the default view
+    byte-identical to today.
+    """
+    if not owners:
         return []
-    return ["per-loop owners:", *(f"  {_owner_line(owner)}" for owner in report.per_loop_owners)]
+    return ["per-loop owners:", *(f"  {_owner_line(owner)}" for owner in owners)]
 
 
 def _stall_lines(report: LoopStatusReport) -> list[str]:
@@ -93,8 +110,7 @@ def _render_text(report: LoopStatusReport, *, show_all: bool) -> list[str]:
     lines.append("mini-loops:")
     lines.extend(_entry_line(entry, now) for entry in report.mini_loops)
     lines.append(_owner_line(report.owner))
-    if show_all:
-        lines.extend(_per_loop_owner_lines(report))
+    lines.extend(_per_loop_owner_lines(_resolve_per_loop_owners(report, show_all=show_all)))
     lines.extend(_stall_lines(report))
     return lines
 
@@ -135,9 +151,11 @@ def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
         "infra_slots": [_entry_payload(entry, now) for entry in report.infra_slots],
         "mini_loops": [_entry_payload(entry, now) for entry in report.mini_loops],
         # The default ``owner`` block keeps its exact #1744 shape (no ``slot``
-        # key) so the default ``--json`` output is byte-identical to today.
-        # The cross-session per-loop layer (which carries ``slot``) is added
-        # only under ``--all``.
+        # key) so the single-owner default ``--json`` output is byte-identical
+        # to today. The per-loop layer (which carries ``slot``) is added only
+        # when there are per-loop owners to show: scoped to the current
+        # session by default, the full cross-session set under ``--all``
+        # (#1834 WI-2).
         "owner": {
             "session_id": report.owner.session_id,
             "owner_pid": report.owner.owner_pid,
@@ -145,8 +163,9 @@ def _render_json(report: LoopStatusReport, *, show_all: bool) -> str:
             "is_live": report.owner.is_live,
         },
     }
-    if show_all:
-        payload["per_loop_owners"] = [_owner_payload(owner) for owner in report.per_loop_owners]
+    per_loop_owners = _resolve_per_loop_owners(report, show_all=show_all)
+    if per_loop_owners:
+        payload["per_loop_owners"] = [_owner_payload(owner) for owner in per_loop_owners]
     return json.dumps(payload, indent=2)
 
 

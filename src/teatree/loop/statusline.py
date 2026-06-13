@@ -371,21 +371,24 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
 
 
 def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
-    """Return one ``<short-name> <next-tick>`` chunk per live infra LoopLease.
+    """Return one ``<short-name> <next-tick>`` chunk per live LoopLease this session shows.
 
     The ``loop-owner`` lease is excluded: it is a session-ownership token,
     not a work loop, and its countdown is meaningless in the shared zones
-    file (every terminal would show the same ``owner Nm`` chunk regardless
-    of which session is actually the owner). The per-session owner badge in
-    ``statusline.sh`` replaces that signal with a context-aware you ✓ /
-    owner·pid / unclaimed display. When *colorize* is set, each chunk is
-    wrapped in its recency color (:func:`_loop_recency_color`). Fails open to
-    ``[]`` on any read error.
+    file (the per-session owner badge in ``statusline.sh`` replaces that
+    signal). The dedicated-loop ``loop:<name>`` leases (#1834) are
+    **per-session scoped** via :mod:`teatree.loop.loop_scoping` — only the
+    loops THIS session owns survive (fail-open, byte-identical under the
+    single-owner default). When *colorize* is set, each chunk is wrapped in
+    its recency color (:func:`_loop_recency_color`); fails open to ``[]``.
     """
+    from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, per_loop_chunk_visible  # noqa: PLC0415
+
     try:
         leases = _live_loop_leases()
     except Exception:  # noqa: BLE001
         return []
+    owned_per_loop = current_session_owned_per_loop_slots()
     return [
         _colorize_chunk(
             _loop_chunk(name, acquired_at),
@@ -393,7 +396,7 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
             colorize=colorize,
         )
         for name, acquired_at in leases
-        if name != "loop-owner"
+        if name != "loop-owner" and per_loop_chunk_visible(name, owned_per_loop)
     ]
 
 
