@@ -139,7 +139,7 @@ def _assert_clear_authorized(
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
-        and not _overlay_grants_full_substrate_autonomy(clear)
+        and not _overlay_grants_full_substrate_autonomy(clear, resolved_slug=slug)
     ):
         detail = (
             "no human authoriser recorded on the CLEAR and the overlay autonomy is not full"
@@ -163,25 +163,42 @@ def _assert_clear_authorized(
     return clear
 
 
-def _resolve_clear_overlay_name(clear: "MergeClear") -> str:
+def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "") -> str:
     """The overlay name to resolve autonomy against for *clear*.
 
-    The CLEAR's ``ticket.overlay`` is authoritative when present, but the loop
-    routinely issues a CLEAR with no linked ticket (every substrate CLEAR in
-    the live ledger). The CLEAR always carries the ``owner/repo`` ``slug``, so
-    the overlay is recovered from it via :func:`infer_overlay_for_url` — the
-    same workspace-repos inference ``ticket.overlay`` itself is populated from.
-    Returns ``""`` when neither source resolves an overlay.
+    Resolution order, first non-empty wins:
+
+    1.  ``clear.ticket.overlay`` — authoritative when the CLEAR carries a
+        linked ticket.
+    2.  :func:`infer_overlay_for_url` on the CLEAR's stored ``slug`` — the same
+        workspace-repos inference ``ticket.overlay`` itself is populated from.
+        This resolves only when the stored slug is an ``owner/repo``.
+    3.  :func:`infer_overlay_for_url` on *resolved_slug* — the real
+        ``owner/repo`` the merge keystone recovered for this CLEAR
+        (:func:`resolve_pr_repo_slug` →
+        :func:`_reconcile_slug_against_reviewed_sha`). The loop routinely
+        issues a ticket-less substrate CLEAR whose stored ``slug`` is a *branch
+        name* (``merge-candidate-working-repos``), not ``owner/repo`` — step 2
+        returns ``""`` for it, so without this step the carve-out resolves the
+        global (babysit) overlay and wrongly refuses a merge the overlay
+        genuinely stands ``full`` for. Threading the merge's already-recovered
+        slug makes the autonomy check resolve the SAME repo the bound merge
+        targets.
+
+    Returns ``""`` when no source resolves an overlay (the fail-closed default).
     """
     from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
     overlay_name = str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
     if overlay_name:
         return overlay_name
-    return infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
+    from_stored = infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
+    if from_stored:
+        return from_stored
+    return infer_overlay_for_url(resolved_slug.strip()).strip()
 
 
-def _overlay_grants_full_substrate_autonomy(clear: "MergeClear") -> bool:
+def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
     """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
 
     Resolves the effective autonomy for the CLEAR's overlay
@@ -192,10 +209,16 @@ def _overlay_grants_full_substrate_autonomy(clear: "MergeClear") -> bool:
     (``notify`` / ``babysit``), or an unresolvable overlay, is fail-closed:
     the per-CLEAR human authoriser stays mandatory. The carve-out touches ONLY
     the per-PR sign-off — every other substrate-merge floor guard runs unchanged.
+
+    *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
+    this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
+    kwarg). It is the recovery source for a ticket-less CLEAR whose stored
+    ``slug`` is a branch name rather than ``owner/repo`` — see
+    :func:`_resolve_clear_overlay_name`.
     """
     from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
 
-    overlay_name = _resolve_clear_overlay_name(clear)
+    overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
     return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
