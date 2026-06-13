@@ -1,5 +1,11 @@
 version: 2
 updates:
+  # Watches pyproject.toml and proposes bumps to version constraints.
+  # NOTE: Dependabot's pip ecosystem does NOT regenerate uv.lock — after
+  # merging a dependabot PR you must run `uv lock --upgrade <package>` locally
+  # (or let the weekly `uv-lock-upgrade` workflow open the lock-refresh PR).
+  # The `uv` package-ecosystem is not yet supported by Dependabot; track
+  # https://github.com/dependabot/dependabot-core/issues/10478 for native support.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -9,6 +15,8 @@ updates:
         patterns:
           - "*"
 
+  # SHA-pinned actions are kept current by Dependabot: it reads the `# vN`
+  # comment tag and proposes a PR when a new release resolves to a different SHA.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
