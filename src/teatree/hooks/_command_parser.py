@@ -396,6 +396,7 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
 def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyFileContext") -> None:
     """Route a single command segment to the right argument walkers."""
     from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
+    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415
 
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
@@ -404,6 +405,11 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads, ctx.base)
+    # ``t3 review`` posts carry the body as the positional NOTE and use
+    # ``--file`` as a diff ANCHOR, not a body-file — extract the NOTE and SKIP
+    # the body-file walker so the anchored source is never scanned (#2278/#2270).
+    if append_t3_review_note_payload(words, payloads):
+        return
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
