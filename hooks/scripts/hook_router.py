@@ -6858,6 +6858,131 @@ def handle_block_direct_commands(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
+# ── PreToolUse: block-secret-file-print (#2306) ──────────────────────
+#
+# Blocks Bash commands that route a known secret-bearing source to stdout.
+# The privacy scan gates COMMITS, but nothing gates a command that echoes a
+# secret to the transcript — once it lands there, rotation is the only remedy.
+#
+# Triggered by:
+#   - cat/head/tail of known secret-bearing paths (credential files, key files,
+#     .env files, pass stores)
+#   - `pass show …` whose stdout is NOT captured or redirected to a file
+#   - echo/printf of a pasted token literal (glpat-/ghp_/gho_/xoxb-/xoxp-/sk-)
+#
+# Allowed (must NOT false-positive):
+#   - Reading a value into a shell variable  (VAR=$(…))
+#   - Piping / redirecting to a file         (… > out.txt)
+#   - Using the value via env or header      (curl -H "Token: $VAR")
+#   - cat of ordinary non-secret files
+#   - echo of prose that MENTIONS a secret-file path
+#
+# Fails OPEN on any internal error — a gate bug must never wedge the agent
+# (consistent with the #1164 raw-review-post guard).
+
+_SECRET_PATHS_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
+    r"""(?x)
+    (?:~|/root|/home/[^/\s]+|/Users/[^/\s]+|\$HOME|\$\{HOME\}|\$\{?HOME\}?)
+    /(?:
+        \.teatree\.toml
+        | \.netrc
+        | \.config/gh/hosts\.yml
+        | (?:Library/Application\s+Support|\.config)/glab-cli/config\.yml
+        | \.ssh/(?:id_[a-z0-9_]+|.*\.pem|.*\.key)
+    )
+    | (?:^|[\s/])(?:\.env(?:\.[a-z]+)?|secrets?\.env|.*\.credentials?|.*\.pem|.*\.key|.*_account\.json)(?:\s|$|['")])
+    """,
+    re.IGNORECASE,
+)
+
+_TOKEN_LITERAL_RE = re.compile(
+    r"""(?:^|\s)(?:glpat[-_]|ghp_|gho_|xoxb-|xoxp-|sk-)\S+""",
+)
+
+_PRINT_CMDS_RE = re.compile(r"^\s*(?:cat|head|tail)\b")
+
+_PASS_SHOW_RE = re.compile(r"^\s*pass\s+show\b")
+
+_CAPTURE_OR_REDIRECT_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
+    r"""
+    \$\(            # subshell capture: $(…)
+    | >\s*\S+       # stdout redirect to a file or /dev/null
+    | \|\s*\S       # pipe to another command (value leaves stdout)
+    """,
+    re.VERBOSE,
+)
+
+_ECHO_SAFE_QUOTE_RE = re.compile(r"""^(?:'[^']*'|"[^"]*")$""")
+
+# [skill-load-ok: souliane/teatree repo]
+_CREDENTIAL_PRINT_BLOCK_MSG = (
+    "BLOCKED: this command would print a secret-bearing file or credential token "
+    "to the transcript. Reading a secret into the transcript is irrecoverable — "
+    "rotation is the only remedy. Instead, extract the value into a shell variable "
+    "(`TOKEN=$(pass show …)`) and use it via env/header without printing it. "
+    "Do NOT implement 'mask-then-print' — a masking regex is one edge case away "
+    "from leaking. The gate's job is to keep the value off stdout entirely."
+)
+
+
+def _command_captures_or_redirects(command: str) -> bool:
+    """Return True when the command's stdout is captured or redirected, not printed.
+
+    A variable-assignment prefix (``VAR=$(…)`` or ``export VAR=$(…)``) or a
+    stdout redirect (``> file``) or pipe (``| cmd``) means the secret value
+    does NOT land on the transcript. A plain ``pass show x`` with no such
+    construct does.
+    """
+    return bool(_CAPTURE_OR_REDIRECT_RE.search(command))
+
+
+def _echo_arg_is_token(command: str) -> bool:
+    """Return True when the echo/printf command carries a bare token literal.
+
+    Prose strings inside quotes that merely MENTION a secret path are not
+    treated as token prints — they contain no token literal.  Only an
+    unquoted or minimally-quoted arg that starts with a known token prefix
+    triggers a deny.
+    """
+    parts = command.split(None, 1)
+    if len(parts) < 2:  # noqa: PLR2004
+        return False
+    arg = parts[1].strip()
+    if _ECHO_SAFE_QUOTE_RE.match(arg):
+        return False
+    return bool(_TOKEN_LITERAL_RE.search(command))
+
+
+def _is_secret_print(command: str) -> bool:  # [skill-load-ok: souliane/teatree repo]
+    """Whether *command* would print a secret-bearing value to stdout."""
+    try:
+        if _command_captures_or_redirects(command):
+            return False
+        if _PRINT_CMDS_RE.match(command):
+            return bool(_SECRET_PATHS_RE.search(command))
+        if re.match(r"^\s*(?:echo|printf)\b", command):
+            return _echo_arg_is_token(command)
+        return bool(_PASS_SHOW_RE.match(command))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def handle_block_secret_file_print(data: dict) -> bool:
+    """Deny a Bash command that would print a secret-bearing file or token to stdout.
+
+    Blocks cat/head/tail of credential files, ``pass show`` without redirection,
+    and echo/printf of pasted token literals. Commands that capture the value
+    into a variable or redirect to a file pass through. Returns True when a
+    deny was emitted (caller stops the handler chain).
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _is_secret_print(command):
+        return False
+    return emit_pretooluse_deny(_CREDENTIAL_PRINT_BLOCK_MSG)  # [skill-load-ok: teatree]
+
+
 # ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
 #
 # ``gh pr merge`` / ``glab mr merge`` bypass the FSM coherence mechanism
@@ -8506,6 +8631,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_secret_file_print,
         handle_block_out_of_band_merge,
         handle_block_raw_review_post,
         handle_validate_mr_metadata,
