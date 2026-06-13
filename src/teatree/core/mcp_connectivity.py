@@ -42,7 +42,7 @@ CLAUDE_AI_HOSTED = "claude.ai-hosted"
 THIRD_PARTY = "third-party"
 
 _CLAUDE_AI_PREFIX = "claude.ai "
-_CONNECTED_MARKERS = ("✔ Connected", "Connected")
+_CONNECTED_MARKER = "✔"
 _MCP_LIST_TIMEOUT_SECONDS = 30
 _CLAUDE_AI_HOSTED_HOSTS = ("mcp.notion.com", "mcp.slack.com", "mcp.sentry.dev")
 
@@ -110,9 +110,23 @@ def resolve_provider(name: str, *, url: str) -> str:
 
 
 def _project(data: dict, cwd: Path) -> dict:
+    """The ``projects`` entry for *cwd*, resolved by nearest-ancestor key.
+
+    Claude keys ``projects`` by absolute path. A worktree cwd is rarely an exact
+    key (the teatree model is worktree-first), so the entry is the one whose path
+    is the longest ancestor of (or equal to) *cwd* — the same longest-prefix
+    resolution Claude uses. An exact-``get`` would resolve the disabled set empty
+    from a worktree and flag healthy-but-disabled servers as disconnected.
+    """
     projects = data.get("projects")
-    project = projects.get(str(cwd)) if isinstance(projects, dict) else None
-    return project if isinstance(project, dict) else {}
+    if not isinstance(projects, dict):
+        return {}
+    candidates = [cwd, *cwd.parents]
+    for ancestor in candidates:
+        project = projects.get(str(ancestor))
+        if isinstance(project, dict):
+            return project
+    return {}
 
 
 def _project_disabled_servers(data: dict, cwd: Path) -> set[str]:
@@ -188,9 +202,10 @@ def has_enabled_mcp_servers(*, home: Path | None = None, cwd: Path | None = None
 def parse_mcp_list_output(text: str) -> list[McpServerStatus]:
     """Parse ``claude mcp list`` text into per-server connectivity.
 
-    Each server line is ``<name>: <url-or-transport> - <status>``. A status
-    containing ``Connected`` (with the ✔ glyph) is connected; ``Failed``,
-    ``Pending approval``, and any other status are not.
+    Each server line is ``<name>: <url-or-transport> - <status>``. Connected is
+    anchored on the ✔ glyph (``✔ Connected``) so it cannot substring-match a
+    ``Not Connected`` / ``✘ Failed`` / ``⏸ Pending approval`` status — those and
+    any other status are not connected.
     """
     statuses: list[McpServerStatus] = []
     for raw in text.splitlines():
@@ -200,7 +215,7 @@ def parse_mcp_list_output(text: str) -> list[McpServerStatus]:
         name, _, rest = line.partition(": ")
         target, _, status = rest.rpartition(" - ")
         url = target.strip() if target.strip().startswith("http") else ""
-        connected = any(marker in status for marker in _CONNECTED_MARKERS)
+        connected = _CONNECTED_MARKER in status
         statuses.append(McpServerStatus(name=name.strip(), url=url, connected=connected))
     return statuses
 

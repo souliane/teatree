@@ -54,6 +54,49 @@ class TestReadEnabledMcpServers:
     def test_missing_file_is_empty_not_error(self, tmp_path):
         assert read_enabled_mcp_servers(home=tmp_path, cwd=tmp_path) == []
 
+    def test_disabled_resolved_from_nearest_ancestor_project_key(self, tmp_path):
+        """A worktree cwd inherits the disabled set from the nearest ANCESTOR project key.
+
+        Claude keys ``projects`` by absolute path and a worktree cwd is rarely an
+        exact key — disabled servers are declared on the parent workspace. Resolving
+        by exact ``get(cwd)`` only would resolve the disabled set EMPTY and flag a
+        healthy-but-disabled server as enabled-but-disconnected.
+        """
+        workspace = tmp_path
+        worktree = workspace / "ticket-1234" / "repo"
+        worktree.mkdir(parents=True)
+        _write_claude_json(
+            workspace,
+            {
+                "claudeAiMcpEverConnected": ["claude.ai Notion", "claude.ai Figma"],
+                "projects": {
+                    str(workspace): {"disabledMcpServers": ["claude.ai Figma"]},
+                },
+            },
+        )
+        names = {s.name for s in read_enabled_mcp_servers(home=workspace, cwd=worktree)}
+        assert "claude.ai Notion" in names
+        assert "claude.ai Figma" not in names
+
+    def test_exact_project_key_wins_over_shorter_ancestor(self, tmp_path):
+        """The longest-prefix (nearest) ancestor key wins, not merely any ancestor."""
+        workspace = tmp_path
+        worktree = workspace / "ticket-1234" / "repo"
+        worktree.mkdir(parents=True)
+        _write_claude_json(
+            workspace,
+            {
+                "claudeAiMcpEverConnected": ["claude.ai Notion", "claude.ai Figma"],
+                "projects": {
+                    str(workspace): {"disabledMcpServers": ["claude.ai Notion"]},
+                    str(worktree): {"disabledMcpServers": ["claude.ai Figma"]},
+                },
+            },
+        )
+        names = {s.name for s in read_enabled_mcp_servers(home=workspace, cwd=worktree)}
+        assert "claude.ai Notion" in names
+        assert "claude.ai Figma" not in names
+
 
 class TestResolveProvider:
     def test_claude_ai_prefix_resolves_hosted(self):
@@ -77,6 +120,13 @@ class TestParseMcpListOutput:
         assert by_name["glab"].connected is False
         assert by_name["Figma"].connected is False
         assert by_name["claude.ai Notion"].url == "https://mcp.notion.com/mcp"
+
+    def test_not_connected_status_is_not_a_false_positive(self):
+        """A 'Not Connected' status must NOT substring-match 'Connected' (anchored on ✔)."""
+        text = "glab: stdio - Not Connected\nNotion: https://mcp.notion.com/mcp - ✔ Connected\n"
+        by_name = {s.name: s for s in parse_mcp_list_output(text)}
+        assert by_name["glab"].connected is False
+        assert by_name["Notion"].connected is True
 
 
 class TestCheckMcpConnectivity:

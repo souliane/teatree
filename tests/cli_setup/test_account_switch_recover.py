@@ -97,3 +97,23 @@ class TestRecoverAccountSwitchCommand:
         assert result.exit_code == 1
         assert "claude.ai Notion" in result.output
         assert "All connectors reachable" not in result.output
+
+    def test_switch_mcp_degraded_warn_is_printed_and_exits_zero(self, monkeypatch):
+        """A degraded probe (claude absent) prints its WARN here too, matching the doctor path."""
+        probes = (ConnectorProbeResult(name="slack", reachable=True),)
+        monkeypatch.setattr(
+            "teatree.core.mcp_connectivity.check_mcp_connectivity",
+            lambda: McpConnectivityOutcome(
+                ok=True,
+                degraded=True,
+                findings=["Could not live-probe MCP connectivity (FileNotFoundError: claude binary not on PATH); ..."],
+            ),
+        )
+        with patch(
+            "teatree.core.account_switch.detect_and_recover_account_switch",
+            return_value=_outcome(switched=True, probes=probes),
+        ):
+            result = runner.invoke(_app(), [])
+        assert result.exit_code == 0
+        assert "Could not live-probe MCP connectivity" in result.output
+        assert "All connectors reachable" in result.output

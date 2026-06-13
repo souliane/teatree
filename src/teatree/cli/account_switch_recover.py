@@ -16,18 +16,17 @@ def _report_mcp_connectivity() -> bool:
 
     A `/login` switch can leave an enabled MCP server disconnected even when the
     messaging-backend reprobe passed, so the account-switch recovery surfaces the
-    same connectivity findings the doctor gate does. Returns ``True`` when every
-    enabled server is connected (or the check degraded), ``False`` on a loud
-    disconnection/provider finding.
+    same connectivity findings the doctor gate does — including the degraded WARN
+    (probe could not run) that the doctor path also prints. Returns ``True`` when
+    every enabled server is connected (or the check degraded), ``False`` on a
+    loud disconnection/provider finding.
     """
     from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415
 
     outcome = check_mcp_connectivity()
-    if outcome.ok:
-        return True
     for finding in outcome.findings:
         typer.echo(f"  MCP: {finding}")
-    return False
+    return outcome.ok
 
 
 def recover_account_switch() -> None:
