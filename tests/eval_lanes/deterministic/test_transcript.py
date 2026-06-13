@@ -14,7 +14,7 @@ from teatree.eval.transcript import (
     requested_model_present,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
 def _load(name: str) -> str:

@@ -1,6 +1,6 @@
 # Co-located behavioral evals for the ship skill. `agent_path` is omitted on
 # each spec — discovery defaults it to skills/ship/SKILL.md (the owning skill).
-# Fixtures live in tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 # A PR that has ALREADY passed a cold review is brought up to date by MERGING
 # the default branch into its branch, never by rebasing (a rebase rewrites the

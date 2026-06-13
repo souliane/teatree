@@ -90,7 +90,7 @@ t3 eval all
 
 ## Authoring co-located evals
 
-A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
+A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
 
 ## Related
 

@@ -24,7 +24,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 | Concern | Location |
 |---|---|
 | CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `benchmark.py` per-variant cost/pass-rate comparison; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation; `skill_command_lane.py` #550 Tier-1 command-validity lane; `skill_prose_lane.py` #550 Tier-3 advisory prose-judge lane) |
-| Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
+| Scenario specs | `tests/eval_lanes/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
 | Transcript readers | `src/teatree/eval/transcript.py` (stream-json), `session_transcript.py` + `subagent_transcript.py` (on-disk session schema) |
@@ -183,7 +183,7 @@ file, so a scenario is only scoped when its rule maps cleanly to one heading.
 
 `agent_sections` resolution is guarded two ways: a missing/typo'd heading raises
 `MissingSectionError` (`teatree.eval.context_budget`) at run time, and
-`tests/eval/test_scenarios_anti_vacuous.py` resolves every declared section
+`tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py` resolves every declared section
 against the real SKILL.md on every PR — so a drifted heading is a hard RED, never
 a silently-empty (vacuous) prompt. Generated scenarios declare their sections in
 `scripts/eval/corpus_gen/all_scenarios.py::_AGENT_SECTIONS` (one auditable map,
@@ -575,8 +575,8 @@ code *does*: each `RegressionCheck` calls the **real** function for a recurring
 failure class on a constructed must-block input and a must-allow input, and
 reports a violation when either direction is wrong. Checks that need git build
 a throwaway repo under `tempfile`; checks that need the ORM run under the test
-DB (and skip cleanly when Django is not configured). `tests/eval/
-test_regression_corpus.py` proves each check is non-vacuous — a deliberately
+DB (and skip cleanly when Django is not configured). `tests/eval_lanes/
+deterministic/test_regression_corpus.py` proves each check is non-vacuous — a deliberately
 broken stand-in for the same code path turns the corpus RED — so a check that
 would silently pass on the pre-fix behavior is caught at test time. The corpus
 also runs in the normal pytest gate on every PR (via that test), so it is not
@@ -640,9 +640,9 @@ The unit tests mock the judge boundary; the metered path drives it for real.
   `eval-skill-triggers` hook gates every commit and `eval-pinned-regressions`
   gates every push (token-free).
 - **Every PR (deterministic layers).** The pinned-regressions corpus is exercised by
-  `tests/eval/test_regression_corpus.py` in the normal pytest gate on every
+  `tests/eval_lanes/deterministic/test_regression_corpus.py` in the normal pytest gate on every
   PR, and skill-triggers + the scenario anti-vacuous matchers are pinned by
-  `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
+  `tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
   test_eval.py`. The deterministic, free layers therefore guard every PR
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
 - **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
@@ -752,7 +752,7 @@ is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
 The gate is general and declarative: a new `skills/<name>/` with no eval and no
 `eval_exempt` trips it by default, and a new skill is covered-or-exempt with a
 one-line frontmatter key. It is **warn-first** in Phase A — the coverage lane in
-`t3 eval all` and the `tests/eval/test_skill_eval_coverage.py` gate report a gap
+`t3 eval all` and the `tests/eval_lanes/deterministic/test_skill_eval_coverage.py` gate report a gap
 but exit 0 (never red-blocking an unrelated push); `t3 eval coverage
 --fail-on-gap` is the Phase-B enforcement (a follow-up flip once the team is
 ready). The shipped corpus is gap-free today (the 4 co-located seeds — ship,
@@ -768,7 +768,7 @@ for `workspace` / `ship` / `test` / `code` / `debug` / `ticket` / `sweeping-prs`
 / orchestration / privacy-safety / communication) are declared once in
 `scripts/eval/corpus_gen/catalog.py` (+ `per_skill.py`) and emitted by
 `uv run python scripts/eval/generate_corpus.py` into both the scenario YAML and
-the fixtures. `tests/eval/test_corpus_generation.py` re-runs the emitter and
+the fixtures. `tests/eval_lanes/deterministic/test_corpus_generation.py` re-runs the emitter and
 fails on any drift, and re-checks the anti-vacuous contract from the
 declaration, so the catalog is the single source of truth. Hand-written
 scenarios (the originals) stay hand-written; only the generated files carry the
@@ -859,7 +859,7 @@ Every scenario ships three fixtures — `_pass` (compliant → GREEN), `_fail`
 what proves the scenario is not vacuous: a spec made only of negative matchers
 (`no_tool_call_matching`) is trivially satisfied by an agent that does nothing,
 so each scenario carries a positive `Skill` matcher that a no-op transcript
-fails. `tests/eval/test_scenarios_anti_vacuous.py` runs all three directions on
+fails. `tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py` runs all three directions on
 every PR, so a toothless skill-routing matcher cannot merge.
 
 ## Ground-truth corpus & conversation-audit curation (#2192, #1861)
@@ -918,7 +918,7 @@ through `t3 eval history` and `t3 eval run --gate-regressions`. See the
 
 ## Scenario shape
 
-Scenarios live in `src/teatree/eval/scenarios/*.yaml`. Each file holds a
+Scenarios live in `tests/eval_lanes/scenarios/*.yaml`. Each file holds a
 YAML list of one or more specs.
 
 ```yaml
@@ -998,7 +998,7 @@ form, so `args.run_in_background: ~ "(?i)true"` matches.
 ## Adding a scenario
 
 1. Decide on the surface:
-   - **Core** (`src/teatree/eval/scenarios/`) — cross-overlay invariants.
+   - **Core** (`tests/eval_lanes/scenarios/`) — cross-overlay invariants.
      Fixtures use placeholder identities (`widget-user`, `U_USER`,
      `https://example.com/widget/example/pull/42`).
    - **Overlay** (`<overlay>/eval/scenarios/`) — scenarios that reference
@@ -1010,7 +1010,7 @@ form, so `args.run_in_background: ~ "(?i)true"` matches.
 3. Keep prompts hermetic — no real network, no secrets — and keep
    `max_turns` low so a single run costs cents, not dollars.
 4. Ship at least a `<name>_fail.stream.jsonl` fixture under
-   `tests/eval/fixtures/`. Add a `<name>_pass.stream.jsonl` when the
+   `tests/eval_lanes/fixtures/`. Add a `<name>_pass.stream.jsonl` when the
    behavior shape is binary. The `test_scenarios_anti_vacuous` pytest
    parametrizes every shipped scenario against its fixtures and asserts
    the fail fixture goes RED and the pass fixture goes GREEN — a
@@ -1221,10 +1221,10 @@ not-caught outcome reads `FAIL … BROKEN — harness MISSED the planted violati
 
 It is anti-vacuous by construction: `src/teatree/eval/negative_control.py`
 builds both a violating run (caught) and a compliant run (not caught) of the
-same scenario, and `tests/eval/test_negative_control.py` asserts the control
+same scenario, and `tests/eval_lanes/deterministic/test_negative_control.py` asserts the control
 fires on the former and stays quiet on the latter.
 
-The generic per-scenario anti-vacuity gate (`tests/eval/test_scenarios_anti_vacuous.py`)
+The generic per-scenario anti-vacuity gate (`tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py`)
 proves every scenario's `_fail` fixture drives a red *verdict*; the negative
 control additionally proves the red *report content* (the violated rule + the
 offending tool call) is emitted in both text and JSON.

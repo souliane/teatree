@@ -17,7 +17,7 @@ from teatree.eval.backends import (
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
 def _spec(
