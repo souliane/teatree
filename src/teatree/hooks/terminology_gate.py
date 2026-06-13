@@ -87,7 +87,7 @@ def scan_text(text: str) -> list[tuple[int, TerminologyFinding]]:
 # phrase with its correction).
 _EXEMPT_SUFFIXES: tuple[str, ...] = (
     "src/teatree/hooks/terminology_gate.py",
-    "tests/test_terminology_gate.py",
+    "tests/teatree_hooks/test_terminology_gate.py",
 )
 
 

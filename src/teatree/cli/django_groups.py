@@ -91,6 +91,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "post-test-plan",
                 "Post/update the ticket's single test-plan note (side-by-side Dev|Local test plan) from a manifest.",
             ),
+            (
+                "post-evidence",
+                "[Deprecated] Alias for post-test-plan (renamed; kept one release for back-compat).",
+            ),
         ],
     ),
     "db": DjangoGroup(
@@ -117,6 +121,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("fetch-issue", "Fetch issue details from the configured tracker."),
             ("detect-tenant", "Detect the current tenant variant from the overlay."),
             ("post-test-plan", "Post a test plan as a PR comment."),
+            ("post-evidence", "[Deprecated] Alias for post-test-plan (renamed; kept one release for back-compat)."),
             ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
         ],
     ),

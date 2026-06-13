@@ -4659,6 +4659,8 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ project         Run E2E tests from the project's own test directory.         │
 │ post-test-plan  Post/update the ticket's single test-plan note (side-by-side │
 │                 Dev|Local test plan) from a manifest.                        │
+│ post-evidence   [Deprecated] Alias for post-test-plan (renamed; kept one     │
+│                 release for back-compat).                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4839,6 +4841,36 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 
  The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
  for one release so existing scripts keep working.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --manifest                                   TEXT                            │
+│ --ticket                                     TEXT                            │
+│ --title                                      TEXT                            │
+│ --mrs                                        TEXT  MR/PR URL(s) the test     │
+│                                                    plan covers (repeat or    │
+│                                                    comma-separate).          │
+│                                                    Supplements the           │
+│                                                    manifest's 'mrs'.         │
+│ --skip-validation    --no-skip-validation          User-authorised bypass of │
+│                                                    the image preflight       │
+│                                                    (red-box / duplicate      │
+│                                                    gates). Not for routine   │
+│                                                    use.                      │
+│                                                    [default:                 │
+│                                                    no-skip-validation]       │
+│ --help                                             Show this message and     │
+│                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e post-evidence`
+
+```
+Usage: t3 teatree e2e post-evidence [OPTIONS]
+
+ (deprecated)
+ Deprecated alias for ``post-test-plan`` (renamed; kept one release for
+ back-compat).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --manifest                                   TEXT                            │
@@ -5060,6 +5092,8 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ fetch-issue     Fetch issue details from the configured tracker.             │
 │ detect-tenant   Detect the current tenant variant from the overlay.          │
 │ post-test-plan  Post a test plan as a PR comment.                            │
+│ post-evidence   [Deprecated] Alias for post-test-plan (renamed; kept one     │
+│                 release for back-compat).                                    │
 │ sweep           List your open PRs across the forge for the /t3:sweeping-prs │
 │                 skill.                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -5197,6 +5231,27 @@ Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
 
  The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
  for one release so existing scripts keep working.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_iid      INTEGER  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo         TEXT                                                          │
+│ --title        TEXT  [default: Test Plan]                                    │
+│ --body         TEXT                                                          │
+│ --files        TEXT                                                          │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pr post-evidence`
+
+```
+Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
+
+ (deprecated)
+ Deprecated alias for ``post-test-plan`` (renamed; kept one release for
+ back-compat).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_iid      INTEGER  [required]                                         │
