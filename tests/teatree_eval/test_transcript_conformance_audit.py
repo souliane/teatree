@@ -106,3 +106,52 @@ class TestNoCommitNoVerify:
     def test_green_when_no_verify_is_not_a_commit(self) -> None:
         events = _bash("grep --no-verify somefile")
         assert _invariant("no_commit_no_verify").predicate(events).ok
+
+
+# ── no_concurrent_unsafe_discard (correlative) ────────────────────────────────
+
+
+class TestNoConcurrentUnsafeDiscard:
+    """A discard/restore that could wipe a concurrent agent's in-progress work.
+
+    Grounds the "Concurrent Agent Safety" rule: never ``git stash``,
+    ``git checkout -- <path>``, or ``git restore <path>`` — they discard working-
+    tree changes the agent may not own, destroying another agent's edits.
+    """
+
+    def test_red_on_git_stash(self) -> None:
+        events = _bash("git stash")
+        result = _invariant("no_concurrent_unsafe_discard").predicate(events)
+        assert not result.ok
+        assert result.offending_index == 0
+
+    def test_red_on_git_stash_push(self) -> None:
+        events = _bash("git stash push --staged src/mod.py")
+        assert not _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_red_on_git_checkout_double_dash_path(self) -> None:
+        events = _bash("git checkout -- src/mod.py")
+        assert not _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_red_on_git_restore_path(self) -> None:
+        events = _bash("git restore src/mod.py")
+        assert not _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_green_on_git_checkout_branch(self) -> None:
+        # A branch checkout (no `--`) switches branches — it discards nothing.
+        events = _bash("git checkout -b ac/my-feature")
+        assert _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_green_on_git_restore_staged_index_only(self) -> None:
+        # `--staged` unstages from the index; it does NOT touch the working tree,
+        # so it cannot destroy another agent's edits.
+        events = _bash("git restore --staged src/mod.py")
+        assert _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_green_on_an_unrelated_command(self) -> None:
+        events = _bash("git status")
+        assert _invariant("no_concurrent_unsafe_discard").predicate(events).ok
+
+    def test_green_when_no_bash_events(self) -> None:
+        clean = parse_session_jsonl('{"type":"assistant","message":{"role":"assistant","content":[]}}\n')
+        assert _invariant("no_concurrent_unsafe_discard").predicate(clean).ok

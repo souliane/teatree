@@ -720,6 +720,7 @@ class, where it is pinned, and the originating fix:
 | pre-push gates reconcile a renamed/stale branch (read what exists, not the stale `<N>-ticket` ref) | `regression_corpus` (`resolve_and_reconcile_branch`) | [#2102](https://github.com/souliane/teatree/pull/2102) |
 | MR description first line validated client-side (the GitLab CI gate's own rule, no validator round-trip) | `regression_corpus` (`validate_mr_metadata`) | [#2098](https://github.com/souliane/teatree/pull/2098) |
 | review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `skills/review/evals.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`, co-located) | [#2173](https://github.com/souliane/teatree/issues/2173) |
+| completion report LEADS with the deliverable status (final assistant message names the branch + PR), never buries it under systemic findings — the first `final_state` end-state matcher | `scenarios/completion_report_leads_with_status.yaml` | [#166](https://github.com/souliane/teatree/issues/166) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
@@ -968,6 +969,17 @@ Supported matcher operators:
   e.g. "background the long op via a `Task` dispatch OR a Bash call with
   `run_in_background: true`" — so a compliant response taking either branch
   stays green instead of over-fitting to one. Branches are positive only.
+- `final_state: contains "<substring>"` / `final_state: ~ "<regex>"` — assert
+  the run's **end state** rather than a captured tool call. Unlike the
+  `tool_call` matchers (which scan the whole trajectory), this matches against
+  the run's FINAL assistant message (the last `text_blocks` entry) — the
+  agent's terminal answer after every tool call resolved. Use it to pin "the
+  agent ENDED by reporting X" (e.g. a completion report that leads with the
+  deliverable status — branch + PR — instead of burying it). A run that emits
+  no assistant text fails it (there is no final message), so a `final_state`
+  matcher is non-vacuous against a no-op transcript on its own. Quote the whole
+  value (`final_state: '~ "PR #\d+"'`) when the pattern contains a `#`, so YAML
+  does not treat it as a comment.
 
 A scalar arg value that is not a string (a boolean / number such as Bash's
 `run_in_background: true`) is compared against the operator as its `str()`
@@ -1057,6 +1069,12 @@ It complements the gate-liveness corpus (`tests/test_gate_liveness_corpus.py`,
 (`confidence="deterministic"`, low false-positive) invariants ship live —
 `no_edit_in_main_clone`, `no_raw_out_of_band_merge`, `no_raw_review_post`,
 `no_raw_slack_overlay_post`.
+
+Each invariant carries a populated `catalog_ref` (the #166 catalog linkage): a
+clickable link to the rules-skill section it enforces
+(`skills/rules/SKILL.md#<anchor>`), surfaced in the `--format json` report so a
+flagged invariant points straight at the rule. `_rule_ref(anchor)` in
+`transcript_conformance.py` is the single source of truth for that link shape.
 
 ```bash
 t3 eval transcript-replay                       # newest session for this project
@@ -1176,13 +1194,26 @@ offending tool call) is emitted in both text and JSON.
 
 ## Deferred
 
-- Final-state matcher.
 - The remaining pain-point catalog from
   [teatree#1160](https://github.com/souliane/teatree/issues/1160) beyond the
   5+ scenarios already shipped (CI integration, UI/screenshot eval, perf
   benchmarking — all flagged out-of-scope in the ticket itself).
-- Transcript-replay AMBER/RED-tier invariants (correlative / judgement
-  confidence) and loop-signal-derived invariants — the conformance registry
-  ships GREEN-tier only for now.
-- Catalog linkage to [#166](https://github.com/souliane/teatree/issues/166): the
-  `Invariant.catalog_ref` field is wired but unset.
+- Further transcript-replay AMBER/RED-tier invariants (correlative / judgement
+  confidence) and loop-signal-derived invariants. The conformance registry's
+  ship-blocking subset (`INVARIANT_REGISTRY`) stays GREEN-tier only; the
+  audit-only superset (`AUDIT_REGISTRY`) now carries three correlative (AMBER)
+  invariants — `no_force_push_to_shared_default`, `no_commit_no_verify`, and the
+  WI-7 addition `no_concurrent_unsafe_discard` (a `git stash` / `git checkout --
+  <path>` / `git restore <path>` that can wipe a concurrent agent's edits). The
+  rest of the AMBER/RED catalog and the loop-signal-derived tier remain a
+  follow-up.
+
+### Shipped (WI-7, was deferred)
+
+- **Final-state matcher** (`final_state: ~ "<regex>"` / `contains "<substring>"`)
+  — see § "Final-state matcher" under "Scenario shape". Asserts the run's
+  terminal assistant message (its end state) rather than a captured tool call.
+- **`#166` catalog linkage** — every shipped conformance invariant now sets
+  `Invariant.catalog_ref` to a clickable link to the rules-skill section it
+  enforces (`skills/rules/SKILL.md#<section-anchor>`), surfaced in the
+  transcript-replay JSON report.

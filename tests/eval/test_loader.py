@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, FinalStateMatcher
 
 _MINIMAL = (
     "- name: example\n"
@@ -392,3 +392,54 @@ class TestAnyOfMatcher:
         with pytest.raises(EvalSpecError) as exc:
             load_eval_yaml(_write(tmp_path, body))
         assert "tool_call" in str(exc.value)
+
+
+class TestFinalStateMatcher:
+    def test_parses_final_state_regex_matcher(self, tmp_path: Path) -> None:
+        # A `#` in the regex needs the whole value YAML-quoted (same constraint
+        # the tool-call matchers face) so YAML does not treat it as a comment.
+        body = (
+            "- name: ends_with_pr\n"
+            "  scenario: the agent ends by reporting the opened PR\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - final_state: '~ \"opened PR #\\d+\"'\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        item = spec.matchers[0]
+        assert isinstance(item, FinalStateMatcher)
+        assert item.operator == "~"
+        assert item.value == "opened PR #\\d+"
+
+    def test_parses_final_state_contains_matcher(self, tmp_path: Path) -> None:
+        body = (
+            "- name: ends_clean\n"
+            "  scenario: the agent ends with a clean summary\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            '    - final_state: contains "branch is pushed"\n'
+        )
+        item = load_eval_yaml(_write(tmp_path, body))[0].matchers[0]
+        assert isinstance(item, FinalStateMatcher)
+        assert item.operator == "contains"
+        assert item.value == "branch is pushed"
+
+    def test_rejects_final_state_with_bad_operator(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - final_state: equals foo\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "final_state" in str(exc.value) or "operator" in str(exc.value)
+
+    def test_final_state_coexists_with_tool_call(self, tmp_path: Path) -> None:
+        body = (
+            "- name: both\n"
+            "  scenario: pushes AND reports it\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "git push"\n'
+            '    - final_state: contains "pushed"\n'
+        )
+        matchers = load_eval_yaml(_write(tmp_path, body))[0].matchers
+        assert len(matchers) == 2
+        assert isinstance(matchers[1], FinalStateMatcher)
