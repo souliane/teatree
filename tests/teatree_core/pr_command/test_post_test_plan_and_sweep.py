@@ -11,7 +11,7 @@ from tests.teatree_core.conftest import CommandOverlay
 from ._shared import _MOCK_OVERLAY
 
 
-class TestPostEvidence(TestCase):
+class TestPostTestPlan(TestCase):
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._monkeypatch = monkeypatch

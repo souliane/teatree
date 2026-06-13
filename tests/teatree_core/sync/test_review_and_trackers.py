@@ -292,7 +292,7 @@ class TestTracker404Memoization(TestCase):
         assert live.extra.get("issue_title") == "Live"
 
 
-class TestDetectE2EEvidence:
+class TestDetectE2ETestPlan:
     def test_finds_evidence_with_keyword_and_image(self) -> None:
         discussions = [
             {

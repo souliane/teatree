@@ -1,7 +1,7 @@
 """PR sync functions extracted from ``gitlab_sync.py``.
 
 Handles PR entry construction, ticket upsert from PRs, discussion
-classification, E2E evidence detection, and state inference from PR data.
+classification, E2E test-plan detection, and state inference from PR data.
 """
 
 import logging

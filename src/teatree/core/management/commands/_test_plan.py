@@ -203,7 +203,7 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
         )
         raise TestPlanResolutionError(msg)
     if not resolved.issue_url:
-        msg = f"Ticket {resolved} has no issue_url to post evidence on."
+        msg = f"Ticket {resolved} has no issue_url to post test plan on."
         raise TestPlanResolutionError(msg)
     return resolved
 

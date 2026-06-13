@@ -237,7 +237,7 @@ class TestPrDetectTenant(TestCase):
         assert result == "test_variant"
 
 
-class TestPrPostEvidence(TestCase):
+class TestPrPostTestPlan(TestCase):
     @pytest.fixture(autouse=True)
     def _no_on_behalf_gate(
         self,
