@@ -388,3 +388,55 @@ class TestGateSkipsDestination:
         monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: True)
         cmd = 'glab api --method PUT "projects/$opp/merge_requests/7562" --input /tmp/body.json'
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+
+class TestInternalDenylistScoping:
+    """#1415 fix: SCAN by default; SKIP only a PROVABLY-internal target (denylist).
+
+    The original over-block fired on a publish to a PRIVATE internal remote the
+    user had not declared. The fix is config-driven: with the user's internal
+    namespace in ``internal_publish_namespaces`` (the denylist), that internal
+    target SKIPS, while EVERY non-internal target -- a genuinely-public
+    non-teatree repo, an unknown target, an unresolvable target -- still SCANS.
+    The classifier stays FAIL-CLOSED so no public surface can leak unscanned.
+    """
+
+    def test_denylisted_internal_target_skips(self, tmp_path: Path) -> None:
+        # MUST-NOT-FIRE: the reported over-block, fixed via the denylist. A
+        # private internal namespace named in ``internal_publish_namespaces`` is
+        # provably internal, so the gate skips.
+        cfg = _config(tmp_path, ["internal-eng"])
+        cmd = 'glab mr note 5 -R internal-eng/internal-product --message "customercorp note"'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_user_owned_non_teatree_public_repo_is_scanned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # F3 (the leak path the review caught): a USER-OWNED non-teatree PUBLIC
+        # repo (e.g. a blog repo) is NOT in the denylist and the probe confirms it
+        # PUBLIC, so it must SCAN. A fail-open allowlist would have skipped it and
+        # leaked an internal term onto a public surface.
+        cfg = _config(tmp_path, ["internal-eng"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        dest = publish_destination.Destination(slug="ourorg/other-public-repo", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+        cmd = 'gh issue create -R ourorg/other-public-repo --body "customercorp leak"'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+    def test_unknown_visibility_non_denylisted_target_is_scanned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-FIRE: a target not in the denylist whose visibility the in-hook
+        # probe cannot resolve (the common cold-hook state) stays PUBLIC and is
+        # scanned -- detection failure never opens the gate.
+        cfg = _config(tmp_path, ["internal-eng"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        cmd = 'gh issue create -R someowner/mystery --body "customercorp note"'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+    def test_unresolvable_target_is_scanned_failsafe(self, tmp_path: Path) -> None:
+        # FAIL-SAFE: a publish whose target cannot be resolved from the command
+        # at all keeps scanning -- an unparsable target is never a silent bypass.
+        cfg = _config(tmp_path, ["internal-eng"])
+        cmd = "curl -d x https://example.com"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
