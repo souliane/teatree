@@ -369,18 +369,11 @@ jobs:
       # invocation site so a future ``pyproject.toml`` edit can't silently
       # disarm CI. Both must agree — ``tests/test_coverage_floor_guard.py``
       # locks the floor value.
-      # ``GIT_CONFIG_NOSYSTEM=1`` forces git's compiled-in ``master`` default so a
-      # real-git fixture that re-assumes ``main`` reds deterministically here,
-      # independent of the base image's ambient ``init.defaultBranch``
-      # (souliane/teatree#2359). tests/conftest.py preserves this var; the fitness
-      # function tests/quality/test_git_fixture_default_branch.py is the static
-      # backstop so a regression cannot silently return.
       - run: >
           docker run --rm
           -v "$PWD":/app
           -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
           -e COVERAGE_FILE=/app/.coverage
-          -e GIT_CONFIG_NOSYSTEM=1
           teatree-test-${{ matrix.python-version }}
           uv run -p ${{ matrix.python-version }} pytest --no-header -q
           -o cache_dir=/tmp/.pytest_cache
