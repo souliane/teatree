@@ -45,6 +45,7 @@ from teatree.config.resolution import (
     get_effective_settings,
 )
 from teatree.config.settings import (
+    BOOTSTRAP_FILE_ONLY_SETTINGS,
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
     E2ERepo,
@@ -62,6 +63,7 @@ from teatree.config_speak import resolve_speak, speak_from_subtable
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
+    "BOOTSTRAP_FILE_ONLY_SETTINGS",
     "CONFIG_PATH",
     "DATA_DIR",
     "ENV_SETTING_OVERRIDES",

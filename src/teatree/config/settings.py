@@ -388,6 +388,30 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 }
 
 
+# The irreducible bootstrap set (#1775): settings that must be readable BEFORE
+# Django — and therefore the DB — is available, so they can never move into the
+# ``ConfigSetting`` store. The publish gate reads ``private_repos`` from the raw
+# ``[teatree]`` toml with ``tomllib`` in a hook that runs with no Django;
+# ``DATABASE_URL`` / ``data_dir`` / ``DJANGO_SETTINGS_MODULE`` are the env/toml
+# keys the settings module itself needs to even OPEN the DB. This typed allowlist
+# is the single machine-checked home for that boundary (replacing the former
+# prose-only docstring): the disjoint-registries invariant
+# ``BOOTSTRAP_FILE_ONLY_SETTINGS ∩ OVERLAY_OVERRIDABLE_SETTINGS == ∅`` (a fitness
+# function in the tests) makes it
+# impossible to make a bootstrap key DB-overridable without turning a test red,
+# and ``config-setting set`` already refuses every key here (none is in the
+# overridable registry) so an admin can never stash a DB row for a file-only
+# setting.
+BOOTSTRAP_FILE_ONLY_SETTINGS: frozenset[str] = frozenset(
+    {
+        "DATABASE_URL",
+        "data_dir",
+        "DJANGO_SETTINGS_MODULE",
+        "private_repos",
+    }
+)
+
+
 @dataclass
 class OverlayEntry:
     name: str

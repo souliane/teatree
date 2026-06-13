@@ -6676,9 +6676,11 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ set    Upsert a DB override row for an overridable setting (JSON value).     │
-│ clear  Remove a DB override row, falling back to the file/env source.        │
-│ list   List every DB config override row (read-only).                        │
+│ set     Upsert a DB override row for an overridable setting (JSON value).    │
+│ get     Print a setting's resolved value and its source (db vs file/env).    │
+│ clear   Remove a DB override row, falling back to the file/env source.       │
+│ list    List every DB config override row (read-only).                       │
+│ import  Seed the DB store from operational  toml keys (one-time).            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6709,6 +6711,28 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree config_setting get`
+
+```
+Usage: t3 teatree config_setting get [OPTIONS] KEY
+
+ Print the resolved value for *key* and name its source (DB vs file/env).
+
+ The read side of the dual-read store: when a ``ConfigSetting`` row exists
+ it is reported as the ``db`` source; otherwise the value falls through to
+ the file/env layer and is reported as the ``file/env`` source. Refuses a
+ key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud, not a
+ silent ``file/env`` answer for a non-setting.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    key      TEXT  UserSettings field name to read (must be overridable).   │
+│                     [required]                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree config_setting clear`
 
 ```
@@ -6733,6 +6757,25 @@ Usage: t3 teatree config_setting clear [OPTIONS] KEY
 Usage: t3 teatree config_setting list [OPTIONS]
 
  List every DB config override row (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree config_setting import`
+
+```
+Usage: t3 teatree config_setting import [OPTIONS]
+
+ Seed the DB store from the operational ```` toml keys (one-time migration).
+
+ The dual-read migration step (#938): every ```` key that is a
+ registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
+ registry's parser and upserted into the store, so existing installs move
+ their operational config into the DB. Bootstrap-file-only keys
+ (``private_repos`` / ``DATABASE_URL`` / …) and unknown keys are skipped —
+ only operational settings move. The upsert makes a re-run idempotent.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
