@@ -7,6 +7,7 @@ graph TD
     teatree.teams --> teatree.config
     teatree.teams --> teatree.agents
     teatree.teams --> teatree.skill_support
+    teatree.teams --> teatree.utils
     teatree.config --> teatree.paths
     teatree.config --> teatree.types
     teatree.config --> teatree.utils

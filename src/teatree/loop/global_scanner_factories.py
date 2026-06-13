@@ -10,7 +10,7 @@ of the loop tick fan-out to stay under the module-health LOC cap.
 import os
 from pathlib import Path
 
-from teatree.config import discover_active_overlay, discover_overlays, get_effective_settings, load_config
+from teatree.config import TeamsDisplay, discover_active_overlay, discover_overlays, get_effective_settings, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
@@ -234,7 +234,11 @@ def _pane_reaper_scanner() -> PaneReaperScanner | None:
     settings = get_effective_settings()
     if not settings.teams_enabled:
         return None
-    return PaneReaperScanner(teams_enabled=True, idle_minutes=settings.teams_idle_minutes)
+    return PaneReaperScanner(
+        teams_enabled=True,
+        idle_minutes=settings.teams_idle_minutes,
+        display_enabled=settings.teams_display is not TeamsDisplay.NONE,
+    )
 
 
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
