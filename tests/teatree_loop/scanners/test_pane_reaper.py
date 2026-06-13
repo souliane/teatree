@@ -15,7 +15,9 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import TeamsDisplay, UserSettings
 from teatree.core.models import Session, Task, Ticket
+from teatree.loop.global_scanner_factories import _pane_reaper_scanner
 from teatree.loop.scanners.pane_reaper import PaneReaperScanner
 from teatree.teams.panes import PaneState, TeammatePane
 from teatree.teams.roles import TeamRole, team_claim_slot
@@ -74,3 +76,91 @@ class TestPaneReaperScannerDisabled(TestCase):
         with patch("teatree.loop.scanners.pane_reaper.reap_idle_panes") as reaper:
             scanner.scan()
         reaper.assert_not_called()
+
+
+class TestPaneReaperScannerDisplayTeardown(TestCase):
+    """The DB-driven tmux teardown rides the demote-to-STOPPED transition (WI-5)."""
+
+    def test_demotion_reconciles_tmux_panes_against_live_claims(self) -> None:
+        self._second_live_pane()  # a still-live team claim that must NOT be reaped.
+        self._idle_pane()  # the idle pane demoted this tick.
+        scanner = PaneReaperScanner(teams_enabled=True, idle_minutes=30, display_enabled=True)
+        with patch("teatree.loop.scanners.pane_reaper.reconcile_orphan_panes") as reconcile:
+            reconcile.return_value = []
+            scanner.scan()
+        # After the demotion, the surviving live team claim is the only authoritative
+        # slot — the reconcile kills any tmux pane NOT in that set (the demoted one).
+        reconcile.assert_called_once()
+        live = reconcile.call_args.kwargs["live_claim_slots"]
+        assert live == {team_claim_slot(TeamRole.OVERLAY_MAKER)}
+
+    def test_no_tmux_teardown_when_display_disabled(self) -> None:
+        # display_enabled defaults off → byte-identical to the pre-WI-5 reaper:
+        # the DB demotion still happens, but tmux is never touched.
+        self._idle_pane()
+        scanner = PaneReaperScanner(teams_enabled=True, idle_minutes=30)
+        with patch("teatree.loop.scanners.pane_reaper.reconcile_orphan_panes") as reconcile:
+            signals = scanner.scan()
+        reconcile.assert_not_called()
+        assert len(signals) == 1
+
+    def test_no_tmux_teardown_when_nothing_reaped(self) -> None:
+        # A tick that reaps nothing must not poke tmux even with display on.
+        scanner = PaneReaperScanner(teams_enabled=True, idle_minutes=30, display_enabled=True)
+        with patch("teatree.loop.scanners.pane_reaper.reconcile_orphan_panes") as reconcile:
+            assert scanner.scan() == []
+        reconcile.assert_not_called()
+
+    def test_reconcile_failure_does_not_break_the_tick(self) -> None:
+        # A tmux reconcile blow-up is best-effort: the DB demotion + signal stand,
+        # the exception never propagates into the loop tick.
+        self._idle_pane()
+        scanner = PaneReaperScanner(teams_enabled=True, idle_minutes=30, display_enabled=True)
+        with patch(
+            "teatree.loop.scanners.pane_reaper.reconcile_orphan_panes",
+            side_effect=RuntimeError("tmux exploded"),
+        ):
+            signals = scanner.scan()
+        assert len(signals) == 1
+
+    def _idle_pane(self) -> Task:
+        return _idle_pane_task()
+
+    def _second_live_pane(self) -> Task:
+        ticket = Ticket.objects.create(overlay="x", issue_url=f"https://example.com/issues/{uuid.uuid4().hex}")
+        session = Session.objects.create(ticket=ticket, agent_id="b")
+        task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
+        TeammatePane.spawn(task, role=TeamRole.OVERLAY_MAKER)
+        return task
+
+
+class TestPaneReaperFactoryDisplayResolution(TestCase):
+    """The factory threads ``teams_display`` into the scanner's ``display_enabled``."""
+
+    def test_display_enabled_when_display_is_tmux(self) -> None:
+        settings = UserSettings(teams_enabled=True, teams_display=TeamsDisplay.TMUX)
+        with patch(
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=settings,
+        ):
+            scanner = _pane_reaper_scanner()
+        assert scanner is not None
+        assert scanner.display_enabled is True
+
+    def test_display_disabled_when_display_is_none(self) -> None:
+        settings = UserSettings(teams_enabled=True, teams_display=TeamsDisplay.NONE)
+        with patch(
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=settings,
+        ):
+            scanner = _pane_reaper_scanner()
+        assert scanner is not None
+        assert scanner.display_enabled is False
+
+    def test_factory_returns_none_when_teams_off(self) -> None:
+        settings = UserSettings(teams_enabled=False, teams_display=TeamsDisplay.TMUX)
+        with patch(
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=settings,
+        ):
+            assert _pane_reaper_scanner() is None

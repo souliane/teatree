@@ -56,7 +56,7 @@ depends_on = []
 [[modules]]
 path = "teatree.teams"
 layer = "domain"
-depends_on = ["teatree.core", "teatree.config", "teatree.agents", "teatree.skill_support"]
+depends_on = ["teatree.core", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
 
 [[modules]]
 path = "teatree.config"

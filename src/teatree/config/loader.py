@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 
 import teatree.config as _facade
-from teatree.config.enums import Autonomy, Mode, Speed
+from teatree.config.enums import Autonomy, Mode, Speed, TeamsDisplay
 from teatree.config.resolution import (
     _resolve_enum_setting,
     _resolve_on_behalf_post_mode,
@@ -155,6 +155,24 @@ def _resolve_teams_int(raw: dict, key: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _resolve_teams_display(raw: dict) -> TeamsDisplay:
+    """Resolve the global ``teams_display`` value from ``[teams] display`` (#1838 WI-5).
+
+    The PRESENTATION-only pane-display mode lives in the ``[teams]`` namespace
+    alongside ``enabled`` / ``max_panes`` / ``idle_minutes``. An absent ``[teams]``
+    table or an absent ``display`` key resolves to the conservative
+    :attr:`TeamsDisplay.NONE` (ships dark). An explicit but invalid value raises
+    via :meth:`TeamsDisplay.parse` — a typo in the global file is loud, never a
+    silent escalation. The per-overlay / env tiers key on the ``teams_display``
+    field name and are layered by ``get_effective_settings``.
+    """
+    table = raw.get("teams")
+    if not isinstance(table, dict):
+        return TeamsDisplay.NONE
+    value = table.get("display")
+    return TeamsDisplay.parse(value) if value is not None else TeamsDisplay.NONE
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
@@ -199,6 +217,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         teams_enabled=_resolve_teams_enabled(raw),
         teams_max_panes=_resolve_teams_int(raw, "max_panes", 1),
         teams_idle_minutes=_resolve_teams_int(raw, "idle_minutes", 30),
+        teams_display=_resolve_teams_display(raw),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
         ask_before_post_on_behalf=ask_before_post_on_behalf,
