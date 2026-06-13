@@ -2585,7 +2585,7 @@ def _read_message_file(command: str) -> str | None:
 # already covered by _MERGE_ENDPOINT_RE.  The \d+-free form matches both the
 # collection endpoint (/pulls, /merge_requests) and a per-MR update endpoint
 # (/pulls/42, /merge_requests/42) when written as a POST.
-_API_CREATE_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)(?:/\d+)?(?:[/?'\"\s]|$)")
+_API_CREATE_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)(?:/\d+)?(?!/\d*/[A-Za-z])(?:[?'\"\s]|$)")
 
 
 def _is_api_create_endpoint_write(command: str) -> bool:

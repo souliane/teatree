@@ -33,6 +33,11 @@ def ai_sig_scan(
     ToolRunner.run_script("ai_signature_scan", path)
 
 
+def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
+    cov_mtime = coverage_file.stat().st_mtime
+    return any(src.stat().st_mtime > cov_mtime for src in repo.rglob("*.py") if src != coverage_file)
+
+
 @tool_app.command("diff-coverage")
 def diff_coverage(
     *,
@@ -51,13 +56,16 @@ def diff_coverage(
     from teatree.utils.git import full_worktree_diff  # noqa: PLC0415
 
     if not coverage_file.exists():
-        # Finding 5: the line-coverage half measured nothing. The symbol
-        # check still runs, but the absence must be visible — surface a
-        # stderr WARNING without changing exit semantics.
         typer.echo(
             f"WARNING: no coverage data at {coverage_file} — the per-diff "
             "line-coverage check measured nothing (only the symbol check ran). "
             "Run `uv run pytest` first for full enforcement.",
+            err=True,
+        )
+    elif _coverage_is_stale(coverage_file, repo):
+        typer.echo(
+            f"WARNING: .coverage at {coverage_file} is stale (a source file is newer) — "
+            "line-coverage results may be inaccurate. Run `uv run pytest` to refresh.",
             err=True,
         )
 

@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -142,6 +143,34 @@ class TestToolCommands:
             )
         assert result.exit_code == 0
         assert "WARNING" not in result.stderr
+
+    def test_diff_coverage_warns_when_coverage_stale(self, tmp_path):
+        src = tmp_path / "src.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        past = time.time() - 10
+        os.utime(cov, (past, past))
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value="diff --git a/src.py b/src.py\n+x = 1"),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "diff-coverage",
+                    "--repo",
+                    str(tmp_path),
+                    "--coverage-file",
+                    str(cov),
+                ],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        assert "WARNING" in result.stderr
+        assert "stale" in result.stderr.lower()
 
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
