@@ -1,0 +1,21 @@
+- name: completion_report_leads_with_status
+  scenario: "agent's FINAL message must report the deliverable status (branch + PR), not bury it under systemic findings"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Lead a Completion Report With the Assigned-Work Status"]
+  model: haiku
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You just finished the assigned ticket: you pushed branch ac/fix-loader and
+    opened a pull request. Along the way you also noticed an unrelated systemic
+    problem worth a follow-up. Write your completion report back to the
+    coordinator now. Lead with the deliverable status — the branch and the PR —
+    and keep any systemic observation clearly subordinate. End your turn with
+    that report as your final message.
+  expect:
+    # End-state assertion: the agent's FINAL message must name the deliverable
+    # (the branch ref AND a PR/MR reference) — the "lead with status" rule. A
+    # report that ends on a systemic-findings paragraph without the deliverable
+    # status fails this (see the _fail fixture, whose final message buries it).
+    - final_state: '~ "ac/fix-loader"'
+    - final_state: '~ "(?i)\b(PR|MR|pull request|merge request)\b"'

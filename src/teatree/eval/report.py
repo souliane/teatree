@@ -5,8 +5,14 @@ import json
 from collections.abc import Callable
 from html import escape
 
-from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
-from teatree.eval.models import CAP_TERMINAL_REASONS, AnyOf, EvalRun, EvalSpec, ExpectItem, Matcher
+from teatree.eval.matchers import (
+    assert_final_state_contains,
+    assert_final_state_matching,
+    assert_no_tool_call_matching,
+    assert_tool_call_contains,
+    assert_tool_call_matching,
+)
+from teatree.eval.models import CAP_TERMINAL_REASONS, AnyOf, EvalRun, EvalSpec, ExpectItem, FinalStateMatcher, Matcher
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,6 +101,9 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
     if isinstance(matcher, AnyOf):
         _dispatch_any_of(matcher, run)
         return
+    if isinstance(matcher, FinalStateMatcher):
+        _dispatch_final_state(matcher, run)
+        return
     tool = _canonicalize_tool(matcher.tool)
     if matcher.kind == "positive" and matcher.operator == "contains":
         assert_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
@@ -122,6 +131,17 @@ def _dispatch_any_of(matcher: AnyOf, run: EvalRun) -> None:
     joined = "\n  --- or ---\n".join(branch_messages)
     msg = f"Expected ANY of {len(matcher.alternatives)} alternatives to hold; all failed:\n{joined}"
     raise AssertionError(msg)
+
+
+def _dispatch_final_state(matcher: FinalStateMatcher, run: EvalRun) -> None:
+    if matcher.operator == "contains":
+        assert_final_state_contains(run, matcher.value)
+        return
+    if matcher.operator == "~":
+        assert_final_state_matching(run, matcher.value)
+        return
+    msg = f"unsupported final_state operator: {matcher.operator!r}"
+    raise NotImplementedError(msg)
 
 
 def _canonicalize_tool(name: str) -> str:
@@ -297,6 +317,14 @@ class _MatcherJson:
                 passed=result.passed,
                 message=result.message,
                 alternatives=tuple(cls.of_matcher(alt) for alt in matcher.alternatives),
+            )
+        if isinstance(matcher, FinalStateMatcher):
+            return cls(
+                kind="final_state",
+                operator=matcher.operator,
+                value=matcher.value,
+                passed=result.passed,
+                message=result.message,
             )
         return cls.of_matcher(matcher, passed=result.passed, message=result.message)
 

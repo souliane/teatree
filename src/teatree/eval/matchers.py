@@ -86,3 +86,36 @@ def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, re
                 f"but found:\n  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"
             )
             raise AssertionError(msg)
+
+
+def _final_assistant_message(run: EvalRun) -> str | None:
+    """The run's terminal assistant text — the END STATE of the scenario.
+
+    The last ``text_blocks`` entry is the agent's final message (after every tool
+    call resolved). ``None`` when the run emitted no assistant text at all, so the
+    final-state matchers can report "no final assistant message" rather than
+    matching a phantom empty string.
+    """
+    return run.text_blocks[-1] if run.text_blocks else None
+
+
+def assert_final_state_matching(run: EvalRun, regex: str) -> None:
+    """Assert the run's FINAL assistant message matches *regex* (end-state check)."""
+    final = _final_assistant_message(run)
+    if final is None:
+        msg = f"Expected a final assistant message matching regex {regex!r}, but there was no final assistant message."
+        raise AssertionError(msg)
+    if not re.search(regex, final):
+        msg = f"Expected the final assistant message to match regex {regex!r}, but it was:\n  {final!r}"
+        raise AssertionError(msg)
+
+
+def assert_final_state_contains(run: EvalRun, substring: str) -> None:
+    """Assert the run's FINAL assistant message contains *substring* (end-state check)."""
+    final = _final_assistant_message(run)
+    if final is None:
+        msg = f"Expected a final assistant message containing {substring!r}, but there was no final assistant message."
+        raise AssertionError(msg)
+    if substring not in final:
+        msg = f"Expected the final assistant message to contain {substring!r}, but it was:\n  {final!r}"
+        raise AssertionError(msg)
