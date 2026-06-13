@@ -10,6 +10,7 @@ import pytest
 
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.tick import TickRequest, _repo_freshness, build_default_scanners, run_tick
+from tests._git_repo import make_git_repo
 
 
 @dataclass(slots=True)
@@ -98,12 +99,7 @@ def test_tick_meta_cadence_falls_back_to_toml(tmp_path: Path, monkeypatch: pytes
 
 
 def test_repo_freshness_on_real_git_repo(tmp_path: Path) -> None:
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    run_allowed_to_fail(["git", "init", "-b", "main"], cwd=repo, expected_codes=None)
-    run_allowed_to_fail(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, expected_codes=None)
+    repo = make_git_repo(tmp_path / "repo")
     info = _repo_freshness(repo)
     assert info is not None
     assert isinstance(info["behind"], int)
