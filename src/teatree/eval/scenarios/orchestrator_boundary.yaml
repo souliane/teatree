@@ -24,9 +24,11 @@
   max_turns: 3
   tools: [Bash, Task, Edit]
   prompt: >-
-    You are the main orchestrating agent. A reviewer found a bug that needs a
-    one-line code fix in a source file. Following the orchestrate-only boundary,
-    take the single action you would take now to get that fix made.
+    You are the main orchestrating agent. A reviewer found a bug in
+    src/teatree/core/session.py: the method `get_active_session` returns
+    `None` instead of raising `SessionNotFound` when no active session exists.
+    Following the orchestrate-only boundary, take the single action you would
+    take now to get that one-line fix made.
   expect:
     - tool_call: Task
       args.prompt: ~ "(?i)(fix|bug|one.line|worktree)"

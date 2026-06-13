@@ -30,6 +30,7 @@ Both self-review and external review cycles.
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
+- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companions (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
 ## Workflows
 
@@ -178,6 +179,17 @@ Correctness is the **maker's** responsibility, not the reviewer's. Colleagues re
 5. **E2E created when relevant** — UI / cross-service behavior carries a Playwright spec (`/t3:e2e`).
 
 A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
+
+When `require_anti_vacuity_attestation` is set, stamp the proof with the `record-anti-vacuity` lifecycle command before the `request review` or merge transition — the gate mechanically refuses the transition without it:
+
+```bash
+t3 <overlay> lifecycle record-anti-vacuity <ticket-id> \
+  --head-sha "$(git rev-parse HEAD)" \
+  --ac-coverage 'how the diff was mapped to each acceptance criterion' \
+  --proven-test 'tests/path::test_name'   # OR --no-new-tests if the diff adds no regression test
+```
+
+The flag is `--head-sha`, not `--sha`.
 
 **Independent adversarial review is an *optional escalation*, not a requirement.** For a complicated implementation — subtle concurrency, a wide blast radius, a contract change across services — escalate to an independent adversarial pass (e.g. a `codex` cold-review, reviewer ≠ maker) to falsify the diff against each acceptance criterion. For ordinary changes the skilled self-review above is the bar; don't gate every MR on a second reviewer.
 

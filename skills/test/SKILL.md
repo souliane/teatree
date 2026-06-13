@@ -45,6 +45,7 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
 - Always run with `--reuse-db` for speed unless schema changed.
 - Use `--failed-first` to quickly re-verify fixes.
+- To run only the tests for a specific file or directory, append the path after `--`: `t3 <overlay> run tests -- path/to/test_file.py` (extra args after `--` are forwarded to pytest). This scopes verification to the changed module instead of firing the whole suite locally.
 - **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it.
 
 ### Frontend Lint
@@ -58,6 +59,7 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 
 ### Quality Check
 
+- `t3 ci coverage` — print current coverage vs the configured floor; exits non-zero if any floor is missed. **Use this to confirm coverage still meets the gate after adding new code.**
 - `t3 ci quality-check` — quality analysis.
 - Run before finalizing to catch quality issues early.
 

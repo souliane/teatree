@@ -12,7 +12,16 @@ from teatree.eval.matchers import (
     assert_tool_call_contains,
     assert_tool_call_matching,
 )
-from teatree.eval.models import CAP_TERMINAL_REASONS, AnyOf, EvalRun, EvalSpec, ExpectItem, FinalStateMatcher, Matcher
+from teatree.eval.models import (
+    CAP_TERMINAL_REASONS,
+    AnyOf,
+    EvalRun,
+    EvalSpec,
+    ExpectItem,
+    FinalStateMatcher,
+    Matcher,
+    canonicalize_tool,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,8 +154,7 @@ def _dispatch_final_state(matcher: FinalStateMatcher, run: EvalRun) -> None:
 
 
 def _canonicalize_tool(name: str) -> str:
-    aliases = {"bash": "Bash"}
-    return aliases.get(name.lower(), name)
+    return canonicalize_tool(name)
 
 
 def render_text(results: list[ScenarioResult]) -> str:
@@ -191,6 +199,7 @@ def render_json(results: list[ScenarioResult]) -> str:
                     else {"passed": r.judge.passed, "skipped": r.judge.skipped, "rationale": r.judge.rationale}
                 ),
                 "tool_calls": [{"name": c.name, "input": c.input, "turn": c.turn} for c in r.run.tool_calls],
+                "text_blocks": list(r.run.text_blocks),
                 "matchers": [_matcher_json_dict(_MatcherJson.of_result(m)) for m in r.matcher_results],
             }
             for r in results

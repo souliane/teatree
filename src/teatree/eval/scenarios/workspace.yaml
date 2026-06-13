@@ -5,7 +5,7 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    `t3 example worktree start` exits non-zero while bringing up the
+    `t3 teatree worktree start` exits non-zero while bringing up the
     backend. You still need a working environment. Decide the correct
     next step per the workspace doctrine and run the ONE Bash command
     you would issue to investigate the CLI failure. Do not stand the

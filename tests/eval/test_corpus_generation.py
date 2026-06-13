@@ -105,3 +105,56 @@ class TestDeclarationIsAntiVacuous:
         if not scenario.has_negative:
             pytest.skip("no negative matcher; noop fixture not emitted")
         assert _grade(scenario, "noop", tmp_path) is False
+
+
+def _grade_transcript(scenario: Scenario, transcript: str, tmp_path: Path) -> bool:
+    from scripts.eval.corpus_gen.model import scenario_yaml  # noqa: PLC0415
+
+    spec_path = tmp_path / f"{scenario.name}.yaml"
+    spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
+    spec = load_eval_yaml(spec_path)[0]
+    (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
+    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+    return evaluate(spec, run).passed
+
+
+def _monitor_transcript(scenario_name: str, command: str) -> str:
+    from scripts.eval.corpus_gen.model import Call, _event, _init, _result, _text  # noqa: PLC0415
+
+    call = Call(tool="Monitor", args={"command": command})
+    lines = [_init(f"fixt-{scenario_name}-monitor"), _text("arming a monitor."), _event(call, 1), _result()]
+    return "\n".join(lines) + "\n"
+
+
+def _background_scenario_named(name: str) -> Scenario:
+    return next(s for s in ALL_SCENARIOS if s.name == name)
+
+
+class TestMonitorBranchRejectsNonWatch:
+    """The Monitor ``any_of`` branch matches a REAL watch command, not any prose.
+
+    A too-loose keyword (e.g. ``(?i)(ci|pipeline|gh run|glab)``) let ``echo
+    pipeline`` satisfy the branch and ``ci`` match inside ``decision`` — a wrong
+    response false-passing. These pin that a non-watch Monitor grades RED while a
+    real ``gh run watch`` grades GREEN.
+    """
+
+    def test_echo_pipeline_monitor_does_not_satisfy_the_branch(self, tmp_path: Path) -> None:
+        scenario = _background_scenario_named("never_foreground_poll_ci_pipeline")
+        transcript = _monitor_transcript(scenario.name, "echo pipeline")
+        assert _grade_transcript(scenario, transcript, tmp_path) is False
+
+    def test_ci_inside_an_unrelated_word_does_not_satisfy_the_branch(self, tmp_path: Path) -> None:
+        scenario = _background_scenario_named("never_foreground_poll_ci_pipeline")
+        transcript = _monitor_transcript(scenario.name, "make a decision about the build")
+        assert _grade_transcript(scenario, transcript, tmp_path) is False
+
+    def test_real_gh_run_watch_monitor_satisfies_the_branch(self, tmp_path: Path) -> None:
+        scenario = _background_scenario_named("never_foreground_poll_ci_pipeline")
+        transcript = _monitor_transcript(scenario.name, "gh run watch")
+        assert _grade_transcript(scenario, transcript, tmp_path) is True
+
+    def test_real_until_gh_run_loop_monitor_satisfies_the_branch(self, tmp_path: Path) -> None:
+        scenario = _background_scenario_named("never_foreground_poll_ci_pipeline")
+        transcript = _monitor_transcript(scenario.name, "until gh run list | grep -q completed; do sleep 10; done")
+        assert _grade_transcript(scenario, transcript, tmp_path) is True

@@ -5,10 +5,12 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are running speed boost and about to dispatch a parallel worker
-    for ticket #51. Run the ONE Bash command you would issue to scaffold
-    that worker an isolated workspace so it does not collide with other
-    workers. One command only, no narration.
+    You are running speed boost on overlay 'myoverlay' and about to
+    dispatch a parallel worker for ticket
+    https://github.com/myorg/myoverlay/issues/51. Run the ONE Bash
+    command you would issue to scaffold that worker an isolated workspace
+    so it does not collide with other workers. One command only, no
+    narration.
   expect:
     - tool_call: Bash
       args.command: '~ "(git worktree add|t3 .*(workspace ticket|worktree provision))"'

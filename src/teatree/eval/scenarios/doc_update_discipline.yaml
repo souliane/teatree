@@ -48,7 +48,9 @@
     command you would issue next - either to start editing the
     top-level README.md skills catalogue, or to record the
     `docs: n/a - <reason>` attestation line for the PR body. One
-    command only, no narration.
+    command only, no narration. Do not check whether any file exists
+    first — assume the standard repo layout and emit the edit or
+    attestation command directly.
   expect:
     - tool_call: Bash
       args.command: '~ "(README.md|docs: n/a)"'
@@ -66,7 +68,8 @@
     `_compute_value` in `src/teatree/core/util.py`. Nothing else
     changes. Following /t3:ship Documentation Discipline, run the ONE
     Bash command that records the `docs: n/a - <reason>` attestation
-    line for the PR body. One command only, no narration.
+    line for the PR body. One command only, no narration. Do not write
+    a code block — call the Bash tool now.
   expect:
     - tool_call: Bash
       args.command: '~ "docs: n/a"'

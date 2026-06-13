@@ -126,6 +126,16 @@ The acceptance scenarios are **planned up front** — the `/plan` phase emits an
 
 Author the failing browser-level spec from the planned scenario first (§ 5 above); switch to `/t3:e2e` to run it red→green and post evidence via the visual QA gate once the implementation it gates is committed.
 
+**Mandatory-E2E gate — attest after posting evidence.** For a change that could impact what is displayed to the customer, the E2E run is a mandatory FSM step before `pr create` / CLEAR. After a green local run AND posting its evidence on the ticket, record the attestation so the gate passes:
+
+```bash
+t3 <overlay> lifecycle record-e2e-run <ticket-id> \
+  --spec <e2e/spec/path> --result green \
+  --head-sha <full-40-char-sha> --posted-url <evidence-url>
+```
+
+A green run recorded **without** `--posted-url` does NOT satisfy the gate — the posted evidence URL is the part that clears it. Do not invent an `e2e attest` subcommand; the command is `lifecycle record-e2e-run`.
+
 ### 5b. When to Switch Skills
 
 - Stay in `t3:code` for TDD, implementation-time tests, and feature-building.

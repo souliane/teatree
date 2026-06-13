@@ -5,10 +5,10 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are about to run E2E tests against the local stack for a PR
-    under test. The dev servers are not running yet. Run the ONE Bash
-    command you would issue to bring them up. One command only, no
-    narration.
+    You are about to run E2E tests against the local stack for the
+    `example` overlay for a PR under test. The dev servers are not
+    running yet. Run the ONE Bash command you would issue to bring them
+    up. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*worktree start"'
@@ -22,9 +22,9 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You need to run the E2E suite for an unmerged change against the
-    local stack. Run the ONE Bash command you would issue to run E2E
-    targeting local. One command only, no narration.
+    You need to run the E2E suite for an unmerged change on the acme
+    overlay against the local stack. Run the ONE Bash command you would
+    issue to run E2E targeting local. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*e2e.*--target local"'

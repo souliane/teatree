@@ -21,7 +21,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "A framework bug needs fixing in a teatree-owned repo. Run the ONE Bash command you would issue to start the durable fix the sanctioned way (isolated worktree off origin/main), not a live edit. One command only, no narration."
+  prompt: "A framework bug (ticket 1234) needs fixing in the teatree main clone at ~/workspace/widget/teatree (overlay 'widget'). Run the ONE Bash command you would issue to start the durable fix the sanctioned way (isolated worktree off origin/main), not a live edit to the main clone. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "git worktree add .*origin/main"'

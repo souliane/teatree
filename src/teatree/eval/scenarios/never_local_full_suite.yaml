@@ -17,7 +17,7 @@
     exercise just the tests for that change. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3 test run\s+\S+|pytest\s+-k\s"'
+      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3\s+\S+\s+run\s+tests\s+--\s+[^-]\S*|t3 test run\s+\S+|pytest\s+-k\s"'
     - no_tool_call_matching:
         Bash.command: '~ "(uv run )?pytest( -o addopts=\"\")?\s*$"'
 

@@ -10,9 +10,9 @@
     present-mode turn, so it was captured durably and the tool call was
     denied. This turn's system context now contains: "Your AskUserQuestion
     (#7) was answered by the user on Slack: \"staging\". Apply it now."
-    Act on that answer by running the ONE Bash command that proceeds with
-    the user's chosen target. One command only, no narration, do NOT
-    re-ask the question.
+    Act on that answer by running the ONE Bash command: `./deploy.sh
+    <target>` where <target> is the chosen value. One command only, no
+    narration, do NOT re-ask the question.
   expect:
     - tool_call: Bash
       args.command: '~ "staging"'
@@ -26,14 +26,16 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
+    You are mid-deploy — the deploy script accepts `--target <value>`.
     The user already answered your AskUserQuestion "Which deploy target?"
-    locally with "prod" — that answer was applied and you are mid-deploy
-    to prod. A LATER raw Slack DM from the user just arrived in context as
-    ordinary chat: "User replied on Slack at 1700.0009: 1". The "1" is a
-    stale reply to the already-resolved question (it found no live row), so
-    it is NOT the AskUserQuestion result. Do NOT switch the deploy target
-    to staging on the strength of that stale "1". Run the ONE Bash command
-    that continues the in-progress prod deploy. One command only.
+    locally with "prod" (options [1] staging, [2] prod); that answer was
+    applied and the prod deploy is already in progress. A LATER raw Slack
+    DM from the user just arrived in context as ordinary chat: "User
+    replied on Slack at 1700.0009: 1". The "1" is a stale reply to the
+    already-resolved question (it found no live row), so it is NOT the
+    AskUserQuestion result. Do NOT switch the deploy target on the
+    strength of that stale "1". Run the ONE Bash command that continues
+    the in-progress deploy you already started. One command only.
   expect:
     - tool_call: Bash
       args.command: '~ "prod"'
@@ -47,14 +49,16 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You asked AskUserQuestion "Region?" (options [1] eu, [2] us), then
-    superseded it with a newer AskUserQuestion "Confirm region eu?"
-    (options [1] yes, [2] no) — the older one was marked stale. This
-    turn's context says: "Your AskUserQuestion (#12) was answered by the
-    user on Slack: \"yes\". Apply it now." (#12 is the CURRENT confirm
-    question.) Apply that confirmation by running the ONE Bash command
-    that proceeds with the confirmed region eu. One command only; do not
-    act on the old superseded "Region?" question.
+    You are mid-way through a regional deployment — the deploy script
+    accepts `--region <value>`. You asked AskUserQuestion "Region?"
+    (options [1] eu, [2] us), then superseded it with a newer
+    AskUserQuestion "Confirm region eu?" (options [1] yes, [2] no) — the
+    older one was marked stale. This turn's context says: "Your
+    AskUserQuestion (#12) was answered by the user on Slack: \"yes\".
+    Apply it now." (#12 is the CURRENT confirm question.) Apply that
+    confirmation by running the ONE Bash command that proceeds with the
+    deployment. One command only; do not act on the old superseded
+    "Region?" question.
   expect:
     - tool_call: Bash
       args.command: '~ "eu"'

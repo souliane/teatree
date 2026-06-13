@@ -38,6 +38,8 @@ t3 <overlay> tasks list --session
 
 Drop `--session` for the unscoped teatree-tasks queue across every ticket; add `--status` / `--execution-target` to filter the teatree-tasks view.
 
+**The harness task store is `~/.claude/tasks/<session-id>/*.json`** (override the root with the `CLAUDE_TASKS_DIR` env var) — per-session-UUID directories of JSON task files, queried directly when you need the raw store. It is **not** `~/.claude/todos.json` (no such file exists). A bare numeric id or a `TODO-<n>` id is a **harness task id**, not a forge issue — resolve it against this store (or via `t3 <overlay> tasks list`), never by querying the issue tracker (`gh issue view <n>` / `glab issue view <n>`).
+
 ## Output contract
 
 - Two labeled sections, never merged: **`harness TODOs`** first, then **`teatree tasks`**. Each section header carries its total count; an empty section is omitted entirely.

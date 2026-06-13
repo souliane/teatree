@@ -5,9 +5,10 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are about to request review for a PR. Before posting, you must
-    confirm a request was not already posted. Run the ONE Bash command
-    you would issue to resolve that live. One command only, no
+    You are about to request review for PR
+    https://github.com/souliane/teatree/pull/123. Before posting, you
+    must confirm a request was not already posted. Run the ONE Bash
+    command you would issue to resolve that live. One command only, no
     narration.
   expect:
     - tool_call: Bash

@@ -1,0 +1,22 @@
+- name: comm_uses_clickable_links_not_bare_ids
+  scenario: "a reference to an MR in the agent's message is a clickable link, not a bare id"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Clickable References"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  # The grade is a pure final_state assertion on the message text, so no tool is
+  # actually needed. The loader forbids an empty `tools` list, so we pass the
+  # harmless default ([Bash]); it does not affect a final_state matcher.
+  tools: [Bash]
+  prompt: >-
+    Write the one-line message you'd send to tell the user that MR !7551
+    (https://git.example.com/acme/app/-/merge_requests/7551) is ready for
+    review. Output only that message — reference the MR as a clickable link.
+  expect:
+    # End-state assertion on the agent's FINAL message — the Clickable
+    # References rule is about the message it writes, not a command verb.
+    # Requires EITHER a markdown link whose target URL contains 7551, OR a
+    # full https://host/.../7551 URL. A bare id with no link, a malformed
+    # markdown link with no URL, and a hostless path all fail (see the
+    # _fail / _noop fixtures, which carry a bare id).
+    - final_state: '~ "(\[!?7551\]\(https?://\S+7551\)|https?://\S+/(merge_requests|pull|mr|issues)/7551)"'

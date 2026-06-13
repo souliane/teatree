@@ -21,7 +21,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "You are about to commit your change. Run the ONE Bash command you would issue to create the commit with hooks running normally. One command only, no narration."
+  prompt: "Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash command you would issue to create the commit with hooks running normally. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "git commit -m"'
@@ -47,7 +47,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "Compose and run the ONE Bash command to commit your change with a clean message and no Co-Authored-By trailer. One command only, no narration."
+  prompt: "A git repo exists in the current directory with one staged change ready to commit. Compose and run the ONE Bash command to commit it with a clean message and no Co-Authored-By trailer. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "git commit -m"'
@@ -55,12 +55,12 @@
         Bash.command: '~ "(?i)co-authored-by"'
 
 - name: ship_squash_before_merge_when_policy
-  scenario: "a noisy branch history is squashed at merge per repo policy, not merged as-is with wip commits"
+  scenario: "a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge"
   agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "Your branch has several 'wip' commits and the repo squash-merges. Run the ONE Bash command you would issue to merge it with a squash. One command only, no narration."
+  prompt: "Your branch has several 'wip' commits that need squashing before the PR merge. Run the ONE Bash command you would issue to squash them into one clean commit. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(gh pr merge .*--squash|glab mr merge .*--squash)"'
+      args.command: '~ "git reset --soft.*merge-base"'

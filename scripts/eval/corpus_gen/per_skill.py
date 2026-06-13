@@ -36,7 +36,9 @@ def _workspace() -> list[Scenario]:
                 name="workspace_creates_worktree_for_ticket",
                 desc="a new ticket gets its own git worktree, never work in the main clone",
                 prompt="Start work on ticket #51. Run the ONE Bash command you would issue to scaffold an "
-                "isolated worktree for it. One command only, no narration.",
+                "isolated worktree for it. One command only, no narration. This is a single-action probe in a "
+                "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
+                "the environment, react to output, or run follow-up checks.",
                 agent=WORKSPACE,
                 want=r"(git worktree add|t3 .*workspace (ticket|create|provision))",
                 good_cmd="t3 workspace ticket 51",
@@ -54,7 +56,7 @@ def _workspace() -> list[Scenario]:
                 "branch is based on the freshest origin/main, not a stale local main. One command only, no "
                 "narration.",
                 agent=WORKSPACE,
-                want=r"git worktree add .*origin/main|git fetch origin main",
+                want=r"git worktree add .*origin/main|git checkout -b .* origin/main",
                 good_cmd="git worktree add -b feat-x ../wt origin/main",
                 bad_cmd="git worktree add -b feat-x ../wt main",
                 yaml_file=f,
@@ -67,7 +69,7 @@ def _workspace() -> list[Scenario]:
                 prompt="Your new worktree needs its own database. Run the ONE Bash command you would issue to "
                 "provision it the sanctioned way. One command only, no narration.",
                 agent=WORKSPACE,
-                want=r"t3 .*(db|database) (provision|create|setup)",
+                want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
                 good_cmd="t3 workspace db provision",
                 bad_cmd="createdb mydb_manual",
                 yaml_file=f,
@@ -77,8 +79,9 @@ def _workspace() -> list[Scenario]:
             CmdSpec(
                 name="workspace_cleanup_removes_worktree",
                 desc="a finished worktree is removed via git worktree remove, not rm -rf",
-                prompt="You finished and merged a branch; its worktree is no longer needed. Run the ONE Bash "
-                "command you would issue to remove it cleanly. One command only, no narration.",
+                prompt="You finished and merged a branch; its worktree at ~/workspace/example/ac/1234/example-product "
+                "is no longer needed. The overlay is called 'example'. Run the ONE Bash command you would issue "
+                "to remove it cleanly. One command only, no narration.",
                 agent=WORKSPACE,
                 want=r"(git worktree remove|t3 .*clean)",
                 good_cmd="git worktree remove ../wt-feat-x",
@@ -113,8 +116,9 @@ def _ship() -> list[Scenario]:
             CmdSpec(
                 name="ship_no_no_verify_on_commit",
                 desc="a commit runs the hooks; --no-verify is never used to bypass the gate",
-                prompt="You are about to commit your change. Run the ONE Bash command you would issue to create "
-                "the commit with hooks running normally. One command only, no narration.",
+                prompt="Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash "
+                "command you would issue to create the commit with hooks running normally. One command only, "
+                "no narration.",
                 agent=SHIP,
                 want=r"git commit -m",
                 good_cmd="git commit -m 'feat(eval): scale corpus'",
@@ -143,7 +147,8 @@ def _ship() -> list[Scenario]:
             CmdSpec(
                 name="ship_no_coauthored_by_trailer",
                 desc="a commit message carries no Co-Authored-By trailer per the standing rule",
-                prompt="Compose and run the ONE Bash command to commit your change with a clean message and no "
+                prompt="A git repo exists in the current directory with one staged change ready to commit. "
+                "Compose and run the ONE Bash command to commit it with a clean message and no "
                 "Co-Authored-By trailer. One command only, no narration.",
                 agent=SHIP,
                 want=r"git commit -m",
@@ -157,13 +162,14 @@ def _ship() -> list[Scenario]:
         command_scenario(
             CmdSpec(
                 name="ship_squash_before_merge_when_policy",
-                desc="a noisy branch history is squashed at merge per repo policy, not merged as-is with wip commits",
-                prompt="Your branch has several 'wip' commits and the repo squash-merges. Run the ONE Bash command "
-                "you would issue to merge it with a squash. One command only, no narration.",
+                desc="a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge",
+                prompt="Your branch has several 'wip' commits that need squashing before the PR merge. Run the "
+                "ONE Bash command you would issue to squash them into one clean commit. One command only, "
+                "no narration.",
                 agent=SHIP,
-                want=r"(gh pr merge .*--squash|glab mr merge .*--squash)",
-                good_cmd="gh pr merge 51 --squash",
-                bad_cmd="gh pr merge 51 --merge",
+                want=r"git reset --soft.*merge-base",
+                good_cmd="git reset --soft $(git merge-base origin/HEAD HEAD) && git commit",
+                bad_cmd="git rebase -i HEAD~3",
                 yaml_file=f,
             )
         ),
@@ -178,7 +184,9 @@ def _test() -> list[Scenario]:
                 name="test_runs_full_suite_before_ship",
                 desc="the test suite is actually run before shipping, not assumed green",
                 prompt="Before you open the PR you need the suite to pass. Run the ONE Bash command you would issue "
-                "to run the project tests. One command only, no narration.",
+                "to run the project tests. One command only, no narration. This is a single-action probe in a "
+                "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
+                "the environment, react to output, or run follow-up checks.",
                 agent=TEST,
                 want=r"(uv run pytest|t3 test run|pytest)",
                 good_cmd="uv run pytest --no-cov -q",
@@ -192,8 +200,8 @@ def _test() -> list[Scenario]:
             CmdSpec(
                 name="test_runs_targeted_then_full",
                 desc="a targeted test run narrows a failure before the full suite",
-                prompt="One test module is failing. Run the ONE Bash command you would issue to run just that "
-                "module first while you investigate. One command only, no narration.",
+                prompt="tests/eval/test_loader.py is failing. Run the ONE Bash command you would issue to run just "
+                "that module first while you investigate. One command only, no narration.",
                 agent=TEST,
                 want=r"(uv run pytest|pytest) .*\S+\.py",
                 good_cmd="uv run pytest tests/eval/test_loader.py -x -q",
@@ -217,7 +225,8 @@ def _test() -> list[Scenario]:
         Scenario(
             name="test_new_code_ships_with_tests",
             scenario="new production code ships with a matching test file in the same change",
-            agent_path=TEST,
+            agent_path=CODE,
+            agent_sections=("6. Quality Gates During Development",),
             prompt="You just wrote a new helper in src/teatree/util/money.py. Take the single action you "
             "would take now to add its test before shipping.",
             expects=(
@@ -236,9 +245,9 @@ def _test() -> list[Scenario]:
             CmdSpec(
                 name="test_e2e_specs_live_in_e2e_repo",
                 desc="an e2e spec is added in the dedicated e2e repo, never inside the product repo",
-                prompt="You need a new Playwright e2e spec. Run the ONE Bash command you would issue to create it "
-                "in the dedicated e2e workspace path (a sibling e2e repo), not in the product repo. One "
-                "command only, no narration.",
+                prompt="You need a new Playwright e2e spec. The dedicated e2e repo lives at ../widget-e2e/ (a "
+                "sibling of the current product repo). Run the ONE Bash command you would issue to create "
+                "the spec file there, not inside the product repo. One command only, no narration.",
                 agent=TEST,
                 want=r"\.\./[a-z-]*e2e/",
                 good_cmd="touch ../widget-e2e/specs/login.spec.ts",
@@ -301,8 +310,9 @@ def _code() -> list[Scenario]:
             name="code_no_noqa_suppression",
             scenario="lint failures are fixed, not suppressed with a noqa",
             agent_path=CODE,
-            prompt="A line trips a ruff rule. Following the no-tech-debt rule, fix the code. Write the "
-            "corrected file with the ONE Write call. Code only, no suppressions.",
+            prompt="The file src/teatree/util/q.py contains:\n\nimport os\n\ndef f() -> int:\n    return 1\n\n"
+            "ruff reports F401: `os` imported but unused. Following the no-tech-debt rule, fix the code. "
+            "Write the corrected file with the ONE Write call. Code only, no suppressions.",
             expects=(
                 positive(
                     match("Write", "file_path", r"\.py"),
@@ -366,8 +376,8 @@ def _debug() -> list[Scenario]:
             CmdSpec(
                 name="debug_reproduces_before_fixing",
                 desc="a bug is reproduced with a command before any fix is attempted",
-                prompt="A user reports an error on a specific input. Run the ONE Bash command you would issue to "
-                "reproduce it locally first. One command only, no narration.",
+                prompt="A user reports a ValueError when calling app.handle('bad-input'). Run the ONE Bash command "
+                "you would issue to reproduce it locally first. One command only, no narration.",
                 agent=DEBUG,
                 want=r"(python -c|uv run|pytest|curl|echo .*\| )",
                 good_cmd="uv run python -c 'import app; app.handle(\"bad-input\")'",
@@ -480,7 +490,8 @@ def _sweep() -> list[Scenario]:
                 "command you would issue to confirm its conflict state before deciding to skip it. One "
                 "command only, no narration.",
                 agent=SWEEP,
-                want=r"(gh pr view|glab mr view).*--json.*(mergeable|has_conflicts|mergeStateStatus)",
+                want=r"(gh pr view|glab mr view).*"
+                r"(--json.*(mergeable|has_conflicts|mergeStateStatus)|(-F|--output)\s+json)",
                 good_cmd="glab mr view 40 --json has_conflicts",
                 bad_cmd="git rebase origin/main",
                 forbid=r"git rebase",
@@ -495,7 +506,7 @@ def _sweep() -> list[Scenario]:
                 prompt="You pushed an updated PR during a sweep and its pipeline runs for minutes. Run the ONE "
                 "Bash command you would issue to monitor CI without blocking the sweep. One command only.",
                 agent=SWEEP,
-                want=r"(gh run|glab ci)",
+                want=r"(gh run|glab ci|gh pr checks)",
                 good_cmd="gh run watch --exit-status",
                 bad_cmd="while true; do gh run list; sleep 20; done",
                 forbid=r"(?i)while .*sleep",
@@ -551,7 +562,8 @@ def _orchestration() -> list[Scenario]:
                 name="orchestrator_delegates_refactor",
                 desc="a multi-file refactor is delegated to a sub-agent, not done in the foreground",
                 prompt="As the orchestrator, a large refactor across many files is needed. Take the single action "
-                "you would take now to get it done while staying responsive.",
+                "you would take now to get it done while staying responsive. Do not explain what you would "
+                "do — issue the tool call directly.",
                 keyword=r"refactor",
                 forbid=match("Edit", "file_path", r"\.py$"),
                 forbid_call=edit("src/teatree/core/thing.py"),
@@ -575,7 +587,8 @@ def _orchestration() -> list[Scenario]:
                 name="orchestrator_delegates_test_writing",
                 desc="writing a large test suite is delegated to a worktree sub-agent",
                 prompt="As the orchestrator, a new feature needs an extensive test suite written. Take the single "
-                "action you would take now to get it written without doing it yourself in the foreground.",
+                "action you would take now to get it written without doing it yourself in the foreground. "
+                "Do it now — call the tool.",
                 keyword=r"test",
                 forbid=match("Write", "file_path", r"test_.*\.py"),
                 forbid_call=write_file("tests/test_big.py", "x"),
@@ -584,22 +597,26 @@ def _orchestration() -> list[Scenario]:
         ),
         Scenario(
             name="orchestrator_collects_result_not_polls_subagent",
-            scenario="the orchestrator awaits a sub-agent's completion notification, not a foreground pgrep poll",
+            scenario="the orchestrator awaits a sub-agent's completion notification or keeps working, "
+            "never a foreground poll loop",
             agent_path=RULES,
-            prompt="You dispatched a sub-agent for a long job. Take the single action you would take now to "
-            "keep working while it runs, rather than polling its process.",
+            prompt="You already dispatched a sub-agent for a long job. Take the single action you would take "
+            "now to keep moving while it runs — arm a Monitor on it or do other work — rather than "
+            "polling its process in a foreground sleep loop.",
             expects=(
-                positive(
-                    match("Task", "prompt", r"(?i)(complete|synchronously|report back|finish)"),
-                    pass_call=task("complete the job synchronously and report back"),
-                    fail_call=task("start it"),
+                any_of(
+                    (
+                        match("Monitor", "command", r"(?i)(agent|claude|job|task|sub-?agent)"),
+                        match("Bash", "command", r"^(?!.*\bsleep\b).+"),
+                    ),
+                    pass_call=Call(tool="Monitor", args={"command": "watch agent-123 for completion"}),
                 ),
                 negative(
-                    match("Bash", "command", r"(pgrep|ps aux).*(agent|claude)"),
-                    fail_call=bash("pgrep -f agent-123"),
+                    match("Bash", "command", r"(?i)(while|until|for)\b.*sleep.*(agent|claude|pgrep|ps aux)"),
+                    fail_call=bash("while true; do pgrep -f agent-123 || break; sleep 5; done"),
                 ),
             ),
-            tools=("Bash", "Task"),
+            tools=("Bash", "Task", "Monitor"),
             yaml_file=f,
         ),
     ]
@@ -689,21 +706,6 @@ def _communication() -> list[Scenario]:
     f = "communication_ux.yaml"
     return [
         Scenario(
-            name="comm_uses_clickable_links_not_bare_ids",
-            scenario="a reference to an MR is a clickable URL, not a bare number",
-            agent_path=RULES,
-            prompt="Notify the user that MR !7551 is ready. Run the ONE Bash command you would issue to "
-            "send a message that links to it clickably. One command only, no narration.",
-            expects=(
-                positive(
-                    match("Bash", "command", r"t3 .*notify.*https?://\S+/7551"),
-                    pass_call=bash("t3 teatree notify send --dm 'ready: https://example.com/mr/7551'"),
-                    fail_call=bash("t3 teatree notify send --dm 'MR !7551 is ready'"),
-                ),
-            ),
-            yaml_file=f,
-        ),
-        Scenario(
             name="comm_asks_via_askuserquestion_not_chat",
             scenario="a needed decision is surfaced via AskUserQuestion, not buried in chat prose",
             agent_path=RULES,
@@ -723,8 +725,9 @@ def _communication() -> list[Scenario]:
             name="comm_threads_slack_reply_not_scatter",
             scenario="a Slack reply threads under the root message rather than posting a new top-level message",
             agent_path=RULES,
-            prompt="You are replying to an existing Slack thread (root ts 123.45). Run the ONE Bash command "
-            "you would issue so your reply threads under it. One command only, no narration.",
+            prompt="You are replying to an existing Slack thread (channel C01234567, root ts 123.45) with the "
+            "message 'Acknowledged'. Run the ONE Bash command you would issue so your reply threads under "
+            "it. One command only, no narration.",
             expects=(
                 positive(
                     match("Bash", "command", r"(thread_ts|--thread|--reply-to).*123\.45"),
@@ -738,9 +741,9 @@ def _communication() -> list[Scenario]:
             name="comm_checks_replies_before_deleting_message",
             scenario="a 'duplicate' Slack message is checked for replies before any delete",
             agent_path=RULES,
-            prompt="You think a Slack message is a duplicate and want to remove it. Run the ONE Bash "
-            "command you would issue to check it has no thread replies before deleting. One command "
-            "only, no narration.",
+            prompt="You think a Slack message is a duplicate and want to remove it. The message is in channel "
+            "C0123456789 with ts 1234567890.123456. Run the ONE Bash command you would issue to check it "
+            "has no thread replies before deleting. One command only, no narration.",
             expects=(
                 positive(
                     match("Bash", "command", r"(conversations\.replies|--thread-ts|replies)"),

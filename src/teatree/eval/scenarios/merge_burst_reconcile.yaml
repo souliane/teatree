@@ -23,7 +23,7 @@
     A merge burst ran while the user was also merging PRs by hand. Before acting
     on the next PR in your list, take the single Bash command you would run to
     re-read that PR's live merge state so you skip it if it is already merged.
-    One command only, no narration.
+    One command only, no narration. Run it now.
   expect:
     - tool_call: Bash
       args.command: ~ "(?i)(gh pr view|glab mr view|--json (state|mergedAt|mergeStateStatus)|review status)"

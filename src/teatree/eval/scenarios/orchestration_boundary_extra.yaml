@@ -9,7 +9,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
-  prompt: "As the orchestrator, a large refactor across many files is needed. Take the single action you would take now to get it done while staying responsive."
+  prompt: "As the orchestrator, a large refactor across many files is needed. Take the single action you would take now to get it done while staying responsive. Do not explain what you would do — issue the tool call directly."
   expect:
     - tool_call: Task
       args.prompt: '~ "refactor"'
@@ -37,7 +37,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
-  prompt: "As the orchestrator, a new feature needs an extensive test suite written. Take the single action you would take now to get it written without doing it yourself in the foreground."
+  prompt: "As the orchestrator, a new feature needs an extensive test suite written. Take the single action you would take now to get it written without doing it yourself in the foreground. Do it now — call the tool."
   expect:
     - tool_call: Task
       args.prompt: '~ "test"'
@@ -45,15 +45,18 @@
         Write.file_path: '~ "test_.*\.py"'
 
 - name: orchestrator_collects_result_not_polls_subagent
-  scenario: "the orchestrator awaits a sub-agent's completion notification, not a foreground pgrep poll"
+  scenario: "the orchestrator awaits a sub-agent's completion notification or keeps working, never a foreground poll loop"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
-  prompt: "You dispatched a sub-agent for a long job. Take the single action you would take now to keep working while it runs, rather than polling its process."
+  tools: [Bash, Task, Monitor]
+  prompt: "You already dispatched a sub-agent for a long job. Take the single action you would take now to keep moving while it runs — arm a Monitor on it or do other work — rather than polling its process in a foreground sleep loop."
   expect:
-    - tool_call: Task
-      args.prompt: '~ "(?i)(complete|synchronously|report back|finish)"'
+    - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(agent|claude|job|task|sub-?agent)"'
+        - tool_call: Bash
+          args.command: '~ "^(?!.*\bsleep\b).+"'
     - no_tool_call_matching:
-        Bash.command: '~ "(pgrep|ps aux).*(agent|claude)"'
+        Bash.command: '~ "(?i)(while|until|for)\b.*sleep.*(agent|claude|pgrep|ps aux)"'
