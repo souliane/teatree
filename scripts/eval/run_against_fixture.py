@@ -24,7 +24,7 @@ from pathlib import Path
 
 from teatree.eval.backends import SubscriptionTranscriptRunner
 from teatree.eval.loader import load_eval_yaml
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem
+from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher
 from teatree.eval.report import evaluate
 
 
@@ -84,6 +84,8 @@ def main() -> int:
 def _describe(matcher: ExpectItem) -> str:
     if isinstance(matcher, AnyOf):
         return "any_of[" + " | ".join(_describe(alt) for alt in matcher.alternatives) + "]"
+    if isinstance(matcher, FinalStateMatcher):
+        return f"final_state {matcher.operator} {matcher.value!r}"
     return f"{matcher.kind} {matcher.tool}.{matcher.arg_path} {matcher.operator}"
 
 

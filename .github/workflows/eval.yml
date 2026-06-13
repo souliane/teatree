@@ -2,8 +2,10 @@
 # METERED BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
 # ============================================================
 #
-# The behavioral-eval suite (`t3 eval run --backend sdk`) shells out to the
-# `claude -p` CLI — it is metered (API cost), reaches the network, and varies by
+# The behavioral-eval suite (`t3 eval run --backend sdk`) runs the metered
+# in-process Agent-SDK suite (the SDK spawns the `claude` CLI child internally,
+# so `shutil.which("claude")` is still the provisioning gate) — it is metered
+# (API cost), reaches the network, and varies by
 # model. It MUST NOT run on every push or every PR. This workflow is fully
 # independent of the main CI (`ci.yml`): triggering it never runs the rest of
 # the pipeline, and a PR run never triggers this workflow.
@@ -24,7 +26,8 @@
 #   The metered backend authenticates from `CLAUDE_CODE_OAUTH_TOKEN`, the
 #   OAuth token from `claude setup-token`. This is the auth that works in every
 #   environment — a clean Linux runner with the token as a pure env var (no
-#   `~/.claude.json`, no keychain, no `/login`) authenticates `claude -p`. It is
+#   `~/.claude.json`, no keychain, no `/login`) authenticates the in-process
+#   Agent-SDK's `claude` child. It is
 #   the June-15-safe path: it does NOT depend on an `sk-ant-api03` API key, which
 #   we do not have. The token is wired from the repo secret of the same name;
 #   `ANTHROPIC_API_KEY` is intentionally NOT used here.
@@ -44,7 +47,8 @@
 # The FREE deterministic eval lanes (eval-skill-triggers commit-stage,
 # eval-pinned-regressions push-stage) are unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
-# metered claude -p suite lives here.
+# metered in-process Agent-SDK suite (the SDK spawns the `claude` CLI child
+# internally, so `shutil.which("claude")` is still the provisioning gate) lives here.
 # ============================================================
 
 name: Metered eval
@@ -56,7 +60,7 @@ on:
   workflow_dispatch:
     inputs:
       backend:
-        description: "AI-lane backend for the manual run (sdk = metered claude -p)."
+        description: "AI-lane backend for the manual run (sdk = metered in-process Agent SDK)."
         required: false
         default: sdk
         type: string

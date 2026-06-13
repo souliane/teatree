@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, JudgeSpec, Matcher
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -147,11 +147,18 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
         return _parse_positive(item_map, spec_name, path)
     if "no_tool_call_matching" in item_map:
         return _parse_negative(item_map, spec_name, path)
+    if "final_state" in item_map:
+        return _parse_final_state(item_map, spec_name, path)
     raise EvalSpecError(
         path,
         None,
-        f"spec {spec_name!r}: expect entry must have `tool_call`, `no_tool_call_matching`, or `any_of`",
+        f"spec {spec_name!r}: expect entry must have `tool_call`, `no_tool_call_matching`, `any_of`, or `final_state`",
     )
+
+
+def _parse_final_state(item: Mapping[str, Any], spec_name: str, path: Path) -> FinalStateMatcher:
+    operator, value = _parse_op_expr(str(item["final_state"]), spec_name, path)
+    return FinalStateMatcher(operator=operator, value=value)
 
 
 def _parse_any_of(item: Mapping[str, Any], spec_name: str, path: Path) -> AnyOf:

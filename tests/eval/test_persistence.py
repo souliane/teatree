@@ -11,7 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.eval.matrix import MatrixRow
-from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, Matcher, TokenUsage
+from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.persistence import persist_matrix, persist_run
 from teatree.eval.report import evaluate
 
@@ -19,7 +19,7 @@ _TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator
 _BG_BASH_BRANCH = Matcher(kind="positive", tool="Bash", arg_path="run_in_background", operator="~", value="(?i)true")
 
 
-def _spec(matchers: tuple[Matcher | AnyOf, ...]) -> EvalSpec:
+def _spec(matchers: tuple[Matcher | AnyOf | FinalStateMatcher, ...]) -> EvalSpec:
     return EvalSpec(
         name="background_long_operations_full_suite",
         scenario="text",
@@ -30,9 +30,10 @@ def _spec(matchers: tuple[Matcher | AnyOf, ...]) -> EvalSpec:
     )
 
 
-def _run(
+def _run(  # noqa: PLR0913 — test-data builder mirroring the EvalRun dataclass fields.
     tool_calls: tuple[EvalToolCall, ...],
     *,
+    text_blocks: tuple[str, ...] = (),
     cost_usd: float = 0.0,
     usage: TokenUsage | None = None,
     main_cost_usd: float = 0.0,
@@ -41,7 +42,7 @@ def _run(
     return EvalRun(
         spec_name="background_long_operations_full_suite",
         tool_calls=tool_calls,
-        text_blocks=(),
+        text_blocks=text_blocks,
         terminal_reason="success",
         is_error=False,
         raw_stdout="",
@@ -83,6 +84,22 @@ class TestPersistAnyOf(TestCase):
         assert scenario.verdict == "fail"
         assert scenario.matcher_details[0]["kind"] == "any_of"
         assert scenario.matcher_details[0]["passed"] is False
+
+
+class TestPersistFinalState(TestCase):
+    def test_persists_final_state_matcher_detail(self) -> None:
+        spec = _spec((FinalStateMatcher(operator="contains", value="pushed"),))
+        run = _run((), text_blocks=("All done — the branch is pushed.",))
+        result = evaluate(spec, run)
+        assert result.passed is True
+
+        record = persist_run([result], model="haiku")
+
+        detail = record.scenario_results.get().matcher_details[0]
+        assert detail["kind"] == "final_state"
+        assert detail["operator"] == "contains"
+        assert detail["value"] == "pushed"
+        assert detail["passed"] is True
 
 
 class TestPersistCost(TestCase):

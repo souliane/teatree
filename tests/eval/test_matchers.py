@@ -1,6 +1,12 @@
 import pytest
 
-from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
+from teatree.eval.matchers import (
+    assert_final_state_contains,
+    assert_final_state_matching,
+    assert_no_tool_call_matching,
+    assert_tool_call_contains,
+    assert_tool_call_matching,
+)
 from teatree.eval.models import EvalRun, EvalToolCall
 
 
@@ -10,6 +16,18 @@ def _run(tool_calls: list[EvalToolCall]) -> EvalRun:
         tool_calls=tuple(tool_calls),
         text_blocks=(),
         terminal_reason="success",
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+    )
+
+
+def _run_with_text(*text_blocks: str, terminal_reason: str = "success") -> EvalRun:
+    return EvalRun(
+        spec_name="t",
+        tool_calls=(),
+        text_blocks=tuple(text_blocks),
+        terminal_reason=terminal_reason,
         is_error=False,
         raw_stdout="",
         raw_stderr="",
@@ -105,3 +123,53 @@ class TestAssertNoToolCallMatching:
         with pytest.raises(AssertionError) as exc_info:
             assert_no_tool_call_matching(run, "Bash", "command", r"Edit.*README\.md")
         assert "Edit" in str(exc_info.value)
+
+
+class TestAssertFinalStateMatching:
+    """The end-state matcher: assert the run's FINAL assistant message.
+
+    Unlike the tool-call matchers (which look across every captured tool call),
+    this asserts the agent's terminal answer — the last ``text_blocks`` entry —
+    so a scenario can pin "the agent ended by saying X", not just "it called Y".
+    """
+
+    def test_passes_when_final_message_matches(self) -> None:
+        run = _run_with_text("First I will investigate.", "Done: I pushed branch ac/fix and opened PR #5.")
+        assert_final_state_matching(run, r"opened PR #\d+")
+
+    def test_uses_the_last_block_not_an_earlier_one(self) -> None:
+        run = _run_with_text("opened PR #5 earlier", "Actually I reverted everything.")
+        with pytest.raises(AssertionError) as exc_info:
+            assert_final_state_matching(run, r"opened PR #\d+")
+        # The earlier block must not satisfy the matcher — only the final one counts.
+        assert "Actually I reverted everything." in str(exc_info.value)
+
+    def test_raises_when_pattern_absent(self) -> None:
+        run = _run_with_text("I am still working on it.")
+        with pytest.raises(AssertionError) as exc_info:
+            assert_final_state_matching(run, r"opened PR #\d+")
+        assert "opened PR" in str(exc_info.value)
+
+    def test_raises_when_no_text_blocks(self) -> None:
+        run = _run_with_text()
+        with pytest.raises(AssertionError) as exc_info:
+            assert_final_state_matching(run, r"anything")
+        assert "no final assistant message" in str(exc_info.value)
+
+
+class TestAssertFinalStateContains:
+    def test_passes_when_substring_present(self) -> None:
+        run = _run_with_text("Summary.", "All checks passed and the branch is pushed.")
+        assert_final_state_contains(run, "branch is pushed")
+
+    def test_raises_when_substring_absent(self) -> None:
+        run = _run_with_text("Summary.", "I gave up.")
+        with pytest.raises(AssertionError) as exc_info:
+            assert_final_state_contains(run, "branch is pushed")
+        assert "branch is pushed" in str(exc_info.value)
+        assert "I gave up." in str(exc_info.value)
+
+    def test_raises_when_no_text_blocks(self) -> None:
+        run = _run_with_text()
+        with pytest.raises(AssertionError):
+            assert_final_state_contains(run, "x")

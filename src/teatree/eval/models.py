@@ -54,8 +54,24 @@ class AnyOf:
     alternatives: tuple[Matcher, ...]
 
 
-# An ``expect`` entry is either a single matcher or a disjunction of them.
-ExpectItem = Matcher | AnyOf
+@dataclasses.dataclass(frozen=True)
+class FinalStateMatcher:
+    """An assertion about the run's END STATE — its final assistant message.
+
+    The tool-call matchers (:class:`Matcher`) look across the whole trajectory;
+    this one pins the agent's TERMINAL answer (the last ``text_blocks`` entry).
+    It carries no ``tool``/``arg_path`` because there is exactly one subject — the
+    final message — so a scenario declares only the ``operator`` (``contains`` /
+    ``~``) and the ``value`` to match against it.
+    """
+
+    operator: str
+    value: str
+
+
+# An ``expect`` entry is a single tool-call matcher, a disjunction of them, or an
+# assertion about the run's final assistant message (the end state).
+ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
 
 @dataclasses.dataclass(frozen=True)

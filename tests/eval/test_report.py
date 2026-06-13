@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
+from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, FinalStateMatcher, JudgeSpec, Matcher
 from teatree.eval.report import (
     JudgeOutcome,
     MatcherResult,
@@ -39,10 +39,11 @@ def _spec(
     )
 
 
-def _run(
+def _run(  # noqa: PLR0913 — test-data builder mirroring the EvalRun dataclass fields.
     *,
     spec_name: str = "scenario_one",
     tool_calls: tuple[EvalToolCall, ...] = (),
+    text_blocks: tuple[str, ...] = (),
     terminal_reason: str = "success",
     is_error: bool = False,
     raw_stderr: str = "",
@@ -50,7 +51,7 @@ def _run(
     return EvalRun(
         spec_name=spec_name,
         tool_calls=tool_calls,
-        text_blocks=(),
+        text_blocks=text_blocks,
         terminal_reason=terminal_reason,
         is_error=is_error,
         raw_stdout="",
@@ -114,6 +115,44 @@ class TestEvaluate:
     def test_any_of_fails_against_noop_transcript(self) -> None:
         spec = _spec(matchers=(_ANY_OF,))
         assert evaluate(spec, _run(tool_calls=())).passed is False
+
+
+class TestFinalStateMatcherDispatch:
+    def test_passes_when_final_message_matches_regex(self) -> None:
+        spec = _spec(matchers=(FinalStateMatcher(operator="~", value=r"opened PR #\d+"),))
+        run = _run(text_blocks=("investigating...", "Done: opened PR #5 and pushed the branch."))
+        result = evaluate(spec, run)
+        assert result.passed is True
+
+    def test_passes_when_final_message_contains_substring(self) -> None:
+        spec = _spec(matchers=(FinalStateMatcher(operator="contains", value="branch is pushed"),))
+        run = _run(text_blocks=("step 1", "All green and the branch is pushed."))
+        assert evaluate(spec, run).passed is True
+
+    def test_fails_when_final_message_does_not_match(self) -> None:
+        spec = _spec(matchers=(FinalStateMatcher(operator="~", value=r"opened PR #\d+"),))
+        run = _run(text_blocks=("opened PR #5 earlier", "Actually I reverted everything."))
+        result = evaluate(spec, run)
+        assert result.passed is False
+        assert "Actually I reverted everything." in result.matcher_results[0].message
+
+    def test_fails_against_noop_transcript_with_no_text(self) -> None:
+        spec = _spec(matchers=(FinalStateMatcher(operator="contains", value="pushed"),))
+        assert evaluate(spec, _run(text_blocks=())).passed is False
+
+    def test_final_state_and_tool_call_both_required(self) -> None:
+        spec = _spec(
+            matchers=(
+                Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git push"),
+                FinalStateMatcher(operator="contains", value="pushed"),
+            )
+        )
+        # Tool call present but final message wrong → the conjunction fails.
+        run = _run(
+            tool_calls=(EvalToolCall(name="Bash", input={"command": "git push origin ac/x"}, turn=1),),
+            text_blocks=("I gave up.",),
+        )
+        assert evaluate(spec, run).passed is False
 
 
 class TestVerdict:
