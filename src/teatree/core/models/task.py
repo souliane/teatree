@@ -44,6 +44,7 @@ class Task(models.Model):
     status = FSMField(max_length=32, choices=Status.choices, default=Status.PENDING)
     claimed_at = models.DateTimeField(null=True, blank=True)
     claimed_by = models.CharField(max_length=255, blank=True)
+    claimed_by_session = models.CharField(max_length=255, blank=True, default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
@@ -461,6 +462,7 @@ class Task(models.Model):
     def _clear_claim(self) -> None:
         self.claimed_at = None
         self.claimed_by = ""
+        self.claimed_by_session = ""
         self.lease_expires_at = None
         self.heartbeat_at = None
 
