@@ -33,7 +33,7 @@ classifiers there, so an interspersed persistent flag cannot break detection
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final
 
 from teatree.hooks._publish_detection import (
@@ -101,13 +101,16 @@ def _segment_is_t3_publish(words: list[str]) -> bool:
     Keyed to the segment's own leading executable so a read-only
     ``grep "notify send"`` (leader ``grep``) is not misread as a ``t3`` post,
     and a ``cd <wt> && t3 <overlay> notify send`` (the publish verb on its own
-    ``t3``-led segment) is correctly detected. The overlay segment between
-    ``t3`` and the verb is arbitrary, so the verb-segment substring is matched
-    against the segment's joined words.
+    ``t3``-led segment) is correctly detected. The leader is canonicalised up to
+    the ``t3`` executable basename so a path-form leader (``./t3``,
+    ``/usr/local/bin/t3``) is recognised the same as a bare ``t3`` (env-prefixed
+    leaders are already stripped by :func:`_publish_detection.segment_word_lists`).
+    The overlay segment between ``t3`` and the verb is arbitrary, so the
+    verb-segment substring is matched against the canonicalised joined words.
     """
-    if words[0] != "t3":
+    if PurePosixPath(words[0]).name != "t3":
         return False
-    joined = " ".join(words)
+    joined = " ".join(["t3", *words[1:]])
     return any(needle in joined for needle in _T3_PUBLISH_SUBSTRINGS)
 
 
