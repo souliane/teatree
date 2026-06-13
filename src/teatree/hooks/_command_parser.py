@@ -33,7 +33,7 @@ classifiers there, so an interspersed persistent flag cannot break detection
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final
 
 from teatree.hooks._publish_detection import (
@@ -101,13 +101,16 @@ def _segment_is_t3_publish(words: list[str]) -> bool:
     Keyed to the segment's own leading executable so a read-only
     ``grep "notify send"`` (leader ``grep``) is not misread as a ``t3`` post,
     and a ``cd <wt> && t3 <overlay> notify send`` (the publish verb on its own
-    ``t3``-led segment) is correctly detected. The overlay segment between
-    ``t3`` and the verb is arbitrary, so the verb-segment substring is matched
-    against the segment's joined words.
+    ``t3``-led segment) is correctly detected. The leader is canonicalised up to
+    the ``t3`` executable basename so a path-form leader (``./t3``,
+    ``/usr/local/bin/t3``) is recognised the same as a bare ``t3`` (env-prefixed
+    leaders are already stripped by :func:`_publish_detection.segment_word_lists`).
+    The overlay segment between ``t3`` and the verb is arbitrary, so the
+    verb-segment substring is matched against the canonicalised joined words.
     """
-    if words[0] != "t3":
+    if PurePosixPath(words[0]).name != "t3":
         return False
-    joined = " ".join(words)
+    joined = " ".join(["t3", *words[1:]])
     return any(needle in joined for needle in _T3_PUBLISH_SUBSTRINGS)
 
 
@@ -396,6 +399,7 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
 def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyFileContext") -> None:
     """Route a single command segment to the right argument walkers."""
     from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
+    from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415
 
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
@@ -404,6 +408,11 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads, ctx.base)
+    # ``t3 review`` posts carry the body as the positional NOTE and use
+    # ``--file`` as a diff ANCHOR, not a body-file — extract the NOTE and SKIP
+    # the body-file walker so the anchored source is never scanned (#2278/#2270).
+    if append_t3_review_note_payload(words, payloads):
+        return
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
