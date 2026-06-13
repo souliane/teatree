@@ -9,19 +9,29 @@ what its issues/PRs are supposed to carry.
 :func:`resolve_publish_destination` extracts the target repo/namespace
 from the COMMAND ITSELF (the ``--repo``/``-R`` flag, the ``api`` URL path,
 or the cwd git remote) and :func:`is_public_destination` classifies THAT
-resolved target FAIL-CLOSED: a destination is PUBLIC (gate scans/blocks)
-UNLESS it is PROVABLY internal -- its namespace matches the CONFIG-DRIVEN
-``[teatree] internal_publish_namespaces`` allowlist (or the
-``T3_INTERNAL_PUBLISH_NAMESPACES`` env var), the ``[teatree] private_repos``
-allowlist, or the day-cached ``gh``/``glab`` live-visibility probe (the same
-fallback the private-repo carve-out applies to its command-resolved target).
-Resolving visibility from the command's target rather than the harness cwd
-is what lets a post FROM a public clone TO a provably-private repo skip the
-public-leak scan instead of over-blocking. With no allowlist configured and
-no probe-resolvable target, every destination stays PUBLIC, so behaviour is
-UNCHANGED for unconfigured users. An unresolvable destination is PUBLIC
-(scan). :func:`gate_skips_destination` is the composed predicate the gates
-call.
+resolved target FAIL-CLOSED against an INTERNAL DENYLIST: a destination is
+PUBLIC (gate scans/blocks) UNLESS it is PROVABLY internal -- its namespace
+matches the config-driven ``[teatree] internal_publish_namespaces`` allowlist
+(or the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var), the
+``[teatree] private_repos`` allowlist, or the day-cached ``gh``/``glab``
+live-visibility probe returns a CONFIRMED-PRIVATE verdict. Every OTHER target
+-- a genuinely-public non-teatree repo (a user's other public repos), a
+third-party repo, an UNKNOWN-visibility target, or an UNRESOLVABLE target --
+stays PUBLIC and is SCANNED. This is the only safe default: an allowlist of
+"surfaces to scan" would fail OPEN on a public repo nobody remembered to list,
+leaking an internal term unscanned onto a public surface. Resolving the target
+from the command rather than the harness cwd is what lets a post FROM a public
+clone TO a provably-private repo skip the public-leak scan instead of
+over-blocking. With nothing configured and no probe-resolvable private verdict,
+every destination stays PUBLIC, so behaviour is conservative for unconfigured
+users. :func:`gate_skips_destination` is the composed predicate the gates call.
+
+The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
+reads the internal denylist from ``~/.teatree.toml`` DIRECTLY (the
+``internal_publish_namespaces`` / ``private_repos`` readers in
+:mod:`teatree.hooks._repo_visibility` and this module). The canonical public
+teatree repo needs no entry -- it is public, so the fail-closed default already
+scans it.
 
 The shared command-parsing helpers (``_extract_repo_flag``, the
 eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
@@ -312,20 +322,15 @@ def _segment_is_skip_inert(words: list[str]) -> bool:
     return rest[0] in _SKIP_INERT_LEADERS and _segment_is_publish_inert(words)
 
 
-def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] internal_publish_namespaces`` allowlist (lower-cased).
+def _teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
+    """Return a ``[teatree] <key>`` list unioned with ``<env_var>`` (lower-cased).
 
-    The list of host/namespace prefixes that are PROVABLY internal. Read
-    from the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var first (comma- or
-    space-separated, for a quick per-session override), then the
-    ``[teatree] internal_publish_namespaces`` key in ``~/.teatree.toml``.
-    DEFAULT is empty -- every destination stays PUBLIC, so behaviour is
-    unchanged for users who have not configured the allowlist.
-
-    No real company/customer namespace is hardcoded here; the allowlist
-    lives only in the user's private config / env.
+    The env var (comma- or space-separated) supplements the TOML list, mirroring
+    the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
+    shape. Reads the TOML directly (no Django/config import) to stay importable
+    from the hook process.
     """
-    env_raw = os.environ.get("T3_INTERNAL_PUBLISH_NAMESPACES", "")
+    env_raw = os.environ.get(env_var, "")
     env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
 
     import tomllib  # noqa: PLC0415
@@ -338,10 +343,26 @@ def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
         except (OSError, ValueError):
             raw = {}
         teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
-        entries = teatree.get("internal_publish_namespaces", []) if isinstance(teatree, dict) else []
+        entries = teatree.get(key, []) if isinstance(teatree, dict) else []
         if isinstance(entries, list):
             toml_entries = [str(e).strip().lower() for e in entries if str(e).strip()]
     return env_entries + toml_entries
+
+
+def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
+    """Return the ``[teatree] internal_publish_namespaces`` denylist (lower-cased).
+
+    The list of host/namespace prefixes that are PROVABLY internal. Read
+    from the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var first (comma- or
+    space-separated, for a quick per-session override), then the
+    ``[teatree] internal_publish_namespaces`` key in ``~/.teatree.toml``.
+    DEFAULT is empty -- with nothing configured every destination stays PUBLIC
+    (scanned), so behaviour is conservative for unconfigured users.
+
+    No real company/customer namespace is hardcoded here; the denylist lives
+    only in the user's private config / env.
+    """
+    return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
 
 
 def is_public_destination(dest: Destination | None, *, config_path: Path | None = None) -> bool:
@@ -352,32 +373,32 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     of these resolves its slug to private:
 
     - the ``[teatree] internal_publish_namespaces`` /
-        ``T3_INTERNAL_PUBLISH_NAMESPACES`` allowlist, as a case-insensitive
+        ``T3_INTERNAL_PUBLISH_NAMESPACES`` denylist, as a case-insensitive
         prefix-SEGMENT match (``internalcorp`` matches ``internalcorp/svc``
         and ``host/internalcorp/svc`` but not ``other/internalcorp-public``);
     - the existing ``[teatree] private_repos`` allowlist that the
         commit / pure-post carve-out already consults
-        (:func:`_repo_visibility.slug_is_allowlisted_private`, a
-        case-insensitive path-SEGMENT-prefix match), so a user's CURRENT
-        ``private_repos`` config makes their private namespaces skip the
-        public-leak scan without maintaining a second allowlist;
+        (:func:`_repo_visibility.slug_is_allowlisted_private`), so a user's
+        CURRENT ``private_repos`` config makes their private namespaces skip the
+        public-leak scan without maintaining a second list;
     - the day-cached ``gh``/``glab`` live-visibility probe
-        (:func:`_repo_visibility.slug_is_private`), the same fallback the
-        commit / pure-post carve-out (:func:`publish_surface.segment_target_is_private`)
-        already applies to its command-resolved target. Resolving visibility
-        from the COMMAND's target slug (the ``--repo``/``-R`` flag, the
-        ``api`` URL path, or the cwd remote) rather than the harness cwd is
-        what lets a post FROM a public clone TO a provably-private repo skip
-        the public-leak scan instead of over-blocking. The probe returns
-        ``None`` (unknown -- tool absent in-hook or auth differs) for an
-        unresolvable target, which stays PUBLIC.
+        (:func:`_repo_visibility.slug_is_private`) returning a CONFIRMED-PRIVATE
+        verdict. Resolving visibility from the COMMAND's target slug (the
+        ``--repo``/``-R`` flag, the ``api`` URL path, or the cwd remote) rather
+        than the harness cwd is what lets a post FROM a public clone TO a
+        provably-private repo skip the public-leak scan instead of over-blocking.
+        The probe returns ``None`` (unknown -- tool absent in-hook or auth
+        differs) for an unresolvable target, which stays PUBLIC.
 
-    A ``None`` destination (unresolvable target) is PUBLIC, a slug carrying an
-    unexpanded shell variable (``$``) is PUBLIC unconditionally (its runtime
-    value is unknowable, so neither allowlist nor probe can PROVE anything
-    about the repo the expanded command will actually hit), and a probe that
-    cannot prove the target private leaves it PUBLIC -- detection failure
-    never weakens the gate.
+    Every OTHER target stays PUBLIC and is SCANNED: a genuinely-public
+    non-teatree repo (a user's other public repos), a third-party repo, an
+    UNKNOWN-visibility target, a ``None`` destination (unresolvable target), an
+    empty slug, and a slug carrying an unexpanded shell variable (``$``, runtime
+    value unknowable). The public-surface default is fail-closed because an
+    allowlist of "surfaces to scan" would fail OPEN on a public repo nobody
+    remembered to list, leaking an internal term unscanned onto a public surface.
+    A probe that cannot prove the target private leaves it PUBLIC -- detection
+    failure never weakens the gate.
     """
     if dest is None:
         return True
