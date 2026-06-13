@@ -1,7 +1,8 @@
 """OAuth-token resolution for the metered ``sdk`` eval lane.
 
-``claude -p`` authenticates from ``CLAUDE_CODE_OAUTH_TOKEN`` — the OAuth token
-from ``claude setup-token``. It reaches the CLI two ways, and this module is the
+The metered in-process Agent-SDK lane (the SDK spawns the ``claude`` CLI child)
+authenticates from ``CLAUDE_CODE_OAUTH_TOKEN`` — the OAuth token from
+``claude setup-token``. It reaches the CLI two ways, and this module is the
 single resolver both rely on.
 
 CI wires it from the ``CLAUDE_CODE_OAUTH_TOKEN`` repo secret as a plain env var;
