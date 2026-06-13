@@ -47,12 +47,21 @@ class RunGuards:
 
     @staticmethod
     def sdk_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        RunGuards.sdk_metered_total(
+            backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
+        )
+
+    @staticmethod
+    def sdk_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
+        """Fail-loud the unmetered-$0 guard from a precomputed cost total.
+
+        The single-run lane sums ``ScenarioResult.run.cost_usd``; the benchmark /
+        matrix lane works in ``MatrixRow`` and sums ``cost_usd`` itself. Both share
+        this one ``UnmeteredSdkRunError`` → ``typer.Exit`` translation so a
+        fake-green $0 metered run turns RED identically wherever it is detected.
+        """
         try:
-            assert_sdk_run_was_metered(
-                backend=backend,
-                executed=executed,
-                total_cost_usd=sum(r.run.cost_usd for r in results),
-            )
+            assert_sdk_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
         except UnmeteredSdkRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None

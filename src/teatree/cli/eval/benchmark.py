@@ -21,10 +21,10 @@ from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import collect_matrix_rows, parse_model_tags
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
+from teatree.eval.backends import SDK_BACKEND, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
-from teatree.eval.sdk_runner import SdkInProcessRunner
 from teatree.utils.django_bootstrap import ensure_django
 
 #: Generous per-run cap for the benchmark lane. The whole point of the benchmark
@@ -112,9 +112,23 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     require_valid_format(output_format)
     tags = parse_model_tags(models)
     specs = _select_specs(scenarios)
-    runner = SdkInProcessRunner(max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd)
+    runner = make_runner(
+        SDK_BACKEND, max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd
+    )
     rows = collect_matrix_rows(specs, tags, runner=runner, trials=trials, require="any")
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
+    # The benchmark is always sdk-metered, yet (unlike the single-run lane and the
+    # suite) it lacked the unmetered-$0 guard: an executed-but-$0 run (auth ok but
+    # billing nothing, or mid-run quota exhaustion) would report a fake-green $0
+    # across every variant. Count only genuinely-graded cells (skipped = not
+    # provisioned, errored = $0 by construction); if any of those ran yet the lane
+    # metered nothing, fail loud like skip_guard.assert_sdk_run_was_metered.
+    graded = [row for row in rows if not row.skipped and not row.errored]
+    RunGuards.sdk_metered_total(
+        backend=SDK_BACKEND,
+        executed=len(graded),
+        total_cost_usd=sum(row.cost_usd for row in graded),
+    )
     if persist:
         persist_matrix_run(rows, models=tags, max_turns=max_turns, baseline=False)
     summaries = summarize_benchmark(rows, tags)

@@ -20,12 +20,13 @@ from teatree.cli.eval.run_modes import (
     persist_pass_at_k_run,
     with_model,
 )
+from teatree.eval.backends import SDK_BACKEND, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
+from teatree.eval.sdk_runner import MAX_BUDGET_USD
 
 #: How many extra attempts a single matrix/benchmark cell gets after its first
 #: failure. A clean-room scenario is idempotent (re-running costs only extra
@@ -63,7 +64,8 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
-    runner = SdkInProcessRunner(
+    runner = make_runner(
+        SDK_BACKEND,
         max_turns_override=max_turns,
         require_executed=require_executed,
         max_budget_usd=max_budget_usd,
@@ -146,7 +148,8 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     a scenario's own) still win over this lane default at the runner's seam.
     """
     model_list = parse_model_tags(models)
-    runner = SdkInProcessRunner(
+    runner = make_runner(
+        SDK_BACKEND,
         max_turns_override=max_turns,
         require_executed=require_executed,
         max_budget_usd=max_budget_usd,
@@ -199,7 +202,7 @@ def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benc
     specs: list[EvalSpec],
     model_tags: list[str],
     *,
-    runner: SdkInProcessRunner,
+    runner: EvalRunner,
     trials: int,
     require: str,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
@@ -219,7 +222,7 @@ def collect_matrix_rows(  # noqa: PLR0913 — each kwarg threads one matrix/benc
 
 
 def _resilient_matrix_trial(
-    runner: SdkInProcessRunner,
+    runner: EvalRunner,
     spec: EvalSpec,
     *,
     trials: int,
@@ -268,7 +271,7 @@ def _resilient_matrix_trial(
 
 
 def _matrix_trial(
-    runner: SdkInProcessRunner,
+    runner: EvalRunner,
     spec: EvalSpec,
     *,
     trials: int,
