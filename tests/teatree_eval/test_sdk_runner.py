@@ -28,6 +28,7 @@ from teatree.eval.sdk_runner import (
     SdkInProcessRunner,
     build_sdk_options,
     classify_terminal_error,
+    compute_available_tools,
     compute_disallowed_tools,
 )
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
@@ -1024,6 +1025,128 @@ class TestComputeDisallowedTools:
         disallowed = compute_disallowed_tools(spec)
         assert list(disallowed) == sorted(disallowed)
 
+    def test_known_builtin_tools_is_the_complete_bundled_cli_set(self) -> None:
+        # The denylist is exhaustive only if KNOWN_BUILTIN_TOOLS is the COMPLETE
+        # bundled-CLI built-in set. An incomplete set is exactly why PushNotification
+        # leaked. Assert the escape/spiral tools the metered runs surfaced are all
+        # present (plus the full 24-name set excludes nothing the model can reach).
+        expected = {
+            "Agent",
+            "AskUserQuestion",
+            "Bash",
+            "BashOutput",
+            "Edit",
+            "EnterPlanMode",
+            "ExitPlanMode",
+            "Glob",
+            "Grep",
+            "KillBash",
+            "KillShell",
+            "ListMcpResources",
+            "Monitor",
+            "MultiEdit",
+            "NotebookEdit",
+            "PushNotification",
+            "Read",
+            "ReadMcpResource",
+            "Task",
+            "TodoWrite",
+            "ToolSearch",
+            "WebFetch",
+            "WebSearch",
+            "Write",
+        }
+        assert set(KNOWN_BUILTIN_TOOLS) == expected
+        assert len(KNOWN_BUILTIN_TOOLS) == 24
+        for escape_tool in ("PushNotification", "ToolSearch", "AskUserQuestion"):
+            assert escape_tool in KNOWN_BUILTIN_TOOLS
+
+    def test_monitor_is_a_builtin_disallowed_for_a_non_monitor_scenario(self, tmp_path: Path) -> None:
+        # Monitor IS a built-in now (background scenarios declare it), so a scenario
+        # that neither declares nor references it gets it disallowed — a non-background
+        # scenario should not be able to spiral into Monitor.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Monitor" in disallowed
+
+    def test_monitor_stays_available_for_a_background_scenario(self, tmp_path: Path) -> None:
+        # A background-shape spec declaring Monitor keeps it available: NOT in the
+        # disallowed complement, and IN the allowlist of available tools.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task", "Monitor"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="ci"),),
+        )
+        assert "Monitor" not in compute_disallowed_tools(spec)
+        assert "Monitor" in compute_available_tools(spec)
+
+
+class TestComputeAvailableTools:
+    """The ALLOWLIST: only a scenario's declared + matcher-referenced tools.
+
+    The PRIMARY restriction (the SDK's ``--tools`` allowlist). The model sees
+    only the listed tools, regardless of permission mode — the robust fix for the
+    fragile denylist (which leaked any built-in not yet enumerated). Available =
+    canonicalize(declared) union matcher-referenced.
+    """
+
+    def test_declared_and_referenced_only(self, tmp_path: Path) -> None:
+        # tools=[Bash] + a Bash matcher → exactly ("Bash",): no PushNotification,
+        # ToolSearch, Monitor, or any other built-in leaks in.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+        )
+        assert compute_available_tools(spec) == ("Bash",)
+
+    def test_negative_matcher_tool_is_available_so_assertion_is_not_vacuous(self, tmp_path: Path) -> None:
+        # orchestrator_delegates_test_writing shape: tools=[Bash, Edit, Task] with a
+        # NEGATIVE Write matcher. Write must be AVAILABLE so the model CAN call it —
+        # otherwise the no_tool_call assertion passes vacuously.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Edit", "Task"),
+            matchers=(
+                Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="test"),
+                Matcher(kind="negative", tool="Write", arg_path="file_path", operator="~", value=r"test_.*\.py"),
+            ),
+        )
+        available = compute_available_tools(spec)
+        assert set(available) == {"Bash", "Edit", "Task", "Write"}
+
+    def test_lowercase_declared_tool_is_canonicalized(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+        )
+        assert compute_available_tools(spec) == ("Bash",)
+
+    def test_available_is_sorted_and_deterministic(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Task", "Bash", "Edit"),
+            matchers=(Matcher(kind="negative", tool="Write", arg_path="file_path", operator="~", value="x"),),
+        )
+        available = compute_available_tools(spec)
+        assert list(available) == sorted(available)
+
+    def test_no_declared_no_referenced_is_empty(self, tmp_path: Path) -> None:
+        # A scenario that declares no tools and references none → empty allowlist.
+        # The edge case build_sdk_options must render as `tools=None` (CLI default),
+        # NOT an empty `--tools ""`.
+        spec = _spec_with(
+            tmp_path,
+            tools=(),
+            matchers=(FinalStateMatcher(operator="contains", value="done"),),
+        )
+        assert compute_available_tools(spec) == ()
+
 
 class TestDisallowedToolsFlowToOptions:
     """The computed disallowed set reaches ``ClaudeAgentOptions.disallowed_tools``."""
@@ -1079,3 +1202,74 @@ class TestDisallowedToolsFlowToOptions:
         assert "Bash" in disallowed
         assert "Read" in disallowed
         assert "Write" not in disallowed
+
+    def test_build_sdk_options_sets_tools_allowlist(self, tmp_path: Path) -> None:
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            available_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        options = build_sdk_options(config)
+        assert options.tools == ["Bash"]
+
+    def test_build_sdk_options_empty_available_tools_renders_none_not_empty_list(self, tmp_path: Path) -> None:
+        # The CLI renders `tools=[]` as `--tools ""` (NO tools) but `tools=None` as
+        # the CLI default. A scenario that didn't opt into an allowlist must get the
+        # default, never an accidental no-tools run.
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=(),
+            available_tools=(),
+            model="haiku",
+            max_turns=3,
+        )
+        options = build_sdk_options(config)
+        assert options.tools is None
+
+    def test_default_available_tools_is_empty_so_judge_path_uses_cli_default(self, tmp_path: Path) -> None:
+        # CleanRoomConfig defaults available_tools to () so the judge path (which
+        # shares build_sdk_options) gets tools=None — the CLI default toolset.
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        assert config.available_tools == ()
+        assert build_sdk_options(config).tools is None
+
+    def test_runner_computes_and_forwards_available_tools_allowlist(self, tmp_path: Path) -> None:
+        # End-to-end: a tools=[Write] scenario reaches the SDK options with the
+        # tools allowlist set to exactly ["Write"] — the model sees only Write.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Write",),
+            matchers=(Matcher(kind="positive", tool="Write", arg_path="file_path", operator="contains", value="x"),),
+        )
+        captured = self._run(spec)
+        assert captured["options"].tools == ["Write"]
+
+    def test_runner_forwards_write_in_allowlist_for_orchestrator_shape(self, tmp_path: Path) -> None:
+        # The negative-Write orchestrator shape: options.tools must contain Write so
+        # the model CAN write (and the negative assertion is not vacuous).
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Edit", "Task"),
+            matchers=(
+                Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="test"),
+                Matcher(kind="negative", tool="Write", arg_path="file_path", operator="~", value=r"test_.*\.py"),
+            ),
+        )
+        captured = self._run(spec)
+        assert "Write" in captured["options"].tools

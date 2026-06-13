@@ -155,36 +155,48 @@ def resolve_metered_effort() -> EffortLevel:
     return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
 
 
-#: The standard built-in tools a model can SPIRAL into when a scenario does not
-#: declare them. Under ``bypassPermissions`` ``allowed_tools`` only auto-approves —
-#: it does NOT remove a tool from the model's available set — so a scenario
-#: declaring ``tools: [Write]`` still sees Bash/Read/etc. and burns ``max_turns``
-#: on exploration that the matchers never asked for (a false fail). The disallowed
-#: complement of (declared union matcher-referenced) tools is computed from this
-#: set and passed as ``disallowed_tools`` (the SDK's true toolset-removal lever).
-#: ``ToolSearch`` (tool-hunting) and ``AskUserQuestion`` (punting) are the
-#: escape/punt tools a metered run spiraled into instead of issuing its one
-#: declared action — included so they are removed unless a scenario declares or
-#: references them. The ``Skill`` tool is deliberately ABSENT — it is left
-#: untouched so a scenario can always load a skill.
+#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (24,
+#: from ``strings`` on the binary). A metered run will SPIRAL into any built-in a
+#: scenario did not declare — tool-hunting (``ToolSearch``), punting
+#: (``AskUserQuestion``), notifying (``PushNotification``) — burning ``max_turns``
+#: on exploration the matchers never asked for (a false fail). The toolset is
+#: restricted by TWO belt-and-suspenders mechanisms that always agree:
+#:
+#: 1. the PRIMARY ``--tools`` allowlist (``ClaudeAgentOptions.tools``) =
+#:    :func:`compute_available_tools` — the model SEES only the listed tools,
+#:    independent of ``permission_mode``;
+#: 2. DEFENSE-IN-DEPTH: the ``--disallowedTools`` complement
+#:    (:func:`compute_disallowed_tools`) = this complete set MINUS the available
+#:    set — exhaustive even if a CLI build ignored ``--tools``. Because the set is
+#:    complete, no built-in (PushNotification etc.) can leak past the denylist.
+#:
+#: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
+#: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
 KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
+    "Agent",
+    "AskUserQuestion",
     "Bash",
-    "Read",
-    "Write",
+    "BashOutput",
     "Edit",
-    "MultiEdit",
+    "EnterPlanMode",
+    "ExitPlanMode",
     "Glob",
     "Grep",
+    "KillBash",
+    "KillShell",
+    "ListMcpResources",
+    "Monitor",
+    "MultiEdit",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "ReadMcpResource",
     "Task",
+    "TodoWrite",
+    "ToolSearch",
     "WebFetch",
     "WebSearch",
-    "NotebookEdit",
-    "TodoWrite",
-    "BashOutput",
-    "KillShell",
-    "SlashCommand",
-    "ToolSearch",
-    "AskUserQuestion",
+    "Write",
 )
 
 
@@ -193,7 +205,7 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
 
     Collects ``Matcher.tool`` (positive AND negative) and each
     ``AnyOf.alternatives`` entry's tool; ``FinalStateMatcher`` references no tool.
-    A negative matcher's tool is included on PURPOSE: disallowing the tool a
+    A negative matcher's tool is included on PURPOSE: removing the tool a
     ``no_tool_call_matching`` assertion guards would make that assertion pass
     vacuously, hiding the misbehaviour it tests — so it must stay available.
     """
@@ -206,20 +218,39 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     return referenced
 
 
-def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
-    """The built-in tools to REMOVE from the model's toolset for *spec*.
+def _available_tool_set(spec: EvalSpec) -> set[str]:
+    """The canonical set of tools the model is ALLOWED to see for *spec*.
 
-    The complement of the scenario's available tools within
-    :data:`KNOWN_BUILTIN_TOOLS`: a built-in is disallowed unless it is declared in
-    ``spec.tools`` OR referenced by any matcher (positive or negative). The
-    ``(declared union matcher-referenced)`` subtraction guarantees a matcher-guarded
-    tool is never removed — so a negative assertion can still observe the
-    misbehaviour it tests. Declared tools are canonicalized the SAME way the grader
-    canonicalizes, so the lowercase ``bash`` alias matches ``Bash``. The result is
-    sorted for a deterministic, idempotent set.
+    The union of the scenario's declared ``spec.tools`` (canonicalized the SAME
+    way the grader canonicalizes, so the lowercase ``bash`` alias matches ``Bash``)
+    and every matcher-referenced tool. A matcher-referenced tool is always
+    available so a negative assertion can still observe the misbehaviour it tests.
+    The single source of truth for BOTH the allowlist and the denylist-complement.
     """
-    available = {canonicalize_tool(tool) for tool in spec.tools} | _matcher_referenced_tools(spec)
-    return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - available))
+    return {canonicalize_tool(tool) for tool in spec.tools} | _matcher_referenced_tools(spec)
+
+
+def compute_available_tools(spec: EvalSpec) -> tuple[str, ...]:
+    """The ``--tools`` ALLOWLIST for *spec* — the model sees ONLY these tools.
+
+    The PRIMARY toolset restriction: ``canonicalize(spec.tools)`` unioned with
+    every matcher-referenced tool, sorted and deterministic. Independent of
+    ``permission_mode``. Empty when a scenario declares no tools and references
+    none — :func:`build_sdk_options` renders that as ``tools=None`` (the CLI
+    default toolset), never an empty ``--tools ""`` (no tools).
+    """
+    return tuple(sorted(_available_tool_set(spec)))
+
+
+def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
+    """The built-in tools to REMOVE from the model's toolset for *spec* (denylist).
+
+    DEFENSE-IN-DEPTH complement of :func:`compute_available_tools` within the
+    complete :data:`KNOWN_BUILTIN_TOOLS`: a built-in is disallowed unless it is in
+    the available set. Because the set is complete, this is exhaustive even if a
+    CLI build ignored ``--tools``. Sorted for a deterministic, idempotent set.
+    """
+    return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - _available_tool_set(spec)))
 
 
 #: Resolved at import so the existing ``patch("…WATCHDOG_SECONDS", 0.01)`` test seam
@@ -352,6 +383,12 @@ class CleanRoomConfig:
     #: (which shares this config) is unchanged; the runner computes the scenario's
     #: complement via :func:`compute_disallowed_tools`.
     disallowed_tools: tuple[str, ...] = ()
+    #: The ``--tools`` ALLOWLIST (the SDK's ``ClaudeAgentOptions.tools``) — the
+    #: model sees ONLY these, the PRIMARY restriction. Defaults empty so the judge
+    #: path gets ``tools=None`` (the CLI default toolset); the runner computes the
+    #: scenario's set via :func:`compute_available_tools`. An empty value renders
+    #: as ``tools=None`` (CLI default), NEVER an empty ``--tools ""`` (no tools).
+    available_tools: tuple[str, ...] = ()
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -363,7 +400,14 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     hooks via ``settings``, ``strict_mcp_config``, ``bypassPermissions``, and the
     ``max_budget_usd`` circuit breaker. ``cwd``/``env`` come from
     :func:`isolated_claude_env`; ``add_dirs`` grants the scenario its workspace.
+
+    The ``--tools`` allowlist is the PRIMARY toolset restriction: an empty
+    ``available_tools`` is passed as ``tools=None`` (the CLI default toolset), NOT
+    an empty list — the SDK renders ``[]`` as ``--tools ""`` (no tools), which
+    would silently strip every tool from a scenario that did not opt into an
+    allowlist.
     """
+    available = list(config.available_tools) if config.available_tools else None
     return ClaudeAgentOptions(
         setting_sources=[],
         system_prompt=config.system_prompt,
@@ -372,6 +416,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         cwd=config.cwd,
         env=config.env,
         add_dirs=[str(config.workspace)],
+        tools=available,
         allowed_tools=list(config.allowed_tools),
         disallowed_tools=list(config.disallowed_tools),
         permission_mode="bypassPermissions",
@@ -488,6 +533,7 @@ class SdkInProcessRunner:
                     cwd=cwd,
                     env=env,
                     allowed_tools=spec.tools,
+                    available_tools=compute_available_tools(spec),
                     disallowed_tools=compute_disallowed_tools(spec),
                     model=variant.model,
                     max_turns=max_turns,
