@@ -43,6 +43,7 @@ ALLOWED_ROOT = frozenset(
         ".pre-commit-config.yaml",
         ".gitignore",
         ".gitlab-ci.yml",
+        "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)
         ".github",
         ".editorconfig",
         ".jscpd.json",

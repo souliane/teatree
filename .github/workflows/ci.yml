@@ -99,14 +99,14 @@ jobs:
       run_heavy_python: ${{ steps.classify.outputs.run_heavy_python }}
       all: ${{ steps.classify.outputs.all }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           # fetch-depth: 0 so the PR-vs-base ``git diff`` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - name: Classify the PR diff into CI lanes
@@ -126,15 +126,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
-      - uses: j178/prek-action@v2
+      - uses: j178/prek-action@bdca6f102f98e2b4c7029491a53dfd366469e33d  # v2
         env:
           SKIP: pytest,uv-audit,cyclonedx-sbom
       # Migration-graph linearity gate. Two PRs branching a migration off
@@ -157,14 +157,14 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           # fetch-depth: 0 so `git merge-base origin/main HEAD` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -193,13 +193,13 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -224,13 +224,13 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -247,11 +247,11 @@ jobs:
   docs-drift:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync --group docs
@@ -296,11 +296,11 @@ jobs:
     # the agent's tools.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -320,11 +320,11 @@ jobs:
     # gate; it can never lock the agent's tools.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -354,9 +354,9 @@ jobs:
       matrix:
         python-version: ["3.13"]
     steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7
         with:
           context: .
           file: dev/Dockerfile.test
@@ -387,7 +387,7 @@ jobs:
           -e COVERAGE_FILE=/app/.coverage
           teatree-test-${{ matrix.python-version }}
           uv run -p ${{ matrix.python-version }} t3 ci coverage
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
           name: coverage-${{ matrix.python-version }}
@@ -459,14 +459,14 @@ jobs:
     timeout-minutes: 12
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -490,11 +490,11 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync --group mutation
@@ -539,11 +539,11 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
@@ -593,35 +593,62 @@ jobs:
     # a preview feature and astral-sh/uv#19492 (OSV parser regression)
     # turned every PR red. ``pip-audit`` uses the same OSV backend and
     # is production-stable. See souliane/teatree#1264.
+    #
+    # AUDITED SURFACE: ``--no-default-groups --all-extras`` exports the SHIPPED
+    # runtime surface (all optional extras, no dev tooling). Previously ``uv sync``
+    # included dev group packages that never ship to users, inflating the CVE
+    # surface with development tools. Optional extras (markdown, notion, slack) ARE
+    # shipped to users and must be audited.
+    #
+    # ALLOWLIST: add unfixable transitive CVEs to ``requirements.audit.ignore`` —
+    # one ``VULN-ID  # package==version: justification`` entry per line. See that
+    # file for the format. Keep the list as short as possible; every entry is a
+    # conscious decision to ship with a known vulnerability.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
-      - run: uv sync
-      - run: uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt
-      - run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt
+      - name: Export shipped runtime surface for audit
+        run: uv export --no-default-groups --all-extras --format requirements-txt --no-emit-workspace --no-header --quiet > requirements.audit.txt
+      - name: Read CVE allowlist
+        id: ignore
+        run: |
+          if [ -s requirements.audit.ignore ]; then
+            grep -v '^\s*#' requirements.audit.ignore | grep -v '^\s*$' \
+              | awk '{print "--ignore-vuln", $1}' | tr '\n' ' ' > /tmp/ignore_flags.txt
+            echo "flags=$(cat /tmp/ignore_flags.txt)" >> "$GITHUB_OUTPUT"
+          else
+            echo "flags=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: pip-audit (OSV backend; strict; allowlist applied)
+        env:
+          IGNORE_FLAGS: ${{ steps.ignore.outputs.flags }}
+        # shellcheck disable=SC2086 — word-splitting on IGNORE_FLAGS is intentional:
+        # it expands to zero or more ``--ignore-vuln GHSA-xxxx`` pairs from the
+        # committed requirements.audit.ignore allowlist (never user-supplied input).
+        run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt $IGNORE_FLAGS
 
   # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
   # also uploads the SBOM as a workflow artifact for supply-chain visibility.
   sbom:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
       - run: uv sync
       - run: scripts/hooks/generate_sbom.sh
       - run: git diff --exit-code dist/sbom.json
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         if: always()
         with:
           name: sbom
