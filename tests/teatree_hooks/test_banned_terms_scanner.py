@@ -358,7 +358,7 @@ class TestRelativeBodyFileResolvesAgainstCommandDir:
         worktree = workspace / "worktree"
         worktree.mkdir(parents=True)
         ambient_cwd.mkdir()
-        _git(worktree, "init", "-q")
+        _git(worktree, "init", "-q", "-b", "main")
         (worktree / "msg.txt").write_text("internal note about acmecorp\n", encoding="utf-8")
         # Process cwd is OUTSIDE the workspace, so a process-cwd-relative parse
         # cannot find the body -- only the ambient-cwd anchor reaches it.

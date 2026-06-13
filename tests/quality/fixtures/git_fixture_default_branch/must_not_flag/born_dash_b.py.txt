@@ -1,0 +1,10 @@
+import subprocess
+
+
+def setup(p):
+    subprocess.run(["git", "init", "-q", "-b", "main", str(p)], check=True)
+    _git(p, "init", "-q", "-b", "main")
+    subprocess.run(["git", "init", "--initial-branch=main", str(p)], check=True)
+    _git(p, "init", "--initial-branch=main", "-q")
+    # A non-init verb whose -m message is literally "init" must not be read as the verb.
+    subprocess.run(["git", "-C", str(p), "commit", "-q", "-m", "init"], check=True)

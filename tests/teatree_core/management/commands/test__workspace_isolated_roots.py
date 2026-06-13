@@ -75,7 +75,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         slug = paths.isolated_slug(Path("/gone/with/git"))
         env_dir = self.root / slug
         env_dir.mkdir()
-        _git(env_dir, "init")
+        _git(env_dir, "init", "-b", "main")
 
         result = reaper.reap_orphan_isolated_worktree_roots()
 

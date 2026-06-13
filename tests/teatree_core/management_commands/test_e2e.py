@@ -218,7 +218,7 @@ class TestE2eRunWorkItem(TestCase):
 
     def _make_repo(self, path: Path) -> str:
         path.mkdir(parents=True, exist_ok=True)
-        self._git(path, "init", "-q")
+        self._git(path, "init", "-q", "-b", "main")
         self._git(path, "config", "user.email", "t@t.test")
         self._git(path, "config", "user.name", "T")
         (path / "f").write_text("x")

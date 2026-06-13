@@ -32,7 +32,7 @@ def _git_repo(path: Path) -> str:
     import os  # noqa: PLC0415
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | _GIT_ENV
-    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)  # noqa: S607
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True, env=env)  # noqa: S607
     return subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--show-toplevel"],  # noqa: S607
         check=True,
