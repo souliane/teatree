@@ -12,7 +12,7 @@ from teatree.config import load_e2e_repos
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.management.commands import _test_plan
-from teatree.core.models import Ticket
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree_env import compose_project
@@ -260,42 +260,38 @@ class Command(TyperCommand):
                 self.stderr.write(f"E2E preflight failed: {exc}")
                 raise SystemExit(1) from exc
 
-    def _resolve_target_env(
-        self,
-        resolved_target: str,
-        linked_ticket: Ticket | None,
-    ) -> tuple[str | None, str | None, dict[str, str] | None]:
-        """Build the per-target trio passed to ``_build_e2e_env``.
-
-        Returns ``(frontend_url, worktree_compose_project, env_cache_override)``.
-        For ``dev`` the BASE_URL is preserved and the other two stay None.
-        For ``local`` the frontend port is discovered (routed through
-        ``linked_ticket`` when provided), the compose project comes from the
-        linked worktree (else the resolved one), and the env-cache override
-        comes from the linked worktree's on-disk path (None when no link).
-        """
-        if resolved_target == "dev":
-            if not os.environ.get("BASE_URL"):
-                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
-                raise SystemExit(1)
-            return None, None, None
-
-        worktree = resolve_worktree()
-        frontend_port = _discover_frontend_port(worktree, linked_ticket=linked_ticket)
-        if frontend_port is None:
+    def _require_frontend_port(self, worktree: Worktree, linked_ticket: Ticket | None) -> int:
+        port = _discover_frontend_port(worktree, linked_ticket=linked_ticket)
+        if port is None:
             probed = ", ".join(_ticket_frontend_projects(worktree, linked_ticket=linked_ticket)) or "none"
             self.stderr.write(
                 f"Frontend not running (no docker `frontend` service in [{probed}], "
                 "no local process on 4200). Run `t3 <overlay> worktree start` first.",
             )
             raise SystemExit(1)
+        return port
 
-        frontend_url = f"http://localhost:{frontend_port}"
+    def _resolve_target_env(
+        self,
+        resolved_target: str,
+        linked_ticket: Ticket | None,
+    ) -> tuple[str | None, str | None, dict[str, str] | None]:
+        """Build the per-target trio passed to ``_build_e2e_env``."""
+        if resolved_target == "dev":
+            if not os.environ.get("BASE_URL"):
+                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
+                raise SystemExit(1)
+            return None, None, None
+
         if linked_ticket is not None:
             linked_wt = _resolve_linked_worktree(linked_ticket)
             if linked_wt is not None:
-                return frontend_url, compose_project(linked_wt), _linked_env_cache(linked_wt)
-        return frontend_url, compose_project(worktree), None
+                port = self._require_frontend_port(linked_wt, linked_ticket)
+                return f"http://localhost:{port}", compose_project(linked_wt), _linked_env_cache(linked_wt)
+
+        worktree = resolve_worktree()
+        port = self._require_frontend_port(worktree, linked_ticket)
+        return f"http://localhost:{port}", compose_project(worktree), None
 
     def _resolve_linked_ticket(self, linked_to: int) -> Ticket | None:
         """Resolve ``--linked-to <pk>`` to a Ticket or exit on misconfig.
