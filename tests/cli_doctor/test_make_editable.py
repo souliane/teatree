@@ -26,7 +26,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _init_git_repo(root: Path) -> None:
     """Initialise a git repo at *root* with the user identity set."""
-    _git(root, "init", "-q")
+    _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "Test")
 

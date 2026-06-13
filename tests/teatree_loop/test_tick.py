@@ -102,7 +102,7 @@ def test_repo_freshness_on_real_git_repo(tmp_path: Path) -> None:
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    run_allowed_to_fail(["git", "init"], cwd=repo, expected_codes=None)
+    run_allowed_to_fail(["git", "init", "-b", "main"], cwd=repo, expected_codes=None)
     run_allowed_to_fail(["git", "commit", "--allow-empty", "-m", "init"], cwd=repo, expected_codes=None)
     info = _repo_freshness(repo)
     assert info is not None

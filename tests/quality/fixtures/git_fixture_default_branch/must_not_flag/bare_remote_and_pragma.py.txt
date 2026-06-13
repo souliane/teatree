@@ -1,0 +1,13 @@
+import subprocess
+
+
+def setup(p):
+    # A bare remote has no working branch to assume.
+    subprocess.run(["git", "init", "-q", "--bare", str(p / "remote.git")], check=True)
+    _git(p, "init", "-q", "--bare")
+    # A deliberate bare init declares intent with the pragma.
+    subprocess.run(["git", "init", str(p)], check=True)  # git-fixture: default-branch-ok
+    # A non-git tool that happens to take an "init" subcommand is never a git fixture.
+    subprocess.run(["docker", "init"], check=True)
+    # A non-init git call is irrelevant.
+    _git(p, "commit", "-m", "init")

@@ -32,7 +32,7 @@ def _git(path: Path, *args: str) -> str:
 
 def _init_repo_with_commits(path: Path, n: int = 2) -> list[str]:
     path.mkdir(parents=True, exist_ok=True)
-    _git(path, "init", "-q")
+    _git(path, "init", "-q", "-b", "main")
     _git(path, "config", "user.email", "t@t.test")
     _git(path, "config", "user.name", "T")
     shas: list[str] = []
