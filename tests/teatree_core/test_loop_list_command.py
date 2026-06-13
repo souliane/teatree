@@ -181,9 +181,22 @@ class TestLoopListIsReadOnly(django.test.TestCase):
         assert not LoopLease.objects.exclude(session_id="").exists()
 
 
+@contextmanager
+def _session(session_id: str) -> Iterator[None]:
+    """Pin the session id the default-view scoping reads (#1834 WI-2)."""
+    with patch("teatree.core.management.commands.loop_list.current_session_id", return_value=session_id):
+        yield
+
+
 @django.test.override_settings(USE_TZ=True)
-class TestLoopListAllPerLoopOwners(django.test.TestCase):
-    """``t3 loop list --all`` — the cross-session per-loop owner health view (#1834)."""
+class TestLoopListPerLoopOwners(django.test.TestCase):
+    """``t3 loop list`` per-loop owner views — scoped default vs ``--all`` (#1834).
+
+    WI-2: the DEFAULT view scopes the per-loop block to the CURRENT session's
+    owned loops; ``--all`` stays the cross-session health view. The
+    single-owner default (no ``loop:<name>`` lease) short-circuits to today's
+    byte-identical output.
+    """
 
     def _seed_per_loop_owners(self) -> None:
         now = timezone.now()
@@ -202,16 +215,39 @@ class TestLoopListAllPerLoopOwners(django.test.TestCase):
             lease_expires_at=now - dt.timedelta(hours=1),
         )
 
-    def test_default_view_omits_per_loop_block(self) -> None:
+    def test_default_view_scopes_to_current_session(self) -> None:
+        """Session A sees only its own loop by default; B's loop is subtracted."""
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)):
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
             output = _run()
-        assert "per-loop owners:" not in output
-        assert "loop:dispatch" not in output
+        assert "per-loop owners:" in output
+        assert "loop:dispatch" in output
+        assert "loop:review" not in output
+
+    def test_all_shows_both_sessions_proving_default_subtracted(self) -> None:
+        """``--all`` lists B's loop too — proving the default actually subtracted it."""
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+            default_output = _run()
+            all_output = _run("--all")
+        assert "loop:review" not in default_output
+        # The cross-session view CONTAINS B's loop — the row existed, the
+        # default filter removed it (not a "B never existed" false pass).
+        assert "loop:dispatch" in all_output
+        assert "loop:review" in all_output
+
+    def test_empty_session_default_shows_full_view(self) -> None:
+        """A cron / anonymous tick (no session) fails open to the full view, never empty."""
+        self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)), _session(""):
+            output = _run()
+        assert "per-loop owners:" in output
+        assert "loop:dispatch" in output
+        assert "loop:review" in output
 
     def test_all_renders_each_per_loop_owner(self) -> None:
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)):
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
             output = _run("--all")
         assert "per-loop owners:" in output
         dispatch_line = next(ln for ln in output.splitlines() if "loop:dispatch" in ln)
@@ -224,22 +260,27 @@ class TestLoopListAllPerLoopOwners(django.test.TestCase):
         assert "stale" in review_line
 
     def test_all_with_no_per_loop_owners_shows_no_block(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
             output = _run("--all")
         assert "per-loop owners:" not in output
 
-    def test_default_text_byte_identical_with_and_without_per_loop_rows(self) -> None:
-        """The single-owner default text is unchanged whether per-loop rows exist."""
-        with _registry(_stub_loop("dispatch", 300)):
-            before = _run()
-        self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)):
-            after = _run()
-        assert before == after
+    def test_single_owner_default_byte_identical_to_today(self) -> None:
+        """No ``loop:<name>`` lease (dedicated_loops off) ⇒ default output unchanged.
+
+        The load-bearing anti-regression: with no per-loop lease present the
+        default view must be byte-identical whether or not a current session
+        resolves — the per-loop block is absent in both cases.
+        """
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+            with_session = _run()
+        with _registry(_stub_loop("dispatch", 300)), _session(""):
+            anonymous = _run()
+        assert with_session == anonymous
+        assert "per-loop owners:" not in with_session
 
     def test_all_json_includes_per_loop_owners(self) -> None:
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)):
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
             payload = json.loads(_run("--all", "--json"))
         assert "per_loop_owners" in payload
         slots = {o["slot"] for o in payload["per_loop_owners"]}
@@ -249,9 +290,19 @@ class TestLoopListAllPerLoopOwners(django.test.TestCase):
         assert dispatch["pid_is_alive"] is True
         assert dispatch["is_live"] is True
 
-    def test_default_json_owner_block_byte_identical(self) -> None:
-        """Without ``--all`` the ``owner`` JSON block keeps its #1744 shape (no per_loop_owners)."""
+    def test_default_json_scopes_per_loop_owners_to_session(self) -> None:
+        """The default ``--json`` per_loop_owners block is scoped to the current session."""
         self._seed_per_loop_owners()
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+            payload = json.loads(_run("--json"))
+        assert {o["slot"] for o in payload["per_loop_owners"]} == {"loop:dispatch"}
+
+    def test_default_json_byte_identical_to_today_when_no_per_loop_rows(self) -> None:
+        """With no ``loop:<name>`` lease the default ``--json`` keeps its #1744 shape.
+
+        The ``owner`` block stays exactly the #1744 keys and no
+        ``per_loop_owners`` key is added — byte-identical to today.
+        """
         LoopLease.objects.create(
             name="loop-owner",
             session_id="sess-global",
@@ -259,7 +310,7 @@ class TestLoopListAllPerLoopOwners(django.test.TestCase):
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)):
+        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
             payload = json.loads(_run("--json"))
         assert "per_loop_owners" not in payload
         assert set(payload["owner"].keys()) == {"session_id", "owner_pid", "pid_is_alive", "is_live"}
