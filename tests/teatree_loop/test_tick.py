@@ -1540,28 +1540,39 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
         assert task.status == Task.Status.PENDING
 
     def test_run_tick_survives_an_orchestrate_phase_error(self) -> None:
+        # Arm the toggle so the planner is actually reached, then make it raise:
+        # the tick must swallow it (fail-open) and leave no budget key → unclamped.
         import tempfile  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
 
+        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
+
+        settings = UserSettings(speed=Speed.FULL, orchestrate_claim_enabled=True)
         scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
         with (
             tempfile.TemporaryDirectory() as d,
+            patch("teatree.loop.tick.get_effective_settings", return_value=settings),
             patch("teatree.loop.tick.orchestrate_phase", side_effect=RuntimeError("config blew up")),
         ):
             sl = Path(d) / "sl.txt"
             report = run_tick(TickRequest(scanners=[scanner]), statusline_path=sl)
             assert sl.exists()
             assert report.signal_count == 1
+            # A failed planner writes no budget → the reader fails open to unclamped.
+            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) is None
 
 
 class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
-    """#1796 / agent-teams Track-A PR#1: ``orchestrate_claim_enabled`` arms claim.
+    """#1796 (WI-1): ``orchestrate_claim_enabled`` arms a read-only BUDGET planner.
 
-    The toggle is read via the existing settings accessor on the dispatch
-    wiring. Default OFF keeps the dormant ``claim=False`` path EXACTLY; flipping
-    it ON runs ``orchestrate_phase`` with ``claim=True`` so the manifest rows
-    the deterministic Python already computes are claimed (the #786-N4 spawn
-    boundary).
+    The reconciled fan-out keeps exactly ONE claim point — the live
+    ``claim_next`` CAS. When the toggle is ON and the speed clamps
+    (``full``/``boost``/``slow``), the tick runs ``orchestrate_phase`` read-only
+    (``claim=False``) to *compute* the cap and persists an admit BUDGET to the
+    tick-meta sidecar — it never claims in the tick, so the orphan window is
+    closed. At ``medium`` OR with the toggle OFF, NO budget key is written
+    (absence = unclamped = today's throughput).
     """
 
     def _full_speed_dispatchable_task(self):
@@ -1571,33 +1582,74 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="d")
         return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
 
-    def _run(self, *, toggle: bool):
-        import tempfile  # noqa: PLC0415
+    def _run(self, *, toggle: bool, sl: Path, speed=None) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
 
-        settings = UserSettings(speed=Speed.FULL, orchestrate_claim_enabled=toggle)
+        settings = UserSettings(speed=speed or Speed.FULL, orchestrate_claim_enabled=toggle)
+        backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=2)]
         with (
-            tempfile.TemporaryDirectory() as d,
             patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
             patch("teatree.loop.tick.get_effective_settings", return_value=settings),
         ):
             scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
-            run_tick(TickRequest(scanners=[scanner]), statusline_path=Path(d) / "sl.txt")
+            run_tick(TickRequest(scanners=[scanner], backends=backends), statusline_path=sl)
 
-    def test_toggle_off_keeps_dormant_path_no_claim(self) -> None:
+    def _read_budget(self, sl: Path):
+        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
+
+        return read_admit_budget(statusline_path=sl, cadence_seconds=720)
+
+    def test_toggle_off_never_claims_and_writes_no_budget(self) -> None:
+        import tempfile  # noqa: PLC0415
+
         from teatree.core.models import Task  # noqa: PLC0415
 
-        task = self._full_speed_dispatchable_task()
-        self._run(toggle=False)
-        task.refresh_from_db()
-        assert task.status == Task.Status.PENDING
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            task = self._full_speed_dispatchable_task()
+            self._run(toggle=False, sl=sl)
+            task.refresh_from_db()
+            assert task.status == Task.Status.PENDING  # tick never claims
+            assert self._read_budget(sl) is None  # no budget key → unclamped
 
-    def test_toggle_on_claims_the_manifest_rows(self) -> None:
+    def test_toggle_on_full_writes_budget_and_does_not_claim_in_tick(self) -> None:
+        import tempfile  # noqa: PLC0415
+
         from teatree.core.models import Task  # noqa: PLC0415
 
-        task = self._full_speed_dispatchable_task()
-        self._run(toggle=True)
-        task.refresh_from_db()
-        assert task.status == Task.Status.CLAIMED
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            task = self._full_speed_dispatchable_task()
+            self._run(toggle=True, sl=sl)
+            task.refresh_from_db()
+            # The tick PLANS, it does not claim — claiming is the live claimer's job.
+            assert task.status == Task.Status.PENDING
+            # The admit budget is persisted for the live claimer to read.
+            assert self._read_budget(sl) == 2
+
+    def test_toggle_on_medium_writes_no_budget(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        from teatree.config import Speed  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            self._full_speed_dispatchable_task()
+            self._run(toggle=True, speed=Speed.MEDIUM, sl=sl)
+            assert self._read_budget(sl) is None  # medium → no clamp
+
+    def test_budget_clears_when_toggle_flips_off_between_ticks(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            self._full_speed_dispatchable_task()
+            self._run(toggle=True, sl=sl)
+            assert self._read_budget(sl) == 2
+            # Operator disarms the toggle — the next tick must clear the budget
+            # so a stale ceiling never throttles dispatch after disarm.
+            self._run(toggle=False, sl=sl)
+            assert self._read_budget(sl) is None

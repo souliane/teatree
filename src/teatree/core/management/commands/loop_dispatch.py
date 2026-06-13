@@ -8,6 +8,7 @@ each via ``spawn-claim`` so the next tick doesn't see them as pending.
 """
 
 import json
+import logging
 from typing import Annotated, Any
 
 import typer
@@ -15,8 +16,13 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
+from teatree.config import cadence_seconds
 from teatree.core.models import Task
 from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, resolve_fanout_directive, subagent_for_phase
+from teatree.loop.admit_budget import read_admit_budget
+from teatree.loop.statusline import default_path
+
+logger = logging.getLogger(__name__)
 
 # The phase → sub-agent authority is the single canonical map in
 # ``teatree.core.phases``. Each author phase dispatches to its OWN agent
@@ -44,6 +50,29 @@ def _dispatchable_q() -> Q:
     for role, phase in _SUBAGENT_BY_PHASE:
         q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
     return q
+
+
+def _admit_budget_exhausted() -> bool:
+    """True when the orchestrate admit budget is hit — refuse the marginal claim (#1796).
+
+    The reconciled fan-out persists a per-tick admit *ceiling* to the tick-meta
+    sidecar (the read-only ``orchestrate_phase`` planner). This live claimer
+    reads it and refuses once the standing in-flight CLAIMED dispatchable WIP
+    has reached the ceiling, so claimed ≡ spawned and the orphan window is
+    closed. The CAS still serializes the marginal claim; this gate only decides
+    *whether* to attempt it.
+
+    **Fail open to UNCLAMPED** (returns ``False``) when the budget is absent
+    (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
+    it), or any read error — a dead loop must never wrongly clamp live dispatch.
+    """
+    try:
+        budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
+    except Exception:  # noqa: BLE001
+        return False
+    if budget is None:
+        return False
+    return Task.objects.in_flight_claimed_count(_dispatchable_q()) >= budget
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
@@ -216,15 +245,26 @@ class Command(TyperCommand):
         (empty when no session is resolvable); it rides the SET clause of the
         claim only, never the CAS predicate, so the claim semantics are
         unchanged.
+
+        #1796 (WI-1): before the CAS, honour the orchestrate admit-budget
+        ceiling the read-only ``orchestrate_phase`` planner persists to the
+        tick-meta sidecar. When the standing in-flight CLAIMED dispatchable WIP
+        has reached the ceiling, refuse with the existing empty no-work payload
+        (exactly today's no-work path) so claimed ≡ spawned and the loop never
+        orphans a claim. Absence / staleness of the budget is UNCLAMPED — the
+        default ``medium`` / toggle-off throughput is byte-identical.
         """
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415
 
         session = current_session_id() if claimed_by_session is None else claimed_by_session
-        task = Task.objects.claim_next_pending(
-            claimed_by=claimed_by,
-            claimed_by_session=session,
-            extra_filter=_dispatchable_q(),
-        )
+        if _admit_budget_exhausted():
+            task = None
+        else:
+            task = Task.objects.claim_next_pending(
+                claimed_by=claimed_by,
+                claimed_by_session=session,
+                extra_filter=_dispatchable_q(),
+            )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 
         if json_output:
