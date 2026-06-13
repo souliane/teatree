@@ -590,6 +590,69 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_linked_to_resolves_without_cwd_worktree_row(self) -> None:
+        """``--linked-to`` succeeds even when cwd has no worktree row.
+
+        Regression for souliane/teatree#2287: ``_resolve_target_env`` called
+        ``resolve_worktree()`` unconditionally before the link routing, so
+        running from a standalone external e2e repo (no ``.t3-cache`` env
+        cache, no DB row for the cwd) raised ``WorktreeNotFoundError`` before
+        ``--linked-to`` could supply the backend worktree.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            backend_wt_dir = tmp_path / "backend-worktree"
+            backend_wt_dir.mkdir()
+            (backend_wt_dir / ".t3-env.cache").write_text(
+                f"WT_VARIANT=acme\nTICKET_DIR={backend_wt_dir.parent}\n",
+                encoding="utf-8",
+            )
+            standalone_e2e_dir = tmp_path / "standalone-e2e"
+            standalone_e2e_dir.mkdir()
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
+
+            backend_ticket = Ticket.objects.create(
+                overlay="test",
+                issue_url="https://example.com/issues/2287",
+                variant="acme",
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=backend_ticket,
+                repo_path="backend-repo",
+                branch="backend",
+                extra={"worktree_path": str(backend_wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "T3_PRIVATE_TESTS": str(private_dir),
+                        "T3_ORIG_CWD": str(standalone_e2e_dir),
+                    },
+                    clear=False,
+                ),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4202),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+            ):
+                os.environ.pop("BASE_URL", None)
+                result = cast(
+                    "str",
+                    call_command("e2e", "external", target="local", linked_to=backend_ticket.pk),
+                )
+
+            assert "passed" in result
+            env = mock_run.call_args[1]["env"]
+            assert env["BASE_URL"] == "http://localhost:4202"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
+            assert env["CUSTOMER"] == "acme"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_linked_to_unknown_ticket_exits_with_error(self) -> None:
         """``--linked-to <bogus-pk>`` is a misconfig — fail fast with exit 2.
 
