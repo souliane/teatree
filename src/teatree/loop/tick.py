@@ -201,10 +201,14 @@ def run_tick(
     report.errors.update(outcome.errors)
 
     act_phase(report)
-    _orchestrate(request)
 
     zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
     _write_tick_meta(started_at, target=statusline_path)
+    # #1796 (WI-1): plan the admit budget AFTER the freshness header write —
+    # the planner MERGES its key into tick-meta.json, so running it after
+    # ``_write_tick_meta`` (a full overwrite) keeps both. Never claims in the
+    # tick: the live ``claim_next`` is the single claim point.
+    _orchestrate(request, statusline_path=statusline_path)
     _write_open_prs_cache(report.signals, target=statusline_path)
     _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
     if report.errors:
@@ -214,28 +218,47 @@ def run_tick(
     return report
 
 
-def _orchestrate(request: TickRequest) -> None:
-    """Run :func:`orchestrate_phase`, claiming only when the toggle is armed.
+def _orchestrate(request: TickRequest, *, statusline_path: Path | None) -> None:
+    """Plan the admit BUDGET — the read-only fan-out ceiling (#1796, WI-1).
 
-    The ``[teatree] orchestrate_claim_enabled`` toggle (read via the existing
-    effective-settings accessor, default OFF) decides ``claim``:
+    The reconciled fan-out keeps exactly ONE claim point: the live
+    ``claim_next`` CAS. ``orchestrate_phase`` is a read-only PLANNER here — it
+    never claims in the tick (the old ``claim=True`` arm orphaned claims the
+    live claimer also took). Instead it computes the clamped fan-out cap and
+    persists it as a BUDGET ceiling to the tick-meta sidecar for the live
+    claimer to read.
 
-    *   **OFF (default)** — ``claim=False``: read-only, mutates no Task row, so
-        the dormant behaviour is byte-identical to before the arm. The fat loop
-        stays the default.
-    *   **ON** — ``claim=True``: the lead does the thin per-unit claim+spawn the
-        deterministic manifest already computes, admitting each row through the
-        existing ``claim_next_pending`` compare-and-swap (the #786-N4
-        claim-is-the-spawn boundary) so a concurrent tick never double-dispatches.
+    The ``[teatree] orchestrate_claim_enabled`` toggle (existing accessor,
+    default OFF) gates the planner:
 
-    Fully fail-open either way — a config read or budget-resolution error
-    degrades to a no-op (the toggle resolves to OFF on a settings-read error),
-    like every other tick phase.
+    *   **OFF (default)** — no budget key is written (any prior one is cleared),
+        so the claimer reads UNCLAMPED. Byte-identical to before the arm.
+    *   **ON** — at a clamping speed (``full``/``boost``/``slow``) the computed
+        cap is persisted as the budget; at ``medium`` no budget key is written
+        (absence = unclamped = today's throughput). The phase never claims, so
+        there is no orphan window.
+
+    Fully fail-open — any config read, planner, or sidecar error degrades to a
+    no-op (and the toggle resolves to OFF on a settings-read error), like every
+    other tick phase. A failed budget write leaves the sidecar without the key,
+    which the reader treats as unclamped: fail-safe by construction.
     """
     try:
-        orchestrate_phase(backends=request.backends, claim=_orchestrate_claim_enabled())
+        from teatree.config import Speed  # noqa: PLC0415
+        from teatree.loop.admit_budget import clear_admit_budget, write_admit_budget  # noqa: PLC0415
+        from teatree.loop.statusline import default_path  # noqa: PLC0415
+
+        target = statusline_path or default_path()
+        if not _orchestrate_claim_enabled():
+            clear_admit_budget(statusline_path=target)
+            return
+        manifest = orchestrate_phase(backends=request.backends, claim=False)
+        if manifest.speed is Speed.MEDIUM:
+            clear_admit_budget(statusline_path=target)
+            return
+        write_admit_budget(manifest.cap, statusline_path=target)
     except Exception:
-        logger.exception("orchestrate_phase failed — tick continues")
+        logger.exception("orchestrate_phase budget planning failed — tick continues")
 
 
 def _orchestrate_claim_enabled() -> bool:
