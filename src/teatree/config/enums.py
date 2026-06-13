@@ -142,6 +142,55 @@ class Autonomy(StrEnum):
             raise ValueError(msg) from exc
 
 
+class TeamsDisplay(StrEnum):
+    """How a Track-B maker pane is DISPLAYED — presentation-only (WI-5, #1838).
+
+    A maker pane's SDK session always runs in-process (the source of truth); this
+    setting governs only whether that same session is ALSO rendered in a visible
+    terminal pane. The mechanism is tmux control mode (``tmux -CC``): under it
+    iTerm2 renders ``tmux split-window`` panes as native split panes in one tab;
+    elsewhere it degrades to plain tmux panes. The naming mirrors Claude Code's
+    own ``teammateMode`` (``tmux`` / ``in-process``, with ``auto`` probing).
+
+    Tiers (default :attr:`NONE`, ships dark):
+
+    *   :attr:`NONE` (default) — no display layer. The in-process SDK path is
+        unchanged; behaviour is byte-identical to today. The conservative default.
+    *   :attr:`AUTO` — display via tmux WHEN a multiplexer is detected (``$TMUX``
+        set, a ``tmux`` binary, a TTY), else fall back to the in-process path. The
+        always-degrades-gracefully tier.
+    *   :attr:`TMUX` — prefer the tmux display; still falls back to in-process when
+        no tmux / no TTY / a spawn failure (the display never replaces the SDK run).
+
+    Read from ``[teams] display`` (the feature namespace, alongside ``enabled``);
+    per-overlay overridable via ``[overlays.<name>].teams_display``;
+    ``T3_TEAMS_DISPLAY`` env wins. A typo / bad value fails SAFE to :attr:`NONE`
+    — the presentation layer can never escalate itself on by a mistyped value.
+    """
+
+    NONE = "none"
+    AUTO = "auto"
+    TMUX = "tmux"
+
+    @classmethod
+    def parse(cls, value: str) -> "TeamsDisplay":
+        """Parse a teams-display string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default (:attr:`NONE`) is
+        applied by the caller when the setting is absent, so this validates only
+        explicit values and a typo in a TOML/DB tier is rejected LOUD. The env
+        tier instead fails SAFE to :attr:`NONE` (see ``_parse_env_teams_display``)
+        so a mistyped env var never crashes the resolver.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid teams display {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class OnBehalfPostMode(StrEnum):
     """Tri-state pre-gate over on-behalf colleague-VISIBLE posts (#960).
 

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode, Speed
+from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
@@ -123,6 +123,22 @@ def _parse_env_str_list(raw: str) -> list[str]:
     clears the allowlist rather than reading as one empty action.
     """
     return [token for token in (part.strip() for part in raw.split(",")) if token]
+
+
+def _parse_env_teams_display(raw: str) -> TeamsDisplay:
+    """Coerce a ``T3_TEAMS_DISPLAY`` env string, failing SAFE to ``NONE`` (#1838 WI-5).
+
+    The presentation-only display mode must never crash the config resolver or
+    escalate itself ON via a typo in the env tier: a mistyped value degrades to
+    the conservative :attr:`TeamsDisplay.NONE` (no display, in-process path
+    unchanged). This is the env-tier counterpart to :meth:`TeamsDisplay.parse`,
+    which raises LOUD for the TOML/DB tiers where a write-time validator catches
+    the typo at set time.
+    """
+    try:
+        return TeamsDisplay.parse(raw)
+    except ValueError:
+        return TeamsDisplay.NONE
 
 
 def _parse_strict_bool(raw: object) -> bool:
@@ -280,6 +296,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_enabled": _parse_strict_bool,
     "teams_max_panes": _parse_overridable_positive_int(1),
     "teams_idle_minutes": _parse_overridable_positive_int(30),
+    "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
@@ -367,6 +384,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
+    "T3_TEAMS_DISPLAY": ("teams_display", _parse_env_teams_display),
 }
 
 
@@ -462,6 +480,17 @@ class UserSettings:
     # tier — the safety bound cannot be configured away by a typo.
     teams_max_panes: int = 1
     teams_idle_minutes: int = 30
+    # #1838 Track-B WI-5 — the PRESENTATION-only pane-display mode. Governs
+    # whether a maker pane's in-process SDK session is ALSO rendered in a visible
+    # tmux pane (native iTerm2 split under `tmux -CC`, plain tmux pane elsewhere).
+    # The SDK session is the source of truth; this never replaces it. Default
+    # `none` (ships dark, byte-identical to today); `auto`/`tmux` opt into the
+    # display with graceful degradation (no tmux / no TTY / spawn failure falls
+    # back to the in-process path). Global value reads from the top-level
+    # `[teams] display` table (the feature namespace, alongside `enabled`);
+    # per-overlay overridable via `[overlays.<name>].teams_display`;
+    # `T3_TEAMS_DISPLAY` env wins. A bad value fails SAFE to `none` at every tier.
+    teams_display: TeamsDisplay = TeamsDisplay.NONE
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
     # human reaction (👍 or `/merge`). The user flips this off only once
