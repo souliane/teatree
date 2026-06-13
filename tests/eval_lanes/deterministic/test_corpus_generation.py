@@ -1,7 +1,7 @@
 """The committed generated corpus matches its declaration.
 
-The themed scenario YAML under ``src/teatree/eval/scenarios/`` and their
-``stream-json`` fixtures under ``tests/eval/fixtures/`` are emitted from the
+The themed scenario YAML under ``tests/eval_lanes/scenarios/`` and their
+``stream-json`` fixtures under ``tests/eval_lanes/fixtures/`` are emitted from the
 declaration in ``scripts/eval/corpus_gen``. This test re-runs the emitter in
 memory and asserts every planned file is committed with identical content, so a
 catalog edit without a regenerate (or a hand-edit of a generated file) fails CI

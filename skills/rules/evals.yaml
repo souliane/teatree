@@ -1,7 +1,7 @@
 # Co-located behavioral evals for the rules skill (the shared cross-cutting
 # invariant surface). `agent_path` is omitted — discovery defaults it to
 # skills/rules/SKILL.md.
-# Fixtures live in tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: do_work_now_runs_command_not_hands_back_steps
   scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"

@@ -1,7 +1,7 @@
 """Load eval specs from YAML into typed dataclasses.
 
 Schema lives in ``src/teatree/eval/README.md`` and
-``src/teatree/eval/scenarios/*.yaml``; the loader validates each spec at
+``tests/eval_lanes/scenarios/*.yaml``; the loader validates each spec at
 load time and raises ``EvalSpecError`` with the offending file path so
 spec authors can jump to the problem.
 

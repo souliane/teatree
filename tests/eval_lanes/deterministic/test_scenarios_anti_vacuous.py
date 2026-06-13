@@ -36,7 +36,7 @@ from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.report import evaluate
 from teatree.eval.sdk_runner import load_agent_definition
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
 def _is_behavioral(spec: EvalSpec) -> bool:

@@ -3,7 +3,7 @@
 Mirrors ``src/teatree/eval/regression_corpus_predicates.py``. Each ``_check_*``
 calls the REAL gate/checker code on a must-block and a must-allow input and
 returns ``True`` only when both directions hold; ``run_regression_corpus`` wires
-them into its check table (covered in ``tests/eval/test_regression_corpus.py``).
+them into its check table (covered in ``tests/eval_lanes/deterministic/test_regression_corpus.py``).
 Here each predicate is called directly so a regression in the predicate logic
 itself (not just the corpus orchestration) is observable, plus an anti-vacuity
 proof: breaking the underlying real function flips a predicate to ``False``.
