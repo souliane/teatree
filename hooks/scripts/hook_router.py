@@ -3685,6 +3685,34 @@ _PYTEST_VERB_RE = (
     r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
     r"pytest(?![\w-])"
 )
+_PYTEST_VERB_FINDER = re.compile(_PYTEST_VERB_RE)
+
+# A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
+# main agent (#1825): only the whole suite ties the session up. The verb
+# match above tells us a ``pytest`` invocation is present; this decides
+# whether the args make it a single/targeted run. Targeted iff the
+# segment after the verb carries a ``-k``/``--deselect <expr>``, a ``::``
+# node-id, OR a specific ``*.py`` test file path. A bare ``pytest`` (no
+# selector), ``pytest -q``, and a DIRECTORY arg (``pytest tests/``) are
+# whole-suite and stay DENIED.
+_PYTEST_TARGETED_RE = re.compile(
+    r"(?:^|\s)(?:-k|--deselect)(?:[=\s]|$)"  # -k <expr> / --deselect <expr>
+    r"|::"  # a node-id (path::Class::test)
+    r"|(?:^|\s)\S*\.py(?:::|\s|$)"  # a specific .py file path
+)
+# A foreground ``git push`` runs the full pre-push suite and wedges the
+# loop owner's session (#1825 motivating incident). Read-only git
+# (``status``/``log``/``diff``/``show``/``fetch``) is NOT here — only the
+# push verb (and its ``--force*`` variants) denies. Anchored to a command
+# head the same way the pytest verb is, so a ``git commit -m 'push fix'``
+# / ``git branch push-x`` mention is NOT a false-deny.
+_GIT_PUSH_RE = (
+    r"(?:^|[;&|\n(){}])"
+    r"\s*"
+    r"(?:\w+=\S+\s+)*"
+    r"(?:(?:command|exec|time|nice)\s+)*"
+    r"git\s+(?:-C\s+\S+\s+|--git-dir[=\s]\S+\s+)*push\b"
+)
 
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
@@ -3697,12 +3725,17 @@ _PYTEST_VERB_RE = (
 # dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
 # ``nx e2e <target>``), container image AND compose builds (``docker
 # build`` / ``docker compose build``), package installs/sync, long sleeps,
-# and full-tree recursive sweeps (the shapes that actually wedge a
-# session). ``manage.py migrate`` is gated elsewhere (the
-# ``_BLOCKED_COMMANDS`` t3-CLI redirect); short ``t3 loop tick``/``ci``/
-# ``doctor`` are NOT slow and are deliberately not listed.
+# full-tree recursive sweeps (the shapes that actually wedge a session),
+# and a foreground ``git push`` (#1825 — its full pre-push suite blocks
+# the loop and the user's queued input). ``manage.py migrate`` is gated
+# elsewhere (the ``_BLOCKED_COMMANDS`` t3-CLI redirect); short ``t3 loop
+# tick``/``ci``/``doctor`` are NOT slow and are deliberately not listed.
+# Read-only git (``status``/``log``/``diff``/``show``/``fetch``) is never
+# matched, and a TARGETED ``pytest`` run is exempted in
+# :func:`_deny_heavy_main_agent_bash` (the verb still matches here; the
+# whole-suite-vs-targeted split is applied at deny time).
 _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:" + _PYTEST_VERB_RE + r"|"
+    r"(?:" + _PYTEST_VERB_RE + r"|" + _GIT_PUSH_RE + r"|"
     r"\btox\b|"
     r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
     r"manage\.py\s+runserver|"
@@ -3845,13 +3878,54 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     )
 
 
+def _pytest_command_is_targeted(command: str) -> bool:
+    """True when EVERY ``pytest`` invocation in ``command`` is a targeted run (#1825).
+
+    A targeted run carries a ``-k``/``--deselect <expr>``, a ``::``
+    node-id, or a specific ``*.py`` test file path in the segment after
+    the verb (see :data:`_PYTEST_TARGETED_RE`). A bare/whole-suite
+    ``pytest`` or a directory arg (``pytest tests/``) is NOT targeted, so
+    a command containing one is whole-suite and stays gated. Each pytest
+    verb's argument span is bounded by the next shell separator so a
+    selector belonging to a LATER chained pytest cannot vouch for an
+    earlier whole-suite one.
+    """
+    matches = list(_PYTEST_VERB_FINDER.finditer(command))
+    if not matches:
+        return False
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(command)
+        segment = command[start:end]
+        boundary = re.search(r"[;&|\n(){}]", segment)
+        if boundary is not None:
+            segment = segment[: boundary.start()]
+        if not _PYTEST_TARGETED_RE.search(segment):
+            return False
+    return True
+
+
+def _command_matches_non_pytest_heavy(command: str) -> bool:
+    """True when ``command`` matches a heavy pattern OTHER than the ``pytest`` verb.
+
+    The targeted-pytest exemption (#1825) must only relax a command whose
+    sole heavy match is a targeted ``pytest`` — a ``pytest -k foo && npm
+    install`` still denies on the ``npm install`` arm. Stripping the
+    pytest verb tokens to bare placeholders before re-matching leaves any
+    other heavy arm intact.
+    """
+    stripped = _PYTEST_VERB_FINDER.sub(" __pytest__ ", command)
+    return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
+
+
 def _deny_heavy_main_agent_bash(data: dict) -> bool:
     """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
 
     Passes through when the call is a sanctioned orchestration verb,
     comes from a sub-agent, is dispatched with ``run_in_background:
-    true``, carries a ``[fg-ok: <reason>]`` opt-out marker, or does not
-    match the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+    true``, carries a ``[fg-ok: <reason>]`` opt-out marker, is a TARGETED
+    ``pytest`` run with no other heavy arm (#1825), or does not match the
+    heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
 
     The deny routes through :func:`_fail_open_or_deny` (#1692) so the
     self-rescue allowlist and the master ``danger_gate_fail_open`` switch
@@ -3867,6 +3941,8 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     if not isinstance(command, str):
         return False
     if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+        return False
+    if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
         return False
     return _fail_open_or_deny(
         data,

@@ -30,6 +30,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
+    _ORCHESTRATOR_HEAVY_BASH_RE,
     handle_enforce_orchestrator_boundary,
     handle_orchestrator_turn_budget_nudge,
     handle_reset_turn_tool_budget,
@@ -65,6 +66,15 @@ def _main_bash(command: str, *, run_in_background: bool | None = None) -> dict:
     return {"tool_name": "Bash", "tool_input": tool_input, "session_id": "s-corpus"}
 
 
+def _subagent_bash(command: str) -> dict:
+    return {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "session_id": "s-corpus",
+        "agent_id": "a4ad83956ff699aaa",
+    }
+
+
 def _main_tool(tool_name: str, **tool_input: object) -> dict:
     return {"tool_name": tool_name, "tool_input": tool_input, "session_id": "s-corpus"}
 
@@ -97,10 +107,16 @@ _MUST_ALLOW_ORCHESTRATION_TOOLS = [
 ]
 
 # Quick orientation / status Bash the orchestrator routinely needs.
+# Read-only git, a targeted/single test run, and the orchestration
+# vocabulary all stay ALLOWED — only a foreground heavy OPERATION
+# (whole-suite test, ``git push``) is gated (#1825).
 _MUST_ALLOW_BASH = [
     "git status",
     "git log --oneline -5",
     "git diff --stat",
+    "git diff",
+    "git show HEAD",
+    "git fetch origin",
     "cat src/teatree/config.py",
     "grep -rn TODO src/",
     "rg pattern src/",
@@ -111,6 +127,13 @@ _MUST_ALLOW_BASH = [
     "t3 loop status",
     "t3 teatree followup sync",
     "t3 teatree gate disable",
+    # #1825 — a single / targeted pytest run is cheap; never gate it.
+    "pytest -k test_foo",
+    "pytest tests/x.py::Test::test_z",
+    "pytest path/to/test_file.py",
+    "uv run pytest -k test_foo",
+    'pytest -k "foo or bar"',
+    "uv run pytest --no-cov -q tests/test_orchestrator_responsiveness_corpus.py",
 ]
 
 
@@ -134,6 +157,9 @@ class TestMustAllowNeverBlocked:
 _MUST_DENY_FOREGROUND_BASH = [
     "uv run pytest",
     "uv run pytest --no-cov -q",
+    # #1825 — bare / whole-suite / directory pytest is the gated shape.
+    "pytest",
+    "pytest tests/",
     "tox -e py312",
     "t3 teatree run backend",
     "t3 myapp e2e smoke",
@@ -146,6 +172,12 @@ _MUST_DENY_FOREGROUND_BASH = [
     "sleep 600",
     "find . -name '*.py' -exec grep -l TODO {} ;",
     "ls -laR /Users/adrien/workspace",
+    # #1825 — a foreground ``git push`` runs the full pre-push suite and
+    # wedges the loop owner's session (the motivating incident).
+    "git push",
+    "git push origin HEAD",
+    "git push -u origin feature",
+    "git push --force-with-lease origin feature",
 ]
 
 
@@ -157,6 +189,118 @@ class TestMustDenyForegroundHeavyWork:
     @pytest.mark.parametrize("command", _MUST_DENY_FOREGROUND_BASH)
     def test_same_heavy_bash_allowed_in_background(self, command: str) -> None:
         assert handle_enforce_orchestrator_boundary(_main_bash(command, run_in_background=True)) is False
+
+
+# #1825 — git push is the gate's motivating incident (its pre-push suite
+# wedges the session); read-only git must never be gated.
+_GIT_PUSH_DENY = [
+    "git push",
+    "git push origin HEAD",
+    "git push -u origin feature",
+    "git push --force-with-lease origin feature",
+    "git push --force",
+]
+_READONLY_GIT_ALLOW = [
+    "git status",
+    "git log --oneline -5",
+    "git diff",
+    "git show HEAD",
+    "git fetch origin",
+    "git commit -m 'push the button'",
+    "git branch push-fix",
+    "git checkout -b fix-push",
+]
+# #1825 — a single/targeted pytest run is allowed; only the whole suite
+# (and a directory arg) is gated.
+_TARGETED_PYTEST_ALLOW = [
+    "pytest -k test_foo",
+    "pytest tests/x.py::Test::test_z",
+    "pytest path/to/test_file.py",
+    "uv run pytest -k test_foo",
+    'pytest -k "foo or bar"',
+    "python -m pytest tests/test_x.py",
+    "pytest tests/test_x.py::test_y",
+    "uvx pytest tests/test_x.py",
+]
+_WHOLE_SUITE_PYTEST_DENY = [
+    "pytest",
+    "pytest -q",
+    "pytest tests/",
+    "uv run pytest",
+    "uv run pytest --no-cov -q",
+    "python -m pytest tests/",
+    "poetry run pytest",
+    "uvx pytest",
+    "uvx pytest tests/",
+]
+
+
+class TestGitPushBoundary:
+    """#1825 — a foreground ``git push`` is gated; read-only git is not.
+
+    ``git push`` is the gate's motivating incident (its full pre-push
+    suite blocks the loop and the user's queued input). It must deny in
+    the foreground main agent while honouring every never-lockout
+    off-ramp, and read-only git must never be gated.
+    """
+
+    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
+    def test_foreground_git_push_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is True
+
+    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
+    def test_git_push_allowed_in_background(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command, run_in_background=True)) is False
+
+    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
+    def test_git_push_allowed_from_subagent(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_subagent_bash(command)) is False
+
+    def test_git_push_allowed_with_fg_ok_marker(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash("git push [fg-ok: release cut]")) is False
+
+    def test_git_push_allowed_when_kill_switch_set(self, clean_home: Path) -> None:
+        (clean_home / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8"
+        )
+        assert handle_enforce_orchestrator_boundary(_main_bash("git push")) is False
+
+    @pytest.mark.parametrize("command", _READONLY_GIT_ALLOW)
+    def test_readonly_git_never_gated(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is False
+
+    @pytest.mark.parametrize("command", _GIT_PUSH_DENY)
+    def test_anti_vacuous_regex_matches_git_push(self, command: str) -> None:
+        # The pre-fix denylist carried no git verb — this row would have
+        # gone GREEN (allowed) before the fix. Pinning the regex match
+        # proves the new arm is what gates it, not an unrelated pattern.
+        assert _ORCHESTRATOR_HEAVY_BASH_RE.search(command) is not None
+
+
+class TestTargetedPytestAllowed:
+    """#1825 — a single/targeted pytest run is allowed; only the suite denies.
+
+    The pre-fix ``_PYTEST_VERB_RE`` matched the bare verb, so ``pytest -k
+    <expr>`` and ``pytest path::Test::test`` over-blocked. The fix exempts
+    a targeted run (``-k``/``::``/specific ``*.py`` file) while keeping a
+    bare/whole-suite ``pytest`` and ``pytest <dir>/`` gated.
+    """
+
+    @pytest.mark.parametrize("command", _TARGETED_PYTEST_ALLOW)
+    def test_targeted_pytest_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is False
+
+    @pytest.mark.parametrize("command", _WHOLE_SUITE_PYTEST_DENY)
+    def test_whole_suite_pytest_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_bash(command)) is True
+
+    def test_targeted_pytest_with_other_heavy_arm_still_denied(self) -> None:
+        # A targeted pytest does NOT vouch for a chained heavy command.
+        assert handle_enforce_orchestrator_boundary(_main_bash("pytest -k foo && npm install")) is True
+
+    def test_chained_targeted_then_whole_suite_denied(self) -> None:
+        # Every pytest segment must be targeted; a trailing bare suite denies.
+        assert handle_enforce_orchestrator_boundary(_main_bash("pytest -k foo ; pytest")) is True
 
 
 class TestForegroundAgentBoundary:
