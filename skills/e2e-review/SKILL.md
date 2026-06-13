@@ -217,3 +217,6 @@ A spec that "runs green" but skips items 1-9 is rejected: it imports tech debt t
 - `t3:e2e` — the author's skill: writing, running, snapshotting, and posting evidence for a spec.
 - `t3:review` — the general review skill: self-review, giving review, receiving feedback, the
   real-bug-means-hold rule, and inline-finding posting.
+
+The `t3:e2e-review` agent (`agents/e2e-review.md`) bundles this skill and is dispatched for the
+`e2e_reviewing` phase — the reviewer leg of the EXTERNAL `ReviewLoop` (BLUEPRINT § 5.6, #2298).

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_loop_clean_spec_passes_terminates-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The spec passes every hard-fail check; recording a clean verdict so the loop terminates at PASSED."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review record my-org/my-repo 4120 --verdict merge_safe --head-sha abc1234", "description": "Record a clean verdict so the loop terminates"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
