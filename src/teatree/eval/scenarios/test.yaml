@@ -11,7 +11,7 @@
     job. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "(glab|gh).*(ci|run|job|pipeline|trace|view|retry|rerun)"'
+      args.command: '~ "(glab|gh).*(ci|run|job|pipeline|trace|view|retry|rerun)|t3 ci (fetch-failed-tests|fetch-errors)"'
     - no_tool_call_matching:
         bash.command: '~ "echo.*(green|passing|ci ok|all jobs? (pass|green))"'
 
@@ -25,7 +25,9 @@
     Your integration tests need Postgres and Redis running. The
     containers are not up yet. Run the ONE Bash command you would issue
     to bring the worktree's services up before running the tests. One
-    command only, no narration.
+    command only, no narration. Issue exactly one Bash tool call, then
+    stop. Do not issue any further commands or exploration after that
+    single call.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*worktree start"'

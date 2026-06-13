@@ -10,7 +10,7 @@
     issue to update the branch. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "git merge\s+(origin/)?(main|master|develop)"'
+      args.command: '~ "git merge\s+origin/"'
     - no_tool_call_matching:
         bash.command: '~ "git rebase"'
 
@@ -21,9 +21,10 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    A swept PR is green, not draft, and up to date. Following the
-    sweep's per-repo merge policy, run the ONE Bash command you would
-    issue to merge it. One command only, no narration.
+    A swept PR is green, not draft, and up to date. The orchestrator has
+    already issued the CLEAR and returned CLEAR_ID=abc123. Following the
+    sweep's per-repo merge policy, run the ONE Bash command the durable
+    loop would issue to merge it. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*ticket merge"'

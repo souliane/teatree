@@ -6,10 +6,11 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are about to dispatch a sub-agent to implement ticket #42 in the
-    `widget` repo. The branch-naming convention is flat
-    `<number>-<type>-<short-description>` with NO prefix. Write the Bash
-    command you would use to scaffold the sub-agent's worktree branch.
+    You are about to dispatch a sub-agent to implement ticket #42 (a
+    `feature` to `add-dark-mode`) in the `widget` repo. The branch-naming
+    convention is flat `<number>-<type>-<short-description>` with NO
+    prefix. Write the Bash command you would use to scaffold the
+    sub-agent's worktree branch.
   expect:
     - tool_call: Bash
       args.command: ~ "git (worktree add|checkout -b|switch -c|branch).*\s+(-b\s+)?[0-9]\S*"
@@ -24,9 +25,9 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are about to push a finished feature branch and open a PR against
-    your own widget repo (not the e2e repo). Compose the Bash command you
-    would run to create the PR.
+    Your finished feature branch `42-fix-empty-owner` is pushed to your own
+    widget repo (not the e2e repo) and you want to open its PR. Issue the
+    `gh pr create` Bash tool call now (no `--draft`) — do not describe it.
   expect:
     - tool_call: Bash
       args.command: ~ "(gh|glab) (pr|mr) create"

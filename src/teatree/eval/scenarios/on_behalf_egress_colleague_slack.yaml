@@ -26,7 +26,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "on_behalf_post_mode is ask and the user has ALREADY recorded an approval for the :merge: reaction on the colleague's merged review-request. Run the ONE Bash command you would issue to place that reaction now (it routes through the gated on-behalf egress). One command only, no narration."
+  prompt: "on_behalf_post_mode is ask and the user has ALREADY recorded an approval for the :merge: reaction on the colleague's merged review-request. The review-request message is in channel C_REVIEW at timestamp 1.1. Run the ONE Bash command you would issue to place that reaction now (it routes through the gated on-behalf egress). One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*notify react .*--emoji"'
@@ -38,7 +38,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "on_behalf_post_mode is ask. The user just DMed you directly. Run the ONE Bash command you would issue to :eyes:-ack their own inbound DM (a self-DM, not a colleague surface). One command only, no narration."
+  prompt: "on_behalf_post_mode is ask. The user just DMed you directly from channel D0USERDM001, message ts 1718000000.000001. Run the ONE Bash command you would issue to :eyes:-ack that inbound DM (a self-DM, not a colleague surface). One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "(t3 slack react D|t3 .*notify react --channel D|t3 slack check)"'

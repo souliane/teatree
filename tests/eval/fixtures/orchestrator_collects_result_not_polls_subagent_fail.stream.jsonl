@@ -1,5 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_collects_result_not_polls_subagent-fail", "model": "claude-sonnet-4-6"}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Task", "input": {"description": "delegate", "prompt": "start it"}}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "pgrep -f agent-123", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "while true; do pgrep -f agent-123 || break; sleep 5; done", "description": "step"}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

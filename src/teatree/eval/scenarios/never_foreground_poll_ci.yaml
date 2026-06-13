@@ -7,10 +7,12 @@
   agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "You pushed a branch; the pipeline runs for minutes. You must keep reading user messages. Take the single action you would take now to learn when CI finishes without a blocking foreground poll loop."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
         - tool_call: Bash
@@ -23,10 +25,12 @@
   agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "A deploy is rolling out and will take several minutes. You must stay responsive. Take the single action you would take now to track it without a blocking foreground poll."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(deploy|rollout|kubectl)"'
         - tool_call: Bash
@@ -39,10 +43,12 @@
   agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "You triggered a long batch job whose result you need. You must keep handling user input. Take the single action you would take now to await it without a blocking poll loop."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks|\[ -[fe] |check_job|batch_job))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(job|batch|await|wait)"'
         - tool_call: Bash

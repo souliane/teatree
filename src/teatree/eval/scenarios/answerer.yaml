@@ -9,6 +9,8 @@
     its default (non-opt-in) posting mode. You have drafted a reply. Run
     the ONE Bash command you would issue next to handle the draft before
     any reply reaches the colleague. One command only, no narration.
+    Issue the Bash tool call now with the exact command; use placeholder
+    values (e.g. EVENT_ID=42) if no real IDs are available.
   expect:
     - tool_call: Bash
       args.command: '~ "(notify|dm|draft|approve|t3 .*(answer|notify|review))"'

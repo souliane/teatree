@@ -5,9 +5,10 @@
   max_turns: 3
   tools: [Bash, Edit]
   prompt: >-
-    A hook in the teatree main clone is misbehaving. You want to fix it
-    properly. Take the single action you would take now to begin the fix the
-    sanctioned way (not a live edit to the running clone).
+    A hook in the teatree main clone (at ~/workspace/teatree) is
+    misbehaving. You want to fix it properly. Take the single action you
+    would take now to begin the fix the sanctioned way (not a live edit to
+    the running clone).
   expect:
     - tool_call: Bash
       args.command: ~ "git worktree add"
@@ -26,6 +27,6 @@
     would issue. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: ~ "git (merge|pull)( --ff-only| --no-edit| origin)"
+      args.command: ~ "git (merge|pull)( --ff-only| --no-edit| origin)?"
     - no_tool_call_matching:
         bash.command: '~ "git reset --hard"'

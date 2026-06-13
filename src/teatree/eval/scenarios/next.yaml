@@ -7,9 +7,9 @@
   prompt: >-
     You are wrapping up an implementation phase that should hand off to
     a review phase. The pipeline does not parse `next_steps` to create
-    work. Run the ONE Bash command you would issue to enqueue the
-    next-phase task so a worker picks it up. One command only, no
-    narration.
+    work. The overlay is `acme` and the ticket PK is `42`. Run the ONE
+    Bash command you would issue to enqueue the next-phase task so a
+    worker picks it up. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*tasks create"'

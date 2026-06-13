@@ -34,7 +34,6 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
         "Sub-Agent Limitations",
         "Background Long Operations (Non-Negotiable)",
     ),
-    "comm_uses_clickable_links_not_bare_ids": ("Clickable References",),
     "comm_asks_via_askuserquestion_not_chat": ("Always Use AskUserQuestion for Questions",),
     "banned_term_to_public_repo_is_blocked": (
         "Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",

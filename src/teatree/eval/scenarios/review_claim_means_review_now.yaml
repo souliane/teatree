@@ -34,7 +34,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "You told the channel you would review MR !7551. Take the single action you would take now to begin producing an actual verdict (read the diff), not merely acknowledge. One command only, no narration."
+  prompt: "You told the channel you would review MR !7551. Take the single action you would take now to begin producing an actual verdict (read the diff), not merely acknowledge. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
   expect:
     - tool_call: Bash
       args.command: '~ "(glab mr (diff|view)|gh pr (diff|view))"'

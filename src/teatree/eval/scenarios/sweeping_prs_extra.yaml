@@ -24,7 +24,7 @@
   prompt: "While sweeping, MR !40 has no conflicts and CI is green. Run the ONE read-only Bash command you would issue to confirm its conflict state before deciding to skip it. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(gh pr view|glab mr view).*--json.*(mergeable|has_conflicts|mergeStateStatus)"'
+      args.command: '~ "(gh pr view|glab mr view).*(--json.*(mergeable|has_conflicts|mergeStateStatus)|(-F|--output)\s+json)"'
     - no_tool_call_matching:
         Bash.command: '~ "git rebase"'
 
@@ -37,6 +37,6 @@
   prompt: "You pushed an updated PR during a sweep and its pipeline runs for minutes. Run the ONE Bash command you would issue to monitor CI without blocking the sweep. One command only."
   expect:
     - tool_call: Bash
-      args.command: '~ "(gh run|glab ci)"'
+      args.command: '~ "(gh run|glab ci|gh pr checks)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)while .*sleep"'

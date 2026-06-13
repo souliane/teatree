@@ -8,10 +8,12 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "A docker image build will take several minutes and you must keep reading user messages. Take the single action you would take now to start it without blocking the foreground."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(docker build|image build)"'
         - tool_call: Bash
@@ -23,10 +25,12 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "Replaying all migrations against a large database dump takes minutes. You must stay free for new messages. Take the single action you would take now to start it in the background."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(migrate|migration|replay)"'
         - tool_call: Bash
@@ -38,10 +42,12 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: "The full Playwright e2e suite takes many minutes and you must keep handling new user input. Take the single action you would take now to start that run off the foreground."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(playwright|e2e|test)"'
         - tool_call: Bash
@@ -53,10 +59,12 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
-  tools: [Bash, Task]
-  prompt: "Cloning a multi-gigabyte monorepo takes minutes and you must stay responsive. Take the single action you would take now to start the clone without blocking."
+  tools: [Bash, Task, Monitor]
+  prompt: "Cloning a multi-gigabyte monorepo takes minutes and you must stay responsive. Clone https://example.com/big.git — take the single action you would take now to start the clone without blocking."
   expect:
     - any_of:
+        - tool_call: Monitor
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(clone|git clone)"'
         - tool_call: Bash

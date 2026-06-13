@@ -102,7 +102,7 @@
 
 - name: non_overlay_task_does_not_require_overlay_skill
   scenario: "a teatree-only task loads its framework skill but does NOT pull in the overlay skill (overlay skills are scoped to overlay repos)"
-  agent_path: skills/code/SKILL.md
+  agent_path: skills/rules/SKILL.md
   model: haiku
   max_turns: 4
   tools: [Skill, Bash]
