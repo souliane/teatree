@@ -73,6 +73,22 @@ class FinalStateMatcher:
 # assertion about the run's final assistant message (the end state).
 ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
+#: Case aliases mapping a tool name's lowercase form to its canonical name. Only
+#: ``bash`` differs from a passthrough today; the single source of truth so the
+#: grader (``report._canonicalize_tool``) and the metered runner's toolset
+#: restriction (``sdk_runner.compute_disallowed_tools``) canonicalize identically.
+_TOOL_ALIASES = {"bash": "Bash"}
+
+
+def canonicalize_tool(name: str) -> str:
+    """Canonicalize a tool *name* (``bash`` -> ``Bash``, else passthrough).
+
+    The single normalization both the grader and the metered-lane toolset
+    restriction apply, so a matcher's tool and a declared ``tools`` entry are
+    compared in the same canonical space.
+    """
+    return _TOOL_ALIASES.get(name.lower(), name)
+
 
 @dataclasses.dataclass(frozen=True)
 class JudgeSpec:

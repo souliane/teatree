@@ -57,7 +57,7 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import DEFAULT_MAX_TURNS, EvalRun, EvalSpec
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalSpec, Matcher, canonicalize_tool
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
@@ -153,6 +153,68 @@ def resolve_metered_effort() -> EffortLevel:
 
     raw = os.environ.get(_METERED_EFFORT_ENV_VAR, "").strip()
     return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
+
+
+#: The standard built-in tools a model can SPIRAL into when a scenario does not
+#: declare them. Under ``bypassPermissions`` ``allowed_tools`` only auto-approves —
+#: it does NOT remove a tool from the model's available set — so a scenario
+#: declaring ``tools: [Write]`` still sees Bash/Read/etc. and burns ``max_turns``
+#: on exploration that the matchers never asked for (a false fail). The disallowed
+#: complement of (declared union matcher-referenced) tools is computed from this
+#: set and passed as ``disallowed_tools`` (the SDK's true toolset-removal lever). The
+#: ``Skill`` tool is deliberately ABSENT — it is left untouched so a scenario can
+#: always load a skill.
+KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "Task",
+    "WebFetch",
+    "WebSearch",
+    "NotebookEdit",
+    "TodoWrite",
+    "BashOutput",
+    "KillShell",
+    "SlashCommand",
+)
+
+
+def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
+    """The canonical tool names every MATCHER in *spec* references.
+
+    Collects ``Matcher.tool`` (positive AND negative) and each
+    ``AnyOf.alternatives`` entry's tool; ``FinalStateMatcher`` references no tool.
+    A negative matcher's tool is included on PURPOSE: disallowing the tool a
+    ``no_tool_call_matching`` assertion guards would make that assertion pass
+    vacuously, hiding the misbehaviour it tests — so it must stay available.
+    """
+    referenced: set[str] = set()
+    for matcher in spec.matchers:
+        if isinstance(matcher, Matcher):
+            referenced.add(canonicalize_tool(matcher.tool))
+        elif isinstance(matcher, AnyOf):
+            referenced.update(canonicalize_tool(alt.tool) for alt in matcher.alternatives)
+    return referenced
+
+
+def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
+    """The built-in tools to REMOVE from the model's toolset for *spec*.
+
+    The complement of the scenario's available tools within
+    :data:`KNOWN_BUILTIN_TOOLS`: a built-in is disallowed unless it is declared in
+    ``spec.tools`` OR referenced by any matcher (positive or negative). The
+    ``(declared union matcher-referenced)`` subtraction guarantees a matcher-guarded
+    tool is never removed — so a negative assertion can still observe the
+    misbehaviour it tests. Declared tools are canonicalized the SAME way the grader
+    canonicalizes, so the lowercase ``bash`` alias matches ``Bash``. The result is
+    sorted for a deterministic, idempotent set.
+    """
+    available = {canonicalize_tool(tool) for tool in spec.tools} | _matcher_referenced_tools(spec)
+    return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - available))
 
 
 #: Resolved at import so the existing ``patch("…WATCHDOG_SECONDS", 0.01)`` test seam
@@ -279,6 +341,12 @@ class CleanRoomConfig:
     #: :data:`MAX_BUDGET_USD`; the metered benchmark threads a generous cap so a
     #: high-effort scenario completes (a truncated run is a false measurement).
     max_budget_usd: float = float(MAX_BUDGET_USD)
+    #: Tools to REMOVE from the model's available set (the SDK's
+    #: ``--disallowedTools`` lever). Unlike ``allowed_tools`` it restricts the
+    #: toolset even under ``bypassPermissions``. Defaults empty so the judge path
+    #: (which shares this config) is unchanged; the runner computes the scenario's
+    #: complement via :func:`compute_disallowed_tools`.
+    disallowed_tools: tuple[str, ...] = ()
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -300,6 +368,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         env=config.env,
         add_dirs=[str(config.workspace)],
         allowed_tools=list(config.allowed_tools),
+        disallowed_tools=list(config.disallowed_tools),
         permission_mode="bypassPermissions",
         max_turns=config.max_turns,
         max_budget_usd=config.max_budget_usd,
@@ -414,6 +483,7 @@ class SdkInProcessRunner:
                     cwd=cwd,
                     env=env,
                     allowed_tools=spec.tools,
+                    disallowed_tools=compute_disallowed_tools(spec),
                     model=variant.model,
                     max_turns=max_turns,
                     effort=effort,

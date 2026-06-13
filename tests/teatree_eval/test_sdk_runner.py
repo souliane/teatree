@@ -15,10 +15,11 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
-from teatree.eval.models import EvalSpec, Matcher, TokenUsage
+from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.sdk_runner import (
     DEFAULT_MAX_TURNS,
     DEFAULT_WATCHDOG_SECONDS,
+    KNOWN_BUILTIN_TOOLS,
     MAX_BUDGET_USD,
     WATCHDOG_SECONDS,
     BudgetExceededError,
@@ -27,6 +28,7 @@ from teatree.eval.sdk_runner import (
     SdkInProcessRunner,
     build_sdk_options,
     classify_terminal_error,
+    compute_disallowed_tools,
 )
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
@@ -862,3 +864,190 @@ class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:
         query = _yield_then_raise_query(messages, "Claude Code returned an error result: error_during_execution")
         with pytest.raises(Exception, match="error_during_execution"):
             self._run_with_query(spec, query)
+
+
+def _spec_with(
+    tmp_path: Path,
+    *,
+    tools: tuple[str, ...],
+    matchers: tuple[ExpectItem, ...],
+) -> EvalSpec:
+    """An :class:`EvalSpec` carrying arbitrary declared *tools* and *matchers*.
+
+    The agent file and prompt are inert — only ``tools`` and ``matchers`` drive
+    the disallowed-set computation under test.
+    """
+    agent = tmp_path / "agent.md"
+    agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
+    return EvalSpec(
+        name="toolset_restriction",
+        scenario="a scenario's declared tools restrict the model's available toolset",
+        agent_path=str(agent),
+        prompt="do the one action.",
+        matchers=matchers,
+        source_path=tmp_path / "spec.yaml",
+        tools=tools,
+    )
+
+
+class TestComputeDisallowedTools:
+    """A scenario's ``tools:`` plus its matcher-referenced tools fix the toolset.
+
+    Under ``bypassPermissions`` ``allowed_tools`` only AUTO-APPROVES — it does not
+    remove a tool from the model's available set. The metered lane therefore
+    computes a ``disallowed_tools`` complement so a scenario declaring
+    ``tools: [Write]`` no longer sees Bash/Read and spirals into exploration that
+    blows ``max_turns`` (a false fail). The complement must NEVER disallow a tool
+    any matcher references — positive OR negative — or a negative assertion would
+    pass vacuously, hiding the very misbehaviour it tests.
+    """
+
+    def test_declared_only_tool_disallows_the_other_builtins(self, tmp_path: Path) -> None:
+        # tools=[Write] + a positive Write matcher: Write stays available, the
+        # spiral tools (Bash, Read) are removed from the model's toolset.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Write",),
+            matchers=(Matcher(kind="positive", tool="Write", arg_path="file_path", operator="contains", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Bash" in disallowed
+        assert "Read" in disallowed
+        assert "Write" not in disallowed
+
+    def test_negative_matcher_tool_is_never_disallowed(self, tmp_path: Path) -> None:
+        # The orchestrator_delegates_test_writing shape: tools=[Bash, Edit, Task]
+        # with a NEGATIVE Write matcher (the orchestrator must DELEGATE, not write
+        # code itself). Write must stay AVAILABLE so the negative assertion is not
+        # vacuous; the declared tools must not be disallowed either.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Edit", "Task"),
+            matchers=(
+                Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="test"),
+                Matcher(kind="negative", tool="Write", arg_path="file_path", operator="~", value=r"test_.*\.py"),
+            ),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Write" not in disallowed
+        assert "Bash" not in disallowed
+        assert "Edit" not in disallowed
+        assert "Task" not in disallowed
+
+    def test_lowercase_declared_tool_is_canonicalized(self, tmp_path: Path) -> None:
+        # A spec declaring the lowercase alias "bash" must NOT have Bash disallowed
+        # — declared tools are canonicalized the SAME way the grader canonicalizes.
+        spec = _spec_with(
+            tmp_path,
+            tools=("bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Bash" not in disallowed
+
+    def test_any_of_alternative_tools_are_never_disallowed(self, tmp_path: Path) -> None:
+        # Each AnyOf alternative is a positive matcher; its tool must stay available
+        # so the disjunction can hold on either branch.
+        spec = _spec_with(
+            tmp_path,
+            tools=(),
+            matchers=(
+                AnyOf(
+                    alternatives=(
+                        Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),
+                        Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),
+                    )
+                ),
+            ),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Task" not in disallowed
+        assert "Bash" not in disallowed
+
+    def test_final_state_matcher_contributes_no_tool(self, tmp_path: Path) -> None:
+        # A FinalStateMatcher has no tool, so it neither adds to nor removes from
+        # the disallow set — the declared tools alone govern.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Read",),
+            matchers=(FinalStateMatcher(operator="contains", value="done"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert "Read" not in disallowed
+        assert "Bash" in disallowed
+
+    def test_skill_is_never_disallowed(self, tmp_path: Path) -> None:
+        # "Skill" is deliberately absent from KNOWN_BUILTIN_TOOLS — it is left
+        # untouched so a scenario can always load a skill.
+        assert "Skill" not in KNOWN_BUILTIN_TOOLS
+        spec = _spec_with(
+            tmp_path,
+            tools=("Write",),
+            matchers=(Matcher(kind="positive", tool="Write", arg_path="file_path", operator="contains", value="x"),),
+        )
+        assert "Skill" not in compute_disallowed_tools(spec)
+
+    def test_disallowed_set_is_sorted_and_deterministic(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Write",),
+            matchers=(Matcher(kind="positive", tool="Write", arg_path="file_path", operator="contains", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert list(disallowed) == sorted(disallowed)
+
+
+class TestDisallowedToolsFlowToOptions:
+    """The computed disallowed set reaches ``ClaudeAgentOptions.disallowed_tools``."""
+
+    def _run(self, spec: EvalSpec, **kwargs: Any):
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+        return captured
+
+    def test_build_sdk_options_forwards_disallowed_tools(self, tmp_path: Path) -> None:
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Write",),
+            model="haiku",
+            max_turns=3,
+            disallowed_tools=("Bash", "Read"),
+        )
+        options = build_sdk_options(config)
+        assert list(options.disallowed_tools) == ["Bash", "Read"]
+
+    def test_default_disallowed_tools_is_empty_for_the_judge_path(self, tmp_path: Path) -> None:
+        # CleanRoomConfig defaults disallowed_tools to () so the judge path (which
+        # shares build_sdk_options) is unchanged.
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        assert config.disallowed_tools == ()
+        assert list(build_sdk_options(config).disallowed_tools) == []
+
+    def test_runner_computes_and_forwards_disallowed_tools(self, tmp_path: Path) -> None:
+        # End-to-end: a tools=[Write] scenario reaches the SDK options with the
+        # spiral builtins (Bash, Read) disallowed and Write still available.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Write",),
+            matchers=(Matcher(kind="positive", tool="Write", arg_path="file_path", operator="contains", value="x"),),
+        )
+        captured = self._run(spec)
+        disallowed = list(captured["options"].disallowed_tools)
+        assert "Bash" in disallowed
+        assert "Read" in disallowed
+        assert "Write" not in disallowed
