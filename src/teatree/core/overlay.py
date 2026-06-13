@@ -577,6 +577,10 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
             return list(self.config.workspace_repos)
         return self.get_repos()
 
+    def get_merge_candidate_repo_slugs(self) -> list[str]:
+        """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against (``pr_slug_resolution``)."""
+        return []
+
     def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
         _ = changed_files
         return []

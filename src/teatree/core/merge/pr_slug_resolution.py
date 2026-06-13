@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from teatree.config import discover_overlays
 from teatree.core.merge.ci_rollup import fetch_live_head_sha
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
@@ -180,15 +181,91 @@ def resolve_pr_repo_slug(clear: object) -> str:
     raise MergePreconditionError(msg)
 
 
+def normalize_repo_slug(value: str) -> str:
+    """Canonicalize *value* UP to a GitHub ``owner/repo`` slug, or ``""``.
+
+    The single normalization boundary for a declared working-repo (#2323):
+    :meth:`OverlayBase.get_merge_candidate_repo_slugs` may return a bare
+    ``owner/repo``, an HTTPS URL, an SSH URL, or a ``host-alias`` SSH form
+    (``git@github.com-myalias:owner/repo.git``). Each is canonicalized up to
+    ``owner/repo`` here so the candidate set holds one consistent
+    fully-qualified key — never an under-qualified form matched by stripping
+    the registered slug down.
+
+    Delegates to :func:`teatree.utils.git.slug_from_remote`, the pure string
+    parser that strips the host prefix from a bare ``owner/repo`` (no-op), an
+    HTTPS/SSH URL, and a ``host-alias`` SSH URL, dropping any trailing ``.git``.
+    A value that yields no ``owner/repo`` shape (empty, a single path segment,
+    an unparsable string) returns ``""`` so the caller drops it.
+    """
+    slug = git.slug_from_remote(value)
+    return slug if _looks_like_owner_repo(slug) else ""
+
+
+def _overlay_package_repo_slugs() -> list[str]:
+    """The ``origin`` slug of every registered overlay's ``project_path``.
+
+    Source (2) for :func:`_iter_candidate_repo_slugs`. Best-effort: a
+    ``discover_overlays`` failure yields nothing, and a project path with no
+    resolvable ``origin`` remote is skipped — neither blocks the probe.
+    """
+    try:
+        entries = discover_overlays()
+    except Exception:  # noqa: BLE001 — overlay discovery is best-effort here
+        return []
+    slugs: list[str] = []
+    for entry in entries:
+        path = getattr(entry, "project_path", None)
+        if path is None:
+            continue
+        try:
+            slug = git.remote_slug(repo=str(path))
+        except Exception:  # noqa: BLE001 — a missing remote must not block the probe
+            slug = ""
+        if slug:
+            slugs.append(slug)
+    return slugs
+
+
+def _overlay_working_repo_slugs() -> list[str]:
+    """Every overlay's declared working-repos, normalized to ``owner/repo`` (#2323).
+
+    Source (3) for :func:`_iter_candidate_repo_slugs`. Reads each registered
+    overlay's :meth:`OverlayBase.get_merge_candidate_repo_slugs` — repos the
+    overlay operates on but does not package (e.g. an ``e2e`` companion repo) —
+    and normalizes each declaration up to ``owner/repo`` via
+    :func:`normalize_repo_slug`. Best-effort per-overlay: a hook that raises is
+    logged and skipped so one broken overlay cannot poison the candidate set.
+    """
+    try:
+        overlays = get_all_overlays()
+    except Exception:  # noqa: BLE001 — overlay instantiation is best-effort here
+        return []
+    slugs: list[str] = []
+    for name, overlay in overlays.items():
+        try:
+            declared = overlay.get_merge_candidate_repo_slugs()
+        except Exception:
+            logger.warning("overlay %r get_merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True)
+            continue
+        slugs.extend(normalize_repo_slug(raw) for raw in declared)
+    return slugs
+
+
 def _iter_candidate_repo_slugs() -> list[str]:
-    """Every ``owner/repo`` reachable from this machine's overlay registry (#1335).
+    """Every ``owner/repo`` reachable from this machine's overlay registry (#1335, #2323).
 
     Source set, de-duplicated preserving insertion order:
 
     (1) the running clone's ``origin`` (the same value
         :func:`_project_repo_slug` returns).
     (2) the ``origin`` slug of every registered overlay's ``project_path``
-        (entry-point + TOML overlays via :func:`discover_overlays`).
+        (entry-point + TOML overlays via :func:`_overlay_package_repo_slugs`).
+    (3) each registered overlay's declared **working-repos**
+        (:func:`_overlay_working_repo_slugs`) — repos the overlay operates on but
+        does not package. A CLEAR for a PR in one of them (e.g. an ``e2e``
+        companion repo) was previously unmergeable because the candidate set
+        never contained it (#2323).
 
     Used by :func:`_probe_candidate_repos` to recover from the #1335
     cross-repo confusion: a CLEAR issued from the teatree clone for a PR
@@ -197,9 +274,9 @@ def _iter_candidate_repo_slugs() -> list[str]:
     PR. With this enumeration the probe can verify each candidate and
     pick the one whose ``pulls/<N>`` head matches the reviewed SHA.
 
-    Probe-side failures (``discover_overlays`` raises, a project path
-    has no ``origin`` remote) are swallowed: the candidate set is best-
-    effort, never load-bearing for the happy path.
+    Probe-side failures (a source helper raises, a project path has no
+    ``origin`` remote, an overlay's working-repo hook raises) are swallowed:
+    the candidate set is best-effort, never load-bearing for the happy path.
     """
     seen: set[str] = set()
     candidates: list[str] = []
@@ -210,19 +287,9 @@ def _iter_candidate_repo_slugs() -> list[str]:
             candidates.append(slug)
 
     _add(_project_repo_slug())
-
-    try:
-        entries = discover_overlays()
-    except Exception:  # noqa: BLE001 — overlay discovery is best-effort here
-        entries = []
-    for entry in entries:
-        path = getattr(entry, "project_path", None)
-        if path is None:
-            continue
-        try:
-            slug = git.remote_slug(repo=str(path))
-        except Exception:  # noqa: BLE001 — a missing remote must not block the probe
-            slug = ""
+    for slug in _overlay_package_repo_slugs():
+        _add(slug)
+    for slug in _overlay_working_repo_slugs():
         _add(slug)
 
     return candidates
