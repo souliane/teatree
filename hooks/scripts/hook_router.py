@@ -5597,9 +5597,12 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # #1380 / #1604: conditionally evict any stale DB ``loop-owner`` row.
     # Runs when the registry had no entry (fresh machine or dead-owner prune)
     # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
-    # compaction resume — re-anchoring ``loop-owner`` SYNCHRONOUSLY before any
-    # tick so no maker pane can win the compaction-window CAS race against the
-    # rotated lead session. The eviction is conditional on liveness either way
+    # compaction resume — the eviction ORPHANS the stale lease (``session_id=""``)
+    # synchronously before any tick, so the lead's next ``t3 loop tick``
+    # re-anchors ``loop-owner`` uncontested and no maker pane can win the
+    # compaction-window CAS race against the rotated lead session. (The eviction
+    # only orphans; it does NOT itself re-claim — the re-claim is the lead's next
+    # tick.) The eviction is conditional on liveness either way
     # (``evict_stale_owner``'s decision table), so a LIVE foreign DB lease is
     # preserved — a pane never hijacks a genuinely live owner. ``current_pid``
     # is the lead's new process and ``keep_session_id`` its (rotated) session,

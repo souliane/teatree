@@ -752,19 +752,21 @@ class TestNewSessionHijackFix(TestCase):
         assert row.session_id == "incumbent", "HIJACK: new-session took over an alive owner's expired-TTL lease"
 
 
-# ── Issue #1838 PR#7a: evict-on-compact re-anchors loop-owner before any tick ──
+# ── Issue #1838 PR#7a: evict-on-compact orphans the stale loop-owner lease ──
 
 
 class TestEvictOnCompactReanchorsLoopOwner(TestCase):
-    """The lead's ``SessionStart(source=compact)`` re-anchors ``loop-owner`` synchronously.
+    """The lead's ``SessionStart(source=compact)`` orphans the stale ``loop-owner`` lease.
 
     The compaction window is the race the maker-only pane layer must close: the
     lead's session id rotates during compaction, and a pane could try to claim
     ``loop-owner`` in that window. The fix calls ``evict_stale_owner`` (keep the
     lead session, current pid) SYNCHRONOUSLY on ``source == "compact"`` — BEFORE
-    any tick — so a stale same-pid ``loop-owner`` lease is re-anchored and no
-    pane can win the compaction-window CAS. ``evict_stale_owner``'s safety table
-    still applies: a LIVE foreign lease is preserved.
+    any tick — which ORPHANS the stale same-pid ``loop-owner`` lease
+    (``session_id=""``) so the lead's next ``t3 loop tick`` re-anchors it
+    uncontested and no pane can win the compaction-window CAS. (The eviction only
+    orphans; the re-claim is the lead's next tick.) ``evict_stale_owner``'s safety
+    table still applies: a LIVE foreign lease is preserved.
 
     must-fire: on ``source == "compact"`` the synchronous eviction runs even on
     the same-session-restart branch (where the rotation-only path does not).
