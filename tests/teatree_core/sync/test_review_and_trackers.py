@@ -1,7 +1,7 @@
 """Review-permalink, Notion-status and tracker-404 tests (souliane/teatree#443 split of test_sync.py).
 
 Covers fetch_review_permalinks, fetch_notion_statuses, _overlay_name,
-resolve_issue 404 handling, tracker-404 memoization and detect_e2e_evidence.
+resolve_issue 404 handling, tracker-404 memoization and detect_e2e_test_plan.
 """
 
 from unittest.mock import MagicMock
@@ -12,7 +12,7 @@ from django.test import TestCase
 
 from teatree.backends.gitlab.api import ProjectInfo
 from teatree.backends.gitlab.sync_issues import fetch_issue_labels, resolve_issue
-from teatree.backends.gitlab.sync_prs import detect_e2e_evidence
+from teatree.backends.gitlab.sync_prs import detect_e2e_test_plan
 from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name, fetch_notion_statuses
@@ -292,7 +292,7 @@ class TestTracker404Memoization(TestCase):
         assert live.extra.get("issue_title") == "Live"
 
 
-class TestDetectE2EEvidence:
+class TestDetectE2ETestPlan:
     def test_finds_evidence_with_keyword_and_image(self) -> None:
         discussions = [
             {
@@ -304,20 +304,20 @@ class TestDetectE2EEvidence:
                 ],
             },
         ]
-        url = detect_e2e_evidence(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
+        url = detect_e2e_test_plan(discussions, "https://gitlab.com/org/repo/-/merge_requests/1")
         assert url == "https://gitlab.com/org/repo/-/merge_requests/1#note_42"
 
     def test_skips_keyword_without_image(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "E2E tests look good"}]}]
-        assert detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert detect_e2e_test_plan(discussions, "https://example.com") == ""
 
     def test_skips_image_without_keyword(self) -> None:
         discussions = [{"notes": [{"id": 1, "body": "![logo](/uploads/logo.png)"}]}]
-        assert detect_e2e_evidence(discussions, "https://example.com") == ""
+        assert detect_e2e_test_plan(discussions, "https://example.com") == ""
 
     def test_empty_discussions(self) -> None:
-        assert detect_e2e_evidence([], "https://example.com") == ""
+        assert detect_e2e_test_plan([], "https://example.com") == ""
 
     def test_non_dict_entries_skipped(self) -> None:
         bad_input: list[RawAPIDict] = ["not-a-dict"]  # type: ignore[list-item]
-        assert detect_e2e_evidence(bad_input, "https://example.com") == ""
+        assert detect_e2e_test_plan(bad_input, "https://example.com") == ""

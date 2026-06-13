@@ -158,7 +158,7 @@ The gate is **enforced uniformly** at the chokepoints that cover every on-behalf
 
 - `teatree.core.reply_transport._BaseReplier` — Slack thread reply, Slack channel post, GitLab MR comment, GitHub PR comment.
 - `teatree.cli.review.ReviewService` — post-comment, post-draft-note, publish-draft-notes, reply-to-discussion, resolve-discussion, update-note, delete-discussion.
-- the `t3 pr post-evidence` command (`teatree.core.management.commands.pr.PrCommand.post_evidence`) — gated inline so PR *creation*, which is not an on-behalf colleague-facing post, stays ungated.
+- the `t3 pr post-test-plan` command (`teatree.core.management.commands.pr.Command.post_test_plan`) — gated inline so PR *creation*, which is not an on-behalf colleague-facing post, stays ungated.
 - the two `post_transition` signals that publish reactions on a colleague-facing message — `PullRequest.approve` ✅ on the requester's review-request message, and the ticket-transition emoji signal.
 
 The gate is **satisfiable, not pure suppression**: it mirrors the #953 `DbApproval` / §17.4 `MergeClear` shape — a durable, single-use, scoped, maker≠checker `OnBehalfApproval` row that `teatree.core.on_behalf_gate_recorded.require_on_behalf_approval` consumes single-use (writing an `OnBehalfAudit` row). A chat-only operator satisfies the gate **without a TTY** by recording one (`t3 review approve-on-behalf <target> <action> --approver <id>`); the next on-behalf attempt then publishes and the row is consumed. Under `draft_or_ask` the `AUTO_DRAFT` verdict additionally records a `BotPing` row keyed by `on_behalf_autodraft:{target}:{action}` so each (target, action) pair generates exactly one user DM regardless of retries.

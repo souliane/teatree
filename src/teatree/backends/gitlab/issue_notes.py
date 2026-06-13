@@ -1,4 +1,4 @@
-"""GitLab issue / work-item note operations — the post-evidence note concern.
+"""GitLab issue / work-item note operations — the test-plan note concern.
 
 Free functions holding the issue-note CRUD (post / list / update) plus the
 shared issue-URL parsing, so :class:`teatree.backends.gitlab.GitLabCodeHost`
@@ -77,7 +77,7 @@ def list_issue_comments(client: GitLabAPI, *, issue_url: str) -> list[RawAPIDict
 def update_issue_comment(client: GitLabAPI, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
     """Edit a note in place on a GitLab issue / work item, or return ``{"error": ...}``.
 
-    Used by ``e2e post-evidence`` to keep ONE evidence note per ticket rather
+    Used by ``e2e post-test-plan`` to keep ONE test-plan note per ticket rather
     than appending a new one on re-run.
     """
     resolved = _resolve_issue(client, issue_url)

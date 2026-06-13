@@ -134,7 +134,11 @@
           "name": "trigger-ci"
         },
         {
-          "help": "Post (or update) the ticket's single E2E evidence note from a manifest",
+          "help": "Post (or update) the ticket's single test-plan note from a manifest",
+          "name": "post-test-plan"
+        },
+        {
+          "help": "Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)",
           "name": "post-evidence"
         }
       ]
@@ -441,7 +445,11 @@
           "name": "detect-tenant"
         },
         {
-          "help": "Post test evidence as a PR comment. Uploads files and updates existing notes",
+          "help": "Post a test plan as a PR comment. Uploads files and updates existing notes",
+          "name": "post-test-plan"
+        },
+        {
+          "help": "Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)",
           "name": "post-evidence"
         }
       ]

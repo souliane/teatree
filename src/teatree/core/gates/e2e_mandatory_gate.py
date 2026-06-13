@@ -114,7 +114,7 @@ def _deny_message(inputs: GateInputs) -> str:
         f"no green POSTED E2E evidence at the reviewed tree {inputs.head_sha[:8]}. E2E is a mandatory FSM "
         f"step for anything that could impact what is displayed to the customer, and recorded evidence is "
         f"not enough — it must be POSTED (#1967). Satisfy the gate with EITHER:\n"
-        f"  1. post evidence:   t3 <overlay> e2e post-evidence --ticket {inputs.ticket.pk} --env dev|local "
+        f"  1. post test plan:  t3 <overlay> e2e post-test-plan --ticket {inputs.ticket.pk} --env dev|local "
         f"--before <img> --after <img> --assertion <claim>\n"
         f"     then attest it:  t3 <overlay> lifecycle record-e2e-run {inputs.ticket.pk} --spec <path> "
         f"--result green --head-sha {inputs.head_sha} --posted-url <comment-url>\n"

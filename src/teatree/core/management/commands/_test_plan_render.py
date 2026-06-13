@@ -1,12 +1,12 @@
-"""Pure state model, manifest parse, merge, and render for ``e2e post-evidence``.
+"""Pure state model, manifest parse, merge, and render for ``e2e post-test-plan``.
 
-The string/JSON layer of the one-note-per-ticket evidence model (teatree #272),
-split out of ``_e2e_evidence.py`` so the rendering and the host-facing
+The string/JSON layer of the one-note-per-ticket test-plan model (teatree #272),
+split out of ``_test_plan.py`` so the rendering and the host-facing
 orchestration each stay focused and under the module-health cap. Nothing here
 touches the ORM, the code host, or the CLI — every function is a pure transform
-over the manifest input and the persisted :class:`EvidenceState`.
+over the manifest input and the persisted :class:`TestPlanState`.
 
-The note carries a hidden machine-readable :class:`EvidenceState` blob
+The note carries a hidden machine-readable :class:`TestPlanState` blob
 (``<!-- t3-e2e-data {…} -->``) that is the source of truth. :func:`merge_state`
 overlays one run's side(s) on the prior state (freezing the side the run does
 not carry); :func:`render_body` is a pure function of the merged state.
@@ -28,18 +28,24 @@ _ENVS = ("dev", "local")
 _EMPTY_CELL = "—"
 
 # The hidden idempotency marker — keyed on the TICKET (its number, e.g. 8521),
-# so a ticket carries exactly ONE evidence note across all environments.
+# so a ticket carries exactly ONE test-plan note across all environments.
+#
+# The emitted string stays ``t3-e2e-evidence`` (NOT renamed to ``t3-test-plan``)
+# on purpose: it is PERSISTED in live GitLab/GitHub ticket notes. Changing the
+# emitted marker would break idempotent update of every note posted before this
+# rename — a fresh note would be created beside the stale one. The regex below
+# is therefore the durable wire format; the concept rename is user-facing only.
 _TICKET_MARKER_RE = re.compile(r"<!--\s*t3-e2e-evidence\s+ticket=(?P<ticket>\S+)\s*-->")
 # The hidden machine-readable state blob — the source of truth for the merge.
 _DATA_BLOB_RE = re.compile(r"<!--\s*t3-e2e-data\s+(?P<json>\{.*?\})\s*-->", re.DOTALL)
 
 
-class EvidenceValidationError(ValueError):
-    """A pre-post evidence validation failed — the note must NOT be posted.
+class TestPlanValidationError(ValueError):
+    """A pre-post test-plan validation failed — the note must NOT be posted.
 
     Raised by the pure validators below; the command method catches it,
     writes ``str(error)`` to stderr and raises ``SystemExit(1)`` so no
-    upload or comment side effect ever runs on invalid evidence.
+    upload or comment side effect ever runs on an invalid test plan.
     """
 
 
@@ -75,7 +81,7 @@ class SideState(TypedDict):
     missing_on_dev: NotRequired[list[str]]
 
 
-class EvidenceState(TypedDict):
+class TestPlanState(TypedDict):
     """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
 
     ``steps`` maps a workflow name → its written test-plan steps. It is
@@ -92,7 +98,7 @@ class EvidenceState(TypedDict):
     steps: dict[str, list[str]]
 
 
-def empty_state(*, ticket: str, title: str) -> EvidenceState:
+def empty_state(*, ticket: str, title: str) -> TestPlanState:
     """A fresh state with both sides empty."""
     return {
         "ticket": ticket,
@@ -122,8 +128,8 @@ def _coerce_side(raw: object, *, env: str) -> SideState:
     return side
 
 
-def coerce_state(raw: object) -> EvidenceState:
-    """Build a well-typed :class:`EvidenceState` from a parsed (untyped) blob.
+def coerce_state(raw: object) -> TestPlanState:
+    """Build a well-typed :class:`TestPlanState` from a parsed (untyped) blob.
 
     The persisted blob is JSON, so it arrives as loose ``object``; this rebuilds
     it into the typed shape, dropping anything malformed (a corrupt blob yields
@@ -182,7 +188,7 @@ class SideManifest:
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceManifest:
+class TestPlanManifest:
     """The whole parsed + validated ``--manifest``: ticket, MRs, and per-side input.
 
     ``steps`` maps a workflow name → its ordered written test-plan steps (the
@@ -198,11 +204,11 @@ class EvidenceManifest:
     steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
-def evidence_marker(*, ticket_id: str) -> str:
+def test_plan_marker(*, ticket_id: str) -> str:
     """The hidden HTML-comment idempotency marker keyed on the ticket.
 
     Renders invisibly in GitLab/GitHub markdown; matched by
-    :data:`_TICKET_MARKER_RE` to find the ticket's single evidence note to
+    :data:`_TICKET_MARKER_RE` to find the ticket's single test-plan note to
     update. Keyed on the ticket number so one note per ticket is maintained
     across every environment.
     """
@@ -239,14 +245,14 @@ def render_mrs_line(mrs: tuple[str, ...]) -> str:
     return "Repos & MRs: " + ", ".join(parts)
 
 
-def parse_manifest(raw: str, *, base_dir: Path | None = None) -> EvidenceManifest:
-    """Parse the ``--manifest`` JSON into a validated :class:`EvidenceManifest`.
+def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifest:
+    """Parse the ``--manifest`` JSON into a validated :class:`TestPlanManifest`.
 
     The manifest is a JSON object carrying ``ticket``, ``mrs``, the per-side
     ``dev``/``local`` commit metadata, and a ``workflows`` array whose entries
     carry each side's captures (each workflow object: ``workflow`` name, optional
     ``steps``, and a per-env ``{"video": ..., "images": [...]}`` block). The
-    shape of each field is documented on :class:`EvidenceManifest`,
+    shape of each field is documented on :class:`TestPlanManifest`,
     :class:`SideManifest`, and :class:`WorkflowArtifacts`.
 
     A side is "present" when the manifest carries it (its ``commits`` block or
@@ -254,7 +260,7 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> EvidenceManifes
     column. A workflow's optional workflow-level ``steps`` array is the written
     test plan, rendered above that workflow's comparison table. Validates every
     referenced file exists and is the right media kind, raising
-    :class:`EvidenceValidationError` so no upload runs on bad input. ``base_dir``
+    :class:`TestPlanValidationError` so no upload runs on bad input. ``base_dir``
     is the manifest file's directory: a RELATIVE image/video path resolves
     against it (an absolute path is unchanged; ``None`` keeps cwd-relative).
     """
@@ -262,20 +268,20 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> EvidenceManifes
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         msg = f"--manifest is not valid JSON: {exc}"
-        raise EvidenceValidationError(msg) from None
+        raise TestPlanValidationError(msg) from None
     if not isinstance(data, dict):
         msg = "--manifest must be a JSON object with 'ticket', 'mrs', 'dev'/'local', and 'workflows'."
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     raw_workflows = data.get("workflows")
     if not isinstance(raw_workflows, list) or not raw_workflows:
         msg = "--manifest 'workflows' must be a non-empty array."
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     mrs = tuple(str(m).strip() for m in data.get("mrs", []) if str(m).strip())
     sides = {env: _parse_side(data, raw_workflows, env=env, base_dir=base_dir) for env in _ENVS}
     if not sides["dev"].present and not sides["local"].present:
         msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
-        raise EvidenceValidationError(msg)
-    return EvidenceManifest(
+        raise TestPlanValidationError(msg)
+    return TestPlanManifest(
         ticket=str(data.get("ticket", "")).strip(),
         mrs=mrs,
         dev=sides["dev"],
@@ -333,12 +339,12 @@ def _parse_side_workflow(entry: object, *, env: str, index: int, base_dir: Path 
     """
     if not isinstance(entry, dict):
         msg = f"--manifest workflow {index} must be an object, got {type(entry).__name__}."
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     entry_dict = _as_dict(entry)
     workflow = str(entry_dict.get("workflow", "")).strip()
     if not workflow:
         msg = f"--manifest workflow {index} is missing a non-empty 'workflow' name."
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     if not isinstance(entry_dict.get(env), dict):
         return None
     side = _as_dict(entry_dict.get(env))
@@ -363,10 +369,10 @@ def _validated_file(path_str: str, *, kind: MediaKind, workflow: str, base_dir: 
         path = base_dir / path
     if not path.is_file():
         msg = f"workflow {workflow!r}: artifact not found: {path}"
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     if media_kind(path) is not kind:
         msg = f"workflow {workflow!r}: {path.name} is not a recognised {kind.value} file."
-        raise EvidenceValidationError(msg)
+        raise TestPlanValidationError(msg)
     return path
 
 
@@ -374,12 +380,12 @@ def _validated_file(path_str: str, *, kind: MediaKind, workflow: str, base_dir: 
 
 
 def merge_state(
-    prior: EvidenceState,
+    prior: TestPlanState,
     *,
-    manifest: EvidenceManifest,
+    manifest: TestPlanManifest,
     title: str,
     embeds: dict[str, dict[str, WorkflowEmbed]],
-) -> EvidenceState:
+) -> TestPlanState:
     """Merge THIS run's side(s) over the prior persisted state, returning new state.
 
     The prior state is the source of truth; this run overwrites only the sides
@@ -393,7 +399,7 @@ def merge_state(
     steps overwrite a workflow's steps, but a steps-less re-run preserves the
     prior steps (a workflow whose steps this run omits keeps what was recorded).
     """
-    state: EvidenceState = {
+    state: TestPlanState = {
         "ticket": manifest.ticket or prior.get("ticket", ""),
         "title": title,
         "mrs": list(manifest.mrs) if manifest.mrs else list(prior.get("mrs", [])),
@@ -499,7 +505,7 @@ def _dev_gap_clause(side: SideState) -> str:
     return "⚠️ Not yet on dev: " + ", ".join(missing) + " — expected gap."
 
 
-def _workflow_names(state: EvidenceState) -> list[str]:
+def _workflow_names(state: TestPlanState) -> list[str]:
     """The ordered union of workflow names across both sides (dev order, then new local)."""
     names: list[str] = []
     for side in (state["dev"], state["local"]):
@@ -521,7 +527,7 @@ def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
     return wf.get("video_md") or _EMPTY_CELL, list(wf.get("image_md", []))
 
 
-def _test_plan_block(state: EvidenceState, workflow: str) -> list[str]:
+def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
     """Render the ``**How to test:**`` numbered step list for one workflow, or ``[]``.
 
     The written test plan a human follows to reproduce the workflow manually,
@@ -534,7 +540,7 @@ def _test_plan_block(state: EvidenceState, workflow: str) -> list[str]:
     return ["**How to test:**", "", *[f"{i}. {step}" for i, step in enumerate(steps, start=1)], ""]
 
 
-def _workflow_table(state: EvidenceState, workflow: str) -> list[str]:
+def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
     """Render one workflow's block: heading, test-plan steps, then the ``| Dev | Local |`` table.
 
     The optional ``**How to test:**`` numbered step list (the written test plan)
@@ -561,11 +567,11 @@ def _workflow_table(state: EvidenceState, workflow: str) -> list[str]:
     return lines
 
 
-def render_body(state: EvidenceState) -> str:
-    """Render the full evidence note body from the merged state.
+def render_body(state: TestPlanState) -> str:
+    """Render the full test-plan note body from the merged state.
 
     Layout: the hidden ticket marker, the hidden ``t3-e2e-data`` JSON blob (the
-    source of truth for the next run's merge), the ``## E2E Evidence — <title>``
+    source of truth for the next run's merge), the ``## Test Plan — <title>``
     heading, the ``Repos & MRs:`` line, the per-side ``Dev deployed`` / ``Local
     tested`` commit-provenance lines (each ``repo `sha``` a clickable commit link
     when resolvable; the dev line carrying the ``⚠️ Not yet on dev`` gap clause
@@ -580,9 +586,9 @@ def render_body(state: EvidenceState) -> str:
     base_index = _commit_base_index(tuple(state.get("mrs", [])))
 
     lines = [
-        evidence_marker(ticket_id=ticket_id),
+        test_plan_marker(ticket_id=ticket_id),
         f"<!-- t3-e2e-data {json.dumps(state, separators=(',', ':'), sort_keys=True)} -->",
-        f"## E2E Evidence — {title}",
+        f"## Test Plan — {title}",
         "",
     ]
     mrs_line = render_mrs_line(tuple(state.get("mrs", [])))
@@ -604,7 +610,7 @@ def render_body(state: EvidenceState) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def parse_state_blob(body: str) -> EvidenceState:
+def parse_state_blob(body: str) -> TestPlanState:
     """Recover the persisted state from a note body, or an empty state when absent/corrupt."""
     match = _DATA_BLOB_RE.search(body)
     if match is None:
@@ -617,6 +623,6 @@ def parse_state_blob(body: str) -> EvidenceState:
 
 
 def find_ticket_marker(body: str, *, ticket_id: str) -> bool:
-    """True iff *body* carries this ticket's evidence marker."""
+    """True iff *body* carries this ticket's test-plan marker."""
     match = _TICKET_MARKER_RE.search(body)
     return match is not None and match.group("ticket") == ticket_id

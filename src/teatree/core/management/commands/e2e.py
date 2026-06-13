@@ -9,12 +9,10 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_e2e_repos
-from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.management.commands import _e2e_discovery as _disc
-from teatree.core.management.commands import _e2e_evidence as _evidence
 from teatree.core.management.commands import _e2e_runners as _runners
+from teatree.core.management.commands import _test_plan
 from teatree.core.models import Ticket
-from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree_env import compose_project
@@ -30,6 +28,18 @@ _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
 _resolve_private_tests_path = _runners.resolve_private_tests_path
 _build_e2e_env = _runners.build_e2e_env
+
+
+# Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
+_MRS_OPTION = typer.Option(
+    None,
+    "--mrs",
+    help="MR/PR URL(s) the test plan covers (repeat or comma-separate). Supplements the manifest's 'mrs'.",
+)
+_SKIP_VALIDATION_OPTION = typer.Option(
+    default=False,
+    help="User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use.",
+)
 
 
 @dataclass
@@ -492,26 +502,19 @@ class Command(TyperCommand):
         self.stderr.write(f"E2E failed (exit {rc}).")
         raise SystemExit(rc)
 
-    @command(name="post-evidence")
-    def post_evidence(
+    @command(name="post-test-plan")
+    def post_test_plan(
         self,
         *,
         manifest: str = "",
         ticket: str = "",
         title: str = "",
-        mrs: list[str] = typer.Option(  # noqa: B008 — typer.Option is the django-typer option-declaration idiom.
-            None,
-            "--mrs",
-            help="MR/PR URL(s) the evidence covers (repeat or comma-separate). Supplements the manifest's 'mrs'.",
-        ),
-        skip_validation: bool = typer.Option(
-            default=False,
-            help="User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use.",
-        ),
-    ) -> _evidence.PostEvidenceResult:
-        """Post (or update) the ticket's single E2E evidence note from a manifest.
+        mrs: list[str] = _MRS_OPTION,
+        skip_validation: bool = _SKIP_VALIDATION_OPTION,
+    ) -> _test_plan.PostTestPlanResult:
+        """Post (or update) the ticket's single test-plan note from a manifest.
 
-        There is ONE evidence note per ticket (work item / bug), never on an
+        There is ONE test-plan note per ticket (work item / bug), never on an
         MR. It renders as a test plan: a header (title, multi-repo MR links,
         per-env commit provenance, dev-gap reconciliation) and one side-by-side
         **Dev | Local** comparison table per workflow. The note carries a hidden
@@ -526,44 +529,38 @@ class Command(TyperCommand):
         (pk / number / URL) selects the issue (auto-detected from the worktree, or
         the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
         heading. ``--skip-validation`` is the user-authorised bypass of the
-        red-box / duplicate image preflight. See :mod:`._e2e_evidence`.
-        """
-        host = code_host_from_overlay()
-        if host is None:
-            self.stderr.write("No code host configured (check overlay GitLab/GitHub token).")
-            raise SystemExit(1)
+        red-box / duplicate image preflight. See :mod:`._test_plan`.
 
-        manifest_json, manifest_dir = self._read_manifest(manifest)
-        flags = _evidence.EvidenceFlags(
+        The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
+        for one release so existing scripts keep working.
+        """
+        return _test_plan.run_post_test_plan(
+            manifest=manifest,
             ticket=ticket,
-            manifest=manifest_json,
             title=title,
-            mrs=tuple(mrs or ()),
-            manifest_dir=manifest_dir,
+            mrs=mrs,
             skip_validation=skip_validation,
+            write_out=self.stdout.write,
+            write_err=self.stderr.write,
         )
-        try:
-            post = _evidence.build_validated_post(flags)
-            result = _evidence.post_evidence_comment(host, post)
-        except (_evidence.EvidenceValidationError, OnBehalfPostBlockedError) as err:
-            self.stderr.write(str(err))
-            raise SystemExit(1) from err
-        self.stdout.write(
-            f"  Evidence {result['action']} ({', '.join(result['envs'])}) "
-            f"on {post.issue_url} (comment {result['comment_id']}).",
+
+    @command(name="post-evidence", hidden=True, deprecated=True)
+    def post_evidence(
+        self,
+        *,
+        manifest: str = "",
+        ticket: str = "",
+        title: str = "",
+        mrs: list[str] = _MRS_OPTION,
+        skip_validation: bool = _SKIP_VALIDATION_OPTION,
+    ) -> _test_plan.PostTestPlanResult:
+        """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
+        return _test_plan.run_post_test_plan(
+            manifest=manifest,
+            ticket=ticket,
+            title=title,
+            mrs=mrs,
+            skip_validation=skip_validation,
+            write_out=self.stdout.write,
+            write_err=self.stderr.write,
         )
-        return result
-
-    def _read_manifest(self, manifest: str) -> tuple[str, str]:
-        """Return ``(manifest JSON text, base_dir)`` — a path read with its parent as base dir.
-
-        A non-path value is an inline JSON string with an empty base dir; an
-        empty ``--manifest`` exits non-zero.
-        """
-        if not manifest.strip():
-            self.stderr.write("--manifest is required (a path to, or inline string of, the evidence manifest JSON).")
-            raise SystemExit(1)
-        path = Path(manifest)
-        if path.is_file():
-            return path.read_text(encoding="utf-8"), str(path.resolve().parent)
-        return manifest, ""

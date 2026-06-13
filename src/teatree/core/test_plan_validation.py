@@ -1,8 +1,8 @@
-"""Deterministic pre-post validation of E2E evidence images.
+"""Deterministic pre-post validation of test-plan images.
 
-The preflight the ``e2e post-evidence`` command runs over every image the
+The preflight the ``e2e post-test-plan`` command runs over every image the
 manifest references BEFORE any upload or post. It refuses the whole post
-(fail-loud) when an image is not a real piece of evidence, so the user never has
+(fail-loud) when an image is not a real piece of test-plan evidence, so the user never has
 to manually spot a red-box-less screenshot or a pasted-twice look-alike after
 the fact:
 
@@ -11,7 +11,7 @@ the fact:
     A meaningful count of saturated-red pixels (``R≥200, G≤80, B≤80``) consistent
     with an outline must be present; a plain full-page screenshot with no
     highlight is refused by name. The threshold sits in the clean gap between
-    real evidence crops (3660-6490 saturated-red px in the reference set) and the
+    real test-plan crops (3660-6490 saturated-red px in the reference set) and the
     largest incidental red UI element in a plain shot (≈1667 px).
 *   **Duplicate gate** — no two images may be byte-identical (the "several
     screenshots look the same" failure). The colliding pair is named.
@@ -47,14 +47,16 @@ _RED_BOX_MIN_PIXELS = 2000
 _STALENESS_WINDOW_SECONDS = 24 * 3600
 
 
-class EvidenceImageValidationError(ValueError):
-    """An evidence image failed a hard pre-post check — the post must NOT publish.
+class TestPlanImageValidationError(ValueError):
+    """A test-plan image failed a hard pre-post check — the post must NOT publish.
 
-    Raised by :func:`validate_evidence_images` for a missing red box or a
+    Raised by :func:`validate_test_plan_images` for a missing red box or a
     byte-identical duplicate pair, naming the exact offending file(s) and the
     reason. The command surfaces it as a non-zero ``SystemExit`` before any
     upload, so a failed validation burns no on-behalf approval and writes no note.
     """
+
+    __test__ = False  # not a pytest test class (name starts with 'Test')
 
 
 def _saturated_red_pixel_count(path: Path) -> int:
@@ -85,11 +87,11 @@ def _refuse_images_without_red_box(images: list[Path]) -> None:
     if missing:
         names = ", ".join(img.name for img in missing)
         msg = (
-            f"E2E evidence refused: no red highlight box found in {names}. "
+            f"Test plan refused: no red highlight box found in {names}. "
             f"Every screenshot must carry the highlightAndShoot red box "
             f"(outline:3px solid red) — re-capture the missing one(s)."
         )
-        raise EvidenceImageValidationError(msg)
+        raise TestPlanImageValidationError(msg)
 
 
 def _refuse_duplicate_images(images: list[Path]) -> None:
@@ -100,11 +102,11 @@ def _refuse_duplicate_images(images: list[Path]) -> None:
         prior = seen.get(digest)
         if prior is not None:
             msg = (
-                f"E2E evidence refused: {img.name} is byte-identical to {prior.name}. "
+                f"Test plan refused: {img.name} is byte-identical to {prior.name}. "
                 f"Distinct screenshots must show distinct states — remove the duplicate "
                 f"or re-capture the intended one."
             )
-            raise EvidenceImageValidationError(msg)
+            raise TestPlanImageValidationError(msg)
         seen[digest] = img
 
 
@@ -121,19 +123,19 @@ def _staleness_warnings(images: list[Path]) -> list[str]:
         if age_gap > _STALENESS_WINDOW_SECONDS:
             hours = age_gap / 3600
             warnings.append(
-                f"E2E evidence warning: {img.name} is {hours:.0f}h older than the "
+                f"Test plan warning: {img.name} is {hours:.0f}h older than the "
                 f"freshest image in its set — confirm it is the intended (e.g. frozen "
                 f"dev) capture and not a stale leftover."
             )
     return warnings
 
 
-def validate_evidence_images(images: list[Path], *, skip: bool = False) -> list[str]:
-    """Validate every evidence image; raise on a hard failure, return staleness warnings.
+def validate_test_plan_images(images: list[Path], *, skip: bool = False) -> list[str]:
+    """Validate every test-plan image; raise on a hard failure, return staleness warnings.
 
     Order: red-box gate (every image must carry a highlight box) → duplicate gate
     (no byte-identical pair) → staleness check (warn-only). A hard failure raises
-    :class:`EvidenceImageValidationError` naming the offending file(s); the
+    :class:`TestPlanImageValidationError` naming the offending file(s); the
     staleness check never raises — it returns a list of human-readable warning
     strings the caller surfaces loudly.
 

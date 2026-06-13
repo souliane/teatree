@@ -79,7 +79,7 @@ Run `t3 <overlay> --help` for the full list. Subcommand groups: `worktree`, `wor
 | `t3 <overlay> pr check-gates` | Check transition gates for ticket status |
 | `t3 <overlay> pr fetch-issue` | Fetch issue context from tracker |
 | `t3 <overlay> pr detect-tenant` | Detect tenant variant |
-| `t3 <overlay> pr post-evidence` | Post test evidence as PR comment |
+| `t3 <overlay> pr post-test-plan` | Post a test plan as PR comment |
 | `t3 <overlay> followup sync` | Sync followup data from PRs |
 | `t3 <overlay> followup refresh` | Return counts of tickets and tasks |
 | `t3 <overlay> followup remind` | Return list of pending tasks |

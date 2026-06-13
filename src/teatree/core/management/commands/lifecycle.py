@@ -225,7 +225,7 @@ class Command(TyperCommand):
             str,
             typer.Option(
                 "--posted-url",
-                help="URL of the posted `e2e post-evidence` comment; required for a green run to satisfy the gate.",
+                help="URL of the posted `e2e post-test-plan` comment; required for a green run to satisfy the gate.",
             ),
         ] = "",
     ) -> "RecordE2ERunResult":
@@ -235,7 +235,7 @@ class Command(TyperCommand):
         for the ticket at ``--head-sha``. A green run satisfies the mandatory-E2E
         gate at ``pr create`` and the §17.4 CLEAR **only when** ``--posted-url``
         is given — recorded E2E evidence is not enough, it must be POSTED (the
-        SHA-bound ``e2e post-evidence`` ticket comment). A green run at any other
+        SHA-bound ``e2e post-test-plan`` ticket comment). A green run at any other
         SHA does not carry. Re-recording the same spec at the same tree updates
         the row in place (idempotent). A red run, or a green run with no
         ``--posted-url``, records provenance without satisfying the gate.

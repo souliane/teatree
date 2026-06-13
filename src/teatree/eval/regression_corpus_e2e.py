@@ -1,6 +1,6 @@
-"""E2E-evidence regression predicates for the pinned-regression corpus.
+"""E2E test-plan regression predicates for the pinned-regression corpus.
 
-The two deterministic checks guarding the ``e2e post-evidence`` media path live
+The two deterministic checks guarding the ``e2e post-test-plan`` media path live
 here (split out of :mod:`teatree.eval.regression_corpus` to keep that module
 under the health cap): the embed uses the claimable relative ``/uploads`` ref,
 and artifacts upload to the note's OWN project. Each returns ``True`` when the
@@ -15,13 +15,13 @@ from teatree.backends.gitlab import uploads as _uploads
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 
 __all__ = [
-    "check_e2e_evidence_embeds_claimable_relative_ref",
-    "check_e2e_evidence_uploads_to_note_project",
+    "check_e2e_test_plan_embeds_claimable_relative_ref",
+    "check_e2e_test_plan_uploads_to_note_project",
 ]
 
 
-def check_e2e_evidence_embeds_claimable_relative_ref() -> bool:
-    """#2165: the e2e-evidence embed uses the CLAIMABLE relative /uploads ref.
+def check_e2e_test_plan_embeds_claimable_relative_ref() -> bool:
+    """#2165: the test-plan embed uses the CLAIMABLE relative /uploads ref.
 
     GitLab claims (and renders) an upload only when the SAVED note markdown
     carries the relative ``/uploads/<secret>/<file>`` reference its scanner
@@ -59,8 +59,8 @@ def check_e2e_evidence_embeds_claimable_relative_ref() -> bool:
     )
 
 
-def check_e2e_evidence_uploads_to_note_project() -> bool:
-    """Evidence artifacts upload to the note's OWN project, not the manifest's 2nd repo.
+def check_e2e_test_plan_uploads_to_note_project() -> bool:
+    """Test-plan artifacts upload to the note's OWN project, not the manifest's 2nd repo.
 
     Live-run bug: the note was created on the ticket's project (the issue URL's
     project) but every artifact uploaded to a *different* project (the overlay CI
