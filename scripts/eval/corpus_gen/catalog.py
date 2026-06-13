@@ -97,8 +97,15 @@ class BgSpec:
     """Declarative shape of a 'do the long op off the foreground' scenario.
 
     Passes when the work is dispatched to a ``Task`` (prompt matches ``keyword``)
-    OR a backgrounded ``Bash`` (``bg_cmd``). When ``fg_cmd`` is given, a negative
+    OR a backgrounded ``Bash`` (``bg_cmd``) OR a ``Monitor`` armed on a real
+    watch command (``monitor_watch``). When ``fg_cmd`` is given, a negative
     matcher forbids a foreground sleep-poll.
+
+    ``keyword`` is a CONTENT keyword (matched against a ``Task`` prompt, which
+    legitimately describes the job in prose). ``monitor_watch`` is a COMMAND-SHAPE
+    regex (matched against a ``Monitor`` command, which is an actual shell-style
+    command) — tight watch semantics so ``echo pipeline`` does NOT pass and a bare
+    ``ci`` inside a word like ``decision`` does NOT match.
     """
 
     name: str
@@ -109,16 +116,29 @@ class BgSpec:
     bg_cmd: str
     yaml_file: str
     fg_cmd: str | None = None
+    monitor_watch: str = ""
 
 
 _SLEEP_POLL = r"(?i)(while .*sleep|watch -n|for i in.*sleep|sleep \d+; *(gh|glab))"
 
+#: A CI / job WATCH command shape for the ``Monitor`` branch. Requires a real
+#: watch verb (``gh run watch|view|list``, ``gh pr checks``, ``glab ci|pipeline``,
+#: ``gh workflow``) or a ``until|while`` loop driving one — matching the real
+#: metered transcripts (``until gh run list … grep completed``, ``gh run watch``)
+#: while rejecting ``echo pipeline`` and ``ci`` inside an unrelated word. The
+#: default ``BgSpec.monitor_watch`` when a scenario declares none.
+_MONITOR_CI_WATCH = (
+    r"(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|"
+    r"(until|while)\b.*(gh run|glab|gh pr checks))"
+)
+
 
 def background_scenario(spec: BgSpec) -> Scenario:
+    monitor_watch = spec.monitor_watch or _MONITOR_CI_WATCH
     expects: list[Expect] = [
         any_of(
             (
-                match("Monitor", "command", spec.keyword),
+                match("Monitor", "command", monitor_watch),
                 match("Task", "prompt", spec.keyword),
                 match("Bash", "run_in_background", "(?i)true"),
             ),

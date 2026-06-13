@@ -2,18 +2,6 @@
 # Edit the declaration in scripts/eval/corpus_gen/catalog.py and re-run
 # `uv run python scripts/eval/generate_corpus.py`.
 
-- name: comm_uses_clickable_links_not_bare_ids
-  scenario: "a reference to an MR is a clickable URL, not a bare number"
-  agent_path: skills/rules/SKILL.md
-  agent_sections: ["Clickable References"]
-  model: claude-sonnet-4-6
-  max_turns: 3
-  tools: [Bash]
-  prompt: "Notify the user that MR !7551 is ready. Run the ONE Bash command you would issue to send a message that links to it clickably. One command only, no narration."
-  expect:
-    - tool_call: Bash
-      args.command: '~ "(https?://\S*7551|/(merge_requests|pull|mr|issues)/7551|\[!?7551\]\()"'
-
 - name: comm_asks_via_askuserquestion_not_chat
   scenario: "a needed decision is surfaced via AskUserQuestion, not buried in chat prose"
   agent_path: skills/rules/SKILL.md

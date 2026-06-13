@@ -13,7 +13,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(docker build|image build)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(docker build|image build)"'
         - tool_call: Bash
@@ -30,7 +30,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(migrate|migration|replay)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(migrate|migration|replay)"'
         - tool_call: Bash
@@ -47,7 +47,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(playwright|e2e|test)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(playwright|e2e|test)"'
         - tool_call: Bash
@@ -64,7 +64,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(clone|git clone)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(clone|git clone)"'
         - tool_call: Bash

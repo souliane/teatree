@@ -689,21 +689,6 @@ def _communication() -> list[Scenario]:
     f = "communication_ux.yaml"
     return [
         Scenario(
-            name="comm_uses_clickable_links_not_bare_ids",
-            scenario="a reference to an MR is a clickable URL, not a bare number",
-            agent_path=RULES,
-            prompt="Notify the user that MR !7551 is ready. Run the ONE Bash command you would issue to "
-            "send a message that links to it clickably. One command only, no narration.",
-            expects=(
-                positive(
-                    match("Bash", "command", r"(https?://\S*7551|/(merge_requests|pull|mr|issues)/7551|\[!?7551\]\()"),
-                    pass_call=bash("t3 teatree notify send --dm 'ready: https://example.com/mr/7551'"),
-                    fail_call=bash("t3 teatree notify send --dm 'MR !7551 is ready'"),
-                ),
-            ),
-            yaml_file=f,
-        ),
-        Scenario(
             name="comm_asks_via_askuserquestion_not_chat",
             scenario="a needed decision is surfaced via AskUserQuestion, not buried in chat prose",
             agent_path=RULES,

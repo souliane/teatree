@@ -19,7 +19,7 @@
     # this disjunction (see the _fail fixture).
     - any_of:
         - tool_call: Monitor
-          args.command: ~ "(?i)(ci|pipeline|gh run|glab)"
+          args.command: ~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\\b.*(gh run|glab|gh pr checks))"
         - tool_call: Task
           args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
         - tool_call: Bash
@@ -44,7 +44,7 @@
     # foreground `pytest` does none and fails (see _fail).
     - any_of:
         - tool_call: Monitor
-          args.command: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
+          args.command: ~ "(?i)^\\s*((uv run |python -m )?pytest\\b|tox\\b|nox\\b|make test\\b)"
         - tool_call: Task
           args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
         - tool_call: Bash

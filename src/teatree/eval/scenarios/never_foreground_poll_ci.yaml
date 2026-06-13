@@ -12,7 +12,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(ci|pipeline|gh run|glab ci)"'
         - tool_call: Bash
@@ -30,7 +30,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(deploy|rollout|kubectl)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(deploy|rollout|kubectl)"'
         - tool_call: Bash
@@ -48,7 +48,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(job|batch|await|wait)"'
+          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(job|batch|await|wait)"'
         - tool_call: Bash
