@@ -4651,14 +4651,14 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run            Run E2E tests — dispatches to project or external runner      │
-│                based on overlay config.                                      │
-│ trigger-ci     Trigger E2E tests on a remote CI pipeline.                    │
-│ external       Run Playwright tests from the external test repo              │
-│                (T3_PRIVATE_TESTS).                                           │
-│ project        Run E2E tests from the project's own test directory.          │
-│ post-evidence  Post/update the ticket's single E2E evidence note             │
-│                (side-by-side Dev|Local test plan) from a manifest.           │
+│ run             Run E2E tests — dispatches to project or external runner     │
+│                 based on overlay config.                                     │
+│ trigger-ci      Trigger E2E tests on a remote CI pipeline.                   │
+│ external        Run Playwright tests from the external test repo             │
+│                 (T3_PRIVATE_TESTS).                                          │
+│ project         Run E2E tests from the project's own test directory.         │
+│ post-test-plan  Post/update the ticket's single test-plan note (side-by-side │
+│                 Dev|Local test plan) from a manifest.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4813,14 +4813,14 @@ Usage: t3 teatree e2e project [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree e2e post-evidence`
+##### `t3 teatree e2e post-test-plan`
 
 ```
-Usage: t3 teatree e2e post-evidence [OPTIONS]
+Usage: t3 teatree e2e post-test-plan [OPTIONS]
 
- Post (or update) the ticket's single E2E evidence note from a manifest.
+ Post (or update) the ticket's single test-plan note from a manifest.
 
- There is ONE evidence note per ticket (work item / bug), never on an
+ There is ONE test-plan note per ticket (work item / bug), never on an
  MR. It renders as a test plan: a header (title, multi-repo MR links,
  per-env commit provenance, dev-gap reconciliation) and one side-by-side
  **Dev | Local** comparison table per workflow. The note carries a hidden
@@ -4835,14 +4835,17 @@ Usage: t3 teatree e2e post-evidence [OPTIONS]
  (pk / number / URL) selects the issue (auto-detected from the worktree, or
  the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
  heading. ``--skip-validation`` is the user-authorised bypass of the
- red-box / duplicate image preflight. See :mod:`._e2e_evidence`.
+ red-box / duplicate image preflight. See :mod:`._test_plan`.
+
+ The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
+ for one release so existing scripts keep working.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --manifest                                   TEXT                            │
 │ --ticket                                     TEXT                            │
 │ --title                                      TEXT                            │
-│ --mrs                                        TEXT  MR/PR URL(s) the evidence │
-│                                                    covers (repeat or         │
+│ --mrs                                        TEXT  MR/PR URL(s) the test     │
+│                                                    plan covers (repeat or    │
 │                                                    comma-separate).          │
 │                                                    Supplements the           │
 │                                                    manifest's 'mrs'.         │
@@ -5051,14 +5054,14 @@ Usage: t3 teatree pr [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ create         Create a pull request for the ticket's branch.                │
-│ ensure-pr      Create a PR for an orphan branch (idempotent).                │
-│ check-gates    Check whether session gates allow a phase transition.         │
-│ fetch-issue    Fetch issue details from the configured tracker.              │
-│ detect-tenant  Detect the current tenant variant from the overlay.           │
-│ post-evidence  Post test evidence as a PR comment.                           │
-│ sweep          List your open PRs across the forge for the /t3:sweeping-prs  │
-│                skill.                                                        │
+│ create          Create a pull request for the ticket's branch.               │
+│ ensure-pr       Create a PR for an orphan branch (idempotent).               │
+│ check-gates     Check whether session gates allow a phase transition.        │
+│ fetch-issue     Fetch issue details from the configured tracker.             │
+│ detect-tenant   Detect the current tenant variant from the overlay.          │
+│ post-test-plan  Post a test plan as a PR comment.                            │
+│ sweep           List your open PRs across the forge for the /t3:sweeping-prs │
+│                 skill.                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5171,12 +5174,12 @@ Usage: t3 teatree pr detect-tenant [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree pr post-evidence`
+##### `t3 teatree pr post-test-plan`
 
 ```
-Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
+Usage: t3 teatree pr post-test-plan [OPTIONS] MR_IID
 
- Post test evidence as a PR comment. Uploads files and updates existing notes.
+ Post a test plan as a PR comment. Uploads files and updates existing notes.
 
  Files (screenshots, videos) are uploaded and embedded as ``!(url)`` in the
  body.
@@ -5186,9 +5189,14 @@ Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
  Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
  ``draft_or_ask``): the call is refused with no upload or host side
  effect when no recorded :class:`OnBehalfApproval` matches
- ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
- at the ``code_host`` layer) so PR creation — which is not an
- on-behalf colleague-facing post — remains ungated.
+ ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
+ is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
+ value even though the command is now named ``post-test-plan``. The gate
+ is inlined here (not at the ``code_host`` layer) so PR creation — which
+ is not an on-behalf colleague-facing post — remains ungated.
+
+ The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
+ for one release so existing scripts keep working.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_iid      INTEGER  [required]                                         │

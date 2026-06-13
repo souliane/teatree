@@ -1,6 +1,6 @@
-"""``t3 pr post-evidence`` is on-behalf-gated under the tri-state mode (#960).
+"""``t3 pr post-test-plan`` is on-behalf-gated under the tri-state mode (#960).
 
-``post-evidence`` publishes a comment under the user's identity on a
+``post-test-plan`` publishes a comment under the user's identity on a
 colleague-visible PR/MR — it is a third on-behalf chokepoint alongside
 ``_BaseReplier`` (reply transport) and ``ReviewService`` (review CLI),
 so it routes through the same satisfiable ``on_behalf_post_mode`` gate:
@@ -70,7 +70,7 @@ class TestPostEvidenceOnBehalfGate(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="proof",
@@ -98,7 +98,7 @@ class TestPostEvidenceOnBehalfGate(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="proof",
@@ -122,7 +122,7 @@ class TestPostEvidenceOnBehalfGate(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="proof",
@@ -154,7 +154,7 @@ class TestPostEvidenceOnBehalfGate(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="proof",
@@ -178,7 +178,7 @@ def _notify_backend() -> MagicMock:
 
 
 class TestPostEvidenceAfterReceiptDm(TestCase):
-    """#949: a successful post-evidence comment fires one after-receipt DM."""
+    """#949: a successful post-test-plan comment fires one after-receipt DM."""
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,7 +200,7 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
         mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
-            call_command("pr", "post-evidence", "100", repo="my/repo", body="proof")
+            call_command("pr", "post-test-plan", "100", repo="my/repo", body="proof")
 
         ping = BotPing.objects.get(idempotency_key="on_behalf_post:my/repo!100:post_evidence")
         assert ping.status == BotPing.Status.SENT
@@ -221,7 +221,7 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             result = cast(
                 "dict[str, object]",
-                call_command("pr", "post-evidence", "100", repo="my/repo", body="proof"),
+                call_command("pr", "post-test-plan", "100", repo="my/repo", body="proof"),
             )
 
         assert "error" in result

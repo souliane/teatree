@@ -5,7 +5,7 @@ the exact reviewed tree AND **posted** — a recorded-but-unposted run does NOT
 satisfy the gate (user directive: "recorded e2e evidence is NOT enough — it must
 be posted too"). ``E2eMandatoryRun`` is that durable record: one row per
 ``(ticket, head_sha, spec)``, carrying the run ``result`` and the ``posted_url``
-of the SHA-bound ``e2e post-evidence`` ticket comment.
+of the SHA-bound ``e2e post-test-plan`` ticket comment.
 
 The gate reads it via :meth:`has_green_evidence`, true only when a green run with
 a non-empty ``posted_url`` exists for the ticket at the given SHA — a green run
@@ -47,7 +47,7 @@ class E2eMandatoryRun(models.Model):
     head_sha = models.CharField(max_length=64)
     spec = models.CharField(max_length=512)
     result = models.CharField(max_length=16, choices=Result.choices)
-    # The URL of the posted ``e2e post-evidence`` ticket comment for this run.
+    # The URL of the posted ``e2e post-test-plan`` ticket comment for this run.
     # Empty means recorded-but-unposted: the run does NOT satisfy the gate
     # (#1967 — posted proof is required, a local record is not enough).
     posted_url = models.CharField(max_length=512, blank=True, default="")
@@ -94,7 +94,7 @@ class E2eMandatoryRun(models.Model):
         """True iff a green AND POSTED E2E run is recorded for *ticket* at exactly *head_sha*.
 
         A green run with no ``posted_url`` does NOT satisfy the gate — the
-        evidence must be posted (the SHA-bound ``e2e post-evidence`` comment),
+        evidence must be posted (the SHA-bound ``e2e post-test-plan`` comment),
         not merely recorded locally (#1967).
         """
         return (

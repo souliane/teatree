@@ -60,7 +60,7 @@ class PlanArtifactRef:
 class E2eRunRef:
     """An E2eMandatoryRun's evidence for the per-ticket artifact aggregation (#273).
 
-    ``posted_url`` is the SHA-bound ``e2e post-evidence`` comment — the place the
+    ``posted_url`` is the SHA-bound ``e2e post-test-plan`` comment — the place the
     E2E video/evidence lives — and is empty for a recorded-but-unposted run.
     """
 

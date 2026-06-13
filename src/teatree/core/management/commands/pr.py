@@ -64,6 +64,9 @@ from teatree.utils import git
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
 
+# The host create/update-comment response shape returned by the comment commands.
+type CommentResult = dict[str, object]
+
 # VisualQAGateFailure / BranchCurrencyFailure / NoCommitsAheadError and the
 # pre-ship gate helpers live in ``_ship_gates`` (extracted by concern,
 # re-imported above under their legacy underscore names) so external importers
@@ -429,8 +432,8 @@ class Command(TyperCommand):
         prs = host.list_my_prs(author=author)
         return {"author": author, "count": len(prs), "prs": prs}
 
-    @command(name="post-evidence")
-    def post_evidence(
+    @command(name="post-test-plan")
+    def post_test_plan(
         self,
         mr_iid: int,
         repo: str = "",
@@ -438,7 +441,7 @@ class Command(TyperCommand):
         body: str = "",
         files: list[str] | None = None,
     ) -> dict[str, object]:
-        """Post test evidence as a PR comment. Uploads files and updates existing notes.
+        """Post a test plan as a PR comment. Uploads files and updates existing notes.
 
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
@@ -446,9 +449,14 @@ class Command(TyperCommand):
         Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
         ``draft_or_ask``): the call is refused with no upload or host side
         effect when no recorded :class:`OnBehalfApproval` matches
-        ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
-        at the ``code_host`` layer) so PR creation — which is not an
-        on-behalf colleague-facing post — remains ungated.
+        ``(<repo>!<mr>, "post_evidence")``. The ``"post_evidence"`` action key
+        is PERSISTED on existing ``OnBehalfApproval`` rows, so it stays the wire
+        value even though the command is now named ``post-test-plan``. The gate
+        is inlined here (not at the ``code_host`` layer) so PR creation — which
+        is not an on-behalf colleague-facing post — remains ungated.
+
+        The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
+        for one release so existing scripts keep working.
         """
         host = code_host_from_overlay()
         if host is None:
@@ -508,3 +516,15 @@ class Command(TyperCommand):
             summary=f"{title} on {target}",
         )
         return result
+
+    @command(name="post-evidence", hidden=True, deprecated=True)
+    def post_evidence(
+        self,
+        mr_iid: int,
+        repo: str = "",
+        title: str = "Test Plan",
+        body: str = "",
+        files: list[str] | None = None,
+    ) -> CommentResult:
+        """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
+        return self.post_test_plan(mr_iid, repo=repo, title=title, body=body, files=files)

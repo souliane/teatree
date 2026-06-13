@@ -71,7 +71,8 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `external` | Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo) |
 | `project` | Run E2E tests from the project's own test directory |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
-| `post-evidence` | Post (or update) the ticket's single E2E evidence note from a manifest |
+| `post-test-plan` | Post (or update) the ticket's single test-plan note from a manifest |
+| `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
 ## `env`
 
@@ -232,7 +233,8 @@ Run one tick: scan all overlays, dispatch, render statusline.
 | `check-gates` | Check whether session gates allow a phase transition (#1118: cross-session) |
 | `fetch-issue` | Fetch issue details with embedded image URLs and external links |
 | `detect-tenant` | Detect the current tenant variant from the overlay |
-| `post-evidence` | Post test evidence as a PR comment. Uploads files and updates existing notes |
+| `post-test-plan` | Post a test plan as a PR comment. Uploads files and updates existing notes |
+| `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
 ## `questions`
 
