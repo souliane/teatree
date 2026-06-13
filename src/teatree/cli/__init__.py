@@ -64,6 +64,7 @@ from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_listen import slack_app
 from teatree.cli.task_alias import task_app
+from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
 from teatree.cli.update import update_app
 
@@ -153,6 +154,7 @@ app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
+app.add_typer(teams_app, name="teams")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
 app.add_typer(recover_app, name="recover")
