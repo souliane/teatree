@@ -548,6 +548,7 @@ Any operation expected to run longer than ~15 seconds — CI/pipeline watches, f
 
 Background it instead:
 
+- Arm a **Monitor** to watch a long-running command/pipeline — its events arrive as notifications and wake you, so the foreground stays free. This is the canonical teatree mechanism for watching a long op without blocking (the loop uses it), and the preferred choice for a CI/pipeline or test-suite watch.
 - Dispatch a **background sub-agent** (Task tool) for the long unit of work, then keep handling new input while it runs.
 - For a single shell command, pass `run_in_background: true` to Bash rather than waiting on it inline.
 

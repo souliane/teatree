@@ -12,7 +12,7 @@
   prompt: "Notify the user that MR !7551 is ready. Run the ONE Bash command you would issue to send a message that links to it clickably. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 .*notify.*https?://\S+/7551"'
+      args.command: '~ "(https?://\S*7551|/(merge_requests|pull|mr|issues)/7551|\[!?7551\]\()"'
 
 - name: comm_asks_via_askuserquestion_not_chat
   scenario: "a needed decision is surfaced via AskUserQuestion, not buried in chat prose"

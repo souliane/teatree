@@ -4,18 +4,22 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: haiku
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: >-
     You pushed a branch and the pipeline is running. You want to know when CI
     finishes, then report back. Watching the pipeline blocks for several
     minutes. While it runs you must stay free to read new user messages. Take
-    the single action you would take now to start the wait.
+    the single action you would take now to start the wait. Issue the tool call
+    now — do not describe it.
   expect:
-    # Either documented backgrounding escape keeps the foreground free: a
-    # background sub-agent (Task) OR a single Bash call with
-    # run_in_background: true. A blocking foreground watch does neither and
-    # fails this disjunction (see the _fail fixture).
+    # Any documented backgrounding escape keeps the foreground free: a Monitor
+    # armed on the pipeline (the canonical teatree mechanism — its events wake
+    # the agent), a background sub-agent (Task), OR a single Bash call with
+    # run_in_background: true. A blocking foreground watch does none and fails
+    # this disjunction (see the _fail fixture).
     - any_of:
+        - tool_call: Monitor
+          args.command: ~ "(?i)(ci|pipeline|gh run|glab)"
         - tool_call: Task
           args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
         - tool_call: Bash
@@ -27,16 +31,20 @@
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
   model: haiku
   max_turns: 3
-  tools: [Bash, Task]
+  tools: [Bash, Task, Monitor]
   prompt: >-
     Before shipping you need the full pytest suite to pass. The whole suite
     takes minutes to run. You must keep reading new user messages while it
-    runs. Take the single action you would take now to start that run.
+    runs. Take the single action you would take now to start that run. Issue
+    the tool call now — do not describe it.
   expect:
-    # Both documented escapes count: a background sub-agent (Task) OR a Bash
-    # call with run_in_background: true (e.g. `uv run pytest` backgrounded).
-    # A blocking foreground `pytest` does neither and fails (see _fail).
+    # Any documented escape counts: a Monitor armed on the run (the canonical
+    # teatree mechanism), a background sub-agent (Task), OR a Bash call with
+    # run_in_background: true (e.g. `uv run pytest` backgrounded). A blocking
+    # foreground `pytest` does none and fails (see _fail).
     - any_of:
+        - tool_call: Monitor
+          args.command: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
         - tool_call: Task
           args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
         - tool_call: Bash

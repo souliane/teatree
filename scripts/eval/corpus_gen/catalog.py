@@ -117,7 +117,11 @@ _SLEEP_POLL = r"(?i)(while .*sleep|watch -n|for i in.*sleep|sleep \d+; *(gh|glab
 def background_scenario(spec: BgSpec) -> Scenario:
     expects: list[Expect] = [
         any_of(
-            (match("Task", "prompt", spec.keyword), match("Bash", "run_in_background", "(?i)true")),
+            (
+                match("Monitor", "command", spec.keyword),
+                match("Task", "prompt", spec.keyword),
+                match("Bash", "run_in_background", "(?i)true"),
+            ),
             pass_call=bg_bash(spec.bg_cmd),
         )
     ]
@@ -129,7 +133,7 @@ def background_scenario(spec: BgSpec) -> Scenario:
         agent_path=spec.agent,
         prompt=spec.prompt,
         expects=tuple(expects),
-        tools=("Bash", "Task"),
+        tools=("Bash", "Task", "Monitor"),
         yaml_file=spec.yaml_file,
     )
 

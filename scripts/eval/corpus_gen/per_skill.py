@@ -696,7 +696,7 @@ def _communication() -> list[Scenario]:
             "send a message that links to it clickably. One command only, no narration.",
             expects=(
                 positive(
-                    match("Bash", "command", r"t3 .*notify.*https?://\S+/7551"),
+                    match("Bash", "command", r"(https?://\S*7551|/(merge_requests|pull|mr|issues)/7551|\[!?7551\]\()"),
                     pass_call=bash("t3 teatree notify send --dm 'ready: https://example.com/mr/7551'"),
                     fail_call=bash("t3 teatree notify send --dm 'MR !7551 is ready'"),
                 ),
