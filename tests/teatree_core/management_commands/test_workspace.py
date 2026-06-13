@@ -2608,7 +2608,7 @@ def _init_repo_with_remote(tmp: Path) -> tuple[Path, Path]:
     remote = tmp / "remote.git"
     work = tmp / "work"
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)  # noqa: S607
-    subprocess.run(["git", "init", "-q", str(work)], check=True)  # noqa: S607
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)  # noqa: S607
     _git(work, "commit", "-q", "--allow-empty", "-m", "base")
     _git(work, "remote", "add", "origin", str(remote))
     _git(work, "push", "-q", "origin", "HEAD:main")
@@ -3473,7 +3473,7 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             broken = tmp / "broken"
             broken.mkdir()
             work = broken / "work"
-            subprocess.run(["git", "init", "-q", str(work)], check=True)  # noqa: S607
+            subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)  # noqa: S607
             _git(work, "commit", "-q", "--allow-empty", "-m", "base")
             wt_path = broken / "wt-feature"
             _git(work, "checkout", "-q", "-b", "feature")
