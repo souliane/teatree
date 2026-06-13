@@ -2,11 +2,11 @@
 
 The single-trial path threads the resolved ``--effort`` / ``METERED_DEFAULT_EFFORT``
 into ``make_runner(... effort=...)``; the always-metered pass@k (``--trials k>1``,
-the CI gate) and model-matrix lanes must do the SAME — they construct their own
-``SdkInProcessRunner`` and so must pass the lane effort, or the calibration never
-reaches the metered gate. A scenario's own ``model@effort`` still wins at the
-runner's per-scenario seam; the lane effort is the default for scenarios that
-declare none.
+the CI gate) and model-matrix lanes must do the SAME. They now build through that
+same ``make_runner`` chokepoint (so OAuth-token resolution can never be bypassed),
+and so must pass the lane effort, or the calibration never reaches the metered gate.
+A scenario's own ``model@effort`` still wins at the runner's per-scenario seam; the
+lane effort is the default for scenarios that declare none.
 """
 
 from collections.abc import Iterator
@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.eval import multi_trial
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
 
@@ -57,7 +56,10 @@ class _RecordingRunner:
 @pytest.fixture
 def recording_runner() -> Iterator[type[_RecordingRunner]]:
     _RecordingRunner.last_effort = None
-    with patch.object(multi_trial, "SdkInProcessRunner", _RecordingRunner):
+    with (
+        patch("teatree.eval.backends.ensure_oauth_token", return_value="tok"),
+        patch("teatree.eval.backends.SdkInProcessRunner", _RecordingRunner),
+    ):
         yield _RecordingRunner
 
 
