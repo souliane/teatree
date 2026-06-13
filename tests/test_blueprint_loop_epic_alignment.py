@@ -101,6 +101,30 @@ class TestAnyWindowHasHelper:
         assert _any_window_has("nothing here", "#X", "ok") is False
 
 
+class TestTrackABOverviewPresent:
+    """The § 5.6 opening must make Track A vs Track B unmistakable (#1838).
+
+    Anti-vacuous: revert the overview and these go RED. ``_any_window_has``
+    scans all occurrences so an unrelated later mention of a token never
+    satisfies the assertion on its own.
+    """
+
+    def test_track_a_described_as_no_panes_loop_restructure(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "Track A", "no panes", "orchestrate")
+        assert _any_window_has(loop_topology, "Track A", "dedicated_loops")
+
+    def test_track_b_described_as_pane_backed_teammates(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "Track B", "pane", "separate long-lived")
+        assert _any_window_has(loop_topology, "Track B", "REVIEWER", "prohibited")
+
+    def test_master_off_switch_note_present(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "teams", "enabled = false", "off switch")
+        assert _any_window_has(loop_topology, "teams", "classic", "sub-agent")
+
+    def test_fat_loop_reframed_as_default_off_toggle_default(self, loop_topology: str) -> None:
+        assert _any_window_has(loop_topology, "dedicated_loops = false", "default", "not the only")
+
+
 class TestSubsumedIssuesDocumented:
     def test_789_documented_as_subsumed_not_reopened(self, loop_topology: str) -> None:
         assert "#789" in loop_topology
