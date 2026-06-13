@@ -311,14 +311,21 @@ def _reconcile_slug_against_reviewed_sha(
     slug's PR head SHA matches *reviewed_sha* the merge proceeds against
     it unchanged (the common path). When the SHAs disagree, the same
     PR number may live in a downstream overlay's repo at the right SHA;
-    the probe enumerates :func:`_iter_candidate_repo_slugs` and returns
-    the first candidate whose ``pulls/<N>`` head matches.
+    the probe enumerates :func:`_iter_candidate_repo_slugs` and recovers
+    the candidate whose ``pulls/<N>`` head matches — requiring EXACTLY ONE.
 
     No reviewed SHA, no probe (back-compat with legacy callers that did
     not carry the SHA). No candidate match raises a
     :class:`MergePreconditionError` whose message names every candidate
     considered so the diagnosis is unambiguous — never the opaque "head
     moved" escalation that hid the #1335 bug.
+
+    More than one candidate matching *reviewed_sha* is the #2338 same-SHA
+    ambiguity: two distinct repos (a fork/mirror, or an overlay working-repo
+    aliasing another) both expose PR <pr_id> at the reviewed SHA, so binding
+    to whichever was probed first would merge an unverified twin. That case
+    raises a :class:`MergePreconditionError` naming every ambiguous repo —
+    the gate never silently picks one.
     """
     if not reviewed_sha:
         return initial_slug
@@ -337,13 +344,27 @@ def _reconcile_slug_against_reviewed_sha(
     # The initial slug was already probed above — exclude it from the secondary
     # set so the candidates list in the error message reflects what was probed.
     other_candidates = [c for c in candidates if c != initial_slug]
-    match = _probe_candidate_repos(
+    matches = _probe_candidate_repos(
         pr_id=pr_id,
         reviewed_sha=reviewed_sha,
         candidates=other_candidates,
         host_kind=host_kind,
     )
-    if match:
+    if len(matches) > 1:
+        # #2338: a same-SHA multi-match is an ambiguity the merge gate must
+        # never resolve silently — binding to ``matches[0]`` could merge an
+        # unverified fork/mirror twin. Fail loud, naming every ambiguous repo.
+        msg = (
+            f"ambiguous merge candidate for PR #{pr_id}: {len(matches)} distinct "
+            f"repos expose PR #{pr_id} at the reviewed SHA {reviewed_sha} — "
+            f"{matches}. The merge gate refuses to pick one silently (a fork / "
+            f"mirror, or an overlay working-repo aliasing another, could shadow "
+            f"the reviewed work). Re-issue the CLEAR with an explicit owner/repo "
+            f"slug naming the intended repo (§17.4.3 step 2 / #2338)."
+        )
+        raise MergePreconditionError(msg)
+    if matches:
+        match = matches[0]
         logger.info(
             "merge_execution: cross-repo recovery for #%s — initial slug %r "
             "live=%s != reviewed=%s; probed %s, matched %r",
@@ -375,16 +396,23 @@ def _probe_candidate_repos(
     reviewed_sha: str,
     candidates: list[str],
     host_kind: str,
-) -> str:
-    """Return the candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha*.
+) -> list[str]:
+    """Every candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha* (#2338).
 
-    Iterates candidates in order and returns the first whose live head
-    SHA matches *reviewed_sha* — the #1335 recovery path: when the
-    initially-resolved repo's PR is an unrelated same-numbered PR, this
-    finds the repo that actually owns the reviewed work. Returns ``""``
-    when no candidate matches (a real force-push or a truly stale CLEAR).
+    Probes **all** candidates and returns the full list of those whose live
+    head SHA matches *reviewed_sha* — the #1335 recovery path enumerates the
+    repos that could own the reviewed work, and the caller requires EXACTLY
+    ONE to match. Returning every match (not just the first) is what lets the
+    caller detect a same-SHA ambiguity: when two distinct candidate repos
+    (a fork/mirror, or an overlay working-repo that aliases another) both
+    expose PR <pr_id> at the same reviewed SHA, binding silently to whichever
+    was probed first would merge an unverified twin. The list lets the caller
+    raise instead, naming every ambiguous repo.
+
+    The per-candidate swallow-failures contract is preserved: a probe error
+    surfaces as an empty head from :func:`fetch_live_head_sha`, which never
+    equals *reviewed_sha*, so a failing candidate is simply absent from the
+    matches — never counted, never raising on its own. Returns ``[]`` when no
+    candidate matches (a real force-push or a truly stale CLEAR).
     """
-    for slug in candidates:
-        if fetch_live_head_sha(slug, pr_id, host_kind=host_kind) == reviewed_sha:
-            return slug
-    return ""
+    return [slug for slug in candidates if fetch_live_head_sha(slug, pr_id, host_kind=host_kind) == reviewed_sha]
