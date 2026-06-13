@@ -54,6 +54,9 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 loop automatically while consolidated work remains — exactly │
 │                 one consolidation loop per agent identity, deduped across    │
 │                 all sessions (#786 WS4); it idles when none.                 │
+│ teams           Agent-teams master switch. The teams.enabled config key      │
+│                 (default off) gates the pane-backed teammate layer; off      │
+│                 keeps the classic in-session sub-agent fan-out.              │
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
@@ -3349,6 +3352,61 @@ Usage: t3 loop slack-answer start [OPTIONS]
  user pastes inside the loop-owner Claude Code session to register the
  third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
  (seconds; floor 15).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 teams`
+
+```
+Usage: t3 teams [OPTIONS] COMMAND [ARGS]...
+
+ Agent-teams master switch. The teams.enabled config key (default off) gates
+ the pane-backed teammate layer; off keeps the classic in-session sub-agent
+ fan-out.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ on      Enable agent teams — write teams.enabled = true to the config.       │
+│ off     Disable agent teams — write teams.enabled = false to the config.     │
+│ status  Show whether agent teams is on/off (effective value, read-only).     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teams on`
+
+```
+Usage: t3 teams on [OPTIONS]
+
+ Enable agent teams — write teams.enabled = true to the config.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teams off`
+
+```
+Usage: t3 teams off [OPTIONS]
+
+ Disable agent teams — write teams.enabled = false to the config.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teams status`
+
+```
+Usage: t3 teams status [OPTIONS]
+
+ Show whether agent teams is on/off (effective value, read-only).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

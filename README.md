@@ -553,6 +553,9 @@ require_human_approval_to_merge = true    # auto mode: still gate merge on a �
 require_human_approval_to_answer = true   # gate t3:answerer behind a DM confirmation
 agent_signature = false                   # append an AI signature to posts (default off)
 
+[teams]
+enabled = false                           # master agent-teams off switch (default)
+
 [overlays.my-overlay]
 path = "~/workspace/my-overlay"
 ```
@@ -569,6 +572,7 @@ path = "~/workspace/my-overlay"
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
 | `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |
+| `teams.enabled` | `false` | Master agent-teams off switch — `false` (default) keeps the classic in-session sub-agent fan-out; toggle with `t3 teams on` / `t3 teams off` (`t3 teams status` to read) |
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
 (default `false`), not a TOML key — it exists as a deliberate stop for
