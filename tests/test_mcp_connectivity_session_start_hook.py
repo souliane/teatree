@@ -1,3 +1,4 @@
+# test-path: cross-cutting — tests hook_router.py (hooks/), which has no single src/teatree/ mirror.
 """SessionStart enabled-MCP connectivity advisory (#2282).
 
 The advisory rides the single SessionStart stdout write via
