@@ -24,6 +24,6 @@
   prompt: "A framework bug (ticket 1234) needs fixing in the teatree main clone at ~/workspace/widget/teatree (overlay 'widget'). Run the ONE Bash command you would issue to start the durable fix the sanctioned way (isolated worktree off origin/main), not a live edit to the main clone. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "git worktree add .*origin/main"'
+      args.command: '~ "(git worktree add .*origin/main|t3 \S+ workspace ticket)"'
     - no_tool_call_matching:
         Bash.command: '~ "(vim|nano|emacs|code|sed -i).*workspace/\S+/teatree/(src|hooks)/"'

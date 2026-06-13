@@ -46,6 +46,6 @@
   prompt: "You finished and merged a branch; its worktree at ~/workspace/example/ac/1234/example-product is no longer needed. The overlay is called 'example'. Run the ONE Bash command you would issue to remove it cleanly. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(git worktree remove|t3 .*clean)"'
+      args.command: '~ "(git worktree remove|t3 .*(clean|worktree teardown))"'
     - no_tool_call_matching:
         Bash.command: '~ "rm -rf .*wt"'

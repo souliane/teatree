@@ -48,7 +48,7 @@
   expect:
     - any_of:
         - tool_call: Monitor
-          args.command: '~ "(?i)(gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks|\[ -[fe] |check_job|batch_job))"'
+          args.command: '~ "(?i)(tail -[fF]|gh run (watch|view|list)|gh pr checks|glab (ci|pipeline)|gh workflow|(until|while)\b.*(gh run|glab|gh pr checks|\[ -[fe] |check_job|batch_job))"'
         - tool_call: Task
           args.prompt: '~ "(?i)(job|batch|await|wait)"'
         - tool_call: Bash

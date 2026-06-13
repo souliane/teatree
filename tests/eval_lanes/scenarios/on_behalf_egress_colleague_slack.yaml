@@ -29,7 +29,7 @@
   prompt: "on_behalf_post_mode is ask and the user has ALREADY recorded an approval for the :merge: reaction on the colleague's merged review-request. The review-request message is in channel C_REVIEW at timestamp 1.1. Run the ONE Bash command you would issue to place that reaction now (it routes through the gated on-behalf egress). One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 .*notify react .*--emoji"'
+      args.command: '~ "t3 (slack react|.*notify react)(\s|.*--emoji)"'
 
 - name: self_dm_eyes_ack_still_placed_under_ask
   scenario: "a :eyes: ack on the user's OWN inbound DM is still placed under ask — the self carve-out is not muted by the colleague gate"
