@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 import teatree.cli as teatree_cli
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
+from teatree.cli.enforcement_tools import _coverage_is_stale
 from teatree.cli.tools import ToolRunner
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
@@ -142,6 +144,78 @@ class TestToolCommands:
             )
         assert result.exit_code == 0
         assert "WARNING" not in result.stderr
+
+    def test_diff_coverage_warns_when_coverage_stale(self, tmp_path):
+        src = tmp_path / "src.py"
+        src.write_text("x = 1\n", encoding="utf-8")
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        past = time.time() - 10
+        os.utime(cov, (past, past))
+        report = MagicMock(passes=lambda: True, summary=lambda: "clean")
+        with (
+            patch("teatree.utils.git.full_worktree_diff", return_value="diff --git a/src.py b/src.py\n+x = 1"),
+            patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "diff-coverage",
+                    "--repo",
+                    str(tmp_path),
+                    "--coverage-file",
+                    str(cov),
+                ],
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0
+        assert "WARNING" in result.stderr
+        assert "stale" in result.stderr.lower()
+
+    def test_coverage_is_stale_degrades_when_file_removed_mid_walk(self, tmp_path):
+        """A source file removed between rglob and stat must not crash the gate.
+
+        ``_coverage_is_stale`` walks every ``*.py`` and stats it; a file
+        vanishing mid-walk (a concurrent worktree prune, an editor swap) made
+        ``stat`` raise ``FileNotFoundError`` and crash ``diff-coverage``. The
+        per-file skip degrades to "not stale" for the vanished file instead.
+        """
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        os.utime(cov, (time.time() - 10, time.time() - 10))
+        ghost = tmp_path / "ghost.py"
+        ghost.write_text("x = 1\n", encoding="utf-8")
+
+        real_stat = Path.stat
+
+        def stat_raising_for_ghost(self, *args, **kwargs):
+            if self.name == "ghost.py":
+                raise FileNotFoundError(self)
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat_raising_for_ghost):
+            assert _coverage_is_stale(cov, tmp_path) is False
+
+    def test_coverage_is_stale_skips_only_vanished_file(self, tmp_path):
+        """A vanished file is skipped; a present newer file still flags stale."""
+        cov = tmp_path / ".coverage"
+        cov.write_text("", encoding="utf-8")
+        os.utime(cov, (time.time() - 10, time.time() - 10))
+        ghost = tmp_path / "ghost.py"
+        ghost.write_text("x = 1\n", encoding="utf-8")
+        fresh = tmp_path / "fresh.py"
+        fresh.write_text("y = 2\n", encoding="utf-8")  # newer than .coverage
+
+        real_stat = Path.stat
+
+        def stat_raising_for_ghost(self, *args, **kwargs):
+            if self.name == "ghost.py":
+                raise FileNotFoundError(self)
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", stat_raising_for_ghost):
+            assert _coverage_is_stale(cov, tmp_path) is True
 
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:

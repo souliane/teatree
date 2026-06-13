@@ -2582,10 +2582,19 @@ def _read_message_file(command: str) -> str | None:
 
 # REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.
 # Distinguishes a PR/MR create from a list read (GET) or the merge endpoint
-# already covered by _MERGE_ENDPOINT_RE.  The \d+-free form matches both the
+# already covered by _MERGE_ENDPOINT_RE.  The optional /\d+ matches both the
 # collection endpoint (/pulls, /merge_requests) and a per-MR update endpoint
 # (/pulls/42, /merge_requests/42) when written as a POST.
-_API_CREATE_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)(?:/\d+)?(?:[/?'\"\s]|$)")
+#
+# The trailing class keeps `/` so the collection-create form written WITH a
+# trailing slash (`/merge_requests/ -f title=…`) still matches as a create —
+# dropping `/` here lets a real trailing-slash MR/PR-create POST escape all
+# three consumers. The sub-resource exclusion lives entirely in the lookahead
+# `(?!/\d*/?[A-Za-z])`: a read-only nested GET (`/merge_requests/42/approvals`,
+# `/pulls/123/commits`, `/notes`, `/files`, `/pipelines`) is `/\d+` then `/`
+# then a letter, so the lookahead rejects it; the trailing-slash create is
+# `/` then a space (not a letter), so the lookahead admits it.
+_API_CREATE_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)(?:/\d+)?(?!/\d*/?[A-Za-z])(?:[/?'\"\s]|$)")
 
 
 def _is_api_create_endpoint_write(command: str) -> bool:
