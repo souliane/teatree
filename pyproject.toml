@@ -30,7 +30,7 @@ dependencies = [
   "django-typer>=3.3",
   "httpx>=0.27",
   # ``teatree.core.evidence_validation`` opens evidence PNGs with Pillow to
-  # detect the highlightAndShoot red box before ``e2e post-evidence`` uploads.
+  # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only
   # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
   "pillow>=11",

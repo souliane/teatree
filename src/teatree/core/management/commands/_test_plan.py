@@ -1,8 +1,8 @@
-"""Host-facing orchestration for ``e2e post-evidence`` (teatree #272, #2165).
+"""Host-facing orchestration for ``e2e post-test-plan`` (teatree #272, #2165).
 
-The ORM + code-host side of the one-note-per-ticket evidence model. The pure
-string/JSON layer — the manifest parse, the persisted :class:`EvidenceState`,
-the merge, and the side-by-side render — lives in :mod:`._e2e_evidence_render`;
+The ORM + code-host side of the one-note-per-ticket test-plan model. The pure
+string/JSON layer — the manifest parse, the persisted :class:`TestPlanState`,
+the merge, and the side-by-side render — lives in :mod:`._test_plan_render`;
 this module resolves the ticket, uploads the artifacts (embedding the relative
 ``/uploads/<secret>/<file>`` reference GitLab claims on save; #2165), merges
 this run's side(s) over the prior state, and creates-or-updates the single note.
@@ -13,27 +13,28 @@ attached after the MR merges.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.evidence_validation import EvidenceImageValidationError, validate_evidence_images
-from teatree.core.management.commands._e2e_evidence_render import (
-    EvidenceManifest,
-    EvidenceState,
-    EvidenceValidationError,
+from teatree.core.management.commands._test_plan_render import (
     SideManifest,
+    TestPlanManifest,
+    TestPlanState,
+    TestPlanValidationError,
     WorkflowArtifacts,
     WorkflowEmbed,
     empty_state,
-    evidence_marker,
     find_ticket_marker,
     merge_state,
     parse_manifest,
     parse_state_blob,
     render_body,
     render_mrs_line,
+    test_plan_marker,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
@@ -43,29 +44,31 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
+from teatree.core.test_plan_validation import TestPlanImageValidationError, validate_test_plan_images
 from teatree.types import RawAPIDict
 
-# Re-exports so callers/tests import the evidence surface from one module.
+# Re-exports so callers/tests import the test-plan surface from one module.
 __all__ = [
-    "EvidenceFlags",
-    "EvidenceManifest",
-    "EvidenceMediaError",
-    "EvidencePost",
-    "EvidenceResolutionError",
-    "EvidenceState",
-    "EvidenceValidationError",
-    "PostEvidenceResult",
+    "PostTestPlanResult",
     "SideManifest",
+    "TestPlanFlags",
+    "TestPlanManifest",
+    "TestPlanMediaError",
+    "TestPlanPost",
+    "TestPlanResolutionError",
+    "TestPlanState",
+    "TestPlanValidationError",
     "WorkflowArtifacts",
     "build_validated_post",
-    "evidence_marker",
     "find_existing_note",
     "merge_state",
     "parse_manifest",
     "parse_state_blob",
-    "post_evidence_comment",
+    "post_test_plan_comment",
     "render_body",
     "render_mrs_line",
+    "run_post_test_plan",
+    "test_plan_marker",
 ]
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
@@ -73,22 +76,22 @@ _ON_BEHALF_ACTION = "post_e2e_evidence"
 _log = logging.getLogger(__name__)
 
 
-class EvidenceResolutionError(EvidenceValidationError):
+class TestPlanResolutionError(TestPlanValidationError):
     """The ticket the evidence should post on could not be resolved.
 
-    A subclass of :class:`EvidenceValidationError` so the command's single
-    ``except EvidenceValidationError`` arm catches resolution and validation
+    A subclass of :class:`TestPlanValidationError` so the command's single
+    ``except TestPlanValidationError`` arm catches resolution and validation
     failures alike — both must exit non-zero with no host side effect.
     """
 
 
-class EvidenceMediaError(EvidenceValidationError):
+class TestPlanMediaError(TestPlanValidationError):
     """An uploaded artifact would not render in the posted note.
 
     Raised by the post-upload existence gate when an embedded media URL does
     not resolve (non-200) or the fetched bytes are not the expected medium —
     so "posted" can never mean "returned 201 but referenced a missing upload".
-    A subclass of :class:`EvidenceValidationError` so the command's existing
+    A subclass of :class:`TestPlanValidationError` so the command's existing
     arm surfaces it as a non-zero exit; the gate runs before the post, so a
     failure burns no on-behalf approval and writes no note.
     """
@@ -96,14 +99,14 @@ class EvidenceMediaError(EvidenceValidationError):
 
 @dataclass(frozen=True, slots=True)
 class ExistingNote:
-    """THIS ticket's prior evidence note: its comment id and recovered state."""
+    """THIS ticket's prior test-plan note: its comment id and recovered state."""
 
     comment_id: int
-    state: EvidenceState
+    state: TestPlanState
 
 
 def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> ExistingNote | None:
-    """Return THIS ticket's existing evidence note (matched on the ticket marker), or ``None``.
+    """Return THIS ticket's existing test-plan note (matched on the ticket marker), or ``None``.
 
     There is one note per ticket, so the first comment whose marker carries
     this ticket id wins. The recovered hidden-JSON state backs the merge.
@@ -118,8 +121,8 @@ def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> Existin
     return None
 
 
-class PostEvidenceResult(TypedDict):
-    """Return shape of ``e2e post-evidence`` — the posted evidence note.
+class PostTestPlanResult(TypedDict):
+    """Return shape of ``e2e post-test-plan`` — the posted test-plan note.
 
     ``action`` is ``"created"`` when a new note was posted and ``"updated"``
     when the ticket's existing note was edited in place. ``envs`` lists the
@@ -133,8 +136,8 @@ class PostEvidenceResult(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
-class EvidencePost:
-    """Validated inputs for :func:`post_evidence_comment`.
+class TestPlanPost:
+    """Validated inputs for :func:`post_test_plan_comment`.
 
     No ``repo`` field: the artifact-upload project is NOT a free input — it is
     resolved at post time from ``issue_url`` (the note's own project) so every
@@ -146,12 +149,12 @@ class EvidencePost:
     issue_url: str
     ticket_id: str
     title: str
-    manifest: EvidenceManifest
+    manifest: TestPlanManifest
 
 
 @dataclass(frozen=True, slots=True)
-class EvidenceFlags:
-    """The raw CLI flags for ``e2e post-evidence``, before validation.
+class TestPlanFlags:
+    """The raw CLI flags for ``e2e post-test-plan``, before validation.
 
     ``manifest_dir`` is the directory the manifest file was read from (empty when
     the manifest was an inline string): relative artifact paths resolve against
@@ -181,7 +184,7 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
     Precedence: ``--ticket`` (a pk, issue number, or full issue URL) wins; then
     the resolved worktree's ticket; then the manifest's own top-level ``ticket``
     field (so a manifest that names its ticket needs no ``--ticket`` flag). Raises
-    :class:`EvidenceResolutionError` when none resolves to a ticket carrying an
+    :class:`TestPlanResolutionError` when none resolves to a ticket carrying an
     ``issue_url``.
     """
     ref = ticket or (manifest_ticket if worktree is None or worktree.ticket is None else "")
@@ -190,7 +193,7 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
             resolved = Ticket.objects.resolve(ref)
         except Ticket.DoesNotExist:
             msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)."
-            raise EvidenceResolutionError(msg) from None
+            raise TestPlanResolutionError(msg) from None
     elif worktree is not None and worktree.ticket is not None:
         resolved = worktree.ticket
     else:
@@ -198,51 +201,51 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
             "Could not determine the ticket: pass --ticket <pk|number|url>, "
             "set a top-level 'ticket' in the manifest, or run from inside a worktree."
         )
-        raise EvidenceResolutionError(msg)
+        raise TestPlanResolutionError(msg)
     if not resolved.issue_url:
         msg = f"Ticket {resolved} has no issue_url to post evidence on."
-        raise EvidenceResolutionError(msg)
+        raise TestPlanResolutionError(msg)
     return resolved
 
 
-def _manifest_image_paths(manifest: EvidenceManifest) -> list[Path]:
+def _manifest_image_paths(manifest: TestPlanManifest) -> list[Path]:
     """Every screenshot path the manifest references, across both sides + all workflows."""
     return [
         Path(image) for side in (manifest.dev, manifest.local) for wf in side.workflows.values() for image in wf.images
     ]
 
 
-def _preflight_images(manifest: EvidenceManifest, *, skip: bool) -> None:
+def _preflight_images(manifest: TestPlanManifest, *, skip: bool) -> None:
     """Run the deterministic image preflight; re-raise a hard failure for the single catch arm.
 
     Refuses (fail-loud) on a missing red box or a byte-identical duplicate by
-    re-raising the :class:`EvidenceImageValidationError` as an
-    :class:`EvidenceValidationError` so the command's existing single
-    ``except EvidenceValidationError`` arm exits non-zero before any upload.
+    re-raising the :class:`TestPlanImageValidationError` as an
+    :class:`TestPlanValidationError` so the command's existing single
+    ``except TestPlanValidationError`` arm exits non-zero before any upload.
     Staleness warnings never refuse — they are logged loudly and the post
     proceeds. ``skip`` is the user-authorised bypass (runs nothing dangerous).
     """
     try:
-        warnings = validate_evidence_images(_manifest_image_paths(manifest), skip=skip)
-    except EvidenceImageValidationError as exc:
-        raise EvidenceValidationError(str(exc)) from exc
+        warnings = validate_test_plan_images(_manifest_image_paths(manifest), skip=skip)
+    except TestPlanImageValidationError as exc:
+        raise TestPlanValidationError(str(exc)) from exc
     for warning in warnings:
         _log.warning(warning)
 
 
-def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
-    """Run every validator in order and return a fully-validated :class:`EvidencePost`.
+def build_validated_post(flags: TestPlanFlags) -> TestPlanPost:
+    """Run every validator in order and return a fully-validated :class:`TestPlanPost`.
 
     Order: manifest parse + per-file existence/media-kind → image preflight
     (red-box / duplicate / staleness) → ticket resolvable. Any hard failure
-    raises :class:`EvidenceValidationError` (or its
-    :class:`EvidenceResolutionError` subclass) so the caller exits non-zero
+    raises :class:`TestPlanValidationError` (or its
+    :class:`TestPlanResolutionError` subclass) so the caller exits non-zero
     before any host side effect. Relative artifact paths resolve against
     ``flags.manifest_dir``; ``--ticket`` falls back to the manifest's ``ticket``
     field. The marker id is the resolved ticket number; the title falls back to
     the issue URL. ``--mrs`` supplements the manifest's MRs. The artifact-upload
     project is NOT decided here — it is resolved from ``issue_url`` at post time
-    (see :class:`EvidencePost`).
+    (see :class:`TestPlanPost`).
     """
     worktree = _resolve_worktree_or_none()
     base_dir = Path(flags.manifest_dir) if flags.manifest_dir else None
@@ -252,19 +255,80 @@ def build_validated_post(flags: EvidenceFlags) -> EvidencePost:
     issue_url = str(ticket.issue_url)
 
     mrs = manifest.mrs or _normalize_mrs(list(flags.mrs))
-    merged = EvidenceManifest(
+    merged = TestPlanManifest(
         ticket=manifest.ticket,
         mrs=tuple(mrs),
         dev=manifest.dev,
         local=manifest.local,
         steps=manifest.steps,
     )
-    return EvidencePost(
+    return TestPlanPost(
         issue_url=issue_url,
         ticket_id=ticket.ticket_number,
         title=flags.title.strip() or issue_url,
         manifest=merged,
     )
+
+
+def _read_manifest(manifest: str, *, write_err: Callable[[str], None]) -> tuple[str, str]:
+    """Return ``(manifest JSON text, base_dir)`` — a path read with its parent as base dir.
+
+    A non-path value is an inline JSON string with an empty base dir; an empty
+    ``--manifest`` writes an error and exits non-zero.
+    """
+    if not manifest.strip():
+        write_err("--manifest is required (a path to, or inline string of, the test-plan manifest JSON).")
+        raise SystemExit(1)
+    path = Path(manifest)
+    if path.is_file():
+        return path.read_text(encoding="utf-8"), str(path.resolve().parent)
+    return manifest, ""
+
+
+def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single shared entry point.
+    *,
+    manifest: str,
+    ticket: str,
+    title: str,
+    mrs: list[str],
+    skip_validation: bool,
+    write_out: Callable[[str], None],
+    write_err: Callable[[str], None],
+) -> PostTestPlanResult:
+    """Read the manifest, resolve the host, validate, and post-or-update the note.
+
+    The full ``e2e post-test-plan`` orchestration, factored out of the CLI command
+    so the thin command method and its deprecated ``post-evidence`` alias share one
+    body. Reads the manifest, resolves the overlay code host, builds and validates
+    the post, then creates-or-updates the single note, writing one success line via
+    ``write_out``. A pre-post :class:`TestPlanValidationError` /
+    :class:`OnBehalfPostBlockedError` is written to ``write_err`` and re-raised as
+    ``SystemExit(1)``; a missing code host exits the same way.
+    """
+    manifest_json, manifest_dir = _read_manifest(manifest, write_err=write_err)
+    flags = TestPlanFlags(
+        ticket=ticket,
+        manifest=manifest_json,
+        title=title,
+        mrs=tuple(mrs or ()),
+        manifest_dir=manifest_dir,
+        skip_validation=skip_validation,
+    )
+    host = code_host_from_overlay()
+    if host is None:
+        write_err("No code host configured (check overlay GitLab/GitHub token).")
+        raise SystemExit(1)
+    try:
+        post = build_validated_post(flags)
+        result = post_test_plan_comment(host, post)
+    except (TestPlanValidationError, OnBehalfPostBlockedError) as err:
+        write_err(str(err))
+        raise SystemExit(1) from err
+    write_out(
+        f"  Test plan {result['action']} ({', '.join(result['envs'])}) "
+        f"on {post.issue_url} (comment {result['comment_id']}).",
+    )
+    return result
 
 
 def _normalize_mrs(raw_mrs: list[str]) -> list[str]:
@@ -294,7 +358,7 @@ def _verified_embed(host: CodeHostBackend, *, repo: str, filepath: str, label: s
     The existence gate (#2156): after uploading, the host fetches the artifact
     back through its token-authenticated route and magic-byte-checks the
     content. A non-200 fetch, wrong media bytes, or an unparsable upload
-    response raises :class:`EvidenceMediaError` naming the broken artifact — so
+    response raises :class:`TestPlanMediaError` naming the broken artifact — so
     the note is never posted referencing a missing upload. The returned
     markdown embeds the **relative** ``/uploads/<secret>/<file>`` reference
     (#2165): GitLab's reference scanner recognises that relative form in the
@@ -308,8 +372,8 @@ def _verified_embed(host: CodeHostBackend, *, repo: str, filepath: str, label: s
     upload = host.upload_file(repo=repo, filepath=filepath)
     verification = host.verify_upload(repo=repo, upload=upload)
     if not verification.ok:
-        msg = f"E2E evidence {label} ({Path(filepath).name}) failed the upload check: {verification.detail}"
-        raise EvidenceMediaError(msg)
+        msg = f"Test plan {label} ({Path(filepath).name}) failed the upload check: {verification.detail}"
+        raise TestPlanMediaError(msg)
     return f"![{label}]({verification.embed_url})"
 
 
@@ -331,7 +395,7 @@ def _embed_side(host: CodeHostBackend, *, repo: str, side: SideManifest) -> dict
     return out
 
 
-def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvidenceResult:
+def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTestPlanResult:
     """Gate, upload artifacts, merge over prior state, then create-or-update the note.
 
     Runs only after every validator passed. The on-behalf gate is the last
@@ -397,6 +461,6 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
         action=_ON_BEHALF_ACTION,
         destination=post.issue_url,
         artifact_url=str(result.get("web_url") or result.get("html_url") or post.issue_url),
-        summary=f"E2E evidence ({', '.join(envs)}) on {post.issue_url}",
+        summary=f"Test plan ({', '.join(envs)}) on {post.issue_url}",
     )
-    return PostEvidenceResult(issue_url=post.issue_url, comment_id=comment_id, envs=envs, action=action)
+    return PostTestPlanResult(issue_url=post.issue_url, comment_id=comment_id, envs=envs, action=action)

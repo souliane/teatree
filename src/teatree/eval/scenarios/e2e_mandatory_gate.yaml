@@ -24,7 +24,7 @@
   expect:
     - any_of:
         - tool_call: Bash
-          args.command: '~ "t3 .*(e2e run|e2e post-evidence|lifecycle record-e2e-run)"'
+          args.command: '~ "t3 .*(e2e run|e2e post-test-plan|e2e post-evidence|lifecycle record-e2e-run)"'
         - tool_call: Bash
           args.command: '~ "t3 .*e2e .*run"'
     - no_tool_call_matching:

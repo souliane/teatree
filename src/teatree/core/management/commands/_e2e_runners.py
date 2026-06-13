@@ -1,7 +1,7 @@
 """External/private-test repo resolution and Playwright env construction.
 
 Split out of ``e2e.py`` (mirroring the ``_e2e_discovery`` and
-``_e2e_evidence`` splits) to keep that module under the project's per-file
+``_test_plan`` splits) to keep that module under the project's per-file
 LOC cap. These are the pure helpers the ``external``/``project`` runners
 lean on: cloning the external test repo, resolving the private-tests
 directory, and building the Playwright environment dict.

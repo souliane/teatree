@@ -29,8 +29,8 @@ module's namespace, and the runtime self-DB schema pre-flight (#2190) lives in
 """
 
 from teatree.eval.regression_corpus_e2e import (
-    check_e2e_evidence_embeds_claimable_relative_ref,
-    check_e2e_evidence_uploads_to_note_project,
+    check_e2e_test_plan_embeds_claimable_relative_ref,
+    check_e2e_test_plan_uploads_to_note_project,
 )
 from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck, RegressionReport
 from teatree.eval.regression_corpus_predicates import (
@@ -167,22 +167,22 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         predicate=_check_mr_description_first_line_validated,
     ),
     RegressionCheck(
-        failure_class="e2e-evidence embeds claimable relative /uploads ref (#2165 regression)",
+        failure_class="e2e-test-plan embeds claimable relative /uploads ref (#2165 regression)",
         origin="https://github.com/souliane/teatree/issues/2165",
         invariant=(
             "_verified_embed embeds the relative /uploads/<secret>/<file> reference GitLab claims on "
             "save; never the absolute /-/project/ or any https:// upload URL"
         ),
-        predicate=check_e2e_evidence_embeds_claimable_relative_ref,
+        predicate=check_e2e_test_plan_embeds_claimable_relative_ref,
     ),
     RegressionCheck(
-        failure_class="e2e-evidence uploads to the note's own project, not a 2nd repo",
+        failure_class="e2e-test-plan uploads to the note's own project, not a 2nd repo",
         origin="https://github.com/souliane/teatree/pull/2181",
         invariant=(
-            "post_evidence_comment uploads every artifact to repo_for_issue_url(issue_url) — the note's "
+            "post_test_plan_comment uploads every artifact to repo_for_issue_url(issue_url) — the note's "
             "own project — never the manifest's second/CI repo, so the note's /uploads refs resolve"
         ),
-        predicate=check_e2e_evidence_uploads_to_note_project,
+        predicate=check_e2e_test_plan_uploads_to_note_project,
     ),
 )
 

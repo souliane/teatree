@@ -6,7 +6,7 @@ STRICT exact-string match on ``target``, but the consume-side token is built
 differently per call site:
 
 * ``review_on_behalf.gate_target`` → ``"{repo}!{mr}"``
-* ``pr.py`` post-evidence → ``"{repo_path}!{mr_iid}"``
+* ``pr.py`` post-test-plan → ``"{repo_path}!{mr_iid}"``
 * ``review_request_post`` → the canonical MR URL (a full ``https://`` string)
 * the signals approval-reaction → ``pull_request.url`` (a full PR URL)
 

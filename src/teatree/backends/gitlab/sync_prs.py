@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _REPO_PATH_RE = re.compile(r"https?://[^/]+/(.+?)/-/merge_requests/")
 _ISSUE_URL_RE = re.compile(r"(https://[^\s)]+/-/(?:issues|work_items)/\d+)")
-_E2E_EVIDENCE_RE = re.compile(
+_E2E_TEST_PLAN_RE = re.compile(
     r"e2e|test.?evidence|playwright|screenshot|side.by.side|figma",
     re.IGNORECASE,
 )
@@ -77,7 +77,7 @@ def build_pr_entry(ctx: "_PRContext", *, username: str) -> PREntry:
 
         discussions = ctx.client.get_mr_discussions(ctx.project.project_id, pr_iid)
         pr_entry.discussions = classify_discussions(discussions, username)
-        e2e_url = detect_e2e_evidence(discussions, web_url)
+        e2e_url = detect_e2e_test_plan(discussions, web_url)
         if e2e_url:
             pr_entry.e2e_test_plan_url = e2e_url
 
@@ -167,7 +167,7 @@ def classify_discussions(
     return result
 
 
-def detect_e2e_evidence(discussions: list[RawAPIDict], pr_url: str) -> str:
+def detect_e2e_test_plan(discussions: list[RawAPIDict], pr_url: str) -> str:
     for disc in discussions:
         if not isinstance(disc, dict):
             continue
@@ -179,7 +179,7 @@ def detect_e2e_evidence(discussions: list[RawAPIDict], pr_url: str) -> str:
                 continue
             body = str(note.get("body", ""))  # ty: ignore[no-matching-overload]
             has_image = "![" in body or "/uploads/" in body
-            has_keyword = bool(_E2E_EVIDENCE_RE.search(body))
+            has_keyword = bool(_E2E_TEST_PLAN_RE.search(body))
             if has_keyword and has_image:
                 note_id = note.get("id")  # ty: ignore[invalid-argument-type]
                 return f"{pr_url}#note_{note_id}" if note_id else pr_url

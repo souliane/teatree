@@ -24,23 +24,23 @@ class TestPostEvidence(TestCase):
     ) -> None:
         """Disable the on-behalf gate (#960) for transport-mechanics tests.
 
-        ``post-evidence`` is on-behalf-gated; the tests here exercise the
+        ``post-test-plan`` is on-behalf-gated; the tests here exercise the
         code-host delegation, not the gate (its own suite lives in
-        ``tests/teatree_core/test_pr_post_evidence_on_behalf_gate.py``).
+        ``tests/teatree_core/test_pr_post_test_plan_on_behalf_gate.py``).
         """
         from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate  # noqa: PLC0415
 
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
     def test_delegates_to_code_host(self) -> None:
-        """post-evidence posts a PR comment via the code host."""
+        """post-test-plan posts a PR comment via the code host."""
         host = MagicMock()
         host.list_pr_comments.return_value = []
         host.post_pr_comment.return_value = {"id": 55}
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = call_command("pr", "post-evidence", "10", "--body", "All tests pass")
+            result = call_command("pr", "post-test-plan", "10", "--body", "All tests pass")
 
         assert result == {"id": 55}
         host.post_pr_comment.assert_called_once()
@@ -49,11 +49,11 @@ class TestPostEvidence(TestCase):
         assert "All tests pass" in call_kw.kwargs["body"]
 
     def test_returns_error_without_code_host(self) -> None:
-        """post-evidence returns error when no code host configured."""
+        """post-test-plan returns error when no code host configured."""
         self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: None)
 
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = call_command("pr", "post-evidence", "10")
+            result = call_command("pr", "post-test-plan", "10")
 
         assert "error" in result
 

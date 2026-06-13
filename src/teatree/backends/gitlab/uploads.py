@@ -1,4 +1,4 @@
-"""GitLab upload embedding + existence check — the post-evidence media concern (#2156, #2165).
+"""GitLab upload embedding + existence check — the test-plan media concern (#2156, #2165).
 
 GitLab claims (and therefore renders) an uploaded file only when the **saved
 note markdown** carries the **relative** reference GitLab itself returns from

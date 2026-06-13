@@ -1,4 +1,4 @@
-"""Tests for ``t3 <overlay> e2e post-evidence`` (teatree #272, #2165).
+"""Tests for ``t3 <overlay> e2e post-test-plan`` (teatree #272, #2165).
 
 The one-note-per-ticket evidence model: a single GitLab note per ticket that
 renders a side-by-side ``Dev | Local`` test plan and accumulates environment
@@ -28,9 +28,8 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.backend_protocols import UploadVerification
-from teatree.core.management.commands import _e2e_evidence as _evidence
-from teatree.core.management.commands import _e2e_evidence_render as _render
-from teatree.core.management.commands import e2e as e2e_command
+from teatree.core.management.commands import _test_plan
+from teatree.core.management.commands import _test_plan_render as _render
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -82,7 +81,7 @@ class TestRenderBody:
         local: _render.SideState | None = None,
         mrs: list[str] | None = None,
         steps: dict[str, list[str]] | None = None,
-    ) -> _render.EvidenceState:
+    ) -> _render.TestPlanState:
         default_mrs = [
             "https://gitlab.com/org/client/-/merge_requests/6331",
             "https://gitlab.com/org/product/-/merge_requests/7585",
@@ -100,10 +99,10 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aaaa", "product": "bbbb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
         assert "<!-- t3-e2e-data " in body
-        assert "## E2E Evidence — My feature" in body
+        assert "## Test Plan — My feature" in body
         # Multi-repo MR links, terse repo!num labels.
         assert "Repos & MRs: [client!6331](" in body
         assert "[product!7585](" in body
@@ -130,7 +129,7 @@ class TestRenderBody:
                 },
             },
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "### Login" in body
         assert "| Dev | Local |" in body
         # Video row first: dev video left, local video right.
@@ -151,7 +150,7 @@ class TestRenderBody:
                 },
             },
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "| — | ![v](/uploads/s/loc.webm) |" in body
         assert "| — | ![i](/uploads/s/l1.png) |" in body
 
@@ -163,7 +162,7 @@ class TestRenderBody:
                 "workflows": {"Login": self._embedded()},
             },
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "⚠️ Not yet on dev: client!6331 (unmerged), product!7585 (draft) — expected gap." in body
 
     def test_empty_video_row_is_omitted_when_neither_side_has_a_video(self) -> None:
@@ -173,7 +172,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](/uploads/s/x.png)",))}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "| — | — |" not in body  # the empty video row is dropped, not rendered blank
         # The screenshot pair row still renders (dev absent → em-dash left, local image right).
         assert "| — | ![i](/uploads/s/x.png) |" in body
@@ -190,12 +189,12 @@ class TestRenderBody:
                 "workflows": {"Login": self._embedded(video="![v](/uploads/s/loc.webm)")},
             },
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "| — | ![v](/uploads/s/loc.webm) |" in body
 
     def test_mrs_line_omitted_when_no_mrs(self) -> None:
         state = self._state(mrs=[], local={"commits": {}, "workflows": {"Wf": self._embedded(images=("![i](u)",))}})
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Repos & MRs:" not in body
 
     def test_test_plan_steps_render_numbered_above_the_table(self) -> None:
@@ -203,7 +202,7 @@ class TestRenderBody:
             local={"commits": {}, "workflows": {"Login": self._embedded(images=("![i](/uploads/s/l1.png)",))}},
             steps={"Login": ["Open the app", "Click the Login button", "Expect the dashboard"]},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "**How to test:**" in body
         assert "1. Open the app" in body
         assert "2. Click the Login button" in body
@@ -221,7 +220,7 @@ class TestRenderBody:
             local={"commits": {}, "workflows": {"Search": self._embedded(images=("![i](u)",))}},
             steps={},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "**How to test:**" not in body
 
     def test_commit_shas_render_as_clickable_links_derived_from_mrs(self) -> None:
@@ -230,7 +229,7 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aabbcc"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Local tested: [client `aabbcc`](https://gitlab.com/org/client/-/commit/aabbcc)" in body
 
     def test_commit_sha_without_matching_mr_falls_back_to_bare_codespan(self) -> None:
@@ -239,7 +238,7 @@ class TestRenderBody:
             mrs=["https://gitlab.com/org/client/-/merge_requests/6331"],
             local={"commits": {"backend": "ddeeff"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Local tested: backend `ddeeff`" in body
         assert "](https://gitlab.com/org/backend/-/commit/" not in body
 
@@ -248,7 +247,7 @@ class TestRenderBody:
             mrs=["https://github.com/owner/product/pull/7585"],
             local={"commits": {"product": "c0ffee"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "[product `c0ffee`](https://github.com/owner/product/commit/c0ffee)" in body
 
     def test_reconcile_line_shows_same_when_dev_and_local_match(self) -> None:
@@ -256,7 +255,7 @@ class TestRenderBody:
             dev={"commits": {"client": "aabb"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Dev ± Local: client: = same commit" in body
 
     def test_reconcile_line_shows_differ_with_both_shas(self) -> None:
@@ -264,7 +263,7 @@ class TestRenderBody:
             dev={"commits": {"client": "ddee"}, "missing_on_dev": [], "workflows": {"Login": self._embedded()}},
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Dev ± Local: client: ≠ dev `ddee` vs local `aabb`" in body
 
     def test_reconcile_line_omitted_when_no_repo_on_both_sides(self) -> None:
@@ -272,31 +271,31 @@ class TestRenderBody:
         state = self._state(
             local={"commits": {"client": "aabb"}, "workflows": {"Login": self._embedded()}},
         )
-        body = _evidence.render_body(state)
+        body = _test_plan.render_body(state)
         assert "Dev ± Local:" not in body
 
 
 class TestMergeState:
     """The merge over prior state freezes the side this run does not carry."""
 
-    def _local_manifest(self) -> _evidence.EvidenceManifest:
-        return _evidence.EvidenceManifest(
+    def _local_manifest(self) -> _test_plan.TestPlanManifest:
+        return _test_plan.TestPlanManifest(
             ticket="8521",
             mrs=("https://gitlab.com/org/client/-/merge_requests/6331",),
-            dev=_evidence.SideManifest(present=False),
-            local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+            dev=_test_plan.SideManifest(present=False),
+            local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
         )
 
-    def _dev_manifest(self) -> _evidence.EvidenceManifest:
-        return _evidence.EvidenceManifest(
+    def _dev_manifest(self) -> _test_plan.TestPlanManifest:
+        return _test_plan.TestPlanManifest(
             ticket="8521",
             mrs=(),
-            dev=_evidence.SideManifest(present=True, commits={"client": "ddee"}, missing_on_dev=()),
-            local=_evidence.SideManifest(present=False),
+            dev=_test_plan.SideManifest(present=True, commits={"client": "ddee"}, missing_on_dev=()),
+            local=_test_plan.SideManifest(present=False),
         )
 
     def test_dev_only_run_preserves_existing_local_column(self) -> None:
-        prior: _render.EvidenceState = {
+        prior: _render.TestPlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -307,7 +306,7 @@ class TestMergeState:
             },
             "steps": {},
         }
-        merged = _evidence.merge_state(
+        merged = _test_plan.merge_state(
             prior,
             manifest=self._dev_manifest(),
             title="t",
@@ -324,7 +323,7 @@ class TestMergeState:
     def test_steps_less_rerun_preserves_prior_steps(self) -> None:
         # A workflow's steps were recorded on a prior run; a later run that omits
         # steps must NOT erase them (workflow-level, persisted across re-renders).
-        prior: _render.EvidenceState = {
+        prior: _render.TestPlanState = {
             "ticket": "8521",
             "title": "t",
             "mrs": [],
@@ -332,7 +331,7 @@ class TestMergeState:
             "local": {"commits": {"client": "aabb"}, "workflows": {}},
             "steps": {"Login": ["Open the app", "Click Login"]},
         }
-        merged = _evidence.merge_state(
+        merged = _test_plan.merge_state(
             prior,
             manifest=self._dev_manifest(),  # carries no steps
             title="t",
@@ -343,18 +342,18 @@ class TestMergeState:
     def test_steps_in_this_run_overwrite_prior_steps_for_that_workflow(self) -> None:
         prior = _render.empty_state(ticket="8521", title="t")
         prior["steps"] = {"Login": ["old step"]}
-        manifest = _evidence.EvidenceManifest(
+        manifest = _test_plan.TestPlanManifest(
             ticket="8521",
             mrs=(),
-            dev=_evidence.SideManifest(present=False),
-            local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+            dev=_test_plan.SideManifest(present=False),
+            local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
             steps={"Login": ("new step 1", "new step 2")},
         )
-        merged = _evidence.merge_state(prior, manifest=manifest, title="t", embeds={"dev": {}, "local": {}})
+        merged = _test_plan.merge_state(prior, manifest=manifest, title="t", embeds={"dev": {}, "local": {}})
         assert merged["steps"]["Login"] == ["new step 1", "new step 2"]
 
     def test_local_only_run_over_empty_prior_leaves_dev_empty(self) -> None:
-        merged = _evidence.merge_state(
+        merged = _test_plan.merge_state(
             _render.empty_state(ticket="8521", title="t"),
             manifest=self._local_manifest(),
             title="t",
@@ -365,7 +364,7 @@ class TestMergeState:
 
     def test_add_dev_section_preserves_then_renders_both(self) -> None:
         # local first → render → recover state → dev run merges → both columns render.
-        local_state = _evidence.merge_state(
+        local_state = _test_plan.merge_state(
             _render.empty_state(ticket="8521", title="My feature"),
             manifest=self._local_manifest(),
             title="My feature",
@@ -375,10 +374,10 @@ class TestMergeState:
             },
         )
         local_state["ticket"] = "8521"
-        body_after_local = _evidence.render_body(local_state)
-        recovered = _evidence.parse_state_blob(body_after_local)
+        body_after_local = _test_plan.render_body(local_state)
+        recovered = _test_plan.parse_state_blob(body_after_local)
 
-        dev_state = _evidence.merge_state(
+        dev_state = _test_plan.merge_state(
             recovered,
             manifest=self._dev_manifest(),
             title="My feature",
@@ -388,7 +387,7 @@ class TestMergeState:
             },
         )
         dev_state["ticket"] = "8521"
-        final = _evidence.render_body(dev_state)
+        final = _test_plan.render_body(dev_state)
         # Both columns are present and paired.
         assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
         assert "| ![i](/uploads/s/d1.png) | ![i](/uploads/s/l1.png) |" in final
@@ -413,7 +412,7 @@ class TestParseManifest:
         img = _write_png(tmp_path / "a.png", b"A")
         vid = _write_webm(tmp_path / "v.webm", b"V")
         manifest = self._manifest(tmp_path, video=vid, images=[img])
-        parsed = _evidence.parse_manifest(manifest)
+        parsed = _test_plan.parse_manifest(manifest)
         assert parsed.ticket == "8521"
         assert parsed.local.present is True
         assert parsed.dev.present is False
@@ -422,31 +421,31 @@ class TestParseManifest:
         assert len(wf.images) == 1
 
     def test_rejects_invalid_json(self) -> None:
-        with pytest.raises(_evidence.EvidenceValidationError, match="not valid JSON"):
-            _evidence.parse_manifest("{not json")
+        with pytest.raises(_test_plan.TestPlanValidationError, match="not valid JSON"):
+            _test_plan.parse_manifest("{not json")
 
     def test_rejects_missing_workflows(self) -> None:
-        with pytest.raises(_evidence.EvidenceValidationError, match="workflows"):
-            _evidence.parse_manifest(json.dumps({"ticket": "8521", "local": {}}))
+        with pytest.raises(_test_plan.TestPlanValidationError, match="workflows"):
+            _test_plan.parse_manifest(json.dumps({"ticket": "8521", "local": {}}))
 
     def test_rejects_missing_artifact_file(self, tmp_path: Path) -> None:
         manifest = self._manifest(tmp_path, video=None, images=[str(tmp_path / "absent.png")])
-        with pytest.raises(_evidence.EvidenceValidationError, match="not found"):
-            _evidence.parse_manifest(manifest)
+        with pytest.raises(_test_plan.TestPlanValidationError, match="not found"):
+            _test_plan.parse_manifest(manifest)
 
     def test_rejects_wrong_media_kind_for_video_slot(self, tmp_path: Path) -> None:
         # A .png handed to the video slot must be rejected.
         png = _write_png(tmp_path / "still.png", b"X")
         manifest = self._manifest(tmp_path, video=png, images=[_write_png(tmp_path / "ok.png", b"Y")])
-        with pytest.raises(_evidence.EvidenceValidationError, match="not a recognised video"):
-            _evidence.parse_manifest(manifest)
+        with pytest.raises(_test_plan.TestPlanValidationError, match="not a recognised video"):
+            _test_plan.parse_manifest(manifest)
 
     def test_rejects_when_no_side_carries_captures(self, tmp_path: Path) -> None:
         manifest = json.dumps(
             {"ticket": "8521", "workflows": [{"workflow": "Login"}]},
         )
-        with pytest.raises(_evidence.EvidenceValidationError, match="no 'dev' or 'local'"):
-            _evidence.parse_manifest(manifest)
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no 'dev' or 'local'"):
+            _test_plan.parse_manifest(manifest)
 
     def test_parses_workflow_level_steps(self, tmp_path: Path) -> None:
         img = _write_png(tmp_path / "a.png", b"A")
@@ -464,7 +463,7 @@ class TestParseManifest:
                 ],
             },
         )
-        parsed = _evidence.parse_manifest(manifest)
+        parsed = _test_plan.parse_manifest(manifest)
         assert parsed.steps["Login"] == ("Open the app", "Click Login", "Expect the dashboard")
         assert "Search" not in parsed.steps
 
@@ -485,7 +484,7 @@ class TestManifestPathResolution:
                 "workflows": [{"workflow": "Login", "local": {"video": "run.webm", "images": ["shot.png"]}}],
             },
         )
-        parsed = _evidence.parse_manifest(manifest, base_dir=media_dir)
+        parsed = _test_plan.parse_manifest(manifest, base_dir=media_dir)
         wf = parsed.local.workflows["Login"]
         assert wf.images[0] == media_dir / "shot.png"
         assert wf.video == media_dir / "run.webm"
@@ -500,7 +499,7 @@ class TestManifestPathResolution:
             },
         )
         # A different (wrong) base_dir must NOT affect an absolute path.
-        parsed = _evidence.parse_manifest(manifest, base_dir=tmp_path / "elsewhere")
+        parsed = _test_plan.parse_manifest(manifest, base_dir=tmp_path / "elsewhere")
         assert parsed.local.workflows["Login"].images[0] == Path(abs_img)
 
     def test_relative_path_without_base_dir_still_resolves_from_cwd(self, tmp_path: Path) -> None:
@@ -513,9 +512,9 @@ class TestManifestPathResolution:
                 "workflows": [{"workflow": "Login", "local": {"images": ["shot.png"]}}],
             },
         )
-        with pytest.raises(_evidence.EvidenceValidationError, match="not found"):
+        with pytest.raises(_test_plan.TestPlanValidationError, match="not found"):
             # No base_dir and cwd is not tmp_path → the bare name does not resolve.
-            _evidence.parse_manifest(manifest)
+            _test_plan.parse_manifest(manifest)
 
 
 class TestTicketFallbackFromManifest(TestCase):
@@ -527,9 +526,9 @@ class TestTicketFallbackFromManifest(TestCase):
         self._tmp = tmp_path
         # No worktree → the resolution must come from the manifest's ticket field.
         monkeypatch.setattr(
-            _evidence,
+            _test_plan,
             "resolve_worktree",
-            MagicMock(side_effect=_evidence.WorktreeNotFoundError("none")),
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
         )
 
     def test_manifest_ticket_field_used_when_flag_omitted(self) -> None:
@@ -544,8 +543,8 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _evidence.EvidenceFlags(ticket="", manifest=manifest)
-        post = _evidence.build_validated_post(flags)
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest)
+        post = _test_plan.build_validated_post(flags)
         assert post.issue_url == _ISSUE_URL
 
     def test_missing_ticket_everywhere_raises_resolution_error(self) -> None:
@@ -556,24 +555,24 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _evidence.EvidenceFlags(ticket="", manifest=manifest)
-        with pytest.raises(_evidence.EvidenceResolutionError, match="Could not determine the ticket"):
-            _evidence.build_validated_post(flags)
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest)
+        with pytest.raises(_test_plan.TestPlanResolutionError, match="Could not determine the ticket"):
+            _test_plan.build_validated_post(flags)
 
 
 class TestMrLabel:
     """The MR link rendering is a pure helper."""
 
     def test_gitlab_mr_renders_repo_bang_num(self) -> None:
-        line = _evidence.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
+        line = _test_plan.render_mrs_line(("https://gitlab.com/grp/sub/client/-/merge_requests/6331",))
         assert line == "Repos & MRs: [client!6331](https://gitlab.com/grp/sub/client/-/merge_requests/6331)"
 
     def test_github_pr_renders_repo_hash_num(self) -> None:
-        line = _evidence.render_mrs_line(("https://github.com/owner/product/pull/7585",))
+        line = _test_plan.render_mrs_line(("https://github.com/owner/product/pull/7585",))
         assert line == "Repos & MRs: [product#7585](https://github.com/owner/product/pull/7585)"
 
     def test_non_url_ref_shown_verbatim(self) -> None:
-        line = _evidence.render_mrs_line(("client!6331",))
+        line = _test_plan.render_mrs_line(("client!6331",))
         assert line == "Repos & MRs: client!6331"
 
 
@@ -597,11 +596,11 @@ class _EvidenceTestBase(TestCase):
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
     def _patch_host(self, host: MagicMock) -> None:
-        self._monkeypatch.setattr(e2e_command, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: host)
         self._monkeypatch.setattr(
-            _evidence,
+            _test_plan,
             "resolve_worktree",
-            MagicMock(side_effect=_evidence.WorktreeNotFoundError("none")),
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
         )
 
     def _ticket(self) -> None:
@@ -632,7 +631,7 @@ class TestCreateAndRelativeEmbed(_EvidenceTestBase):
         # claims on save — never the absolute /-/project or https:// form (#2165).
         host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            return cast("dict[str, object]", call_command("e2e", "post-evidence", **kwargs))
+            return cast("dict[str, object]", call_command("e2e", "post-test-plan", **kwargs))
 
     def test_creates_note_with_relative_embed(self) -> None:
         self._ticket()
@@ -742,7 +741,7 @@ class TestUploadLandsOnNoteProject(_EvidenceTestBase):
 
         overlay = {"test": self._CiProjectOverlay()}
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlay):
-            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest=self._multi_repo_manifest())
+            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest=self._multi_repo_manifest())
 
         # Every upload must target the project that owns the note, NEVER the
         # manifest's second repo / CI project.
@@ -767,7 +766,7 @@ class TestMediaRenderGate(_EvidenceTestBase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             pytest.raises(SystemExit),
         ):
-            call_command("e2e", "post-evidence", **kwargs)
+            call_command("e2e", "post-test-plan", **kwargs)
         host.post_issue_comment.assert_not_called()
         host.update_issue_comment.assert_not_called()
 
@@ -821,7 +820,7 @@ class TestImagePreflightAtCommand(_EvidenceTestBase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             pytest.raises(SystemExit),
         ):
-            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest=self._no_red_box_manifest())
+            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest=self._no_red_box_manifest())
         host.upload_file.assert_not_called()
         host.post_issue_comment.assert_not_called()
 
@@ -839,7 +838,7 @@ class TestImagePreflightAtCommand(_EvidenceTestBase):
                 "dict[str, object]",
                 call_command(
                     "e2e",
-                    "post-evidence",
+                    "post-test-plan",
                     ticket=_ISSUE_URL,
                     manifest=self._no_red_box_manifest(),
                     skip_validation=True,
@@ -860,7 +859,7 @@ class TestRequiresManifest(_EvidenceTestBase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             pytest.raises(SystemExit),
         ):
-            call_command("e2e", "post-evidence", ticket=_ISSUE_URL, manifest="")
+            call_command("e2e", "post-test-plan", ticket=_ISSUE_URL, manifest="")
         host.upload_file.assert_not_called()
         host.post_issue_comment.assert_not_called()
 
@@ -888,19 +887,19 @@ class TestOnBehalfGateConsulted(TestCase):
     def _post(self, *, comments: list[dict[str, object]]) -> MagicMock:
         host = MagicMock()
         host.list_issue_comments.return_value = comments
-        post = _evidence.EvidencePost(
+        post = _test_plan.TestPlanPost(
             issue_url=_ISSUE_URL,
             ticket_id="8521",
             title="t",
-            manifest=_evidence.EvidenceManifest(
+            manifest=_test_plan.TestPlanManifest(
                 ticket="8521",
                 mrs=(),
-                dev=_evidence.SideManifest(present=False),
-                local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+                dev=_test_plan.SideManifest(present=False),
+                local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
             ),
         )
-        with pytest.raises(_evidence.OnBehalfPostBlockedError):
-            _evidence.post_evidence_comment(host, post)
+        with pytest.raises(_test_plan.OnBehalfPostBlockedError):
+            _test_plan.post_test_plan_comment(host, post)
         host.upload_file.assert_not_called()
         host.post_issue_comment.assert_not_called()
         host.update_issue_comment.assert_not_called()
@@ -934,19 +933,19 @@ class TestOnBehalfEvidenceAutoProceeds(TestCase):
         host.upload_file.return_value = {"full_path": "/-/project/9/uploads/deadbeef/x.png"}
         host.verify_upload.return_value = UploadVerification(ok=True, embed_url="/uploads/deadbeef/x.png")
         host.repo_for_issue_url.return_value = "org/repo"
-        post = _evidence.EvidencePost(
+        post = _test_plan.TestPlanPost(
             issue_url=_ISSUE_URL,
             ticket_id="8521",
             title="t",
-            manifest=_evidence.EvidenceManifest(
+            manifest=_test_plan.TestPlanManifest(
                 ticket="8521",
                 mrs=(),
-                dev=_evidence.SideManifest(present=False),
-                local=_evidence.SideManifest(present=True, commits={"client": "aabb"}),
+                dev=_test_plan.SideManifest(present=False),
+                local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
             ),
         )
         # No OnBehalfPostBlockedError despite ASK mode — the carve-out proceeds.
-        result = _evidence.post_evidence_comment(host, post)
+        result = _test_plan.post_test_plan_comment(host, post)
         assert result["action"] == "created"
         host.post_issue_comment.assert_called_once()
 
@@ -955,22 +954,22 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _evidence.evidence_marker(ticket_id="8521")
+        marker = _test_plan.test_plan_marker(ticket_id="8521")
         assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
     def test_parse_state_blob_recovers_and_coerces(self) -> None:
         state = {"ticket": "8521", "title": "t", "mrs": [], "dev": {}, "local": {}}
         body = "<!-- t3-e2e-data " + json.dumps(state) + " -->\nrendered"
-        recovered = _evidence.parse_state_blob(body)
+        recovered = _test_plan.parse_state_blob(body)
         assert recovered["ticket"] == "8521"
         assert recovered["title"] == "t"
         # A coerced side always carries the typed keys.
         assert recovered["dev"]["workflows"] == {}
         assert recovered["local"]["commits"] == {}
         # No blob / corrupt blob → an empty (but typed) state, never a crash.
-        assert _evidence.parse_state_blob("no blob here")["ticket"] == ""
-        assert _evidence.parse_state_blob("<!-- t3-e2e-data {not json} -->")["ticket"] == ""
+        assert _test_plan.parse_state_blob("no blob here")["ticket"] == ""
+        assert _test_plan.parse_state_blob("<!-- t3-e2e-data {not json} -->")["ticket"] == ""
 
     def test_find_existing_note_keys_on_ticket_marker(self) -> None:
         comments = [
@@ -978,8 +977,8 @@ class TestPureHelpers:
             {"id": 2, "body": "<!-- t3-e2e-evidence ticket=9999 -->\nother ticket"},
             {"id": 3, "body": '<!-- t3-e2e-evidence ticket=8521 -->\n<!-- t3-e2e-data {"ticket":"8521"} -->'},
         ]
-        found = _evidence.find_existing_note(comments, ticket_id="8521")
+        found = _test_plan.find_existing_note(comments, ticket_id="8521")
         assert found is not None
         assert found.comment_id == 3
         assert found.state["ticket"] == "8521"
-        assert _evidence.find_existing_note([], ticket_id="8521") is None
+        assert _test_plan.find_existing_note([], ticket_id="8521") is None

@@ -246,9 +246,9 @@ class TestPrPostEvidence(TestCase):
     ) -> None:
         """Disable the on-behalf gate (#960) for transport-mechanics tests.
 
-        ``post-evidence`` is on-behalf-gated; the tests here exercise upload
+        ``post-test-plan`` is on-behalf-gated; the tests here exercise upload
         + body building, not the gate (its own suite lives in
-        ``test_pr_post_evidence_on_behalf_gate.py``).
+        ``test_pr_post_test_plan_on_behalf_gate.py``).
         """
         from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate  # noqa: PLC0415
 
@@ -257,7 +257,7 @@ class TestPrPostEvidence(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_without_code_host_returns_error(self) -> None:
-        result = cast("dict[str, object]", call_command("pr", "post-evidence", "100"))
+        result = cast("dict[str, object]", call_command("pr", "post-test-plan", "100"))
 
         assert "error" in result
 
@@ -273,7 +273,7 @@ class TestPrPostEvidence(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     title="Evidence",
@@ -301,7 +301,7 @@ class TestPrPostEvidence(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="Updated content",
@@ -328,7 +328,7 @@ class TestPrPostEvidence(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "100",
                     repo="my/repo",
                     body="Evidence",
@@ -352,7 +352,7 @@ class TestPrPostEvidence(TestCase):
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
             cast(
                 "dict[str, object]",
-                call_command("pr", "post-evidence", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
+                call_command("pr", "post-test-plan", "100", repo="my/repo", body="x", files=["/tmp/bad.png"]),
             )
 
         body = mock_host.post_pr_comment.call_args[1]["body"]
@@ -370,7 +370,7 @@ class TestPrPostEvidence(TestCase):
                 "dict[str, object]",
                 call_command(
                     "pr",
-                    "post-evidence",
+                    "post-test-plan",
                     "101",
                     title="Screenshot",
                 ),
@@ -388,7 +388,7 @@ class TestPrPostEvidence(TestCase):
         mock_host.list_pr_comments.return_value = []
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
-            call_command("pr", "post-evidence", "102", title="T")
+            call_command("pr", "post-test-plan", "102", title="T")
 
         call_kwargs = mock_host.post_pr_comment.call_args[1]
         assert call_kwargs["repo"] == "test/project"

@@ -1,4 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-e2e_evidence_one_comment_per_ticket_env-pass-21", "model": "claude-sonnet-4-6"}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example e2e post-evidence 42 --env dev", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example e2e post-test-plan 42 --env dev", "description": "step"}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

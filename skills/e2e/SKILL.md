@@ -1,6 +1,6 @@
 ---
 name: e2e
-description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "post evidence", or is working with Playwright-based tests.
+description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "post test plan", "post evidence", or is working with Playwright-based tests.
 compatibility: macOS/Linux, Playwright, Node.js, t3 CLI.
 requires:
   - test
@@ -13,7 +13,7 @@ metadata:
 
 # E2E Testing
 
-Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate.
+Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate.
 
 ## Dependencies
 
@@ -170,7 +170,7 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 
 ## Post Testing Evidence on the Ticket
 
-**Use `t3 <overlay> e2e post-evidence --manifest <json>`.** It maintains ONE structured evidence note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
+**Use `t3 <overlay> e2e post-test-plan --manifest <json>`.** It maintains ONE structured test-plan note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
 
 The note renders as a **test plan**: a header (the ticket title, multi-repo MR links, the per-env commit provenance, and a dev-gap reconciliation line) followed by one block per workflow — the workflow heading, an optional **`How to test:` numbered step list** (the click-through a human follows to reproduce it manually), then the **side-by-side `Dev | Local` comparison table** — each workflow's video row first, then one row per screenshot pair (`—` where a side has no capture, e.g. dev not yet deployed).
 
@@ -186,7 +186,7 @@ Flags (all keyword-only):
 
 | Flag | Required | Notes |
 |---|---|---|
-| `--manifest` | yes | path to (or inline string of) the evidence manifest JSON |
+| `--manifest` | yes | path to (or inline string of) the test-plan manifest JSON |
 | `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
 | `--title` | no | overrides the `## E2E Evidence — <title>` heading |
 | `--mrs` | no | MR/PR URL(s) (repeat or comma-separate) — supplements the manifest's `mrs` |
@@ -227,12 +227,12 @@ artifacts/8521/dev/run.webm
 artifacts/8521/dev/step1.png
 ```
 
-This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-evidence` resolves manifest paths relative to the worktree root, so reference them as `artifacts/<TICKET>/<env>/<file>`.
+This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves manifest paths relative to the worktree root, so reference them as `artifacts/<TICKET>/<env>/<file>`.
 
 ### Rules
 
 - **Paste whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `artifacts/<TICKET>/<env>/` directory.
-- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree evidence note, not optional. Write it in plain manual-testing language.
+- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test-plan note, not optional. Write it in plain manual-testing language.
 - **One note per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same note.
 - Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
@@ -241,7 +241,7 @@ This makes wrap-up and manifest assembly trivial — a side's captures are exact
 
 Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging) or a teatree-managed local stack, never from stale local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
 
-`t3 <overlay> e2e post-evidence` **machine-enforces** that every referenced artifact exists and is the right media kind before any upload or post, and uploads each via the relative `/uploads/<secret>/<file>` reference GitLab claims on save (so the media actually renders — not a broken image or a dead video player).
+`t3 <overlay> e2e post-test-plan` **machine-enforces** that every referenced artifact exists and is the right media kind before any upload or post, and uploads each via the relative `/uploads/<secret>/<file>` reference GitLab claims on save (so the media actually renders — not a broken image or a dead video player).
 
 **Prohibited evidence sources:**
 
