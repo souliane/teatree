@@ -51,6 +51,7 @@ from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
+from teatree.core.models.review_loop import ReviewLoop, ReviewLoopRound
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
 from teatree.core.models.rubric import Rubric, RubricCriterion, RubricError
@@ -140,6 +141,8 @@ __all__ = [
     "ResourcePressureMarker",
     "ReviewAssignment",
     "ReviewIntent",
+    "ReviewLoop",
+    "ReviewLoopRound",
     "ReviewRequestPost",
     "ReviewVerdict",
     "ReviewVerdictError",

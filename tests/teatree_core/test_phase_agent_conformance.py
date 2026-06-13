@@ -79,6 +79,14 @@ class TestSubagentForPhaseConformance(TestCase):
         assert subagent_for_phase(Ticket.Role.AUTHOR, "code") == "t3:coder"
         assert subagent_for_phase(Ticket.Role.AUTHOR, "ship") == "t3:shipper"
 
+    def test_review_loop_e2e_phases_route_to_their_agents(self) -> None:
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "e2e") == "t3:e2e"
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "e2e_reviewing") == "t3:e2e-review"
+        assert (AGENTS_DIR / "e2e-review.md").is_file(), (
+            "the reviewer leg of the EXTERNAL review loop dispatches t3:e2e-review; "
+            "agents/e2e-review.md must exist so the Agent tool resolves it"
+        )
+
 
 class TestLoopDispatchCommandConformance(TestCase):
     """``_SUBAGENT_BY_PHASE`` (the pending-spawn map) mirrors the canonical map."""
