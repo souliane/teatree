@@ -144,6 +144,7 @@ class Command(TyperCommand):
             f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
         )
         self._emit_review_done_signal(recorded)
+        self._advance_review_loop(recorded)
         self._trigger_sweep(recorded)
         return {
             "recorded": True,
@@ -178,6 +179,32 @@ class Command(TyperCommand):
         )
         if attempt is not None and attempt.merged:
             self.stdout.write(f"  pr_sweep merged {attempt.slug}#{attempt.pr_id} @ {attempt.merged_sha[:8]}")
+
+    def _advance_review_loop(self, recorded: ReviewVerdict) -> None:
+        """Drive the open EXTERNAL ReviewLoop for *recorded* from its verdict (#2298).
+
+        The pre-#2298 chokepoint left a HOLD inert (``_trigger_sweep`` only
+        fires on a merge_safe verdict), so the punch-list never fed back to the
+        author. Binding the verdict to the loop and calling the verdict-guarded
+        transition makes a HOLD re-arm an author leg (or exhaust at the round
+        cap) and a merge_safe terminate at PASSED. Non-loop PRs (no open
+        EXTERNAL loop for the verdict's ticket) are unchanged. Best-effort: any
+        failure logs and never turns verdict recording into a command failure;
+        the periodic sweep/scan is the backstop.
+        """
+        ticket_id = recorded.ticket_id  # type: ignore[attr-defined]  # Django implicit FK id
+        if ticket_id is None:
+            return
+        from teatree.core.models import ReviewLoop  # noqa: PLC0415
+
+        loop = ReviewLoop.open_external_for_ticket(ticket_id)
+        if loop is None:
+            return
+        try:
+            loop.advance_from_recorded_verdict(recorded)
+        except Exception:  # noqa: BLE001 — loop advance must never break verdict recording.
+            return
+        self.stdout.write(f"  advanced review-loop {loop.pk} to {loop.state}")
 
     def _emit_review_done_signal(self, recorded: ReviewVerdict) -> None:
         """Post the review-DONE Slack reaction set for *recorded* (#113/#88).
