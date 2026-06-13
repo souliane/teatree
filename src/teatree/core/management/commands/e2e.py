@@ -40,6 +40,8 @@ _SKIP_VALIDATION_OPTION = typer.Option(
     default=False,
     help="User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use.",
 )
+_TEMPLATE_HELP = "Body template: capture-matrix (default), browser-click-first, or link-api. Overrides the manifest's."
+_TEMPLATE_OPTION = typer.Option("", "--template", help=_TEMPLATE_HELP)
 
 
 @dataclass
@@ -499,7 +501,7 @@ class Command(TyperCommand):
         raise SystemExit(rc)
 
     @command(name="post-test-plan")
-    def post_test_plan(
+    def post_test_plan(  # noqa: PLR0913 — CLI entrypoint; each flag is a distinct user-facing option
         self,
         *,
         manifest: str = "",
@@ -507,28 +509,21 @@ class Command(TyperCommand):
         title: str = "",
         mrs: list[str] = _MRS_OPTION,
         skip_validation: bool = _SKIP_VALIDATION_OPTION,
+        body_file: str = "",
+        template: str = _TEMPLATE_OPTION,
     ) -> _test_plan.PostTestPlanResult:
         """Post (or update) the ticket's single test-plan note from a manifest.
 
-        There is ONE test-plan note per ticket (work item / bug), never on an
-        MR. It renders as a test plan: a header (title, multi-repo MR links,
-        per-env commit provenance, dev-gap reconciliation) and one side-by-side
-        **Dev | Local** comparison table per workflow. The note carries a hidden
-        machine-readable state blob that is the source of truth, so a re-run
-        merges the env(s) it supplies over the prior state — a dev-only run
-        updates the Dev column and the deployed-commits/gap line while freezing
-        the Local column, and vice versa.
-
-        ``--manifest`` is a path to (or inline string of) the JSON describing the
-        ticket, MRs, per-env commits, dev gap, and per-workflow captures; relative
-        artifact paths resolve against the manifest file's directory. ``--ticket``
-        (pk / number / URL) selects the issue (auto-detected from the worktree, or
-        the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
-        heading. ``--skip-validation`` is the user-authorised bypass of the
-        red-box / duplicate image preflight. See :mod:`._test_plan`.
-
-        The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
-        for one release so existing scripts keep working.
+        ONE note per ticket (never an MR); a re-run merges the env(s) it
+        supplies over the prior state. ``--manifest`` is the JSON path/string
+        (ticket, MRs, per-env commits, gap, captures); ``--ticket`` selects the
+        issue; ``--title`` overrides the heading; ``--template``
+        (``capture-matrix`` / ``browser-click-first`` / ``link-api``) selects
+        the body shape, overriding the manifest's ``template``;
+        ``--skip-validation`` bypasses the image preflight; ``--body-file`` posts
+        a pre-authored body verbatim (no upload; mutually exclusive with
+        ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
+        deprecated alias.
         """
         return _test_plan.run_post_test_plan(
             manifest=manifest,
@@ -538,10 +533,12 @@ class Command(TyperCommand):
             skip_validation=skip_validation,
             write_out=self.stdout.write,
             write_err=self.stderr.write,
+            body_file=body_file,
+            template=template,
         )
 
     @command(name="post-evidence", hidden=True, deprecated=True)
-    def post_evidence(
+    def post_evidence(  # noqa: PLR0913 — CLI entrypoint, each flag is a distinct user-facing option
         self,
         *,
         manifest: str = "",
@@ -549,6 +546,8 @@ class Command(TyperCommand):
         title: str = "",
         mrs: list[str] = _MRS_OPTION,
         skip_validation: bool = _SKIP_VALIDATION_OPTION,
+        body_file: str = "",
+        template: str = _TEMPLATE_OPTION,
     ) -> _test_plan.PostTestPlanResult:
         """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
         return _test_plan.run_post_test_plan(
@@ -559,4 +558,6 @@ class Command(TyperCommand):
             skip_validation=skip_validation,
             write_out=self.stdout.write,
             write_err=self.stderr.write,
+            body_file=body_file,
+            template=template,
         )
