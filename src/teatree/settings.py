@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_linear_migrations",
     "django_rich",
     "django_tasks",
     "django_tasks_db",
