@@ -41,20 +41,11 @@ _DATA_BLOB_RE = re.compile(r"<!--\s*t3-e2e-data\s+(?P<json>\{.*?\})\s*-->", re.D
 
 
 class TestPlanValidationError(ValueError):
-    """A pre-post test-plan validation failed — the note must NOT be posted.
-
-    Raised by the pure validators below; the command method catches it,
-    writes ``str(error)`` to stderr and raises ``SystemExit(1)`` so no
-    upload or comment side effect ever runs on an invalid test plan.
-    """
+    """Raised when a manifest fails pre-post validation; the note is NOT posted."""
 
 
 def _as_dict(value: object) -> Mapping[str, object]:
-    """Return *value* as a read-only ``Mapping[str, object]`` when it is a mapping, else ``{}``.
-
-    The narrowing primitive for the untyped JSON manifest/state payloads — a
-    ``Mapping`` (not a ``dict``) because every caller only reads from it.
-    """
+    """Return *value* as ``Mapping[str, object]`` when it is a mapping, else ``{}``."""
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
 
 
@@ -280,6 +271,9 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
     sides = {env: _parse_side(data, raw_workflows, env=env, base_dir=base_dir) for env in _ENVS}
     if not sides["dev"].present and not sides["local"].present:
         msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
+        raise TestPlanValidationError(msg)
+    if all(not sides[env].workflows for env in _ENVS if sides[env].present):
+        msg = "--manifest carries no media (no screenshots or video); nothing to post."
         raise TestPlanValidationError(msg)
     return TestPlanManifest(
         ticket=str(data.get("ticket", "")).strip(),

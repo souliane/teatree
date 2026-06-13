@@ -138,6 +138,10 @@
           "name": "post-test-plan"
         },
         {
+          "help": "Withdraw the ticket's single test-plan note",
+          "name": "retract-evidence"
+        },
+        {
           "help": "Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)",
           "name": "post-evidence"
         }

@@ -982,3 +982,140 @@ class TestPureHelpers:
         assert found.comment_id == 3
         assert found.state["ticket"] == "8521"
         assert _test_plan.find_existing_note([], ticket_id="8521") is None
+
+
+# --- zero-media rejection ---------------------------------------------------
+
+
+class TestZeroMediaRejection:
+    """A manifest where every workflow on every present side has no media is rejected."""
+
+    def test_rejects_when_present_side_has_no_media_anywhere(self, tmp_path: Path) -> None:
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [
+                    {"workflow": "Login", "local": {"images": [], "video": None}},
+                    {"workflow": "Search", "local": {"images": []}},
+                ],
+            },
+        )
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no media"):
+            _test_plan.parse_manifest(manifest)
+
+    def test_rejects_manifest_with_commits_but_zero_workflow_captures(self, tmp_path: Path) -> None:
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {}}],
+            },
+        )
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no media"):
+            _test_plan.parse_manifest(manifest)
+
+    def test_accepts_manifest_with_at_least_one_image(self, tmp_path: Path) -> None:
+        img = _write_png(tmp_path / "a.png", b"A")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"images": [img]}}],
+            },
+        )
+        parsed = _test_plan.parse_manifest(manifest)
+        assert parsed.local.present is True
+
+    def test_accepts_manifest_with_only_a_video(self, tmp_path: Path) -> None:
+        vid = _write_webm(tmp_path / "run.webm", b"V")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": {"video": vid}}],
+            },
+        )
+        parsed = _test_plan.parse_manifest(manifest)
+        assert parsed.local.present is True
+
+    def test_two_sides_both_zero_media_rejected(self, tmp_path: Path) -> None:
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "dev": {"commits": {"client": "ddee"}},
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "dev": {}, "local": {}}],
+            },
+        )
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no media"):
+            _test_plan.parse_manifest(manifest)
+
+    def test_one_side_has_media_other_side_is_empty_accepted(self, tmp_path: Path) -> None:
+        img = _write_png(tmp_path / "a.png", b"A")
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "dev": {"commits": {"client": "ddee"}},
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "dev": {}, "local": {"images": [img]}}],
+            },
+        )
+        parsed = _test_plan.parse_manifest(manifest)
+        assert parsed.local.present is True
+
+
+# --- retract-evidence command -----------------------------------------------
+
+
+class TestRetractEvidence(_EvidenceTestBase):
+    """``e2e retract-evidence`` deletes the ticket's single test-plan note."""
+
+    def _existing_note_body(self) -> str:
+        marker = "<!-- t3-e2e-evidence ticket=8521 -->"
+        state: dict[str, object] = {
+            "ticket": "8521",
+            "title": "t",
+            "mrs": [],
+            "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
+            "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "steps": {},
+        }
+        blob = "<!-- t3-e2e-data " + json.dumps(state, separators=(",", ":"), sort_keys=True) + " -->"
+        return f"{marker}\n{blob}\n## Test Plan — t\n"
+
+    def test_deletes_existing_note(self) -> None:
+        self._ticket()
+        host = MagicMock()
+        host.list_issue_comments.return_value = [{"id": 42, "body": self._existing_note_body()}]
+        host.delete_issue_comment.return_value = {}
+        self._patch_host(host)
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)
+        host.delete_issue_comment.assert_called_once_with(issue_url=_ISSUE_URL, comment_id=42)
+
+    def test_exits_nonzero_when_no_note_exists(self) -> None:
+        self._ticket()
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        self._patch_host(host)
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)
+        host.delete_issue_comment.assert_not_called()
+
+    def test_exits_nonzero_when_no_code_host(self) -> None:
+        self._ticket()
+        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: None)
+        self._monkeypatch.setattr(
+            _test_plan,
+            "resolve_worktree",
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "retract-evidence", ticket=_ISSUE_URL)

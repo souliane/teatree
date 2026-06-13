@@ -514,25 +514,11 @@ class Command(TyperCommand):
     ) -> _test_plan.PostTestPlanResult:
         """Post (or update) the ticket's single test-plan note from a manifest.
 
-        There is ONE test-plan note per ticket (work item / bug), never on an
-        MR. It renders as a test plan: a header (title, multi-repo MR links,
-        per-env commit provenance, dev-gap reconciliation) and one side-by-side
-        **Dev | Local** comparison table per workflow. The note carries a hidden
-        machine-readable state blob that is the source of truth, so a re-run
-        merges the env(s) it supplies over the prior state — a dev-only run
-        updates the Dev column and the deployed-commits/gap line while freezing
-        the Local column, and vice versa.
-
-        ``--manifest`` is a path to (or inline string of) the JSON describing the
-        ticket, MRs, per-env commits, dev gap, and per-workflow captures; relative
-        artifact paths resolve against the manifest file's directory. ``--ticket``
-        (pk / number / URL) selects the issue (auto-detected from the worktree, or
-        the manifest's ``ticket`` field, when omitted); ``--title`` overrides the
-        heading. ``--skip-validation`` is the user-authorised bypass of the
-        red-box / duplicate image preflight. See :mod:`._test_plan`.
-
-        The legacy ``post-evidence`` name is kept as a hidden, deprecated alias
-        for one release so existing scripts keep working.
+        One note per ticket — accumulates Dev/Local columns across runs via a
+        hidden state blob. ``--manifest`` is a path to or inline JSON with the
+        ticket, MRs, commits, and per-workflow captures. ``--ticket`` is a pk,
+        number, or URL (auto-detected from the worktree or manifest when omitted).
+        ``--skip-validation`` bypasses the red-box/duplicate preflight. See :mod:`._test_plan`.
         """
         return _test_plan.run_post_test_plan(
             manifest=manifest,
@@ -540,6 +526,19 @@ class Command(TyperCommand):
             title=title,
             mrs=mrs,
             skip_validation=skip_validation,
+            write_out=self.stdout.write,
+            write_err=self.stderr.write,
+        )
+
+    @command(name="retract-evidence")
+    def retract_evidence(
+        self,
+        *,
+        ticket: str = "",
+    ) -> None:
+        """Withdraw the ticket's single test-plan note."""
+        return _test_plan.run_retract_evidence(
+            ticket=ticket,
             write_out=self.stdout.write,
             write_err=self.stderr.write,
         )
