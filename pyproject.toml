@@ -24,6 +24,7 @@ dependencies = [
   "croniter>=6.2.2",
   "django>=5.2,<6.1",
   "django-fsm-2>=4",
+  "django-linear-migrations>=2.19",
   "django-rich>=2.2",
   "django-tasks>=0.9",
   "django-tasks-db>=0.12",
