@@ -19,6 +19,7 @@ import teatree.core.branch_classification as bc_mod
 import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
+import teatree.core.management.commands._workspace_reap as ws_reap_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
@@ -1583,8 +1584,8 @@ class TestWorkspaceCleanAll(TestCase):
             mock_config = MagicMock()
             mock_config.user.workspace_dir = workspace
             with (
-                patch.object(ws_cleanup_mod.sys, "stdin", non_tty),
-                patch.object(ws_cleanup_mod.sys, "stdout", non_tty),
+                patch.object(ws_reap_mod.sys, "stdin", non_tty),
+                patch.object(ws_reap_mod.sys, "stdout", non_tty),
                 patch("builtins.input", side_effect=_input_must_not_be_called),
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
@@ -1629,12 +1630,12 @@ class TestWorkspaceCleanAll(TestCase):
 
         with (
             patch.object(
-                workspace_mod,
+                ws_reap_mod,
                 "cleanup_worktree",
                 side_effect=RuntimeError("2 unsynced commit(s) not on origin/main"),
             ),
             patch.object(
-                workspace_mod,
+                ws_reap_mod,
                 "resolve_unsynced_worktree",
                 return_value="Push failed: backend (ac-backend-932-ticket) — remote rejected",
             ),
@@ -1710,42 +1711,42 @@ class TestIsInteractive(TestCase):
         tty = MagicMock()
         tty.isatty.return_value = True
         with (
-            patch.object(ws_cleanup_mod.sys, "stdin", tty),
-            patch.object(ws_cleanup_mod.sys, "stdout", tty),
+            patch.object(ws_reap_mod.sys, "stdin", tty),
+            patch.object(ws_reap_mod.sys, "stdout", tty),
         ):
-            assert ws_cleanup_mod._is_interactive() is True
+            assert ws_reap_mod._is_interactive() is True
 
     def test_stdin_not_tty_is_not_interactive(self) -> None:
         stdin, stdout = MagicMock(), MagicMock()
         stdin.isatty.return_value = False
         stdout.isatty.return_value = True
         with (
-            patch.object(ws_cleanup_mod.sys, "stdin", stdin),
-            patch.object(ws_cleanup_mod.sys, "stdout", stdout),
+            patch.object(ws_reap_mod.sys, "stdin", stdin),
+            patch.object(ws_reap_mod.sys, "stdout", stdout),
         ):
-            assert ws_cleanup_mod._is_interactive() is False
+            assert ws_reap_mod._is_interactive() is False
 
     def test_stdout_not_tty_is_not_interactive(self) -> None:
         stdin, stdout = MagicMock(), MagicMock()
         stdin.isatty.return_value = True
         stdout.isatty.return_value = False
         with (
-            patch.object(ws_cleanup_mod.sys, "stdin", stdin),
-            patch.object(ws_cleanup_mod.sys, "stdout", stdout),
+            patch.object(ws_reap_mod.sys, "stdin", stdin),
+            patch.object(ws_reap_mod.sys, "stdout", stdout),
         ):
-            assert ws_cleanup_mod._is_interactive() is False
+            assert ws_reap_mod._is_interactive() is False
 
     def test_closed_stdin_value_error_fails_closed(self) -> None:
         """A daemonised worker's closed stdin raises ValueError on isatty()."""
         stdin = MagicMock()
         stdin.isatty.side_effect = ValueError("I/O operation on closed file.")
-        with patch.object(ws_cleanup_mod.sys, "stdin", stdin):
-            assert ws_cleanup_mod._is_interactive() is False
+        with patch.object(ws_reap_mod.sys, "stdin", stdin):
+            assert ws_reap_mod._is_interactive() is False
 
     def test_none_stdin_fails_closed(self) -> None:
         """Some runners leave sys.stdin as None; .isatty raises AttributeError."""
-        with patch.object(ws_cleanup_mod.sys, "stdin", None):
-            assert ws_cleanup_mod._is_interactive() is False
+        with patch.object(ws_reap_mod.sys, "stdin", None):
+            assert ws_reap_mod._is_interactive() is False
 
 
 class TestResolveUnsyncedWorktree(TestCase):
@@ -1764,7 +1765,7 @@ class TestResolveUnsyncedWorktree(TestCase):
     def test_non_tty_preserves_skip_behaviour(self) -> None:
         wt = self._make_worktree()
         exc = RuntimeError("2 unsynced commit(s) not on origin/main: foo")
-        result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=False)
+        result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=False)
         assert result.startswith("Skipped:")
         assert "unsynced" in result
 
@@ -1772,14 +1773,14 @@ class TestResolveUnsyncedWorktree(TestCase):
         wt = self._make_worktree()
         exc = RuntimeError("1 unsynced commit(s) not on origin/main: bar")
         with patch("builtins.input", return_value=""):
-            result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Skipped:")
 
     def test_interactive_eof_falls_back_to_skip(self) -> None:
         wt = self._make_worktree()
         exc = RuntimeError("whatever")
         with patch("builtins.input", side_effect=EOFError):
-            result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Skipped:")
 
     def test_interactive_push_success_suggests_pr_create(self) -> None:
@@ -1791,7 +1792,7 @@ class TestResolveUnsyncedWorktree(TestCase):
                 patch("builtins.input", return_value="p"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=fake_push) as mock_run,
             ):
-                result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+                result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Pushed:")
         assert "pr create" in result
         args = mock_run.call_args[0][0]
@@ -1807,7 +1808,7 @@ class TestResolveUnsyncedWorktree(TestCase):
                 patch("builtins.input", return_value="p"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=fake_push),
             ):
-                result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+                result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Push failed:")
         assert "protected branch" in result
 
@@ -1815,7 +1816,7 @@ class TestResolveUnsyncedWorktree(TestCase):
         wt = self._make_worktree(wt_path="/tmp/does-not-exist-12345")
         exc = RuntimeError("pending")
         with patch("builtins.input", return_value="p"):
-            result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Push failed:")
         assert "worktree path missing" in result
 
@@ -1824,9 +1825,9 @@ class TestResolveUnsyncedWorktree(TestCase):
         exc = RuntimeError("pending")
         with (
             patch("builtins.input", return_value="a"),
-            patch.object(ws_cleanup_mod, "cleanup_worktree", return_value="Cleaned: backend (branch)") as mock_clean,
+            patch.object(ws_reap_mod, "cleanup_worktree", return_value="Cleaned: backend (branch)") as mock_clean,
         ):
-            result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result == "Cleaned: backend (branch)"
         mock_clean.assert_called_once_with(wt, force=True)
 
@@ -1835,9 +1836,9 @@ class TestResolveUnsyncedWorktree(TestCase):
         exc = RuntimeError("pending")
         with (
             patch("builtins.input", return_value="a"),
-            patch.object(ws_cleanup_mod, "cleanup_worktree", side_effect=OSError("boom")),
+            patch.object(ws_reap_mod, "cleanup_worktree", side_effect=OSError("boom")),
         ):
-            result = ws_cleanup_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
+            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
         assert result.startswith("Abandon failed:")
         assert "boom" in result
 
@@ -1926,26 +1927,33 @@ class TestPruneBranches(TestCase):
         with _glab_merged_mr:
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
 
-    def test_squash_merged_fallback_via_empty_diff(self) -> None:
+    def test_squash_merged_fallback_via_cherry_all_equivalent(self) -> None:
+        # git cherry marks every unique commit "- <sha>" when its patch is
+        # already upstream (the squash captured it) -> branch is merged.
+        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n- def456"):
+            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
+
+    def test_squash_merged_fallback_via_cherry_no_unique_commits(self) -> None:
         with _gh_no_pr, patch.object(git_mod, "run", return_value=""):
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
 
-    def test_non_squash_merged_detected_via_nonempty_diff(self) -> None:
-        with _gh_no_pr, patch.object(git_mod, "run", return_value=" file.py | 1 +"):
+    def test_non_merged_detected_via_cherry_plus_line(self) -> None:
+        # A "+ <sha>" line is a unique commit NOT upstream -> not merged.
+        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n+ def456"):
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
 
-    def test_falls_back_to_diff_when_host_cli_is_blocked(self) -> None:
+    def test_falls_back_to_cherry_when_host_cli_is_blocked(self) -> None:
         # A blocked/missing gh/glab raises OSError (PermissionError in a sandbox,
         # FileNotFoundError when absent) — clean-all must not crash, it falls
-        # back to the diff check rather than propagating the error.
+        # back to the git cherry check rather than propagating the error.
         with (
             patch("teatree.utils.run.subprocess.run", side_effect=PermissionError("blocked")),
-            patch.object(git_mod, "run", return_value=""),
+            patch.object(git_mod, "run", return_value="- abc123"),
         ):
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
         with (
             patch("teatree.utils.run.subprocess.run", side_effect=FileNotFoundError("gh")),
-            patch.object(git_mod, "run", return_value=" file.py | 1 +"),
+            patch.object(git_mod, "run", return_value="+ def456"),
         ):
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
 
@@ -2600,7 +2608,7 @@ def _init_repo_with_remote(tmp: Path) -> tuple[Path, Path]:
     remote = tmp / "remote.git"
     work = tmp / "work"
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)  # noqa: S607
-    subprocess.run(["git", "init", "-q", str(work)], check=True)  # noqa: S607
+    subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)  # noqa: S607
     _git(work, "commit", "-q", "--allow-empty", "-m", "base")
     _git(work, "remote", "add", "origin", str(remote))
     _git(work, "push", "-q", "origin", "HEAD:main")
@@ -3299,3 +3307,231 @@ class TestRemoveEmptyTicketDirs(TestCase):
 
             assert loose.exists()
             assert removed == []
+
+
+def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_number: str = "200") -> Worktree:
+    """Build a real-git squash-merged worktree row whose work is already on origin/main.
+
+    ``feature`` is pushed, squash-merged into ``main`` and pushed, so the
+    #706/#835 data-loss guards see the work on a remote and clean-all's
+    ``is_squash_merged`` empty-diff fallback classifies it as merged — the
+    safe-to-reap path. The row carries ``clone_path``/``worktree_path`` extras so
+    ``cleanup_worktree`` resolves the real on-disk worktree.
+    """
+    tmp.mkdir(parents=True, exist_ok=True)
+    _remote, work = _init_repo_with_remote(tmp)
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / "f.py").write_text("work\n", encoding="utf-8")
+    _git(work, "add", "f.py")
+    _git(work, "commit", "-q", "-m", f"feat: shipped work (#{ticket_number})")
+    _git(work, "push", "-q", "origin", "feature")
+    _git(work, "checkout", "-q", "main")
+    _git(work, "merge", "-q", "--squash", "feature")
+    # A distinct subject keeps the squash commit's SHA divergent from feature's
+    # tip even when both land in the same wall-clock second (#915 collision),
+    # so feature is deterministically NOT an ancestor of origin/main.
+    _git(work, "commit", "-q", "-m", f"feat: shipped work via squash (#{ticket_number})")
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "fetch", "-q", "origin")
+
+    wt_path = tmp / "wt-feature"
+    _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+
+    ticket = Ticket.objects.create(overlay=overlay, issue_url=f"https://example.com/issues/{ticket_number}")
+    return Worktree.objects.create(
+        overlay=overlay,
+        ticket=ticket,
+        repo_path="backend",
+        branch="feature",
+        db_name=f"wt_test_{ticket_number}",
+        state=Worktree.State.PROVISIONED,
+        extra={"clone_path": str(work), "worktree_path": str(wt_path)},
+    )
+
+
+@_no_prune
+@_no_stash
+@_no_orphan_dbs
+@_no_orphan_isolated_roots
+@_no_orphan_docker
+@_no_dslr_prune
+@_patch_overlays(FULL_OVERLAY)
+@override_settings(**SETTINGS)
+class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
+    """clean-all reaps a SAFE merged worktree fully and never crashes on a foreign overlay.
+
+    Uses a real on-disk git repo (``_init_repo_with_remote``) so the data-loss
+    guards and squash-merge classification run against actual git, with only the
+    docker-down and DB-drop side effects stubbed.
+    """
+
+    def _run_clean_all(self, workspace: Path) -> tuple[list[str], MagicMock, list[str]]:
+        """Run clean-all against real git, stubbing only docker-down and the DB drop.
+
+        The git layer is NEVER mocked — the #706/#835 data-loss guards must run
+        against actual ``git log ... --not --remotes`` behaviour. Only the two
+        external side effects (``docker compose down`` and ``dropdb``) are
+        intercepted, the DB drop recorded into the returned ``dropped`` list.
+        """
+        dropped: list[str] = []
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
+            patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
+        ):
+            mock_config.return_value.user.workspace_dir = workspace
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+        return cleaned, mock_docker_down, dropped
+
+    def test_reaps_merged_worktree_fully(self) -> None:
+        """A squash-merged worktree loses its worktree dir, branch, DB and docker stack."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp)
+            work = Path(wt.extra["clone_path"])
+            wt_path = Path(wt.extra["worktree_path"])
+
+            cleaned, mock_docker_down, dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.count() == 0, f"row should be gone, got: {cleaned!r}"
+            assert not wt_path.exists(), "git worktree dir should be removed"
+            assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
+            mock_docker_down.assert_called_once_with("backend-wt200")
+            assert "wt_test_200" in dropped, f"dropdb not invoked: {dropped!r}"
+            assert any("Cleaned" in c for c in cleaned)
+
+    def test_keeps_unmerged_worktree_with_unique_work(self) -> None:
+        """A worktree with genuinely-unique unpushed work is kept and reported, not reaped."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "unique.py").write_text("real unpushed work\n", encoding="utf-8")
+            _git(work, "add", "unique.py")
+            _git(work, "commit", "-q", "-m", "feat: genuinely unique unpushed work (#201)")
+            _git(work, "checkout", "-q", "main")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/201")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                state=Worktree.State.PROVISIONED,
+                extra={"clone_path": str(work), "worktree_path": str(wt_path)},
+            )
+
+            # Force the classifier to treat the branch as merged so the reap is
+            # attempted; the data-loss guard is what must keep the unique work.
+            with patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True):
+                cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.count() == 1, "row with unpushed unique work must survive"
+            assert wt_path.is_dir(), "DATA LOSS: worktree dir was removed"
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+            assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
+
+    def test_foreign_overlay_row_does_not_crash_and_other_rows_still_reaped(self) -> None:
+        """A row whose overlay is unregistered is skipped with a warning; the run completes.
+
+        This is the documented crash: ``get_overlay_for_worktree`` raises
+        ``ImproperlyConfigured`` for a foreign/unregistered overlay, which the
+        old ``except RuntimeError`` did not catch — aborting the whole run. The
+        registered-overlay merged sibling must still be reaped in the same pass.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            good = _make_squash_merged_worktree(tmp / "good", overlay="test", ticket_number="202")
+
+            foreign_tmp = tmp / "foreign"
+            foreign_tmp.mkdir()
+            foreign = _make_squash_merged_worktree(foreign_tmp, overlay="overlay-uninstalled", ticket_number="203")
+            foreign_path = Path(foreign.extra["worktree_path"])
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert not Worktree.objects.filter(pk=good.pk).exists(), "registered merged row should be reaped"
+            assert Worktree.objects.filter(pk=foreign.pk).exists(), "foreign-overlay row must be kept, not crashed on"
+            assert foreign_path.is_dir(), "foreign worktree dir must survive"
+            assert any("overlay-uninstalled" in c and "not registered" in c for c in cleaned), (
+                f"expected a foreign-overlay skip warning, got: {cleaned!r}"
+            )
+
+    def test_unclassifiable_sibling_repo_is_skipped_not_crashed(self) -> None:
+        """A non-CREATED row whose sibling repo cannot be classified is skipped, not fatal.
+
+        A corrupt/origin-less clone makes ``git.default_branch`` /
+        ``is_squash_merged`` raise; the squash-merge pass must skip that one row
+        with a warning rather than abort the whole run.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            broken = tmp / "broken"
+            broken.mkdir()
+            work = broken / "work"
+            subprocess.run(["git", "init", "-q", "-b", "main", str(work)], check=True)  # noqa: S607
+            _git(work, "commit", "-q", "--allow-empty", "-m", "base")
+            wt_path = broken / "wt-feature"
+            _git(work, "checkout", "-q", "-b", "feature")
+            _git(work, "worktree", "add", "-q", str(wt_path), "main")
+            _git(work, "checkout", "-q", "feature")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/204")
+            wt = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                state=Worktree.State.PROVISIONED,
+                extra={"clone_path": str(work), "worktree_path": str(wt_path)},
+            )
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), "unclassifiable row must be kept, not crashed on"
+            assert any("feature" in c and "could not classify" in c for c in cleaned), (
+                f"expected a classify-failure skip line, got: {cleaned!r}"
+            )
+
+
+class TestIsSquashMergedRealGit(TestCase):
+    """is_squash_merged detects a real squash-merge via patch-id (git cherry).
+
+    A squash-merge rewrites the source commits into one new SHA on the default
+    branch, so the branch is NOT an ancestor of origin/<default> and the old
+    three-dot-diff / is-ancestor test missed it. These exercise the forge-CLI-free
+    fallback against real git, with gh/glab forced absent so only the git path runs.
+    """
+
+    @staticmethod
+    def _no_host_cli() -> AbstractContextManager[object]:
+        return patch.object(ws_cleanup_mod, "_run_host_cli", return_value=None)
+
+    def test_squash_merged_branch_is_detected_despite_non_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp, ticket_number="300")
+            work = Path(wt.extra["clone_path"])
+            is_ancestor = subprocess.run(
+                ["git", "-C", str(work), "merge-base", "--is-ancestor", "feature", "origin/main"],  # noqa: S607
+                check=False,
+            ).returncode
+            assert is_ancestor != 0, "precondition: squash-merged branch is NOT an ancestor of origin/main"
+            with self._no_host_cli():
+                assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is True
+
+    def test_divergent_branch_is_not_detected_as_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "unique.py").write_text("genuinely unmerged\n", encoding="utf-8")
+            _git(work, "add", "unique.py")
+            _git(work, "commit", "-q", "-m", "feat: never merged (#301)")
+            _git(work, "checkout", "-q", "main")
+            with self._no_host_cli():
+                assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is False
