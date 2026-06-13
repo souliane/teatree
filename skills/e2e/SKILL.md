@@ -188,7 +188,7 @@ Flags (all keyword-only):
 |---|---|---|
 | `--manifest` | yes | path to (or inline string of) the test-plan manifest JSON |
 | `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
-| `--title` | no | overrides the `## E2E Evidence — <title>` heading |
+| `--title` | no | overrides the `## Test Plan — <title>` heading |
 | `--mrs` | no | MR/PR URL(s) (repeat or comma-separate) — supplements the manifest's `mrs` |
 
 ### Manifest shape
