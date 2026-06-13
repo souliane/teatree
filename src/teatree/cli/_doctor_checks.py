@@ -274,6 +274,36 @@ def _check_legacy_overlay_alias() -> None:
         return
 
 
+def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
+    import os  # noqa: PLC0415
+
+    resolved_env = env if env is not None else dict(os.environ)
+    path_dirs = [Path(d) for d in resolved_env.get("PATH", "").split(os.pathsep) if d]
+    home = Path(resolved_env.get("HOME", str(Path.home())))
+    uv_tool_bin_dir_str = resolved_env.get("UV_TOOL_BIN_DIR")
+    uv_bin_dir = Path(uv_tool_bin_dir_str) if uv_tool_bin_dir_str else home / ".local" / "bin"
+    uv_bin_dir_resolved = uv_bin_dir.resolve()
+
+    uv_pos = next(
+        (i for i, d in enumerate(path_dirs) if d.resolve() == uv_bin_dir_resolved and (d / "t3").is_file()),
+        None,
+    )
+    if uv_pos is None:
+        return True
+
+    shadows = [d / "t3" for i, d in enumerate(path_dirs) if i < uv_pos and (d / "t3").is_file()]
+    if not shadows:
+        return True
+
+    uv_t3 = uv_bin_dir / "t3"
+    for shadow in shadows:
+        typer.echo(
+            f"FAIL  Shadowing t3 at {shadow} precedes the uv-managed {uv_t3} on PATH. "
+            f"This stale entry masks dep updates. Remove it: rm {shadow}",
+        )
+    return False
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 
