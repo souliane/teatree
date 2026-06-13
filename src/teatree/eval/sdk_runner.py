@@ -58,6 +58,7 @@ from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalSpec, Matcher, canonicalize_tool
+from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
@@ -480,7 +481,7 @@ class SdkInProcessRunner:
                 raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
 
-        system_prompt = load_agent_definition(spec.agent_path, spec.agent_sections)
+        system_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
         max_turns = self._max_turns_override if self._max_turns_override is not None else spec.max_turns
         try:
             messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))

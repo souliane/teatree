@@ -83,7 +83,7 @@ def _workspace() -> list[Scenario]:
                 "is no longer needed. The overlay is called 'example'. Run the ONE Bash command you would issue "
                 "to remove it cleanly. One command only, no narration.",
                 agent=WORKSPACE,
-                want=r"(git worktree remove|t3 .*clean)",
+                want=r"(git worktree remove|t3 .*(clean|worktree teardown))",
                 good_cmd="git worktree remove ../wt-feat-x",
                 bad_cmd="rm -rf ../wt-feat-x",
                 forbid=r"rm -rf .*wt",

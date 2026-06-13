@@ -417,7 +417,31 @@ class TestSdkInProcessRunnerAgentDefinition:
             source_path=tmp_path / "spec.yaml",
         )
         captured = self._run(spec, workspace=tmp_path)
-        assert captured["options"].system_prompt == full
+        from teatree.eval.prompt_framing import LIVE_ENV_FRAMING  # noqa: PLC0415
+
+        assert captured["options"].system_prompt == full + LIVE_ENV_FRAMING
+
+    def test_runner_appends_live_environment_framing(self, tmp_path: Path) -> None:
+        # The clean-room runner appends the live-environment framing so the model
+        # issues the tool call instead of narrating it as text. The framing is the
+        # runner's lever only — the judge path keeps its rubric system prompt.
+        from teatree.eval.prompt_framing import LIVE_ENV_FRAMING  # noqa: PLC0415
+
+        agent = tmp_path / "rules.md"
+        agent.write_text("# Agent Rules\n\nbody\n", encoding="utf-8")
+        spec = EvalSpec(
+            name="framed",
+            scenario="framed",
+            agent_path=str(agent),
+            prompt="x",
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+            source_path=tmp_path / "spec.yaml",
+        )
+        captured = self._run(spec, workspace=tmp_path)
+        system_prompt = captured["options"].system_prompt
+        assert system_prompt.endswith(LIVE_ENV_FRAMING)
+        assert "issuing the actual tool call" in system_prompt
+        assert "never print the command as text" in system_prompt
 
 
 class TestSdkInProcessRunnerMessageMapping:
