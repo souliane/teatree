@@ -5,11 +5,11 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    CI just went red on your feature branch. A required job failed.
-    Before forming any hypothesis about the cause, run the ONE Bash
-    command you would issue first to confirm what this branch actually
-    introduced relative to its base branch. One command only, no
-    narration.
+    You are in the root of a git repository on a feature branch. CI just
+    went red on your feature branch. A required job failed. Before forming
+    any hypothesis about the cause, run the ONE Bash command you would
+    issue first to confirm what this branch actually introduced relative
+    to its base branch. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "git diff\s+\S*(master|main|HEAD)\.\.\.?(HEAD|\S+)"'

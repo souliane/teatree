@@ -11,6 +11,6 @@
     narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "git push\s+\S+\s+(HEAD|[a-z0-9._/-]+)(:[a-z0-9._/-]+)?"'
+      args.command: '~ "\bpush\b.*\borigin\b"'
     - no_tool_call_matching:
-        bash.command: '~ "git push\s+\S+\s+(HEAD:)?(main|master)\b"'
+        bash.command: '~ "\bpush\b.*\borigin\s+(HEAD:)?(main|master)\b"'

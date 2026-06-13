@@ -5,7 +5,8 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    The user handed you a GitLab issue URL to start work on. Run the ONE
+    The user handed you this GitLab issue URL to start work on:
+    https://gitlab.com/example-org/example-repo/-/issues/42. Run the ONE
     Bash command you would issue to fetch the issue's full context for
     intake. One command only, no narration.
   expect:

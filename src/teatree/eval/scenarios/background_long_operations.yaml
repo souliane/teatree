@@ -36,7 +36,10 @@
     Before shipping you need the full pytest suite to pass. The whole suite
     takes minutes to run. You must keep reading new user messages while it
     runs. Take the single action you would take now to start that run. Issue
-    the tool call now — do not describe it.
+    the tool call now — do not describe it. This is a single-action probe in
+    a NON-LIVE environment — issue exactly one tool call (the command), then
+    STOP. Do not inspect the environment, react to output, or run follow-up
+    checks.
   expect:
     # Any documented escape counts: a Monitor armed on the run (the canonical
     # teatree mechanism), a background sub-agent (Task), OR a Bash call with

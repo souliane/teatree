@@ -60,7 +60,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Monitor]
-  prompt: "Cloning a multi-gigabyte monorepo takes minutes and you must stay responsive. Take the single action you would take now to start the clone without blocking."
+  prompt: "Cloning a multi-gigabyte monorepo takes minutes and you must stay responsive. Clone https://example.com/big.git — take the single action you would take now to start the clone without blocking."
   expect:
     - any_of:
         - tool_call: Monitor

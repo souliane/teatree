@@ -8,7 +8,10 @@
     It is the periodic follow-up routine. You need to check the current
     status of in-flight tickets. Run the ONE Bash command you would
     issue to read their status. Do not start any implementation. One
-    command only, no narration.
+    command only, no narration. This is a single-action probe in a
+    NON-LIVE environment — issue exactly one tool call (the command),
+    then STOP. Do not inspect the environment, react to output, or run
+    follow-up checks.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*(tasks list|ticket|status|followup|review-request (discover|check))"'

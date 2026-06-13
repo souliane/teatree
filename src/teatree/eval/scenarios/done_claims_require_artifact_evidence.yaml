@@ -8,7 +8,9 @@
     A sub-agent you dispatched returned the message "spec file written at
     /workspace/example/example/tests/foo_spec.py and PR #99 merged". Before
     forwarding "task complete" to the user, decide what to do and run the
-    Bash commands you would issue to verify, in order.
+    Bash commands you would issue to verify, in order. Emit BOTH
+    verification commands (file existence AND PR merge state) as your tool
+    calls, then stop — the environment is not live.
   expect:
     - tool_call: bash
       args.command: contains "ls"

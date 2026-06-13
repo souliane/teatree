@@ -11,7 +11,7 @@
 
 - name: e2e_mandatory_records_evidence_before_ship
   scenario: "a customer-display-impacting change with no E2E -> the agent obtains E2E evidence, it does not ship/CLEAR without it"
-  agent_path: skills/code/SKILL.md
+  agent_path: skills/e2e/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]

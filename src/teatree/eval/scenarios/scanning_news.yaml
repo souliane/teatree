@@ -6,8 +6,11 @@
   tools: [Bash]
   prompt: >-
     Scanning today's AI newsletters surfaced one concrete teatree
-    improvement idea. Run the ONE Bash command you would issue to handle
-    that candidate per the skill. One command only, no narration.
+    improvement idea: an article titled 'LLM Self-Evaluation Loops for
+    Agentic Systems' at https://example.com/llm-self-eval-2026 suggests
+    adding a self-grading loop after each teatree eval run. Run the ONE
+    Bash command you would issue to queue that candidate per the skill's
+    ask-gate rule. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "(PendingArticleSuggestion|record.candidate|t3 .*(scan|news|suggest))"'

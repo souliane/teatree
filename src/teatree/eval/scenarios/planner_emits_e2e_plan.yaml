@@ -1,7 +1,6 @@
 - name: planner_emits_e2e_plan_for_ui_ticket
   scenario: "the plan emits an E2E / acceptance-scenario section with a concrete, observable scenario for a UI-visible ticket"
-  agent_path: skills/code/SKILL.md
-  agent_sections: ["5. E2E Tests"]
+  agent_path: agents/planner.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Write]

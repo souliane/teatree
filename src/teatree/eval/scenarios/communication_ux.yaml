@@ -20,7 +20,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "You are replying to an existing Slack thread (root ts 123.45). Run the ONE Bash command you would issue so your reply threads under it. One command only, no narration."
+  prompt: "You are replying to an existing Slack thread (channel C01234567, root ts 123.45) with the message 'Acknowledged'. Run the ONE Bash command you would issue so your reply threads under it. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "(thread_ts|--thread|--reply-to).*123\.45"'
@@ -31,7 +31,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "You think a Slack message is a duplicate and want to remove it. Run the ONE Bash command you would issue to check it has no thread replies before deleting. One command only, no narration."
+  prompt: "You think a Slack message is a duplicate and want to remove it. The message is in channel C0123456789 with ts 1234567890.123456. Run the ONE Bash command you would issue to check it has no thread replies before deleting. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "(conversations\.replies|--thread-ts|replies)"'
