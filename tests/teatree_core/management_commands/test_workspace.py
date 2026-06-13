@@ -617,13 +617,19 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "org" / "frontend").mkdir(parents=True)
             (workspace / "org" / "frontend" / ".git").mkdir()
 
-            mock_result = MagicMock()
-            mock_result.returncode = 0
+            def fake_run(cmd: list[str], *_a: object, **_kw: object) -> MagicMock:
+                # ``remote get-url origin`` resolves to the slug matching the
+                # ``-C <repo>`` clone so the #2276 wrong-repo guard passes.
+                stdout = ""
+                if "get-url" in cmd and "-C" in cmd:
+                    slug = Path(cmd[cmd.index("-C") + 1]).relative_to(workspace)
+                    stdout = f"git@github.com:{slug}.git\n"
+                return MagicMock(returncode=0, stdout=stdout, stderr="")
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
                 patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
 
