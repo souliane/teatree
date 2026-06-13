@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.ticket import schedule_external_review
@@ -246,6 +248,153 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         assert payload[0]["claimed_by_session"] == ""
         task.refresh_from_db()
         assert task.claimed_by_session == ""
+
+
+class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
+    """#1796 (WI-1): ``claim-next`` honours the orchestrate admit-budget ceiling.
+
+    The reconciled fan-out persists a per-tick admit budget to the tick-meta
+    sidecar (read-only PLANNER); the live claimer reads it before its CAS and
+    refuses once the standing in-flight CLAIMED WIP hits the ceiling, so
+    claimed ≡ spawned and the orphan window is closed.
+
+    Absence of a budget (medium / toggle-off) is UNCLAMPED — today's
+    throughput, byte-identical. A stale budget (> TTL) is ignored, also
+    unclamped, so a dead loop never wrongly throttles live dispatch.
+    """
+
+    def _claim_in_flight(self, n: int) -> list[Task]:
+        """Seed *n* dispatchable tasks as CLAIMED with a live lease (in flight)."""
+        claimed: list[Task] = []
+        for i in range(n):
+            task = self._author_task(url=f"https://example.com/issues/inflight/{i}")
+            task.claim(claimed_by="other-worker")
+            claimed.append(task)
+        return claimed
+
+    def _run_claim_next(self, sl: Path) -> list[dict]:
+        stdout = StringIO()
+        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_no_budget_key_drains_all_pending_unclamped(self) -> None:
+        # medium / toggle-off → no budget written → unclamped (today's behaviour).
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._author_task(url="https://example.com/issues/a")
+            payload = self._run_claim_next(sl)
+        assert len(payload) == 1  # claimed despite no budget key
+
+    def test_full_with_budget_admits_exactly_budget_then_refuses(self) -> None:
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            for i in range(3):
+                self._author_task(url=f"https://example.com/issues/q/{i}")
+            write_admit_budget(2, statusline_path=sl)
+            first = self._run_claim_next(sl)
+            second = self._run_claim_next(sl)
+            third = self._run_claim_next(sl)
+        # Budget 2: two claims land, the third is refused (in-flight 2 >= 2).
+        assert len(first) == 1
+        assert len(second) == 1
+        assert third == []
+        assert Task.objects.filter(status=Task.Status.CLAIMED).count() == 2
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+    def test_in_flight_at_budget_refuses_the_next_claim(self) -> None:
+        # THE anti-vacuous core: B already in flight + budget B → claim ZERO.
+        # RED on the pre-fix code (no clamp → it would claim the pending row).
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._claim_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_claim_next(sl)
+        assert payload == []  # the gate, not the CAS, holds the row
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+    def test_freeing_one_lease_lets_exactly_one_more_claim(self) -> None:
+        # Prove the gate is the ONLY thing holding the row: clear one in-flight
+        # lease (reclaim it to PENDING) and the next claim takes exactly one.
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            in_flight = self._claim_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            blocked = self._run_claim_next(sl)
+            assert blocked == []
+
+            # Expire one in-flight lease and reclaim it → in-flight drops to 1.
+            in_flight[0].lease_expires_at = timezone.now() - timedelta(seconds=10)
+            in_flight[0].save(update_fields=["lease_expires_at"])
+            Task.objects.reclaim_orphaned_claims()
+
+            after = self._run_claim_next(sl)
+            again = self._run_claim_next(sl)
+        # Exactly one more claim lands (in-flight 1 < budget 2), then it refuses.
+        assert len(after) == 1
+        assert again == []
+
+    def test_stale_budget_past_ttl_is_ignored_unclamped(self) -> None:
+        # A budget written long ago (dead loop) is ignored → unclamped drain.
+        import json as _json  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            meta = sl.with_name("tick-meta.json")
+            stale_at = _time.time() - (2 * 720 + 600)
+            meta.write_text(
+                _json.dumps({BUDGET_KEY: 0, WRITTEN_AT_KEY: stale_at}) + "\n",
+                encoding="utf-8",
+            )
+            self._claim_in_flight(1)
+            self._author_task(url="https://example.com/issues/pending")
+            payload = self._run_claim_next(sl)
+        # Budget 0 would refuse — but it is stale, so ignored → the row claims.
+        assert len(payload) == 1
+
+    def test_budget_read_error_fails_open_unclamped(self) -> None:
+        # A budget-read failure must NEVER clamp — the gate fails open so a
+        # broken sidecar read can never starve live dispatch.
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._author_task(url="https://example.com/issues/a")
+            stdout = StringIO()
+            with (
+                patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
+                patch(
+                    "teatree.core.management.commands.loop_dispatch.read_admit_budget",
+                    side_effect=RuntimeError("sidecar exploded"),
+                ),
+            ):
+                call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+            assert len(json.loads(stdout.getvalue())) == 1  # claimed despite the error
+
+    def test_no_claimed_but_unspawned_rows_after_a_budgeted_wave(self) -> None:
+        # Reconciliation invariant: with the gate armed, every CLAIMED row is one
+        # the caller will spawn — there is no claimed-but-orphaned surplus. We
+        # claim a full budgeted wave and assert claimed == budget exactly.
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            for i in range(5):
+                self._author_task(url=f"https://example.com/issues/wave/{i}")
+            write_admit_budget(3, statusline_path=sl)
+            for _ in range(5):  # five attempts, only three may claim
+                self._run_claim_next(sl)
+        assert Task.objects.filter(status=Task.Status.CLAIMED).count() == 3
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 2
 
 
 class TestSpawnClaim(_LoopDispatchTest):
