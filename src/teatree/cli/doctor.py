@@ -30,6 +30,7 @@ from teatree.cli._doctor_checks import (
     _check_single_db,
     _check_singletons,
     _check_skills,
+    _check_stale_path_t3,
     _check_stale_uv_venv,
 )
 from teatree.cli._doctor_plugin_repair import (
@@ -72,6 +73,7 @@ __all__ = (
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
+    "_check_stale_path_t3",
     "_check_stale_uv_venv",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
@@ -532,6 +534,7 @@ def check() -> bool:
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
     ok = _check_stale_uv_venv() and ok
+    ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
 
     # ``check`` is a plain Typer command in the Django-free CLI group, so
