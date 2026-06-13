@@ -45,6 +45,8 @@ _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
     "shipping": ("ship", "shipping"),
     "retro": ("retro", "retrospect", "retrospecting"),
     "requesting_review": ("request_review", "requesting_review", "request-review"),
+    "e2e": ("e2e",),
+    "e2e_reviewing": ("e2e-review", "e2e_review", "e2e_reviewing"),
 }
 
 _ALIAS_TO_CANONICAL: dict[str, str] = {
@@ -86,6 +88,8 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "shipping"): "t3:shipper",
     ("author", "answering"): "t3:answerer",
     ("author", "scanning_news"): "t3:scanning-news",
+    ("author", "e2e"): "t3:e2e",
+    ("reviewer", "e2e_reviewing"): "t3:e2e-review",
 }
 
 #: The chaining orchestrator must never be the target of an author phase

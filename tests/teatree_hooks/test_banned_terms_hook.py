@@ -852,3 +852,115 @@ def test_kill_switch_default_on_still_blocks_a_public_post(
 
     assert blocked is True
     assert json.loads(captured.out)["permissionDecision"] == "deny"
+
+
+# ── #1415 internal-denylist scoping (fail-closed) ────────────────────────────
+#
+# The reported over-block fired on a publish to a PRIVATE internal remote the
+# user had not declared. The fix is config-driven and FAIL-CLOSED: a target named
+# in ``internal_publish_namespaces`` (the denylist) SKIPS the scan, while EVERY
+# non-internal target -- the public teatree repo, a USER-OWNED non-teatree PUBLIC
+# repo, an unknown/unresolvable target -- still SCANS. An allowlist of "surfaces
+# to scan" would fail OPEN on a public repo nobody listed and leak unscanned.
+
+_DENYLIST_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\ninternal_publish_namespaces = ["internal-eng"]\n'
+
+
+def test_live_hook_allows_customer_term_to_denylisted_internal_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # MUST-NOT-FIRE (the reported over-block, fixed via the denylist): a banned
+    # term in a publish to a PRIVATE internal GitLab namespace named in
+    # ``internal_publish_namespaces`` is ALLOWED -- it is provably internal.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'glab mr note 5 --repo internal-eng/internal-product --message "customercorp note"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_live_hook_blocks_customer_term_to_user_owned_non_teatree_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # F3 / MUST-FIRE (the leak path the review caught): a USER-OWNED non-teatree
+    # PUBLIC repo (e.g. a blog repo) is NOT in the denylist and the probe confirms
+    # it PUBLIC, so a banned term toward it must STILL hard-block. Reverting the
+    # fail-closed default (treating non-denylisted as skip) makes this go RED.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --repo ourorg/other-public-repo --body "customercorp leak"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_blocks_customer_term_to_unknown_visibility_non_denylisted_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # MUST-FIRE: a non-denylisted target whose visibility the in-hook probe cannot
+    # resolve (the common cold-hook state) stays PUBLIC and is scanned -- detection
+    # failure never opens the gate.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --repo someowner/mystery --body "customercorp note"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_scans_unresolvable_target_failsafe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # FAIL-SAFE: a publish whose target cannot be resolved from the command (a
+    # flagless create whose cwd has NO git remote -> destination None) keeps
+    # scanning and blocks the term. An unparsable target is never a silent bypass.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    no_remote = tmp_path / "no-remote"
+    no_remote.mkdir()
+    _git(no_remote, "init", "-b", "main")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue create --body "customercorp leak"'},
+        "cwd": str(no_remote),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
