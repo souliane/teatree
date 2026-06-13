@@ -27,6 +27,10 @@ from teatree.utils.url_slug import pr_ref_from_url
 _ENVS = ("dev", "local")
 _EMPTY_CELL = "—"
 
+# The known body templates; the default is the side-by-side capture matrix.
+DEFAULT_TEMPLATE = "capture-matrix"
+KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api")
+
 # The hidden idempotency marker — keyed on the TICKET (its number, e.g. 8521),
 # so a ticket carries exactly ONE test-plan note across all environments.
 #
@@ -111,10 +115,15 @@ def empty_state(*, ticket: str, title: str) -> TestPlanState:
 
 def _coerce_workflow(raw: object) -> WorkflowEmbed:
     raw_dict = _as_dict(raw)
-    return {
+    embed: WorkflowEmbed = {
         "video_md": str(raw_dict.get("video_md") or ""),
         "image_md": [str(i) for i in _as_list(raw_dict.get("image_md"))],
     }
+    if raw_dict.get("link_md"):
+        embed["link_md"] = str(raw_dict["link_md"])
+    if raw_dict.get("code_md"):
+        embed["code_md"] = str(raw_dict["code_md"])
+    return embed
 
 
 def _coerce_side(raw: object, *, env: str) -> SideState:
@@ -130,7 +139,7 @@ def _coerce_side(raw: object, *, env: str) -> SideState:
 def coerce_state(raw: object) -> TestPlanState:
     """Build a well-typed :class:`TestPlanState` from a JSON blob; drops malformed fields."""
     raw_dict = _as_dict(raw)
-    return {
+    state: TestPlanState = {
         "ticket": str(raw_dict.get("ticket") or ""),
         "title": str(raw_dict.get("title") or ""),
         "mrs": [str(m) for m in _as_list(raw_dict.get("mrs"))],
@@ -138,6 +147,18 @@ def coerce_state(raw: object) -> TestPlanState:
         "local": _coerce_side(raw_dict.get("local"), env="local"),
         "steps": _coerce_steps(raw_dict.get("steps")),
     }
+    template = str(raw_dict.get("template") or "").strip()
+    if template in KNOWN_TEMPLATES:
+        state["template"] = template
+    blocked = _coerce_blocked_workflows(raw_dict.get("blocked_workflows"))
+    if blocked:
+        state["blocked_workflows"] = blocked
+    return state
+
+
+def _coerce_blocked_workflows(raw: object) -> dict[str, str]:
+    """Rebuild the workflow → blocked-reason mapping, dropping malformed entries."""
+    return {str(name): str(reason) for name, reason in _as_dict(raw).items() if str(name) and str(reason)}
 
 
 def _coerce_steps(raw: object) -> dict[str, list[str]]:
@@ -172,13 +193,15 @@ class SideManifest:
 
 @dataclass(frozen=True, slots=True)
 class TestPlanManifest:
-    """Parsed + validated ``--manifest``: ticket, MRs, per-side input, optional steps."""
+    """Parsed + validated ``--manifest``: ticket, MRs, per-side input, template, optional steps."""
 
     ticket: str
     mrs: tuple[str, ...]
     dev: SideManifest
     local: SideManifest
     steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    template: str = DEFAULT_TEMPLATE
+    blocked_workflows: dict[str, str] = field(default_factory=dict)
 
 
 def test_plan_marker(*, ticket_id: str) -> str:
@@ -234,7 +257,32 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         dev=sides["dev"],
         local=sides["local"],
         steps=_parse_workflow_steps(raw_workflows),
+        template=_parse_template(data.get("template")),
+        blocked_workflows=_parse_blocked_workflows(data.get("blocked_workflows")),
     )
+
+
+def validate_template(template: str) -> str:
+    """Return *template* if it names a known body template, else raise."""
+    if template not in KNOWN_TEMPLATES:
+        msg = f"--manifest 'template' must be one of {', '.join(KNOWN_TEMPLATES)}; got {template!r}."
+        raise TestPlanValidationError(msg)
+    return template
+
+
+def _parse_template(raw: object) -> str:
+    """The validated body template from the manifest, defaulting to the capture matrix."""
+    template = str(raw).strip() if raw else ""
+    return validate_template(template) if template else DEFAULT_TEMPLATE
+
+
+def _parse_blocked_workflows(raw: object) -> dict[str, str]:
+    """``{workflow: reason}`` for every blocked entry carrying a non-empty reason."""
+    out: dict[str, str] = {}
+    for name, reason in _as_dict(raw).items():
+        if str(name).strip() and str(reason).strip():
+            out[str(name).strip()] = str(reason).strip()
+    return out
 
 
 def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, ...]]:
@@ -334,6 +382,8 @@ def merge_state(
         "dev": prior.get("dev", {"commits": {}, "missing_on_dev": [], "workflows": {}}),
         "local": prior.get("local", {"commits": {}, "workflows": {}}),
         "steps": {name: list(steps) for name, steps in prior.get("steps", {}).items()},
+        "template": manifest.template,
+        "blocked_workflows": dict(prior.get("blocked_workflows", {})),
     }
     if manifest.dev.present:
         state["dev"] = {
@@ -345,6 +395,8 @@ def merge_state(
         state["local"] = {"commits": dict(manifest.local.commits), "workflows": embeds.get("local", {})}
     for name, steps in manifest.steps.items():
         state["steps"][name] = list(steps)
+    for name, reason in manifest.blocked_workflows.items():
+        state["blocked_workflows"][name] = reason
     return state
 
 
@@ -503,7 +555,6 @@ def _render_browser_click_first(state: TestPlanState) -> list[str]:
         for side in (state["dev"], state["local"]):
             lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
         lines.append("")
-    lines.extend(_blocked_lines(state))
     return lines
 
 
@@ -521,7 +572,6 @@ def _render_link_api(state: TestPlanState) -> list[str]:
             if code_md:
                 lines.append(code_md)
         lines.append("")
-    lines.extend(_blocked_lines(state))
     return lines
 
 
@@ -531,9 +581,10 @@ def render_body(state: TestPlanState) -> str:
     Dispatches on ``state["template"]``: ``"browser-click-first"`` →
     numbered steps + inline screenshots; ``"link-api"`` → links + code
     blocks; default ``"capture-matrix"`` → side-by-side Dev | Local table.
+    The blocked-workflow placeholders render on every template (shared tail).
     Raises :class:`TestPlanValidationError` when nothing to post.
     """
-    template = state.get("template") or "capture-matrix"
+    template = state.get("template") or DEFAULT_TEMPLATE
     if template == "browser-click-first":
         workflow_lines = _render_browser_click_first(state)
     elif template == "link-api":
@@ -554,6 +605,7 @@ def render_body(state: TestPlanState) -> str:
 
     lines = _render_header(state)
     lines.extend(workflow_lines)
+    lines.extend(_blocked_lines(state))
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

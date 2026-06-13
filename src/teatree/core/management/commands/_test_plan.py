@@ -35,6 +35,7 @@ from teatree.core.management.commands._test_plan_render import (
     render_body,
     render_mrs_line,
     test_plan_marker,
+    validate_template,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
@@ -70,6 +71,7 @@ __all__ = [
     "render_mrs_line",
     "run_post_test_plan",
     "test_plan_marker",
+    "validate_template",
 ]
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
@@ -172,6 +174,7 @@ class TestPlanFlags:
     manifest_dir: str = ""
     skip_validation: bool = False
     body_file: str = ""
+    template: str = ""
 
 
 def _resolve_worktree_or_none() -> Worktree | None:
@@ -259,12 +262,15 @@ def build_validated_post(flags: TestPlanFlags) -> TestPlanPost:
     issue_url = str(ticket.issue_url)
 
     mrs = manifest.mrs or _normalize_mrs(list(flags.mrs))
+    template = validate_template(flags.template.strip()) if flags.template.strip() else manifest.template
     merged = TestPlanManifest(
         ticket=manifest.ticket,
         mrs=tuple(mrs),
         dev=manifest.dev,
         local=manifest.local,
         steps=manifest.steps,
+        template=template,
+        blocked_workflows=manifest.blocked_workflows,
     )
     return TestPlanPost(
         issue_url=issue_url,
@@ -345,6 +351,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
     write_out: Callable[[str], None],
     write_err: Callable[[str], None],
     body_file: str = "",
+    template: str = "",
 ) -> PostTestPlanResult:
     """Read the manifest (or body file), resolve the host, validate, and post-or-update the note.
 
@@ -401,6 +408,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
         mrs=tuple(mrs or ()),
         manifest_dir=manifest_dir,
         skip_validation=skip_validation,
+        template=template,
     )
     try:
         post = build_validated_post(flags)
