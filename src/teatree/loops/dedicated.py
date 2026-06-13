@@ -25,10 +25,12 @@ inbox (60s): inbox — user-facing inbox lag is the most latency-sensitive.
 followup (600s): tickets + followup — intake/disposition, not bursty.
 housekeeping (3600s): news + audit + arch_review + housekeeping + dream +
 dogfood + eval_local — the low-frequency periodic maintenance loops.
-resource (60s): resource_pressure + idle_stack_reaper + local_stack_queue —
-host-resource / local-stack management; all three carry their own internal
-cadence and a 60s registry floor, a cohesive trio distinct from inbox and
-the slow housekeeping.
+resource (60s): resource_pressure + idle_stack_reaper + local_stack_queue +
+pane_reaper — host-resource / local-stack management; each carries its own
+internal cadence and a 60s registry floor, a cohesive set distinct from inbox
+and the slow housekeeping. ``pane_reaper`` (#1838 PR#7b) is the idle-maker-pane
+sibling of ``idle_stack_reaper`` — both demote an idle resource; it is a no-op
+until ``teams_enabled``.
 
 This layer is OPT-IN behind the default-off ``[loops] dedicated_loops`` toggle;
 under the default the single fat slot stays the driver and this map is inert.
@@ -82,7 +84,7 @@ DEDICATED_LOOPS: tuple[DedicatedLoop, ...] = (
     ),
     DedicatedLoop(
         name="resource",
-        members=("resource_pressure", "idle_stack_reaper", "local_stack_queue"),
+        members=("resource_pressure", "idle_stack_reaper", "local_stack_queue", "pane_reaper"),
         cadence_seconds=60,
     ),
 )

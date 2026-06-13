@@ -58,12 +58,30 @@ class TeamRole(Enum):
         CORE-MAKER claims ``overlay == ""`` (core units); OVERLAY-MAKER claims
         ``overlay != ""`` (overlay-specific units). The two are a disjoint total
         cover of the backlog — the ``overlay`` seam is the context split. A pure
-        ``Q`` predicate, NOT wired into any live claim path in this PR.
+        ``Q`` predicate over the ``Ticket`` model (the ``overlay`` field lives on
+        ``Ticket``).
         """
         if self is TeamRole.CORE_MAKER:
             return Q(overlay="")
         if self is TeamRole.OVERLAY_MAKER:
             return ~Q(overlay="")
+        return None
+
+    @property
+    def task_claim_filter(self) -> Q | None:
+        """The maker role's overlay-seam filter expressed over the ``Task`` model.
+
+        The same disjoint overlay seam as :attr:`claim_filter`, re-rooted at the
+        ``Task.ticket`` relation (``ticket__overlay``) so the maker claim path can
+        narrow ``TaskQuerySet.claim_next_pending``'s candidate set directly. The
+        single Task-level normalization seam — a call site never hand-builds the
+        ``ticket__overlay`` predicate. ``None`` for REVIEWER (read-only, no maker
+        claim path).
+        """
+        if self is TeamRole.CORE_MAKER:
+            return Q(ticket__overlay="")
+        if self is TeamRole.OVERLAY_MAKER:
+            return ~Q(ticket__overlay="")
         return None
 
 
