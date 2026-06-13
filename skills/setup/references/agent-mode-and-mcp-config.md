@@ -99,6 +99,37 @@ does for Bash entries — the same self-modification guardrail applies (§
 > This note is deliberately honest about the boundary rather than
 > describing a mechanism that does not exist.
 
+## 2.1 Enabled-MCP connectivity check (souliane/teatree#2282)
+
+An MCP server the user has *enabled* but whose live connection is broken is a
+silent failure: tool calls against it fail late, mid-task, with no obvious
+root cause. Teatree verifies connectivity at three surfaces, all routed
+through the single chokepoint `teatree.core.mcp_connectivity.check_mcp_connectivity`:
+
+| Surface | Where |
+|---------|-------|
+| Session start | The `SessionStart` hook surfaces a run-the-check advisory whenever any MCP server is enabled (a cheap, network-free `~/.claude.json` read — the live probe would exceed the 3s hook budget). |
+| `t3 doctor check` | The `_check_mcp_connectivity` gate live-probes (`claude mcp list`) and FAILs on any enabled-but-disconnected server or provider mismatch. |
+| Account switch | `t3 setup recover-account-switch` re-runs the same check after a `/login`, so a switch that left an enabled MCP disconnected exits non-zero. |
+
+The check enumerates every *enabled* server (top-level + project-scoped
+`mcpServers` plus the claude.ai-hosted connectors in
+`claudeAiMcpEverConnected`, minus the per-project `disabledMcpServers` set),
+live-probes each one's connected status, and validates each resolves to its
+overlay-*declared* provider. A disconnected enabled server, or a provider
+mismatch, is a LOUD, named finding with a reconnect hint — never a silent pass.
+A probe that cannot run (`claude` absent) degrades to a WARN.
+
+An overlay declares the **expected provider** per MCP server via
+`OverlayBase.get_mcp_provider_expectations() -> dict[str, str]` (default `{}`),
+mapping a server name to either `CLAUDE_AI_HOSTED` (a `claude.ai <Service>`
+connector served from an Anthropic-hosted endpoint) or `THIRD_PARTY` (a
+self-hosted or local-command server). Teatree's own default is empty — the
+connectivity check enforces only connected-ness until an overlay supplies
+per-server values. The real per-overlay provider values live in the overlay
+repo (souliane/teatree#251); core ships only the extension point and the
+validation logic.
+
 ## 3. Standing permission state after `t3 setup`
 
 `t3 setup` does **not** set `skipDangerousModePermissionPrompt` or
@@ -153,4 +184,6 @@ duplicates the other.
 | Overlay messaging integration | `[overlays.<name>]` keys / `overlay_settings` module | `teatree.core.overlay.OverlayConfig` |
 | Bash standing permissions | plugin `settings.json` (broad allow / narrow deny) | `settings.json` (BLUEPRINT.md § 11.4) |
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
+| Enabled-MCP connectivity check | n/a — runs at session start / `t3 doctor` / account-switch | `teatree.core.mcp_connectivity.check_mcp_connectivity` (#2282) |
+| Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
 | Recommended auto-mode set | suggested only — user pastes into `autoMode.allow` | `teatree.cli.recommended_authorizations` |

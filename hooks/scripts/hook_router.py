@@ -5301,6 +5301,17 @@ _ACCOUNT_SWITCH_DIRECTIVE = (
     "relying on any outbound message."
 )
 
+_MCP_CONNECTIVITY_DIRECTIVE = (
+    "TEATREE — verify enabled MCP servers are connected.\n\n"
+    "Enabled MCP servers are configured for this account. Run `t3 doctor check` "
+    "now: it live-probes each enabled server (`claude mcp list`) and surfaces a "
+    "LOUD, named finding for any enabled-but-disconnected server (or a provider "
+    "mismatch). An enabled MCP that is not connected fails tool calls late and "
+    "silently — confirm connectivity before relying on any MCP tool. If one is "
+    "disconnected, reconnect it (re-auth the connector in the Claude.ai UI, or "
+    "restart its local command) and re-run."
+)
+
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
@@ -5558,6 +5569,33 @@ def _account_switch_advisory() -> str | None:
                 sys.path.remove(str(src_dir))
 
 
+def _mcp_connectivity_advisory() -> str | None:
+    """Return the #2282 advisory when any MCP server is enabled.
+
+    Uses the cheap, network-free ``~/.claude.json`` reader (NOT the live probe)
+    so the SessionStart hot path stays inside its 3s budget: the live
+    ``claude mcp list`` probe would blow it, so session start only nudges the
+    agent to run ``t3 doctor check`` (which does the bounded probe) when there
+    is something to verify. Any import / read failure returns None so the
+    directive never blocks SessionStart.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.core.mcp_connectivity import has_enabled_mcp_servers  # noqa: PLC0415
+
+        return _MCP_CONNECTIVITY_DIRECTIVE if has_enabled_mcp_servers() else None
+    except Exception:  # noqa: BLE001 — never block SessionStart on a config read hiccup
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
 def _merge_session_start_context(context: str, session_id: str, source: str) -> str:
     """Prepend recovery snapshot + session hand-off, append the autocompact advisory.
 
@@ -5589,6 +5627,10 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     switch_advisory = _account_switch_advisory()
     if switch_advisory:
         context = f"{switch_advisory}\n\n---\n\n{context}"
+
+    mcp_advisory = _mcp_connectivity_advisory()
+    if mcp_advisory:
+        context = f"{mcp_advisory}\n\n---\n\n{context}"
     return context
 
 

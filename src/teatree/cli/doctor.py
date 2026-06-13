@@ -26,6 +26,7 @@ from teatree.cli._doctor_checks import (
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
+    _check_mcp_connectivity,
     _check_single_db,
     _check_singletons,
     _check_skills,
@@ -67,6 +68,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
+    "_check_mcp_connectivity",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -566,6 +568,12 @@ def check() -> bool:
     # ``ensure_django`` because it builds messaging backends via the overlay
     # factory to live-probe connector reachability post cache-invalidation.
     ok = _check_account_switch() and ok
+
+    # Enabled-MCP connectivity + declared-provider check (#2282). Runs after the
+    # account-switch gate (which invalidates the backend cache on a `/login`), so
+    # the live `claude mcp list` probe reflects the post-recovery state. An
+    # enabled-but-disconnected MCP is a hard FAIL; `claude` absent degrades to a WARN.
+    ok = _check_mcp_connectivity() and ok
 
     _check_singletons()
     _check_legacy_overlay_alias()

@@ -98,6 +98,13 @@ class TeatreeOverlay(OverlayBase):
         return []
 
     @override
+    def get_mcp_provider_expectations(self) -> dict[str, str]:
+        # The teatree dogfood overlay declares no per-server provider — the
+        # connectivity check (#2282) enforces only connected-ness here. The real
+        # per-server values live in the overlay repo (souliane/teatree#251).
+        return {}
+
+    @override
     def get_workspace_repos(self) -> list[str]:
         if self.config.workspace_repos:
             return list(self.config.workspace_repos)

@@ -528,16 +528,17 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_connector_preflight(self) -> list[Callable[[], None]]:
         """Return zero-arg probes run before any connector-dependent loop work.
 
-        Each callable raises ``RuntimeError`` (caught by the loop
-        entrypoint, which then ``raise SystemExit``) when a connector the
-        overlay hard-depends on (Slack, Notion, claude.ai) is unreachable.
-        The default is empty — an overlay opts in only when it cannot
-        function correctly with a degraded connector (silent no-ops are
-        worse than refusing to start). Analogous to
-        :meth:`get_e2e_preflight` but fired at loop/lifecycle start
-        rather than before an E2E run.
+        Each callable raises ``RuntimeError`` (caught by the loop entrypoint, which then ``raise
+        SystemExit``) when a connector the overlay hard-depends on (Slack, Notion, claude.ai) is
+        unreachable. The default is empty — an overlay opts in only when it cannot function correctly
+        with a degraded connector (silent no-ops are worse than refusing to start). Analogous to
+        :meth:`get_e2e_preflight` but fired at loop/lifecycle start rather than before an E2E run.
         """
         return []
+
+    def get_mcp_provider_expectations(self) -> dict[str, str]:
+        """``{mcp_server_name: provider}`` for the #2282 connectivity check (default empty; real values in #251)."""
+        return {}
 
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         return {}
