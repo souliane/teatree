@@ -133,6 +133,35 @@ def _check_account_switch() -> bool:
     return False
 
 
+def _check_mcp_connectivity() -> bool:
+    """Verify every enabled MCP server is connected + matches its provider (#2282).
+
+    Enumerates the enabled configured MCP servers (``~/.claude.json`` minus the
+    per-project disabled set), live-probes each one's connection via
+    ``claude mcp list``, and validates each resolves to its overlay-declared
+    provider. An enabled-but-disconnected server, or a provider mismatch, is a
+    hard FAIL naming the server + a reconnect hint. A probe that cannot run
+    (``claude`` absent) degrades to a WARN. Crash-proof: any error degrades to a
+    WARN so a doctor run never aborts on this check.
+    """
+    try:
+        from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415
+
+        outcome = check_mcp_connectivity()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  MCP connectivity check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if outcome.degraded:
+        for finding in outcome.findings:
+            typer.echo(f"WARN  {finding}")
+        return True
+    if outcome.ok:
+        return True
+    for finding in outcome.findings:
+        typer.echo(f"FAIL  {finding}")
+    return False
+
+
 def _check_stale_uv_venv() -> bool:
     """Detect + clean an empty uv-built ``.venv`` in a Pipfile-managed clone (#2005).
 

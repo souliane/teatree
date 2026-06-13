@@ -166,7 +166,7 @@ The hooks cover these events:
 
 | Event | Matcher | Purpose |
 | --- | --- | --- |
-| `SessionStart` | *(none)* | Bootstrap CLI availability; on `source=compact` re-inject the pre-compaction snapshot (#845) |
+| `SessionStart` | *(none)* | Bootstrap CLI availability; on `source=compact` re-inject the pre-compaction snapshot (#845); surface the enabled-MCP connectivity advisory when any MCP server is configured (#2282) |
 | `UserPromptSubmit` | *(none)* | Detect intent from prompt keywords and suggest skills to load |
 | `PreToolUse` | `Bash\|Edit\|Write` | Branch protection, skill enforcement |
 | `PostToolUse` | `Bash\|Write\|Edit\|Read\|Grep\|Glob` | Track which repos are touched |

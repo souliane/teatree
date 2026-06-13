@@ -11,6 +11,25 @@ import typer
 from teatree.utils.django_bootstrap import ensure_django
 
 
+def _report_mcp_connectivity() -> bool:
+    """Re-run the enabled-MCP connectivity check on the account-switch path (#2282).
+
+    A `/login` switch can leave an enabled MCP server disconnected even when the
+    messaging-backend reprobe passed, so the account-switch recovery surfaces the
+    same connectivity findings the doctor gate does. Returns ``True`` when every
+    enabled server is connected (or the check degraded), ``False`` on a loud
+    disconnection/provider finding.
+    """
+    from teatree.core.mcp_connectivity import check_mcp_connectivity  # noqa: PLC0415
+
+    outcome = check_mcp_connectivity()
+    if outcome.ok:
+        return True
+    for finding in outcome.findings:
+        typer.echo(f"  MCP: {finding}")
+    return False
+
+
 def recover_account_switch() -> None:
     """Detect a Claude account switch, invalidate the backend cache, re-probe connectors."""
     ensure_django()
@@ -31,7 +50,9 @@ def recover_account_switch() -> None:
         status = "reachable" if probe.reachable else f"UNREACHABLE — {probe.detail}"
         typer.echo(f"  {probe.name}: {status}")
 
-    if outcome.all_reachable:
+    mcp_ok = _report_mcp_connectivity()
+
+    if outcome.all_reachable and mcp_ok:
         typer.echo("All connectors reachable under the new account.")
         return
 
