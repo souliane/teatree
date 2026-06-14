@@ -190,3 +190,68 @@ def test_mirrored_constants_match_hook_router() -> None:
     assert tc._REVIEW_POST_METHOD_RE.pattern == router._REVIEW_POST_METHOD_RE.pattern
     assert tc._REVIEW_POST_BODY_FLAG_RE.pattern == router._REVIEW_POST_BODY_FLAG_RE.pattern
     assert tc._GLAB_GH_API_RE.pattern == router._GLAB_GH_API_RE.pattern
+
+
+# ── out-of-band-merge invariant: action-aware evasion matrix (#2387) ──────────
+
+
+def _bash_events(command: str) -> list[tc.SessionEvent]:
+    return [
+        tc.SessionEvent(
+            line_no=1,
+            type="assistant",
+            is_sidechain=False,
+            timestamp=None,
+            tool_name="Bash",
+            tool_input={"command": command},
+            skill=None,
+            hook_event=None,
+            hook_exit_code=None,
+            tool_use_id="t1",
+            raw={},
+        ),
+    ]
+
+
+# Every plausible invocation form the live hook denies — the conformance
+# invariant must FLAG each one too (action-aware, not the old substring matcher).
+_CONFORMANCE_FLAGGED = [
+    "gh pr merge 5 --squash",
+    "glab mr merge !9",
+    "GH_TOKEN=x gh pr merge 5",
+    "command gh pr merge 5",
+    "nohup gh pr merge 5",
+    "exec gh pr merge 5",
+    "xargs gh pr merge",
+    "env gh pr merge 5",
+    "/usr/bin/gh pr merge 5",
+    "echo $(gh pr merge 5)",
+    "echo `gh pr merge 5`",
+    "( gh pr merge 5 )",
+    "{ gh pr merge 5; }",
+    "if true; then gh pr merge 5; fi",
+]
+
+# Provably-non-invocation text — the conformance invariant must NOT flag it
+# (the over-block this whole change removes).
+_CONFORMANCE_CLEAN = [
+    "cat >> note.md <<EOF\nrun gh pr merge 5 to land\nEOF",
+    'echo "run gh pr merge 5"',
+    "echo 'gh pr merge 5'",
+    "ls  # gh pr merge 5",
+    'grep "gh pr merge" file.txt',
+    "gh pr view 3",
+]
+
+
+@pytest.mark.parametrize("command", _CONFORMANCE_FLAGGED)
+def test_conformance_flags_every_plausible_merge_invocation(command: str) -> None:
+    result = tc._check_no_raw_out_of_band_merge(_bash_events(command))
+    assert not result.ok, f"conformance invariant missed a plausible merge invocation: {command!r}"
+    assert result.offending_index == 0
+
+
+@pytest.mark.parametrize("command", _CONFORMANCE_CLEAN)
+def test_conformance_allows_documentation_of_merge(command: str) -> None:
+    result = tc._check_no_raw_out_of_band_merge(_bash_events(command))
+    assert result.ok, f"conformance invariant over-flagged non-invocation text: {command!r}"

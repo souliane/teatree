@@ -88,38 +88,51 @@ def _drive(command: str, repo: Path, home: Path) -> subprocess.CompletedProcess[
     )
 
 
-def test_heredoc_documenting_merge_is_allowed(tmp_path: Path, home_managed: Path) -> None:
+# Provably-non-invocation text — the legitimate over-block carve-outs (#2387).
+_STILL_ALLOWED = [
+    pytest.param("cat >> note.md <<EOF\nto land the PR run gh pr merge 5\nEOF", id="heredoc-documents"),
+    pytest.param('echo "run gh pr merge 5 to land the PR"', id="echo-quoted"),
+    pytest.param("ls  # gh pr merge 5", id="comment"),
+    pytest.param("gh pr view 3", id="unrelated-forge-read"),
+]
+
+# Every plausible invocation form — each MUST stay DENIED (the cold-review
+# evasion matrix). The id names the handling whose removal would leak the form.
+_STILL_BLOCKED = [
+    pytest.param("gh pr merge 5 --squash", id="bare-gh"),
+    pytest.param("glab mr merge !9", id="bare-glab"),
+    pytest.param("GH_TOKEN=x gh pr merge 5", id="env-assignment-prefix"),
+    pytest.param("command gh pr merge 5", id="wrapper-command"),
+    pytest.param("time gh pr merge 5", id="wrapper-time"),
+    pytest.param("nohup gh pr merge 5", id="wrapper-nohup"),
+    pytest.param("exec gh pr merge 5", id="wrapper-exec"),
+    pytest.param("xargs gh pr merge", id="wrapper-xargs"),
+    pytest.param("env gh pr merge 5", id="wrapper-env"),
+    pytest.param("/usr/bin/gh pr merge 5", id="path-qualified-basename"),
+    pytest.param("echo $(gh pr merge 5)", id="command-substitution-dollar"),
+    pytest.param("echo `gh pr merge 5`", id="command-substitution-backtick"),
+    pytest.param("( gh pr merge 5 )", id="subshell-group"),
+    pytest.param("{ gh pr merge 5; }", id="brace-group"),
+    pytest.param("if true; then gh pr merge 5; fi", id="compound-if-then"),
+]
+
+
+@pytest.mark.parametrize("command", _STILL_ALLOWED)
+def test_documentation_or_mention_is_allowed(command: str, tmp_path: Path, home_managed: Path) -> None:
     repo = _managed_repo(tmp_path / "wt")
-    command = "cat >> note.md <<EOF\nto land the PR run gh pr merge 5\nEOF"
     result = _drive(command, repo, home_managed)
     assert result.returncode == 0, (
-        "a heredoc that only DOCUMENTS the merge command must NOT be denied; "
+        "provably-non-invocation text must NOT be denied; "
         f"got exit {result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
     )
 
 
-def test_echo_of_merge_phrase_is_allowed(tmp_path: Path, home_managed: Path) -> None:
+@pytest.mark.parametrize("command", _STILL_BLOCKED)
+def test_plausible_invocation_is_blocked(command: str, tmp_path: Path, home_managed: Path) -> None:
     repo = _managed_repo(tmp_path / "wt")
-    result = _drive('echo "run gh pr merge 5 to land the PR"', repo, home_managed)
-    assert result.returncode == 0, (
-        f"an echo of the merge phrase must NOT be denied; got exit {result.returncode}, stderr={result.stderr!r}"
-    )
-
-
-def test_merge_phrase_in_comment_is_allowed(tmp_path: Path, home_managed: Path) -> None:
-    repo = _managed_repo(tmp_path / "wt")
-    result = _drive("ls  # gh pr merge 5", repo, home_managed)
-    assert result.returncode == 0, (
-        f"the merge phrase inside a # comment must NOT be denied; "
-        f"got exit {result.returncode}, stderr={result.stderr!r}"
-    )
-
-
-def test_real_raw_merge_is_still_blocked(tmp_path: Path, home_managed: Path) -> None:
-    repo = _managed_repo(tmp_path / "wt")
-    result = _drive("gh pr merge 5 --squash", repo, home_managed)
+    result = _drive(command, repo, home_managed)
     assert result.returncode == 2, (
-        "an actual raw `gh pr merge` on a teatree-managed repo must STILL be DENIED; "
+        "a plausible raw-merge invocation on a teatree-managed repo must be DENIED; "
         f"got exit {result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
     )
     decision = json.loads(result.stdout)
