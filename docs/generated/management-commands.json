@@ -783,6 +783,10 @@
           "name": "reap-stale"
         },
         {
+          "help": "Free disk via the three safe Docker prunes, then STOP \u2014 engine: ``teatree.docker.reclaim`` (#2246)",
+          "name": "reclaim-disk"
+        },
+        {
           "help": "Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots",
           "name": "clean-all"
         }
