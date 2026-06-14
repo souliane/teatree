@@ -9,11 +9,19 @@ Files already over the cap at HEAD are grandfathered but ratcheted: they may
 only SHRINK. A commit that grows an over-cap file (LOC or public-function
 count) is blocked, so a god-module can never re-accrete after a split (#1983).
 
-Runs on every commit against staged files only.
+Two entry paths share one ratchet predicate. The default (no args) path runs
+per-commit over staged files (``git diff --cached``) — the prek commit hook,
+where a merge commit is exempt because a merge brings both parents' growth into
+one commit and the per-commit comparison would false-flag it (#1983 exemption).
+The ``--from-ref <base>`` path runs over the PR's whole ``base..HEAD`` range —
+the bypass-proof CI twin (#2010); the range is computed once base-to-head, NOT
+per-commit, so the merge-commit false-positive the staged-mode exemption works
+around never arises and no merge exemption is needed in this mode.
 
 See: souliane/teatree codebase audit findings
 """
 
+import argparse
 import ast
 import pathlib
 import re
@@ -83,29 +91,43 @@ def _count_loc(filepath: str) -> int:
         return 0
 
 
-def _count_loc_at_head(filepath: str) -> int:
+def _show_at_ref(filepath: str, ref: str) -> str | None:
     result = subprocess.run(
-        ["git", "show", f"HEAD:{filepath}"],
+        ["git", "show", f"{ref}:{filepath}"],
         capture_output=True,
         text=True,
         check=False,
     )
     if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _count_loc_at_ref(filepath: str, ref: str) -> int:
+    source = _show_at_ref(filepath, ref)
+    if source is None:
         return 0
-    return sum(1 for line in result.stdout.splitlines() if line.strip() and not line.strip().startswith("#"))
+    return sum(1 for line in source.splitlines() if line.strip() and not line.strip().startswith("#"))
+
+
+def _count_module_level_functions_at_ref(filepath: str, ref: str) -> list[str]:
+    source = _show_at_ref(filepath, ref)
+    if source is None:
+        return []
+    return _public_module_functions(source)
+
+
+def _count_loc_at_head(filepath: str) -> int:
+    return _count_loc_at_ref(filepath, "HEAD")
 
 
 def _count_module_level_functions_at_head(filepath: str) -> list[str]:
-    result = subprocess.run(
-        ["git", "show", f"HEAD:{filepath}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return []
+    return _count_module_level_functions_at_ref(filepath, "HEAD")
+
+
+def _public_module_functions(source: str) -> list[str]:
     try:
-        tree = ast.parse(result.stdout)
+        tree = ast.parse(source)
     except SyntaxError:
         return []
     return [
@@ -118,15 +140,9 @@ def _count_module_level_functions_at_head(filepath: str) -> list[str]:
 def _count_module_level_functions(filepath: str) -> list[str]:
     try:
         source = pathlib.Path(filepath).read_text(encoding="utf-8")
-        tree = ast.parse(source)
-    except (OSError, SyntaxError):
+    except OSError:
         return []
-
-    return [
-        node.name
-        for node in ast.iter_child_nodes(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_")
-    ]
+    return _public_module_functions(source)
 
 
 def _added_line_numbers(filepath: str, head_path: str) -> set[int] | None:
@@ -166,7 +182,117 @@ def _find_dict_object_annotations(filepath: str) -> list[tuple[int, str]]:
     return findings
 
 
-def main() -> int:
+def _file_violations(filepath: str, prev_loc: int, prev_funcs: list[str], added_lines: set[int] | None) -> list[str]:
+    """Apply the shrink ratchet to one file's current vs previous state.
+
+    ``prev_loc`` / ``prev_funcs`` are the file's measurements at the comparison
+    baseline (HEAD for staged-mode, the base ref for diff-mode); the current
+    side always reads the working tree, which is the PR head in both contexts.
+    """
+    violations: list[str] = []
+
+    loc = _count_loc(filepath)
+    if loc > MAX_LOC:
+        if prev_loc <= MAX_LOC:
+            violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
+        elif loc > prev_loc:
+            violations.append(
+                f"  {filepath}: {loc} LOC, up from {prev_loc} (over the {MAX_LOC} cap). "
+                f"Over-cap files may only shrink — split by concern or move code out."
+            )
+
+    public_functions = _count_module_level_functions(filepath)
+    if len(public_functions) > MAX_MODULE_FUNCTIONS:
+        names = ", ".join(public_functions[:5])
+        if len(prev_funcs) <= MAX_MODULE_FUNCTIONS:
+            violations.append(
+                f"  {filepath}: {len(public_functions)} public module-level functions "
+                f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
+            )
+        elif len(public_functions) > len(prev_funcs):
+            violations.append(
+                f"  {filepath}: {len(public_functions)} public module-level functions, "
+                f"up from {len(prev_funcs)} (over the {MAX_MODULE_FUNCTIONS} cap). "
+                f"Over-cap files may only shrink — move a function to a class. Examples: {names}"
+            )
+
+    for line_num, _line in _find_dict_object_annotations(filepath):
+        if added_lines is None or line_num in added_lines:
+            violations.append(f"  {filepath}:{line_num}: dict[str, object] — use a dataclass or TypedDict instead")
+
+    return violations
+
+
+def _range_python_files(base_ref: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...HEAD", "--", "*.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return [f for f in result.stdout.strip().splitlines() if f.startswith("src/")]
+
+
+def _range_paths(base_ref: str) -> dict[str, str]:
+    """Map each changed path in ``base..HEAD`` to its pre-rename path at the base ref."""
+    result = subprocess.run(
+        ["git", "diff", "--name-status", "-M", "--diff-filter=ACMR", f"{base_ref}...HEAD", "--", "*.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    mapping: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        status, *paths = line.split("\t")
+        if status.startswith("R") and len(paths) == _RENAME_FIELDS:
+            old_path, new_path = paths
+            mapping[new_path] = old_path
+        elif len(paths) == _SINGLE_PATH_FIELD:
+            mapping[paths[0]] = paths[0]
+    return mapping
+
+
+def _range_added_line_numbers(filepath: str, base_path: str, base_ref: str) -> set[int] | None:
+    paths = [base_path, filepath] if base_path != filepath else [filepath]
+    result = subprocess.run(
+        ["git", "diff", "-U0", "-M", f"{base_ref}...HEAD", "--", *paths],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if not result.stdout:
+        return None
+    added: set[int] = set()
+    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", result.stdout):
+        start = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) else 1
+        added.update(range(start, start + count))
+    return added
+
+
+def run_diff_mode(base_ref: str) -> int:
+    """Ratchet the whole ``base_ref..HEAD`` range (the bypass-proof CI twin, #2010).
+
+    The PR diff is taken once over the range, NOT per-commit, so the
+    merge-commit false-positive the staged-mode exemption guards against never
+    arises here — no merge exemption is needed in this mode.
+    """
+    base_paths = _range_paths(base_ref)
+    violations: list[str] = []
+    for filepath in _range_python_files(base_ref):
+        base_path = base_paths.get(filepath, filepath)
+        violations.extend(
+            _file_violations(
+                filepath,
+                _count_loc_at_ref(base_path, base_ref),
+                _count_module_level_functions_at_ref(base_path, base_ref),
+                _range_added_line_numbers(filepath, base_path, base_ref),
+            )
+        )
+    return _report(violations)
+
+
+def _run_staged() -> int:
     if _is_merge_commit():
         return 0
 
@@ -176,49 +302,22 @@ def main() -> int:
 
     head_paths = _head_paths()
     violations: list[str] = []
-
     for filepath in files:
         head_path = head_paths.get(filepath, filepath)
-        loc = _count_loc(filepath)
-        if loc > MAX_LOC:
-            prev_loc = _count_loc_at_head(head_path)
-            # A file newly crossing the cap is blocked outright. A file already
-            # over the cap at HEAD is grandfathered but ratcheted: it may only
-            # shrink. Growth is a regression that re-accretes the god-module.
-            if prev_loc <= MAX_LOC:
-                violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
-            elif loc > prev_loc:
-                violations.append(
-                    f"  {filepath}: {loc} LOC, up from {prev_loc} (over the {MAX_LOC} cap). "
-                    f"Over-cap files may only shrink — split by concern or move code out."
-                )
+        violations.extend(
+            _file_violations(
+                filepath,
+                _count_loc_at_head(head_path),
+                _count_module_level_functions_at_head(head_path),
+                _added_line_numbers(filepath, head_path),
+            )
+        )
+    return _report(violations)
 
-        public_functions = _count_module_level_functions(filepath)
-        if len(public_functions) > MAX_MODULE_FUNCTIONS:
-            prev_count = len(_count_module_level_functions_at_head(head_path))
-            names = ", ".join(public_functions[:5])
-            if prev_count <= MAX_MODULE_FUNCTIONS:
-                violations.append(
-                    f"  {filepath}: {len(public_functions)} public module-level functions "
-                    f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
-                )
-            elif len(public_functions) > prev_count:
-                violations.append(
-                    f"  {filepath}: {len(public_functions)} public module-level functions, "
-                    f"up from {prev_count} (over the {MAX_MODULE_FUNCTIONS} cap). "
-                    f"Over-cap files may only shrink — move a function to a class. Examples: {names}"
-                )
 
-        added_lines = _added_line_numbers(filepath, head_path)
-        dict_hits = _find_dict_object_annotations(filepath)
-        for line_num, _line in dict_hits:
-            # Only flag lines that were added or modified in this commit
-            if added_lines is None or line_num in added_lines:
-                violations.append(f"  {filepath}:{line_num}: dict[str, object] — use a dataclass or TypedDict instead")
-
+def _report(violations: list[str]) -> int:
     if not violations:
         return 0
-
     print("Module health violations:")
     print()
     for v in violations:
@@ -231,6 +330,21 @@ def main() -> int:
         "before the commit lands."
     )
     return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--from-ref",
+        default=None,
+        help="Run the ratchet over the whole <ref>..HEAD range (CI twin) instead of staged files.",
+    )
+    # Tolerated, ignored: prek's commit-msg stage passes the message file path.
+    parser.add_argument("ignored_commit_msg_file", nargs="?", default=None)
+    args = parser.parse_args(argv)
+    if args.from_ref is not None:
+        return run_diff_mode(args.from_ref)
+    return _run_staged()
 
 
 if __name__ == "__main__":
