@@ -66,21 +66,32 @@ class RunConsolidationSeamTestCase(TestCase):
         assert isinstance(seen[0], ConsolidationExtract)
 
 
+_CITATION = "pushed without running the gate, CI went red"
+
+
 def _cluster_for(member: TranscriptMember, *, key: str = "k1", binding: bool = False) -> DistilledCluster:
     return DistilledCluster(
         cluster_key=key,
         rule="Run the gate before pushing.",
         source_files=[str(member.path)],
         is_binding=binding,
-        verified_citation="pushed without running the gate, CI went red",
+        verified_citation=_CITATION,
         durable_destination="feedback/run_gate.md",
     )
 
 
-def _write_member(tmp_path: Path, name: str = "feedback_x.md", body: str = "BINDING: run the gate") -> TranscriptMember:
+def _write_member(
+    tmp_path: Path,
+    name: str = "feedback_x.md",
+    body: str = f"BINDING: run the gate — {_CITATION}",
+) -> TranscriptMember:
     f = tmp_path / name
     f.write_text(body)
     return TranscriptMember(path=f, kind="memory")
+
+
+def _extract_of(*members: TranscriptMember) -> ConsolidationExtract:
+    return build_extract(list(members))
 
 
 class WriteClustersTestCase(TestCase):
@@ -89,7 +100,7 @@ class WriteClustersTestCase(TestCase):
 
     def test_writes_one_row_per_valid_cluster(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], [member], dry_run=False)
+        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         assert written == 1
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.rule == "Run the gate before pushing."
@@ -98,8 +109,8 @@ class WriteClustersTestCase(TestCase):
 
     def test_idempotent_rerun_writes_no_duplicate(self) -> None:
         member = _write_member(self.tmp)
-        write_clusters([_cluster_for(member)], [member], dry_run=False)
-        write_clusters([_cluster_for(member)], [member], dry_run=False)
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         assert ConsolidatedMemory.objects.filter(cluster_key="k1").count() == 1
 
     def test_rejects_cluster_with_empty_source_files(self) -> None:
@@ -109,10 +120,10 @@ class WriteClustersTestCase(TestCase):
             rule="hallucinated",
             source_files=[],
             is_binding=False,
-            verified_citation="cited",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], [member], dry_run=False)
+        written = write_clusters([bad], _extract_of(member), dry_run=False)
         assert written == 0
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
@@ -123,10 +134,10 @@ class WriteClustersTestCase(TestCase):
             rule="hallucinated",
             source_files=["/nope/not-a-member.md"],
             is_binding=False,
-            verified_citation="cited",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        written = write_clusters([bad], [member], dry_run=False)
+        written = write_clusters([bad], _extract_of(member), dry_run=False)
         assert written == 0
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
@@ -140,19 +151,52 @@ class WriteClustersTestCase(TestCase):
             verified_citation="   ",
             durable_destination="",
         )
-        written = write_clusters([bad], [member], dry_run=False)
+        written = write_clusters([bad], _extract_of(member), dry_run=False)
         assert written == 0
         assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
 
+    def test_rejects_real_path_with_invented_quote(self) -> None:
+        member = _write_member(self.tmp)
+        bad = DistilledCluster(
+            cluster_key="bad",
+            rule="rule",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation="a mistake that never appears in the snippet text",
+            durable_destination="",
+        )
+        written = write_clusters([bad], _extract_of(member), dry_run=False)
+        assert written == 0
+        assert not ConsolidatedMemory.objects.filter(cluster_key="bad").exists()
+
+    def test_accepts_citation_with_differing_whitespace(self) -> None:
+        member = self._member_with_body("feedback_ws.md", f"line one\n  {_CITATION}\n  trailing")
+        spaced = DistilledCluster(
+            cluster_key="ws",
+            rule="rule",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation=f"  {_CITATION}  ",
+            durable_destination="",
+        )
+        written = write_clusters([spaced], _extract_of(member), dry_run=False)
+        assert written == 1
+
     def test_dry_run_writes_nothing(self) -> None:
         member = _write_member(self.tmp)
-        written = write_clusters([_cluster_for(member)], [member], dry_run=True)
+        written = write_clusters([_cluster_for(member)], _extract_of(member), dry_run=True)
         assert written == 1
         assert ConsolidatedMemory.objects.count() == 0
 
+    def test_max_member_weight_is_the_cited_snippet_weight(self) -> None:
+        member = _write_member(self.tmp)
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+        row = ConsolidatedMemory.objects.get(cluster_key="k1")
+        assert row.max_member_weight > 0
+
     def test_binding_row_rule_never_destructively_overwritten(self) -> None:
         member = _write_member(self.tmp)
-        write_clusters([_cluster_for(member, binding=True)], [member], dry_run=False)
+        write_clusters([_cluster_for(member, binding=True)], _extract_of(member), dry_run=False)
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.is_binding is True
         original_rule = row.rule
@@ -162,25 +206,25 @@ class WriteClustersTestCase(TestCase):
             rule="a totally different overwriting rule",
             source_files=[str(member.path)],
             is_binding=True,
-            verified_citation="another cited mistake",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        write_clusters([mutated], [member], dry_run=False)
+        write_clusters([mutated], _extract_of(member), dry_run=False)
         row.refresh_from_db()
         assert row.rule == original_rule
 
     def test_rerun_refreshes_rule_for_non_binding(self) -> None:
         member = _write_member(self.tmp)
-        write_clusters([_cluster_for(member)], [member], dry_run=False)
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         refreshed = DistilledCluster(
             cluster_key="k1",
             rule="A sharper restatement of the same lesson.",
             source_files=[str(member.path)],
             is_binding=False,
-            verified_citation="pushed without running the gate, CI went red",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        write_clusters([refreshed], [member], dry_run=False)
+        write_clusters([refreshed], _extract_of(member), dry_run=False)
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.rule == "A sharper restatement of the same lesson."
 
@@ -192,22 +236,27 @@ class WriteClustersTestCase(TestCase):
             rule="rule",
             source_files=[str(member.path)],
             is_binding=False,
-            verified_citation="cited mistake",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        write_clusters([first], [member], dry_run=False)
+        write_clusters([first], _extract_of(member, member2), dry_run=False)
         grown = DistilledCluster(
             cluster_key="k1",
             rule="rule",
             source_files=[str(member.path), str(member2.path)],
             is_binding=False,
-            verified_citation="cited mistake",
+            verified_citation=_CITATION,
             durable_destination="",
         )
-        write_clusters([grown], [member, member2], dry_run=False)
+        write_clusters([grown], _extract_of(member, member2), dry_run=False)
         row = ConsolidatedMemory.objects.get(cluster_key="k1")
         assert row.member_count == 2
         assert sorted(row.source_files) == sorted([str(member.path), str(member2.path)])
+
+    def _member_with_body(self, name: str, body: str) -> TranscriptMember:
+        f = self.tmp / name
+        f.write_text(body)
+        return TranscriptMember(path=f, kind="memory")
 
 
 class BuildExtractTestCase(TestCase):
@@ -392,12 +441,16 @@ class TestEnumerateMembersTaskOutput:
 
         assert not any(m.path == output_file for m in members)
 
-    def test_all_three_source_types_collected(self, tmp_path: Path) -> None:
+    def test_all_four_source_types_collected(self, tmp_path: Path) -> None:
         projects = tmp_path / "projects"
         task_root = tmp_path / "tasks_tmp"
 
         (projects / "slug").mkdir(parents=True)
         (projects / "slug" / "main-session.jsonl").write_text("{}\n")
+
+        memory_dir = projects / "slug" / "memory"
+        memory_dir.mkdir(parents=True)
+        (memory_dir / "feedback_x.md").write_text("BINDING: a lesson\n")
 
         subagent_dir = projects / "slug" / "sess" / "subagents"
         subagent_dir.mkdir(parents=True)
@@ -414,7 +467,41 @@ class TestEnumerateMembersTaskOutput:
         )
 
         kinds = {m.kind for m in members}
-        assert kinds == {"main", "subagent", "task_output"}
+        assert kinds == {"memory", "main", "subagent", "task_output"}
+
+
+class TestEnumerateMembersMemoryFiles:
+    def test_memory_md_picked_up_as_memory_kind(self, tmp_path: Path) -> None:
+        memory_dir = tmp_path / "slug" / "memory"
+        memory_dir.mkdir(parents=True)
+        md = memory_dir / "feedback_run_gate.md"
+        md.write_text("BINDING: always run the gate\n")
+
+        members = enumerate_members(
+            projects_dir=tmp_path,
+            task_output_roots=[],
+            since=datetime.now(tz=UTC) - timedelta(hours=1),
+        )
+
+        assert any(m.path == md and m.kind == "memory" for m in members)
+
+    def test_old_memory_md_is_still_included(self, tmp_path: Path) -> None:
+        # Curated memory files are durable — re-read regardless of age, unlike
+        # the recency-gated transcripts.
+        memory_dir = tmp_path / "slug" / "memory"
+        memory_dir.mkdir(parents=True)
+        md = memory_dir / "feedback_old.md"
+        md.write_text("BINDING: an old lesson\n")
+        old_ts = time.time() - 90 * 24 * 3600
+        os.utime(md, (old_ts, old_ts))
+
+        members = enumerate_members(
+            projects_dir=tmp_path,
+            task_output_roots=[],
+            since=datetime.now(tz=UTC) - timedelta(hours=1),
+        )
+
+        assert any(m.path == md and m.kind == "memory" for m in members)
 
 
 class TestTranscriptMember:

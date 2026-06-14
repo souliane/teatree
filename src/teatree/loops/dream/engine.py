@@ -8,11 +8,14 @@ testable WITHOUT an LLM.
 The pass runs in three phases, adapted from arXiv:2606.03979 (schedule + safety
 ordering only — no weight updates):
 
-Phase 1 (replay / extract) — :func:`enumerate_members` lists recent memory
-files and session transcripts; :func:`build_extract` reads them, ranks by weight
-(user-correction BINDING/``feedback_*`` highest, then retro findings, cold
-reviews, deny-streaks, other), keeps only high-signal transcript lines, and
-bounds the total size hard so the LLM prompt can never blow up.
+Phase 1 (replay / extract) — :func:`enumerate_members` lists the curated memory
+files (``*/memory/*.md`` under ``~/.claude/projects``, re-read regardless of age)
+and the recency-gated session transcripts (``*/*.jsonl`` main sessions,
+``*/*/subagents/agent-*.jsonl`` sub-agents, ``*/*/tasks/*.output`` task outputs);
+:func:`build_extract` reads them, ranks by weight (user-correction
+BINDING/``feedback_*`` highest, then retro findings, cold reviews, deny-streaks,
+other), keeps only high-signal transcript lines, and bounds the total size hard
+so the LLM prompt can never blow up.
 
 Phase 2 (cluster / distill) — the injected :class:`Distiller` groups the extract
 by root cause and returns one imperative :class:`DistilledCluster` per group,
@@ -148,6 +151,13 @@ def _is_recent_file(path: Path, cutoff_ts: float) -> bool:
     return st.st_mtime >= cutoff_ts
 
 
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError:
+        return False
+
+
 def enumerate_members(
     *,
     since: datetime | None = None,
@@ -167,6 +177,9 @@ def enumerate_members(
     members: list[TranscriptMember] = []
 
     if root.is_dir():
+        members.extend(
+            TranscriptMember(path=p, kind="memory") for p in root.glob("*/memory/*.md") if _is_regular_file(p)
+        )
         members.extend(
             TranscriptMember(path=p, kind="main") for p in root.glob("*/*.jsonl") if _is_recent_file(p, cutoff_ts)
         )
@@ -260,7 +273,7 @@ def _clip(snippet: WeightedSnippet, length: int) -> WeightedSnippet:
 
 def write_clusters(
     clusters: Sequence[DistilledCluster],
-    members: Sequence[TranscriptMember],
+    extract: ConsolidationExtract,
     *,
     dry_run: bool,
     overlay: str = "",
@@ -268,35 +281,49 @@ def write_clusters(
     """Idempotently record valid clusters into the ConsolidatedMemory ledger.
 
     A cluster is rejected (counted as skipped, never written) when its
-    ``source_files`` is empty, cites a path not in *members*, or its
-    ``verified_citation`` is blank — these are the hallucinated-rule shapes the
-    ledger must never persist. A valid cluster is upserted by ``cluster_key``
-    through the manager factory, so a re-run that re-clusters the same members
-    updates the row in place instead of duplicating it. A BINDING row's ``rule``
-    is never destructively overwritten.
+    ``source_files`` is empty, cites a path not present in *extract*, or its
+    ``verified_citation`` does not appear (whitespace-normalized substring) in a
+    cited snippet's text — these are the hallucinated-rule shapes the ledger must
+    never persist, including a real-path-but-invented-quote citation. A valid
+    cluster is upserted by ``cluster_key`` through the manager factory, so a
+    re-run that re-clusters the same members updates the row in place instead of
+    duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
 
     Returns the count of clusters that passed the reject guard. Under *dry_run*
     the count is computed but nothing is written.
     """
-    member_paths = {str(member.path) for member in members}
+    snippet_texts = {str(snippet.path): _normalize_ws(snippet.text) for snippet in extract.snippets}
+    snippet_weights = {str(snippet.path): snippet.weight for snippet in extract.snippets}
     written = 0
     for cluster in clusters:
-        if not _cluster_is_grounded(cluster, member_paths):
+        if not _cluster_is_grounded(cluster, snippet_texts):
             continue
         written += 1
         if not dry_run:
-            _upsert(cluster, overlay=overlay)
+            _upsert(cluster, max_member_weight=_cited_max_weight(cluster, snippet_weights), overlay=overlay)
     return written
 
 
-def _cluster_is_grounded(cluster: DistilledCluster, member_paths: set[str]) -> bool:
+def _normalize_ws(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _cluster_is_grounded(cluster: DistilledCluster, snippet_texts: dict[str, str]) -> bool:
     sources = [str(path) for path in cluster.source_files if str(path).strip()]
-    if not sources or any(source not in member_paths for source in sources):
+    if not sources or any(source not in snippet_texts for source in sources):
         return False
-    return bool(cluster.verified_citation.strip())
+    citation = _normalize_ws(cluster.verified_citation)
+    if not citation:
+        return False
+    return any(citation in snippet_texts[source] for source in sources)
 
 
-def _upsert(cluster: DistilledCluster, *, overlay: str) -> None:
+def _cited_max_weight(cluster: DistilledCluster, snippet_weights: dict[str, int]) -> int:
+    weights = [snippet_weights[str(path)] for path in cluster.source_files if str(path) in snippet_weights]
+    return max(weights, default=0)
+
+
+def _upsert(cluster: DistilledCluster, *, max_member_weight: int, overlay: str) -> None:
     from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
 
     sources = [str(path) for path in cluster.source_files]
@@ -305,7 +332,7 @@ def _upsert(cluster: DistilledCluster, *, overlay: str) -> None:
         rule=cluster.rule,
         source_files=sources,
         member_count=len(sources),
-        max_member_weight=0,
+        max_member_weight=max_member_weight,
         is_binding=cluster.is_binding,
         overlay=overlay,
     )
@@ -314,7 +341,8 @@ def _upsert(cluster: DistilledCluster, *, overlay: str) -> None:
     row.rule = cluster.rule
     row.source_files = sources
     row.member_count = len(sources)
-    row.save(update_fields=["rule", "source_files", "member_count", "updated_at"])
+    row.max_member_weight = max_member_weight
+    row.save(update_fields=["rule", "source_files", "member_count", "max_member_weight", "updated_at"])
 
 
 _DISTILL_SYSTEM_PROMPT = (
@@ -330,10 +358,12 @@ _DISTILL_PROMPT_TEMPLATE = (
     "cluster_key (a stable lowercase slug), rule (one imperative sentence), "
     "source_files (the snippet paths the rule cites — copy them verbatim), "
     "is_binding (true when a source is a BINDING/user-correction), "
-    "verified_citation (the specific real mistake, quoted from a snippet, that "
-    "the rule would have prevented), durable_destination (a suggested home).\n\n"
-    "Emit an element ONLY when verified_citation quotes a real mistake present "
-    "below. If nothing meets the bar, return [].\n\n"
+    "verified_citation (a VERBATIM substring copied from one of the cited "
+    "snippets — the specific real mistake the rule would have prevented; do NOT "
+    "paraphrase, the quote must appear word-for-word in the snippet), "
+    "durable_destination (a suggested home).\n\n"
+    "Emit an element ONLY when verified_citation is a real quote present in a "
+    "cited snippet below. If nothing meets the bar, return [].\n\n"
     "Snippets:\n{snippets}"
 )
 
@@ -474,7 +504,7 @@ def run_consolidation(
     extract = build_extract(members)
     distill = distiller or _sdk_distiller
     clusters = distill(extract)
-    written = write_clusters(clusters, members, dry_run=dry_run, overlay=overlay)
+    written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
     return DreamRunResult(clusters_recorded=written, members_replayed=len(members), dry_run=dry_run)
 
 
