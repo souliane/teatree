@@ -85,14 +85,22 @@ FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not
 
 
 def is_fail_closed_sentinel(text: str) -> bool:
-    """Return True iff ``text`` carries the injected fail-closed sentinel.
+    """Return True iff ``text`` carries an INJECTED fail-closed sentinel.
 
-    Callers fail closed on a NAMED reason rather than rely on the
-    sentinel accidentally tripping a content pattern (#126). The sentinel
-    can be one of several concatenated payload fragments, so a substring
-    test is used rather than equality.
+    The parser emits the sentinel as its own discrete payload fragment for
+    every unresolvable/ambiguous body source, and the fragments are joined
+    by newlines — so a genuinely-injected sentinel is always a standalone
+    newline-delimited line equal to :data:`FAIL_CLOSED_SENTINEL`. The gate
+    fails closed on that NAMED reason (#126).
+
+    A body that merely MENTIONS the sentinel as inert prose inside a
+    properly-quoted argument value (a commit message or PR body that
+    DISCUSSES the gate) embeds the phrase mid-line, not as a standalone
+    line. That is not a quoting hazard — the argument is correctly quoted —
+    so the line-exact test allows it while every genuine injection (the
+    sentinel on its own line) still fails closed (#1213).
     """
-    return FAIL_CLOSED_SENTINEL in text
+    return any(line.strip() == FAIL_CLOSED_SENTINEL for line in text.split("\n"))
 
 
 def _segment_is_t3_publish(words: list[str]) -> bool:
