@@ -31,6 +31,7 @@ import dataclasses
 import math
 
 from teatree.eval.models import TokenUsage
+from teatree.pricing import CACHE_READ_MULTIPLIER
 
 #: Fewer clean cells than this and the 2-parameter fit is under-determined /
 #: over-fit — degrade to ``None`` rather than report a fabricated rate.
@@ -41,10 +42,6 @@ _MIN_CLEAN_CELLS = 4
 #: the fit is numerically meaningless. This happens on small slices and when
 #: output variance is tiny. Degrade to ``None``.
 _MAX_CONDITION_NUMBER = 1e8
-
-#: Anthropic's fixed cache-read multiplier — the rate the warm-equivalent prices
-#: ALL cacheable input at (both reads and the would-be-cold writes).
-_CACHE_READ_MULTIPLIER = 0.10
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,7 +105,7 @@ def warm_equivalent_cost(cells: list[CostCell]) -> float | None:
 
 def _warm_input(usage: TokenUsage) -> float:
     """Cacheable input priced as if fully warm: ``input + 0.10*(cache_creation + cache_read)``."""
-    return usage.input + _CACHE_READ_MULTIPLIER * (usage.cache_creation + usage.cache_read)
+    return usage.input + CACHE_READ_MULTIPLIER * (usage.cache_creation + usage.cache_read)
 
 
 def _condition_number(s11: float, s12: float, s22: float) -> float:

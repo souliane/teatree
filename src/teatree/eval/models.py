@@ -4,6 +4,8 @@ import dataclasses
 from pathlib import Path
 from typing import Any
 
+from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
+
 #: Terminal reasons that mark a cap-truncated / aborted run — a run whose billed
 #: cost does NOT match the clean billed identity (it paid a partial-or-cap cost).
 #: A clean completion (``success``/``end_turn``/empty) is NOT in this set. The
@@ -137,14 +139,6 @@ class EvalToolCall:
     turn: int
 
 
-#: Anthropic's fixed cache-pricing multipliers on input tokens, relative to the
-#: model's base input rate: uncached input bills 1.00x, a 5-minute cache *write*
-#: bills 1.25x, and a cache *read* bills 0.10x. They are a property of the API,
-#: not of any model, so they are constants here — see :class:`TokenUsage`.
-_CACHE_WRITE_MULTIPLIER = 1.25
-_CACHE_READ_MULTIPLIER = 0.10
-
-
 @dataclasses.dataclass(frozen=True)
 class TokenUsage:
     """One run's token usage, split by cache class, with billed-input derivations.
@@ -185,7 +179,7 @@ class TokenUsage:
     @property
     def effective_billed_input(self) -> float:
         """The API's billed-input regressor: ``input + 1.25*cache_creation + 0.10*cache_read``."""
-        return self.input + _CACHE_WRITE_MULTIPLIER * self.cache_creation + _CACHE_READ_MULTIPLIER * self.cache_read
+        return self.input + CACHE_WRITE_MULTIPLIER * self.cache_creation + CACHE_READ_MULTIPLIER * self.cache_read
 
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
         return TokenUsage(
