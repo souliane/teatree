@@ -10,7 +10,7 @@ byte-for-byte unchanged.
 
 The emitted ``issue_implementer.claimed`` signals route to
 ``t3:orchestrator`` (maker-side kickoff) via the dispatch
-``_AGENT_BY_KIND`` table — starting the normal maker pipeline for the
+``AGENT_BY_KIND`` table — starting the normal maker pipeline for the
 claimed issue, issuing no ``MergeClear`` and gaining no merge authority.
 """
 

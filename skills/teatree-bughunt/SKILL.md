@@ -54,7 +54,7 @@ Walk the output of the tick **and** the rendered statusline. The tick must agree
 - `errors` is empty. Any entry like `"my_prs[teatree]": "AuthError: ..."` is bug #1 — surface it before doing anything else.
 - `signal_count` and `action_count` are non-zero when the registered overlays have open work. A clean inbox is plausible; a 0/0 tick on an overlay you know has open PRs is a scanner bug.
 - Every scanner that `build_default_scanners` (`src/teatree/loop/global_scanner_factories.py`) assembles for the active overlay shows up — cross-reference that function for the current set, since it gates each scanner on backend availability, settings flags, and per-scanner cadence. Per-overlay signal-producers (`my_prs[<overlay>]`, `reviewer_prs[<overlay>]`, `assigned_issues[<overlay>]`, `slack_mentions[<overlay>]` when messaging is configured, …) carry the `[<overlay>]` tag; global scanners (`pending_tasks`, `notion_view` when a Notion client is wired, …) run once with no tag (examples non-exhaustive). A scanner that `build_default_scanners` wired with no error in `report.errors` but which emits nothing means the loop dropped it — file it.
-- Every signal kind in the JSON is one the dispatcher knows about (see § "Reference"). A kind not in `_STATUSLINE_ZONE_BY_KIND` falls through to a context-specific default (`_dispatch_one` → `in_flight`, `_dispatch_answering` → `action_needed` — see `src/teatree/loop/dispatch.py`); a brand-new kind nobody mapped is a bug, not a feature.
+- Every signal kind in the JSON is one the dispatcher knows about (see § "Reference"). A kind not in `STATUSLINE_ZONE_BY_KIND` (`src/teatree/loop/dispatch_tables.py`) falls through to a context-specific default (`_dispatch_one` → `in_flight`, `dispatch_answering` → `action_needed` — see `src/teatree/loop/dispatch.py` and `dispatch_gates.py`); a brand-new kind nobody mapped is a bug, not a feature.
 
 **Rendered (`statusline.txt`):**
 
@@ -68,7 +68,7 @@ Walk the output of the tick **and** the rendered statusline. The tick must agree
 
 - **Scanner error in `report.errors`** — anything other than transient network failures. Tag the scanner+overlay in the title.
 - **Missing signal** — open PR on the code host, ticket assigned to the user, fresh Slack mention, but the corresponding scanner emits nothing. Reproduce first, then file.
-- **Wrong zone** — `my_pr.failed` rendered in `in_flight`, `slack.mention` rendered in `anchors`, etc. Cross-reference `_STATUSLINE_ZONE_BY_KIND` in `src/teatree/loop/dispatch.py`.
+- **Wrong zone** — `my_pr.failed` rendered in `in_flight`, `slack.mention` rendered in `anchors`, etc. Cross-reference `STATUSLINE_ZONE_BY_KIND` in `src/teatree/loop/dispatch_tables.py`.
 - **Broken hyperlink** — text URL where OSC 8 expected, OSC 8 wrapping the wrong text, hyperlink that points at the wrong PR.
 - **Stale or duplicated entries** — same PR rendered twice, a closed PR still in `in_flight`, a merged PR in `action_needed`.
 - **Multi-overlay leak** — a signal from one overlay rendered without (or with the wrong) `[overlay]` prefix; identical PRs from two overlays collapsed into one line.
@@ -119,7 +119,7 @@ Verify against the source before quoting in a bug report — these can drift.
   - `reviewer_pr.new_sha`, `reviewer_pr.unreviewed` → agent `t3:reviewer`
   - `pending_task`, `assigned_issue.ready` → agent `t3:orchestrator`
   - `notion.unrouted` → webhook `n8n`
-  - A kind absent from `_STATUSLINE_ZONE_BY_KIND` falls back per dispatch path: `_dispatch_one` → `in_flight`, `_dispatch_answering` → `action_needed` (the dual-dispatch mirror uses `in_flight`). `src/teatree/loop/dispatch.py` is the source of truth — quote it, don't memorise it. A genuinely unmapped *new* kind is the bug to flag, not the fallback itself.
+  - A kind absent from `STATUSLINE_ZONE_BY_KIND` (`src/teatree/loop/dispatch_tables.py`) falls back per dispatch path: `_dispatch_one` → `in_flight`, `dispatch_answering` → `action_needed` (the dual-dispatch mirror uses `in_flight`). `src/teatree/loop/dispatch.py` (the consult order) plus its `dispatch_tables`/`dispatch_reducer`/`dispatch_gates` siblings are the source of truth — quote them, don't memorise them. A genuinely unmapped *new* kind is the bug to flag, not the fallback itself.
 
 ## Rules
 

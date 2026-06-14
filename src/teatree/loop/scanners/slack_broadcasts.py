@@ -594,7 +594,7 @@ def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) 
     """Build the ``slack.review_intent`` signal for one open MR in a broadcast.
 
     Reuses the existing signal shape so the dispatcher routes through
-    ``_review_request_dispatch`` to the ``t3:reviewer`` agent — no new
+    ``review_request_dispatch`` to the ``t3:reviewer`` agent — no new
     signal kind, no parallel dispatch path.
     """
     return ScanSignal(

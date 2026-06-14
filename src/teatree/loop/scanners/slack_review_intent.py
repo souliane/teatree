@@ -147,7 +147,7 @@ class SlackReviewIntentScanner:
         from the backend's in-memory queue instead (populated either by
         Socket Mode ``enqueue_mention`` or by a test fake). For mentions
         already drained by ``SlackMentionsScanner`` into ``slack.mention``
-        signals, the dispatcher's existing ``_review_request_dispatch``
+        signals, the dispatcher's existing ``review_request_dispatch``
         path still routes them to ``t3:reviewer`` — this scanner just adds
         the persistence layer + ``:eyes:`` post for the cases where the
         mention reaches us first (test path or stand-alone deployment).

@@ -4,7 +4,7 @@ GitLab is the source of truth: a review request for an MR that is already
 MERGED or CLOSED can never have a note land on it, so the loop must not
 dispatch a ``t3:reviewer`` for it. The single chokepoint every
 mention/DM/task/review-intent review-request flows through is
-``_review_request_dispatch`` + ``_gate_review_intent``.
+``review_request_dispatch`` + ``gate_review_intent``.
 
 Fail-open doctrine (``get_pr_open_state`` returns UNKNOWN on any API hiccup):
 the gate suppresses ONLY on a definite MERGED/CLOSED — OPEN and UNKNOWN still
@@ -19,6 +19,7 @@ import pytest
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.overlay import OverlayBase
 from teatree.loop import dispatch as dispatch_mod
+from teatree.loop import dispatch_gates
 from teatree.loop.scanners.base import ScanSignal
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/42"
@@ -110,7 +111,7 @@ class TestEmptyUrlNeverSuppresses:
     def test_review_target_is_dead_returns_false_on_empty_url(self) -> None:
         # No URL to check (review-intent without a parsable MR url) must never
         # suppress — there is nothing to confirm dead.
-        assert dispatch_mod._review_target_is_dead("") is False
+        assert dispatch_gates.review_target_is_dead("") is False
 
 
 class TestMentionReviewRequestSkipsMergedClosed:
@@ -143,7 +144,7 @@ class _RepoOverlay(OverlayBase):
 class TestReviewTargetMultiOverlay:
     """Real ``get_overlay()`` ambiguity path — two overlays registered (TODO-282).
 
-    ``_review_target_is_dead`` resolved the overlay with a bare
+    ``review_target_is_dead`` resolved the overlay with a bare
     ``get_overlay()`` to build the per-URL code host. With two overlays
     registered and no ``T3_OVERLAY_NAME`` that raises ``Multiple overlays
     found`` — caught by the function's own ``except Exception`` (fail-open),
@@ -171,7 +172,7 @@ class TestReviewTargetMultiOverlay:
                 return_value=_StubHost(PrOpenState.MERGED),
             ),
         ):
-            result = dispatch_mod._review_target_is_dead(url)
+            result = dispatch_gates.review_target_is_dead(url)
 
         assert result is True, (
             "with two overlays registered, a MERGED MR must still be recognised dead — "

@@ -158,7 +158,7 @@ class SlackMentionsScanner:
         logs and continues so the mention scanner never blocks on a
         side-effect. The maker/checker boundary (BLUEPRINT §17.8) is
         preserved because the actual review dispatch happens through the
-        dispatcher's ``_review_request_dispatch`` on the ``slack.mention``
+        dispatcher's ``review_request_dispatch`` on the ``slack.mention``
         signal — this side-effect just persists the ledger and acks.
         """
         try:
