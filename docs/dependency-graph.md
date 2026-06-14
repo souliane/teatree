@@ -31,6 +31,7 @@ graph TD
     teatree.skill_support --> teatree.project
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
+    teatree.core --> teatree.pricing
     teatree.core --> teatree.project
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
@@ -115,6 +116,7 @@ graph TD
     teatree.cli.eval --> teatree.claude_sessions
     teatree.eval --> teatree.core
     teatree.eval --> teatree.hooks
+    teatree.eval --> teatree.pricing
     teatree.eval --> teatree.utils
     teatree.eval --> teatree.trigger_parser
     teatree.eval --> teatree.claude_sessions
@@ -173,6 +175,7 @@ graph TD
     teatree.quality --> teatree.utils
     teatree.paths
     teatree.types
+    teatree.pricing
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init

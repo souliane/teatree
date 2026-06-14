@@ -18,12 +18,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+from teatree.pricing import CACHE_READ_MULTIPLIER, CACHE_WRITE_MULTIPLIER
+
 _PER_MTOK = 1_000_000
 _DECEMBER = 12
-
-# Cache multipliers over the model's input price (Anthropic published rates).
-_CACHE_READ_MULTIPLIER = 0.1
-_CACHE_WRITE_MULTIPLIER = 1.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,11 +33,11 @@ class ModelPrice:
 
     @property
     def cache_read_per_mtok(self) -> float:
-        return self.input_per_mtok * _CACHE_READ_MULTIPLIER
+        return self.input_per_mtok * CACHE_READ_MULTIPLIER
 
     @property
     def cache_write_per_mtok(self) -> float:
-        return self.input_per_mtok * _CACHE_WRITE_MULTIPLIER
+        return self.input_per_mtok * CACHE_WRITE_MULTIPLIER
 
     def cost(
         self,
