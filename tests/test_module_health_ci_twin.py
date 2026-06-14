@@ -111,6 +111,30 @@ class TestDiffModeRatchet:
         monkeypatch.chdir(repo)
         assert mod.run_diff_mode(base) == 0
 
+    def test_diverged_base_ratchets_against_merge_base_not_base_tip(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Main diverged and independently shrank the file; the branch's own shrink must pass.
+
+        Fork point: big.py = OVER_CAP. main (base_ref) independently shrinks it to
+        OVER_CAP - 100; the feature branch shrinks it to OVER_CAP - 50 (a legitimate
+        ratchet-COMPLIANT shrink vs the fork point). Ratcheting against the LITERAL
+        base tip would report "up from OVER_CAP - 100" and false-block; ratcheting
+        against the merge-base (the fork point) sees a shrink and passes.
+        """
+        repo = _init_repo(tmp_path)
+        fork_point = _commit_file(repo, "src/big.py", _src(_OVER_CAP), "fork: over-cap file")
+
+        _git(repo, "checkout", "-q", "-b", "mainline")
+        _commit_file(repo, "src/big.py", _src(_OVER_CAP - 100), "mainline: independent shrink")
+
+        _git(repo, "checkout", "-q", fork_point)
+        _git(repo, "checkout", "-q", "-b", "feature")
+        _commit_file(repo, "src/big.py", _src(_OVER_CAP - 50), "feature: legitimate shrink")
+
+        monkeypatch.chdir(repo)
+        assert mod.run_diff_mode("mainline") == 0
+
 
 class TestDiffModeArgv:
     """``--from-ref`` selects diff-mode; bare argv keeps staged-mode."""

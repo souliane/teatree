@@ -223,9 +223,20 @@ def _file_violations(filepath: str, prev_loc: int, prev_funcs: list[str], added_
     return violations
 
 
-def _range_python_files(base_ref: str) -> list[str]:
+def _merge_base(base_ref: str) -> str:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base_ref}...HEAD", "--", "*.py"],
+        ["git", "merge-base", base_ref, "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sha = result.stdout.strip()
+    return sha or base_ref
+
+
+def _range_python_files(merge_base: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py"],
         capture_output=True,
         text=True,
         check=False,
@@ -233,10 +244,10 @@ def _range_python_files(base_ref: str) -> list[str]:
     return [f for f in result.stdout.strip().splitlines() if f.startswith("src/")]
 
 
-def _range_paths(base_ref: str) -> dict[str, str]:
-    """Map each changed path in ``base..HEAD`` to its pre-rename path at the base ref."""
+def _range_paths(merge_base: str) -> dict[str, str]:
+    """Map each changed path in ``merge_base..HEAD`` to its pre-change path at the merge-base."""
     result = subprocess.run(
-        ["git", "diff", "--name-status", "-M", "--diff-filter=ACMR", f"{base_ref}...HEAD", "--", "*.py"],
+        ["git", "diff", "--name-status", "-M", "--diff-filter=ACMR", f"{merge_base}..HEAD", "--", "*.py"],
         capture_output=True,
         text=True,
         check=False,
@@ -252,10 +263,10 @@ def _range_paths(base_ref: str) -> dict[str, str]:
     return mapping
 
 
-def _range_added_line_numbers(filepath: str, base_path: str, base_ref: str) -> set[int] | None:
+def _range_added_line_numbers(filepath: str, base_path: str, merge_base: str) -> set[int] | None:
     paths = [base_path, filepath] if base_path != filepath else [filepath]
     result = subprocess.run(
-        ["git", "diff", "-U0", "-M", f"{base_ref}...HEAD", "--", *paths],
+        ["git", "diff", "-U0", "-M", f"{merge_base}..HEAD", "--", *paths],
         capture_output=True,
         text=True,
         check=False,
@@ -273,20 +284,28 @@ def _range_added_line_numbers(filepath: str, base_path: str, base_ref: str) -> s
 def run_diff_mode(base_ref: str) -> int:
     """Ratchet the whole ``base_ref..HEAD`` range (the bypass-proof CI twin, #2010).
 
+    Resolves the merge-base of ``base_ref`` and ``HEAD`` ONCE and uses it as the
+    single comparison reference for both the changed-file diff AND the baseline
+    LOC/function reads. Reading the baseline at the literal ``base_ref`` tip while
+    diffing three-dot (merge-base relative) disagrees when main has diverged and
+    independently edited a file — main's own edits then get mis-attributed to the
+    branch and a legitimate ratchet-compliant shrink false-blocks.
+
     The PR diff is taken once over the range, NOT per-commit, so the
     merge-commit false-positive the staged-mode exemption guards against never
     arises here — no merge exemption is needed in this mode.
     """
-    base_paths = _range_paths(base_ref)
+    merge_base = _merge_base(base_ref)
+    base_paths = _range_paths(merge_base)
     violations: list[str] = []
-    for filepath in _range_python_files(base_ref):
+    for filepath in _range_python_files(merge_base):
         base_path = base_paths.get(filepath, filepath)
         violations.extend(
             _file_violations(
                 filepath,
-                _count_loc_at_ref(base_path, base_ref),
-                _count_module_level_functions_at_ref(base_path, base_ref),
-                _range_added_line_numbers(filepath, base_path, base_ref),
+                _count_loc_at_ref(base_path, merge_base),
+                _count_module_level_functions_at_ref(base_path, merge_base),
+                _range_added_line_numbers(filepath, base_path, merge_base),
             )
         )
     return _report(violations)
