@@ -1,4 +1,4 @@
-"""Idle-stack detection for the idle-stack reaper (souliane/teatree#2190).
+"""Idle-stack detection for the idle-stack reaper (souliane/teatree#2190, #2227).
 
 A locally-running worktree (``SERVICES_UP`` / ``READY``) holds a docker stack,
 language servers, browsers and CI processes — and a
@@ -13,12 +13,25 @@ candidate; (2) its ticket has NO live :class:`Session` (``ended_at`` is null)
 and NO active/claimed :class:`Task` (``PENDING`` / ``CLAIMED``); (3)
 ``last_used_at`` is older than the idle threshold — a null ``last_used_at``
 cannot be confirmed idle, so it is a fail-safe KEEP; (4) it is not the
-currently-active worktree (the process CWD lives inside it).
+currently-active worktree (the process CWD lives inside it); (5) #2227 — its
+ticket carries NO live external-delivery lease (the same lease that gates
+dispatch), it has NOT been touched by an E2E/evidence run within
+``idle_stack_e2e_recent_minutes`` (``Worktree.last_e2e_run``), and it is NOT
+explicitly pinned (``extra['reaper_pinned']``). A stack under active delivery
+or holding fresh evidence is the live target of in-flight work — reaping it
+forces a slow re-provision.
 
 FAIL-SAFE doctrine: every uncertainty resolves to KEEP. A db-only partial
 stack (the wt595 leak class — app tier down but a stray ``db-1`` lingering) is
 reapable, not "healthy": ``stop_services`` brings the WHOLE compose project
 down so no stray container survives.
+
+:func:`preserve_reason` is the single predicate: it returns the human-readable
+reason a worktree is KEPT, or ``None`` when it is reapable.
+:func:`classify_running_worktrees` yields ``(worktree, reason)`` for every
+running candidate so the reaper's tick log can surface preserved-vs-reaped — a
+reap is never silent. :func:`reapable_worktrees` is the ``reason is None``
+filter over that classification.
 """
 
 import logging
@@ -30,7 +43,10 @@ from django.db.models import Q
 from django.utils import timezone
 from django_fsm import can_proceed
 
+from teatree.config import get_effective_settings
 from teatree.core.models import Session, Task, Worktree
+from teatree.core.models.external_delivery import under_external_delivery
+from teatree.core.models.types import validated_worktree_extra
 from teatree.core.worktree_env import compose_project
 from teatree.utils.run import run_allowed_to_fail
 
@@ -92,34 +108,86 @@ def _ticket_is_busy(worktree: Worktree) -> bool:
     return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
 
 
-def _is_reapable(worktree: Worktree, *, cutoff: datetime, active_path: Path | None) -> bool:
-    """Apply the full fail-safe reapability predicate to one worktree."""
+def _is_reaper_pinned(worktree: Worktree) -> bool:
+    """True iff the worktree carries the explicit ``reaper_pinned`` marker (#2227)."""
+    return bool(validated_worktree_extra(worktree.extra).get("reaper_pinned"))
+
+
+def _has_recent_e2e_run(worktree: Worktree, *, e2e_cutoff: datetime) -> bool:
+    """True iff an E2E/evidence run touched this worktree within the recent window (#2227)."""
+    last = worktree.last_e2e_run
+    return last is not None and last > e2e_cutoff
+
+
+def _structural_keep_reason(worktree: Worktree, *, cutoff: datetime, active_path: Path | None) -> str | None:
+    """The pre-#2227 reapability guards: not-running, never-started, recent, busy, CWD."""
     if not can_proceed(worktree.stop_services):
-        return False
+        return f"not in a running state (state={worktree.state})"
     if worktree.last_used_at is None:
-        return False
+        return "never started (last_used_at is null) — cannot confirm idle"
     if worktree.last_used_at > cutoff:
-        return False
+        return "recently used (within the idle window)"
     if _ticket_is_busy(worktree):
-        return False
+        return "ticket has a live session or active/claimed task"
     if _is_currently_active(worktree, active_path):
-        return False
+        return "the currently-active worktree (CWD)"
+    return None
+
+
+def _active_delivery_keep_reason(worktree: Worktree, *, e2e_cutoff: datetime) -> str | None:
+    """The #2227 guards: a stack under active delivery / fresh evidence / a pin is KEPT."""
+    if under_external_delivery(worktree.ticket):
+        return "ticket carries a live external-delivery lease"
+    if _has_recent_e2e_run(worktree, e2e_cutoff=e2e_cutoff):
+        return "a recent E2E/evidence run touched it"
+    if _is_reaper_pinned(worktree):
+        return "explicitly pinned (extra['reaper_pinned'])"
+    return None
+
+
+def preserve_reason(
+    worktree: Worktree,
+    *,
+    cutoff: datetime,
+    e2e_cutoff: datetime,
+    active_path: Path | None,
+) -> str | None:
+    """Return why *worktree* is KEPT by the reaper, or ``None`` when it is reapable.
+
+    The single fail-safe predicate: the structural guards first
+    (:func:`_structural_keep_reason`), then the #2227 active-delivery guards
+    (:func:`_active_delivery_keep_reason`). A non-``None`` reason is a
+    human-readable phrase the reaper logs so a preserve (and, by absence, a
+    reap) is never silent.
+    """
+    structural = _structural_keep_reason(worktree, cutoff=cutoff, active_path=active_path)
+    if structural is not None:
+        return structural
+    delivery = _active_delivery_keep_reason(worktree, e2e_cutoff=e2e_cutoff)
+    if delivery is not None:
+        return delivery
     running = _running_container_count(compose_project(worktree))
     if running == 0:
         logger.info("idle_stack: worktree %s has zero running containers — reaping (idempotent)", worktree.repo_path)
-    return True
+    return None
 
 
-def reapable_worktrees(*, overlay: str, idle_minutes: int, now: datetime | None = None) -> Iterator[Worktree]:
-    """Yield the idle running worktrees of *overlay* that should be reaped.
+def classify_running_worktrees(
+    *, overlay: str, idle_minutes: int, e2e_recent_minutes: int | None = None, now: datetime | None = None
+) -> Iterator[tuple[Worktree, str | None]]:
+    """Yield ``(worktree, preserve_reason)`` for every running worktree of *overlay* (#2227).
 
-    Scoped per overlay (mirroring ``check_local_stack_limit``). ``idle_minutes``
-    is the staleness threshold; a worktree whose ``last_used_at`` is older than
-    ``now - idle_minutes`` AND whose ticket is not busy AND which is not the
-    active worktree is yielded. Caller-supplied *now* is the test/clock seam.
+    The classification the reaper's tick log reads: a ``None`` reason means the
+    worktree is reapable; a non-``None`` reason names why it is KEPT, so a reap
+    is never silent. ``e2e_recent_minutes`` defaults to
+    ``idle_stack_e2e_recent_minutes`` from config; caller-supplied *now* is the
+    test/clock seam.
     """
     moment = now or timezone.now()
     cutoff = moment - timedelta(minutes=idle_minutes)
+    if e2e_recent_minutes is None:
+        e2e_recent_minutes = get_effective_settings().idle_stack_e2e_recent_minutes
+    e2e_cutoff = moment - timedelta(minutes=e2e_recent_minutes)
     active_path = _active_worktree_path()
     candidates = (
         Worktree.objects.filter(overlay=overlay, state__in=_RUNNING_STATES)
@@ -128,8 +196,24 @@ def reapable_worktrees(*, overlay: str, idle_minutes: int, now: datetime | None 
         .order_by("pk")
     )
     for worktree in candidates:
-        if _is_reapable(worktree, cutoff=cutoff, active_path=active_path):
+        yield worktree, preserve_reason(worktree, cutoff=cutoff, e2e_cutoff=e2e_cutoff, active_path=active_path)
+
+
+def reapable_worktrees(
+    *, overlay: str, idle_minutes: int, e2e_recent_minutes: int | None = None, now: datetime | None = None
+) -> Iterator[Worktree]:
+    """Yield the idle running worktrees of *overlay* that should be reaped.
+
+    Scoped per overlay (mirroring ``check_local_stack_limit``). The
+    ``preserve_reason is None`` filter over :func:`classify_running_worktrees`:
+    a worktree is yielded only when no structural guard and none of the #2227
+    active-delivery guards keeps it.
+    """
+    for worktree, reason in classify_running_worktrees(
+        overlay=overlay, idle_minutes=idle_minutes, e2e_recent_minutes=e2e_recent_minutes, now=now
+    ):
+        if reason is None:
             yield worktree
 
 
-__all__ = ["reapable_worktrees"]
+__all__ = ["classify_running_worktrees", "preserve_reason", "reapable_worktrees"]

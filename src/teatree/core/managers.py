@@ -196,6 +196,24 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
             .order_by("pk")
         )
 
+    def stamp_e2e_run(self, ticket_pk: int, *, now: datetime | None = None) -> int:
+        """Stamp ``last_e2e_run`` on the running worktrees of *ticket_pk* (#2227).
+
+        Called by ``lifecycle record-e2e-run`` so the idle-stack reaper KEEPS a
+        stack that an E2E/evidence run just touched (the live target of in-flight
+        work). Scoped to ``services_up``/``ready`` rows — a dormant worktree holds
+        no stack, so there is nothing for the reaper to preserve. Returns the
+        number of rows stamped.
+        """
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
+
+        return self.filter(
+            ticket_id=ticket_pk,
+            state__in=[Worktree.State.SERVICES_UP, Worktree.State.READY],
+        ).update(last_e2e_run=now or timezone.now())
+
 
 class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
     def for_agent(self, agent_id: str) -> models.QuerySet:

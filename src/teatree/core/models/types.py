@@ -369,6 +369,10 @@ class WorktreeExtra(TypedDict, total=False):
     db_refreshed_at: str
     db_import_failures: int
     setup_hook: str
+    # #2227 Explicit operator pin: when true the idle-stack reaper never reaps
+    # this worktree, regardless of idleness — the manual escape hatch alongside
+    # the active-delivery-lease and recent-E2E-run KEEP guards.
+    reaper_pinned: bool
 
 
 # Known keys for WorktreeExtra — used by get_extra() to filter stale data

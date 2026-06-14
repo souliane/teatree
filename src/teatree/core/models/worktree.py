@@ -39,6 +39,13 @@ class Worktree(models.Model):
     # active session/task is a reap candidate (its containers are stopped and
     # it is demoted to ``provisioned``). Null = never started.
     last_used_at = models.DateTimeField(null=True, blank=True)
+    # #2227 E2E-recency signal for the idle-stack reaper. Stamped by
+    # ``lifecycle record-e2e-run`` when an E2E/evidence run touches this stack.
+    # A worktree whose ``last_e2e_run`` is within ``idle_stack_e2e_recent_minutes``
+    # is KEPT by the reaper even when otherwise idle — it is the live target of
+    # in-flight evidence work, so reaping it would force a slow re-provision to
+    # re-capture. Null = no E2E run has touched it.
+    last_e2e_run = models.DateTimeField(null=True, blank=True)
 
     objects = WorktreeManager()
 

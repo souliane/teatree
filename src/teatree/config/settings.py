@@ -350,6 +350,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "idle_stack_reaper_disabled": _parse_strict_bool,
     "idle_stack_idle_minutes": _parse_strict_int,
     "idle_stack_reaper_cadence_minutes": _parse_strict_int,
+    "idle_stack_e2e_recent_minutes": _parse_strict_int,
     "stale_stack_min_age_minutes": _parse_strict_int,
     "local_stack_queue_disabled": _parse_strict_bool,
     "local_stack_queue_max_attempts": _parse_strict_int,
@@ -787,13 +788,18 @@ class UserSettings:
     # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the
     # host's RAM and a ``max_concurrent_local_stacks`` slot. Idle = no active
     # session/task on the ticket AND ``last_used_at`` older than
-    # ``idle_stack_idle_minutes`` AND not the currently-active worktree.
+    # ``idle_stack_idle_minutes`` AND not the currently-active worktree AND no
+    # active-delivery lease / recent E2E run / explicit pin (#2227).
     # Fail-safe: uncertainty ⇒ KEEP. On by default;
     # ``idle_stack_reaper_disabled = true`` is the escape hatch. All knobs are
     # per-overlay overridable.
     idle_stack_reaper_disabled: bool = False
     idle_stack_idle_minutes: int = 30
     idle_stack_reaper_cadence_minutes: int = 5
+    # #2227 Recency window for the E2E-run KEEP guard: a worktree whose
+    # ``Worktree.last_e2e_run`` is within this many minutes is the live target of
+    # in-flight evidence work and is never reaped, even when otherwise idle.
+    idle_stack_e2e_recent_minutes: int = 60
     # #2207 Stale-stack reaper — tears down docker compose stacks that NO
     # Worktree row owns (hand-rolled test stacks, failed-teardown leftovers)
     # once their newest container lifecycle event (created/started/finished)
