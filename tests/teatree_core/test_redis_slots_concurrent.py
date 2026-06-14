@@ -32,8 +32,8 @@ from pathlib import Path
 import pytest
 from django.db import connections
 
+from teatree.core.modelkit.errors import RedisSlotsExhaustedError
 from teatree.core.models import Ticket
-from teatree.core.models.errors import RedisSlotsExhaustedError
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 

@@ -18,7 +18,3 @@ class DirtyWorktreeError(InvalidTransitionError):
     change first. No auto-stash — worktrees share ``.git`` so a stash is
     repo-global (the foreign-stash hazard, near-miss class #806).
     """
-
-
-class RedisSlotsExhaustedError(RuntimeError):
-    """All configured Redis DB slots are in use by active tickets."""

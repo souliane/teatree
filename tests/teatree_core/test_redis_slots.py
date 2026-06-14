@@ -16,8 +16,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import load_config
+from teatree.core.modelkit.errors import RedisSlotsExhaustedError
 from teatree.core.models import Ticket
-from teatree.core.models.errors import RedisSlotsExhaustedError
 from teatree.core.models.worktree import Worktree
 
 REDIS_DB_COUNT = load_config().user.redis_db_count

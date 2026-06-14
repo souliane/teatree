@@ -61,7 +61,7 @@ depends_on = []
 [[modules]]
 path = "teatree.teams"
 layer = "domain"
-depends_on = ["teatree.core", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
+depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
 
 [[modules]]
 path = "teatree.config"
@@ -149,7 +149,9 @@ depends_on = [
   "teatree.hooks",
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn",
-  "teatree.core.modelkit"
+  "teatree.core.modelkit",
+  "teatree.core.models.errors",
+  "teatree.core.models"
 ]
 
 [[modules]]
@@ -158,12 +160,49 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.models.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.session_handover_manager"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.loop_lease_manager"
+layer = "domain"
+depends_on = ["teatree.utils"]
+
+[[modules]]
+path = "teatree.core.managers"
+layer = "domain"
+depends_on = [
+  "teatree.config",
+  "teatree.utils",
+  "teatree.core.modelkit",
+  "teatree.core.models.errors",
+  "teatree.core.loop_lease_manager",
+  "teatree.core.session_handover_manager"
+]
+
+[[modules]]
+path = "teatree.core.models"
+layer = "domain"
+depends_on = [
+  "teatree.core.modelkit",
+  "teatree.core.managers",
+  "teatree.core.models.errors"
+]
+
+[[modules]]
 path = "teatree.agents"
 layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.core",
   "teatree.core.modelkit",
+  "teatree.core.models",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config",
@@ -208,6 +247,7 @@ depends_on = [
   "teatree.types",
   "teatree.utils",
   "teatree.core",
+  "teatree.core.models",
   "teatree.identity",
   "teatree.url_classify"
 ]
@@ -219,6 +259,7 @@ depends_on = [
   "teatree.types",
   "teatree.utils",
   "teatree.core",
+  "teatree.core.models",
   "teatree.backends.errors",
   "teatree.backends.types",
   "teatree.backends.forge_merge_rpc",
@@ -232,6 +273,7 @@ depends_on = [
   "teatree.types",
   "teatree.utils",
   "teatree.core",
+  "teatree.core.models",
   "teatree.backends.errors",
   "teatree.backends.types",
   "teatree.backends.forge_merge_rpc"

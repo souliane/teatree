@@ -34,16 +34,15 @@ _CORE_ROOT = _REPO_ROOT / "src" / "teatree" / "core"
 _MODELS_ROOT = _CORE_ROOT / "models"
 _TACH = _REPO_ROOT / "tach.toml"
 
-# Measured in-worktree after PR-2a severed the 21 deferred up-edges from
-# core/models/ into the parent-core packages (gates/tasks/worktree_tasks/
-# overlay_loader/cost/backend_protocols). The net drop from PR-1's 217 is 11,
-# not 21: the signal receivers + the registry-population functions (incl. the
-# resolver wrappers that re-read the overlay_loader module attribute at call
-# time so a test patch is still seen) hold a handful of call-time
-# `from teatree.core import ...` (deferred so the model modules never import
-# them at boot — no AppRegistryNotReady). SHRINK-ONLY: lower this as PR-2b/PR-3
-# convert remaining deferred edges into declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_CORE_DEFERRED = 206
+# Measured in-worktree after PR-2b converted the 17 deferred
+# `from teatree.core.models.X import Y` imports inside `managers.py` into
+# call-time `apps.get_model("core", "Y")` lookups (AppRegistry-safe,
+# tach-invisible) and declared `teatree.core.models` / `teatree.core.managers`
+# as tach sub-nodes — the core cycle is now structurally forbidden, not merely
+# severed. The drop from PR-2a's 206 is exactly those 17 converted imports.
+# SHRINK-ONLY: lower this as PR-3 converts remaining deferred edges into
+# declared tach sub-node edges; never raise it.
+_FROZEN_INTRA_CORE_DEFERRED = 189
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:
@@ -78,6 +77,33 @@ def _count_all() -> int:
 def _module_entry(path: str) -> dict[str, object]:
     data = tomllib.loads(_TACH.read_text(encoding="utf-8"))
     return next(m for m in data["modules"] if m["path"] == path)
+
+
+def _runtime_models_imports(source: Path) -> list[str]:
+    """Lines importing ``teatree.core.models*`` outside an ``if TYPE_CHECKING`` block."""
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def under_type_checking(node: ast.AST) -> bool:
+        cur = parents.get(node)
+        while cur is not None:
+            if isinstance(cur, ast.If):
+                test = cur.test
+                if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+                    return True
+            cur = parents.get(cur)
+        return False
+
+    return [
+        f"{source.name}:{node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith("teatree.core.models")
+        and not under_type_checking(node)
+    ]
 
 
 def _model_files_importing(dotted: str) -> list[str]:
@@ -144,3 +170,57 @@ class TestCoreModelkitLayer:
     def test_fibonacci_leaf_lives_under_modelkit_not_gates(self) -> None:
         assert (_CORE_ROOT / "modelkit" / "fibonacci.py").is_file()
         assert not (_CORE_ROOT / "gates" / "fibonacci.py").exists()
+
+
+class TestCoreModelManagerNodes:
+    """Pins the PR-2b carve of the ``models`` / ``managers`` tach sub-nodes.
+
+    ``teatree.core.models`` and ``teatree.core.managers`` are declared tach
+    sub-nodes, so the core models↔managers cycle is structurally forbidden by
+    ``forbid_circular_dependencies`` rather than merely severed.
+
+    ``models`` depends on ``managers`` (the eager ``objects = XManager()`` edge),
+    one-way: ``managers`` may never depend on ``models`` (the pure exception leaf
+    ``models.errors`` is its own node so the ``RedisSlotsExhaustedError`` edge does
+    not pull ``managers`` into the full ``models`` node). The two manager-layer
+    helper leaves (``loop_lease_manager`` / ``session_handover_manager``, split out
+    of ``managers``) are declared below ``managers`` so it never reaches back up
+    into the parent ``teatree.core`` node.
+    """
+
+    def test_models_declared_depending_on_managers_one_way(self) -> None:
+        entry = _module_entry("teatree.core.models")
+        deps = entry.get("depends_on", [])
+        assert entry["layer"] == "domain"
+        assert "teatree.core.managers" in deps
+
+    def test_managers_never_depends_on_the_models_node(self) -> None:
+        entry = _module_entry("teatree.core.managers")
+        deps = entry.get("depends_on", [])
+        assert entry["layer"] == "domain"
+        assert "teatree.core.models" not in deps
+        assert "teatree.core" not in deps
+
+    def test_models_errors_is_a_pure_leaf_node(self) -> None:
+        entry = _module_entry("teatree.core.models.errors")
+        assert entry["layer"] == "domain"
+        assert entry.get("depends_on", []) == []
+
+    def test_parent_core_declares_models_and_errors_children(self) -> None:
+        parent = _module_entry("teatree.core")
+        deps = parent.get("depends_on", [])
+        assert "teatree.core.models" in deps
+        assert "teatree.core.models.errors" in deps
+
+    def test_managers_has_no_runtime_models_import(self) -> None:
+        # The 17 deferred `from teatree.core.models.X import Y` imports inside
+        # manager methods became `apps.get_model("core", "Y")`; the lone top-level
+        # `RedisSlotsExhaustedError` import moved to the modelkit leaf. A runtime
+        # `from teatree.core.models...` import in managers.py (top-level OR
+        # function-scoped, but not TYPE_CHECKING-guarded) resurrects the forbidden
+        # managers→models edge.
+        offenders = _runtime_models_imports(_CORE_ROOT / "managers.py")
+        assert not offenders, (
+            "managers.py imports the teatree.core.models node at runtime "
+            "(use apps.get_model instead):\n" + "\n".join(offenders)
+        )
