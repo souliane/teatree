@@ -1183,6 +1183,67 @@ class TestBrowserClickFirstTemplate(TestCase):
         assert "Not deployed yet" in visible
 
 
+class TestBrowserClickFirstStepsWithoutMedia(TestCase):
+    """A steps-only manifest (steps, no screenshots/video) must still render the steps."""
+
+    def _steps_only_state(self) -> _render.TestPlanState:
+        return {
+            "ticket": "8521",
+            "title": "Login flow",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "steps": {"Login": ["Open the app", "Click Login", "Expect dashboard"]},
+            "template": "browser-click-first",
+        }
+
+    def test_renders_steps_when_no_media(self) -> None:
+        body = _render.render_body(self._steps_only_state())
+        visible = body.split("-->")[-1]
+        assert "### Login" in visible
+        assert "1. Open the app" in visible
+        assert "2. Click Login" in visible
+        assert "3. Expect dashboard" in visible
+
+    def test_renders_steps_when_no_media_via_production_path(self) -> None:
+        manifest = _render.parse_manifest(
+            json.dumps(
+                {
+                    "ticket": "8521",
+                    "template": "browser-click-first",
+                    "local": {"commits": {"client": "aabb"}},
+                    "workflows": [{"workflow": "Login", "steps": ["Open the app", "Click Login"]}],
+                }
+            )
+        )
+        merged = _render.merge_state(
+            _render.empty_state(ticket="8521", title="t"),
+            manifest=manifest,
+            title="Login flow",
+            embeds={"dev": {}, "local": {}},
+        )
+        body = _render.render_body(merged)
+        visible = body.split("-->")[-1]
+        assert "### Login" in visible
+        assert "1. Open the app" in visible
+        assert "2. Click Login" in visible
+
+    def test_media_and_steps_both_render(self) -> None:
+        state: _render.TestPlanState = {
+            "ticket": "8521",
+            "title": "Login flow",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": _local_side({"Login": {"video_md": "", "image_md": ["![s1](/uploads/s/s1.png)"]}}),
+            "steps": {"Login": ["Open the app", "Click Login"]},
+            "template": "browser-click-first",
+        }
+        body = _render.render_body(state)
+        visible = body.split("-->")[-1]
+        assert "1. Open the app" in visible
+        assert "![s1](/uploads/s/s1.png)" in visible
+
+
 class TestLinkApiTemplate(TestCase):
     def _state(self) -> _render.TestPlanState:
         return {
