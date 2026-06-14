@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hook_router.py (hooks/) as a subprocess; no src/teatree/ mirror.
 """SUBPROCESS-level liveness: the unknown-repo push gate fires in the real hook process.
 
 The PreToolUse hook runs as a fresh subprocess that never calls

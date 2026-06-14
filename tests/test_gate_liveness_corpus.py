@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives every PreToolUse gate in hook_router.py (hooks/); no src/teatree/ mirror.
 """Gate-liveness / enforcement-conformance corpus.
 
 The symmetric companion to ``test_lockout_regression_corpus.py``. That corpus

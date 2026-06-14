@@ -1,3 +1,4 @@
+# test-path: cross-cutting — tests hook_router.py (hooks/), which has no single src/teatree/ mirror.
 """Tests for the unknown-repo SCOPE push gate in hook_router.
 
 A ``git push`` from a repo whose remote slug is OWNED by a registered overlay
