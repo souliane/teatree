@@ -8,7 +8,7 @@ regardless of which PATs an overlay happens to carry (#2025).
 
 from typing import Literal
 
-from teatree.utils.git import web_base_from_remote
+from teatree.utils.git_remote import web_base_from_remote
 
 
 def forge_from_remote(remote_url: str) -> Literal["github", "gitlab", ""]:

@@ -14,7 +14,7 @@ from teatree.core.merge.ci_rollup import fetch_live_head_sha
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.project import find_project_root
-from teatree.utils import git
+from teatree.utils import git, git_remote
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 logger = logging.getLogger(__name__)
@@ -192,13 +192,13 @@ def normalize_repo_slug(value: str) -> str:
     fully-qualified key — never an under-qualified form matched by stripping
     the registered slug down.
 
-    Delegates to :func:`teatree.utils.git.slug_from_remote`, the pure string
+    Delegates to :func:`teatree.utils.git_remote.slug_from_remote`, the pure string
     parser that strips the host prefix from a bare ``owner/repo`` (no-op), an
     HTTPS/SSH URL, and a ``host-alias`` SSH URL, dropping any trailing ``.git``.
     A value that yields no ``owner/repo`` shape (empty, a single path segment,
     an unparsable string) returns ``""`` so the caller drops it.
     """
-    slug = git.slug_from_remote(value)
+    slug = git_remote.slug_from_remote(value)
     return slug if _looks_like_owner_repo(slug) else ""
 
 

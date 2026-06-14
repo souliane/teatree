@@ -23,7 +23,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PullRequestSp
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
-from teatree.utils import git
+from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
 
 
@@ -109,7 +109,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     warn_if_open_questions_missing(description)
 
     remote = git.remote_url(repo=repo_path)
-    repo_slug = git.slug_from_remote(remote)
+    repo_slug = git_remote.slug_from_remote(remote)
     assignee = host.current_user() or git.config_value(key="user.name")
 
     try:

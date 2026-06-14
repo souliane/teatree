@@ -1,11 +1,6 @@
 import os
-import re
 
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
-
-_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
-_SSH_HOST_RE = re.compile(r"^(?:ssh://)?git@([^:/]+)[:/]")
-_HTTP_HOST_RE = re.compile(r"^(https?)://([^/]+)/")
 
 # ── Low-level runners ───────────────────────────────────────────────
 
@@ -257,36 +252,6 @@ def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
 
 def remote_url(repo: str = ".", remote: str = "origin") -> str:
     return run(repo=repo, args=["remote", "get-url", remote])
-
-
-def slug_from_remote(remote_url: str) -> str:
-    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL.
-
-    Pure string helper (no git invocation). Lives in ``utils`` so both
-    ``core`` and the management commands can use it without a layering
-    violation.
-    """
-    if not remote_url:
-        return ""
-    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
-
-
-def web_base_from_remote(remote_url: str) -> str:
-    """Derive the host web origin (``https://host``) from a git remote URL.
-
-    Handles ``git@host:slug.git``, ``ssh://git@host/slug`` and
-    ``https://host/slug`` forms. Returns ``""`` when no host can be parsed.
-    """
-    if not remote_url:
-        return ""
-    text = remote_url.strip()
-    ssh_match = _SSH_HOST_RE.match(text)
-    if ssh_match:
-        return f"https://{ssh_match.group(1)}"
-    http_match = _HTTP_HOST_RE.match(text)
-    if http_match:
-        return f"{http_match.group(1)}://{http_match.group(2)}"
-    return ""
 
 
 def remote_slug(repo: str = ".", remote: str = "origin") -> str:
