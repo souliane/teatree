@@ -34,7 +34,15 @@ The loop tick scanner classifies an `IncomingEvent` and the event router routes 
 
 - `event.source` — `slack`, `gitlab`, `github`, `notion`, `ci`
 - `event.channel_ref` — channel / MR / issue the question came from
-- `event.thread_ref` — the thread to reply in (may be blank)
+- `event.thread_ref` — the thread to reply in (may be blank). For a thread
+  reply this equals the parent/root ts, so posting with it answers in the
+  SAME thread, not as a new root message.
+- `event.parent_ts` — the replied-to (parent/root) message's ts when this
+  event is a thread reply; blank for a root message (`event.is_thread_reply`).
+- `event.parent_text` — the parent message's text/snippet, resolved by the
+  loop scanner so the referent is available without a second fetch. A reply
+  like "where is the URL?" whose parent asked "approve posting the evidence?"
+  resolves to the evidence artifact, not an unrelated ticket (#2230).
 - `event.actor` — who asked
 - `event.body` — the question text
 - `event.id` — the database PK; the basis for the idempotency key
@@ -91,7 +99,11 @@ classification. Use the backend matching `event.source`. See your
 [issue tracker platform reference](../platforms/references/) for the
 recipes (Slack thread fetch, GitLab/GitHub MR/issue comment thread).
 
-- Pull the full thread, not just `event.body`.
+- Pull the full thread, not just `event.body`. When the event is a thread
+  reply (`event.is_thread_reply`), `event.parent_text` already carries the
+  replied-to message — anchor the referent on it before re-reading the
+  thread, so a deictic reply ("where is the URL?", "is it ready?") resolves
+  against what it actually answers.
 - Note any prior answer already posted in the thread — do not duplicate it.
 - **Never download or transcribe the bot's OWN audio attachment.** The
   Slack-TTS feature attaches a synthesised `speech.m4a` to the bot's own DM

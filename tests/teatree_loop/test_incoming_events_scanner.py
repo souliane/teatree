@@ -273,6 +273,129 @@ class TestIncomingEventsScanner(TestCase):
         assert escalation.payload["thread_ref"] == "thread-1"
 
 
+class _ParentResolverBackend:
+    """MessagingBackend stub exposing one parent message keyed by ts."""
+
+    def __init__(self, *, parent_ts: str, parent_text: str) -> None:
+        self._parent_ts = parent_ts
+        self._parent_text = parent_text
+        self.fetched: list[str] = []
+
+    def fetch_message(self, *, channel: str, ts: str) -> dict:
+        _ = channel
+        self.fetched.append(ts)
+        if ts == self._parent_ts:
+            return {"ts": ts, "text": self._parent_text}
+        return {}
+
+
+class TestThreadReplyParentContext(TestCase):
+    """A threaded reply must expose its parent's text to the answerer (#2230)."""
+
+    def _reply_event(self, *, parent_text: str = "") -> IncomingEvent:
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="U02ABCDEF",
+            channel_ref="C024BE91L",
+            thread_ref="1234567890.000100",
+            parent_ts="1234567890.000100",
+            parent_text=parent_text,
+            body="where is the URL?",
+            payload_json={"event": {"type": "message", "thread_ts": "1234567890.000100"}},
+            idempotency_key="slack:Ev0THREADRPLY",
+        )
+
+    def test_parent_text_resolved_and_persisted_for_a_reply(self) -> None:
+        event = self._reply_event()
+        backend = _ParentResolverBackend(
+            parent_ts="1234567890.000100",
+            parent_text="approve posting the evidence?",
+        )
+
+        IncomingEventsScanner(messaging_resolver=lambda _overlay: backend).scan()
+
+        event.refresh_from_db()
+        assert event.parent_text == "approve posting the evidence?"
+        assert "1234567890.000100" in backend.fetched
+
+    def test_task_signal_exposes_parent_referent_to_answerer(self) -> None:
+        self._reply_event()
+        backend = _ParentResolverBackend(
+            parent_ts="1234567890.000100",
+            parent_text="approve posting the evidence?",
+        )
+
+        signals = IncomingEventsScanner(messaging_resolver=lambda _overlay: backend).scan()
+
+        task = next(s for s in signals if s.kind == "incoming_event.task_needed")
+        assert task.payload["parent_ts"] == "1234567890.000100"
+        assert task.payload["parent_text"] == "approve posting the evidence?"
+
+    def test_already_persisted_parent_text_skips_the_backend_fetch(self) -> None:
+        self._reply_event(parent_text="approve posting the evidence?")
+        backend = _ParentResolverBackend(parent_ts="1234567890.000100", parent_text="STALE")
+
+        signals = IncomingEventsScanner(messaging_resolver=lambda _overlay: backend).scan()
+
+        task = next(s for s in signals if s.kind == "incoming_event.task_needed")
+        assert task.payload["parent_text"] == "approve posting the evidence?"
+        assert backend.fetched == []
+
+    def test_no_backend_leaves_parent_text_blank_but_still_routes(self) -> None:
+        event = self._reply_event()
+
+        signals = IncomingEventsScanner(messaging_resolver=lambda _overlay: None).scan()
+
+        event.refresh_from_db()
+        assert event.parent_text == ""
+        task = next(s for s in signals if s.kind == "incoming_event.task_needed")
+        assert task.payload["parent_ts"] == "1234567890.000100"
+        assert task.payload["parent_text"] == ""
+
+    def test_backend_raise_is_swallowed_and_routing_continues(self) -> None:
+        event = self._reply_event()
+
+        def _raising(_overlay: str) -> object:
+            class _Raises:
+                def fetch_message(self, *, channel: str, ts: str) -> dict:
+                    _ = (channel, ts)
+                    msg = "history 503"
+                    raise RuntimeError(msg)
+
+            return _Raises()
+
+        signals = IncomingEventsScanner(messaging_resolver=_raising).scan()
+
+        event.refresh_from_db()
+        assert event.parent_text == ""
+        assert any(s.kind == "incoming_event.task_needed" for s in signals)
+
+    def test_parent_message_without_text_leaves_field_blank(self) -> None:
+        event = self._reply_event()
+        backend = _ParentResolverBackend(parent_ts="other.ts", parent_text="unused")
+
+        IncomingEventsScanner(messaging_resolver=lambda _overlay: backend).scan()
+
+        event.refresh_from_db()
+        assert event.parent_text == ""
+
+    def test_root_message_is_not_resolved_against_the_backend(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="U02ABCDEF",
+            channel_ref="C024BE91L",
+            thread_ref="1234567890.000100",
+            body="can you implement the dashboard?",
+            payload_json={"event": {"type": "message"}},
+            idempotency_key="slack:Ev0ROOTTASK",
+        )
+        backend = _ParentResolverBackend(parent_ts="x", parent_text="x")
+
+        IncomingEventsScanner(messaging_resolver=lambda _overlay: backend).scan()
+
+        assert backend.fetched == []
+
+
 class _StubOverlay:
     """Minimal overlay stub that returns a fixed MergeGuard from can_auto_merge."""
 

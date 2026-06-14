@@ -75,3 +75,24 @@ class TestIncomingEvent(TestCase):
 
         assert unprocessed.pk in unprocessed_pks
         assert processed.pk not in unprocessed_pks
+
+    def test_parent_fields_default_blank(self) -> None:
+        event = IncomingEvent.objects.create(**self._payload())
+
+        event.refresh_from_db()
+        assert event.parent_ts == ""
+        assert event.parent_text == ""
+        assert event.is_thread_reply is False
+
+    def test_reply_persists_parent_ts_and_text(self) -> None:
+        event = IncomingEvent.objects.create(
+            **self._payload(
+                parent_ts="1234567890.0001",
+                parent_text="approve posting the evidence?",
+            )
+        )
+
+        event.refresh_from_db()
+        assert event.parent_ts == "1234567890.0001"
+        assert event.parent_text == "approve posting the evidence?"
+        assert event.is_thread_reply is True
