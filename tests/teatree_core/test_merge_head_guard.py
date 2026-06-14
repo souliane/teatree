@@ -24,7 +24,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.merge import merge_ticket_pr, restore_caller_branch
-from teatree.core.merge.head_guard import _capture_head
+from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
 
 pytestmark = pytest.mark.django_db
@@ -202,3 +202,117 @@ class TestRestoreCallerBranchPrimitive(TestCase):
             pass
         assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "main"
         assert _git(clone, "rev-parse", "HEAD") == before
+
+    def test_detached_start_restores_to_original_sha_not_a_branch(self) -> None:
+        """Caller already on a detached HEAD: restore returns to that exact SHA (#2383).
+
+        Pins the ``_restore_head`` else-branch
+        ``(not current_branch and current_sha == detached_sha)``: the captured
+        state is a SHA, not a branch name. Inside the guard a different SHA is
+        checked out; on exit HEAD must return to the ORIGINAL detached SHA — not
+        a branch name, not the pr-branch tip.
+        """
+        clone = _make_clone(self.tmp_path)
+        main_sha = _git(clone, "rev-parse", "HEAD")
+        _git(clone, "checkout", main_sha)  # detach at main's tip
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+        assert _capture_head(str(clone)) == ("", main_sha)
+
+        pr_sha = _git(clone, "rev-parse", f"origin/{_PR_BRANCH}")
+        assert pr_sha != main_sha
+        with restore_caller_branch(str(clone)):
+            _git(clone, "checkout", f"origin/{_PR_BRANCH}")
+            assert _git(clone, "rev-parse", "HEAD") == pr_sha
+
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"  # still detached
+        assert _git(clone, "rev-parse", "HEAD") == main_sha  # the original SHA, not the pr-branch
+
+    def test_capture_head_on_non_git_path_returns_empty(self) -> None:
+        """A path git cannot answer for captures ``("", "")`` (line 47).
+
+        Both ``symbolic-ref --quiet`` and ``rev-parse HEAD`` exit non-zero on a
+        non-git directory, so the guard has nothing to restore and stays a
+        no-op (rather than capturing a bogus ref it would later try to check
+        out).
+        """
+        not_a_repo = self.tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        assert _capture_head(str(not_a_repo)) == ("", "")
+
+        # And the whole guard is inert on such a path — it must not raise.
+        with restore_caller_branch(str(not_a_repo)):
+            pass
+
+    def test_restore_head_with_empty_target_is_a_noop(self) -> None:
+        """``_restore_head`` with neither branch nor SHA returns early (line 54)."""
+        clone = _make_clone(self.tmp_path)
+        before = _git(clone, "rev-parse", "HEAD")
+        _restore_head(str(clone), "", "")
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+        assert _git(clone, "rev-parse", "HEAD") == before
+
+    def test_restore_failure_logs_warning_and_does_not_raise(self) -> None:
+        """A checkout that cannot complete logs a warning, never raises (line 62).
+
+        The restore target is overwritten in the worktree with conflicting
+        uncommitted changes, so a plain ``git checkout main`` refuses (it would
+        clobber the local edit). The guard is best-effort: it logs the recovery
+        hint and returns, never propagating the failure.
+        """
+        clone = _make_clone(self.tmp_path)
+        _git(clone, "checkout", f"origin/{_PR_BRANCH}")  # detach off main
+        # A conflicting uncommitted edit to a file that differs between the
+        # detached tree and main makes `git checkout main` refuse.
+        (clone / "f.txt").write_text("conflicting local edit\n", encoding="utf-8")
+
+        with self.assertLogs("teatree.core.merge.head_guard", level="WARNING") as logs:
+            _restore_head(str(clone), "main", "")
+
+        assert any("could not restore" in message for message in logs.output)
+        assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"  # checkout refused; still detached
+
+    def test_guard_swallows_restore_exception_and_propagates_body_result(self) -> None:
+        """The crash-proof branch: a restore that raises never masks the body (lines 89-90).
+
+        ``_restore_head`` is patched to raise inside the guard's ``finally``. The
+        guard must swallow it (logging an exception) AND let the body's own
+        return value propagate unchanged — the docstring's "best-effort and
+        crash-proof" claim, proven.
+        """
+        clone = _make_clone(self.tmp_path)
+        boom = RuntimeError("restore blew up")
+
+        def _explode(*_args: object, **_kwargs: object) -> None:
+            raise boom
+
+        with (
+            patch("teatree.core.merge.head_guard._restore_head", side_effect=_explode),
+            self.assertLogs("teatree.core.merge.head_guard", level="ERROR") as logs,
+        ):
+            with restore_caller_branch(str(clone)):
+                body_result = "body ran to completion"
+            # The guard did not re-raise the restore failure: we reach here.
+            assert body_result == "body ran to completion"
+
+        assert any("restore raised" in message for message in logs.output)
+
+    def test_guard_swallows_restore_exception_and_propagates_body_exception(self) -> None:
+        """A body exception still propagates even when restore also raises (lines 89-90)."""
+        clone = _make_clone(self.tmp_path)
+
+        def _explode(*_args: object, **_kwargs: object) -> None:
+            msg = "restore blew up"
+            raise RuntimeError(msg)
+
+        def _body_raises() -> None:
+            with restore_caller_branch(str(clone)):
+                msg = "original body failure"
+                raise ValueError(msg)
+
+        # The ORIGINAL body exception wins; the restore exception is swallowed.
+        with (
+            patch("teatree.core.merge.head_guard._restore_head", side_effect=_explode),
+            self.assertLogs("teatree.core.merge.head_guard", level="ERROR"),
+            pytest.raises(ValueError, match="original body failure"),
+        ):
+            _body_raises()
