@@ -299,6 +299,10 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 | `lint` | Run the overlay's lint pipeline on this worktree |
 | `build-frontend` | Build the frontend app for production/testing |
 
+## `safe_kill`
+
+Signal *pid* only if it maps to a dead target AND is confirmed non-live.
+
 ## `speak`
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].

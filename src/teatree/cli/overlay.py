@@ -249,6 +249,23 @@ class OverlayAppBuilder:
             # Same as ``full-status``: ``followup`` is core-only (#1318).
             managepy_core("followup", "sync", overlay_name=overlay_name)
 
+        @overlay_app.command(
+            name="safe-kill",
+            context_settings={
+                "allow_extra_args": True,
+                "allow_interspersed_args": False,
+                "ignore_unknown_options": True,
+            },
+            add_help_option=False,
+        )
+        def safe_kill(ctx: typer.Context) -> None:
+            """Signal a pid only if it maps to a dead target AND is confirmed non-live (#2225)."""
+            # ``safe_kill`` is a teatree-CORE management command — dispatch via
+            # ``python -m teatree`` so an overlay clone with its own ``manage.py``
+            # does not crash with ``Unknown command`` (#1318). The pid argument
+            # and ``--hang-cause`` are forwarded verbatim.
+            managepy_core("safe_kill", *ctx.args, overlay_name=overlay_name)
+
         self._register_agent_command()
 
     def _register_agent_command(self) -> None:
