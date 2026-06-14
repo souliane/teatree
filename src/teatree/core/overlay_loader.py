@@ -8,8 +8,9 @@ of whether the overlay was registered via ``pip install`` (entry point) or
 import importlib
 import logging
 import os
+from collections.abc import Callable
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, TypeVar
 from urllib.parse import urlparse
 
 from django.core.exceptions import ImproperlyConfigured
@@ -21,9 +22,12 @@ if TYPE_CHECKING:
     from teatree.core.models import Ticket, Worktree
     from teatree.core.overlay import OverlayBase
 
+_FieldT = TypeVar("_FieldT", list[str], dict[str, list[str]])
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "OverlayConfigResolver",
     "frontend_repos_for_overlay",
     "get_all_overlay_names",
     "get_all_overlays",
@@ -167,42 +171,113 @@ def get_all_overlay_names() -> list[str]:
     return sorted(names)
 
 
-def frontend_repos_for_overlay(name: str | None) -> list[str]:
-    """The overlay's configured frontend repos, resolvable for path-only overlays.
+class OverlayConfigResolver:
+    """Resolve a per-overlay config field, path-only-symmetrically.
 
     An instantiable overlay (entry-point package, or a TOML table carrying a
-    ``class``) answers from ``overlay.config.frontend_repos``. A **path-only**
+    ``class``) answers from its ``OverlayConfig`` attribute. A **path-only**
     TOML overlay — registered with a ``path`` but no Python ``class`` — cannot
     be instantiated as :class:`OverlayBase` in the teatree process (it is
     reached through the CLI subprocess bridge), so ``get_overlay`` raises
     ``Overlay not found`` for it even though it is a known, registered overlay.
-    For that case the frontend repos are read straight from the
-    ``[overlays.<name>]`` TOML table — the same config surface
-    :func:`get_all_overlay_names` already trusts for path-only entries.
+    For that case the field is read straight from the ``[overlays.<name>]``
+    TOML table — the same config surface :func:`get_all_overlay_names` already
+    trusts for path-only entries.
 
-    A blank ``name`` is the ambient single-overlay default and routes through
-    ``get_overlay(None)``. A name that resolves to no registered overlay (a
-    removed overlay, a typo, a synthetic tag) raises ``ImproperlyConfigured``
-    so a safety-gate caller can keep its fail-closed posture for a genuinely
-    unknown overlay instead of silently inferring an empty repo set.
+    Every field a gate resolves per overlay (frontend repos for the local-E2E
+    gate, ``owned_repos`` for the fail-CLOSED scope gate) is registered in
+    :attr:`RESOLVABLE_FIELDS` so a path-only overlay can never carry a field
+    one of those gates reads through ``get_all_overlays()`` alone (where it is
+    invisible). The symmetry fitness test pins that registry.
     """
-    from teatree.config import load_config  # noqa: PLC0415
 
-    resolved = _canonical_overlay_name(name) if name else None
-    try:
-        overlay = get_overlay(resolved)
-    except ImproperlyConfigured:
-        canonical = resolve_overlay_name(name) if name else None
-        if canonical is None:
-            raise
-        table = load_config().raw.get("overlays", {}).get(canonical, {})
-        repos = table.get("frontend_repos") or []
-        return [str(r) for r in repos]
-    config = overlay.config
-    if not hasattr(config, "frontend_repos"):
-        msg = f"overlay {name!r} config has no frontend_repos"
-        raise ImproperlyConfigured(msg)
-    return list(config.frontend_repos or [])
+    @classmethod
+    def _resolve(cls, name: str | None, attr: str, empty: _FieldT) -> _FieldT:
+        """Return *attr* for overlay *name*, from its config or its raw TOML table.
+
+        A blank *name* is the ambient single-overlay default and routes through
+        ``get_overlay(None)``. A name that resolves to no registered overlay
+        (a removed overlay, a typo, a synthetic tag) raises
+        ``ImproperlyConfigured`` so a safety-gate caller keeps its fail-closed
+        posture for a genuinely unknown overlay instead of silently inferring
+        the empty value.
+        """
+        from teatree.config import load_config  # noqa: PLC0415
+
+        resolved = _canonical_overlay_name(name) if name else None
+        try:
+            overlay = get_overlay(resolved)
+        except ImproperlyConfigured:
+            canonical = resolve_overlay_name(name) if name else None
+            if canonical is None:
+                raise
+            table = load_config().raw.get("overlays", {}).get(canonical, {})
+            return table.get(attr) or empty
+        config = overlay.config
+        if not hasattr(config, attr):
+            msg = f"overlay {name!r} config has no {attr}"
+            raise ImproperlyConfigured(msg)
+        return getattr(config, attr) or empty
+
+    @classmethod
+    def frontend_repos(cls, name: str | None) -> list[str]:
+        """The overlay's configured frontend repos, resolvable for path-only overlays."""
+        return [str(r) for r in cls._resolve(name, "frontend_repos", [])]
+
+    @classmethod
+    def owned_repos(cls, name: str | None) -> dict[str, list[str]]:
+        """The overlay's forge-host-keyed ``owned_repos`` (SCOPE axis), path-only-symmetric.
+
+        The SCOPE-axis twin of :meth:`frontend_repos`. A path-only overlay's
+        ``owned_repos`` is otherwise invisible to the fail-CLOSED owned-repo
+        gate, which iterates only instantiable overlays. The dict is returned
+        verbatim (the same shape ``apply_toml_overrides`` would ``setattr``),
+        defaulting to ``{}`` when undeclared and raising ``ImproperlyConfigured``
+        for a genuinely unknown overlay so the gate's fail-closed posture holds.
+        """
+        return dict(cls._resolve(name, "owned_repos", {}))
+
+    @classmethod
+    def path_only_owned_scopes(cls) -> list[dict[str, list[str]]]:
+        """The opted-in ``owned_repos`` of every path-only overlay.
+
+        A path-only overlay (``path``, no ``class``) opts into the scope gate
+        the same way an instantiable one does — ``require_owned_repo_approval``
+        True with a non-empty ``owned_repos`` — but lives only in the raw TOML
+        table. This yields each such scope so the push and merge classifiers
+        can honor a repo a path-only overlay owns. Overlays that did not opt in,
+        carry an empty ``owned_repos``, or are instantiable (already covered by
+        ``get_all_overlays()``) are excluded.
+        """
+        from teatree.config import load_config  # noqa: PLC0415
+
+        instantiable = set(_discover_overlays())
+        overlays_cfg = load_config().raw.get("overlays", {})
+        scopes: list[dict[str, list[str]]] = []
+        for name, cfg in overlays_cfg.items():
+            if name in instantiable or not cfg.get("path"):
+                continue
+            owned = cfg.get("owned_repos") or {}
+            if cfg.get("require_owned_repo_approval") and owned:
+                scopes.append(dict(owned))
+        return scopes
+
+    RESOLVABLE_FIELDS: ClassVar[dict[str, Callable[[str | None], object]]] = {}
+
+
+OverlayConfigResolver.RESOLVABLE_FIELDS = {
+    "frontend_repos": OverlayConfigResolver.frontend_repos,
+    "owned_repos": OverlayConfigResolver.owned_repos,
+}
+
+
+def frontend_repos_for_overlay(name: str | None) -> list[str]:
+    """The overlay's configured frontend repos, resolvable for path-only overlays.
+
+    Thin module-level wrapper over :meth:`OverlayConfigResolver.frontend_repos`,
+    kept for the existing local-E2E gate caller (``core.gates.dod_gate``).
+    """
+    return OverlayConfigResolver.frontend_repos(name)
 
 
 def resolve_overlay_name(name: str) -> str | None:
