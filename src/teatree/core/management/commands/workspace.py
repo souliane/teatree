@@ -52,6 +52,7 @@ from teatree.core.runners import (
     WorktreeStartRunner,
     WorktreeTeardownRunner,
 )
+from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -555,6 +556,14 @@ class Command(TyperCommand):
         blunt deep clean (every unowned project, regardless of age).
         """
         return reap_stale_report(min_age_minutes=min_age_minutes, dry_run=dry_run, write_out=self.stdout.write)
+
+    @command(name="reclaim-disk")
+    def reclaim_disk_cmd(
+        self,
+        dry_run: bool = typer.Option(default=False, help="Plan the reclaim set without removing anything."),  # noqa: FBT001 — CLI flag
+    ) -> str:
+        """Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246)."""
+        return reclaim_disk(dry_run=dry_run).render()
 
     @command(name="clean-all")
     def clean_all(

@@ -377,6 +377,7 @@ Generate Ticket.short_description (#1156).
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing souliane clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
+| `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
 | `clean-all` | Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots |
 
 ## `worktree`
