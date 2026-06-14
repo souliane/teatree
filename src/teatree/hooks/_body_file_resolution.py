@@ -68,11 +68,18 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
     - anything else -- returned verbatim (a normal inline body).
 
     A value the resolver returns verbatim that STILL carries an unexpanded
-    command-substitution marker (a mixed ``"prefix $(cat x)"`` the single-form
-    matchers above do not fully resolve) yields the fail-closed sentinel: the
-    embedded substitution's content is unreadable, so passing the literal would
-    let a leak inside it slip. Resolution is never a bypass -- an unresolvable
-    source always fails closed.
+    ``$(...)`` command-substitution marker (a mixed ``"prefix $(cat x)"`` the
+    single-form matchers above do not fully resolve) yields the fail-closed
+    sentinel: the embedded substitution's content is unreadable, so passing the
+    literal would let a leak inside it slip. Resolution is never a bypass -- an
+    unresolvable ``$(...)`` source always fails closed.
+
+    A backtick is NOT a fail-closed trigger. The extracted value is a literal
+    argv element the gate only SCANS (never re-feeds to a shell), so a markdown
+    inline-code span (a function name / flag / path in backticks, the common
+    case in real PR/issue bodies) is inert data fully present in the value and
+    fully scanned -- blocking on it was a pure false positive that forced
+    ``--body-file``/heredoc workarounds.
     """
     cat_match = _CAT_SUBST_RE.match(value)
     if cat_match is not None:
@@ -83,7 +90,7 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
     if var_match is not None:
         resolved = os.environ.get(var_match.group("name"))
         return resolved if resolved is not None else FAIL_CLOSED_SENTINEL
-    if "$(" in value or "`" in value:
+    if "$(" in value:
         return FAIL_CLOSED_SENTINEL
     return value
 

@@ -679,6 +679,70 @@ class TestEnvVarBodyResolution:
         assert FAIL_CLOSED_SENTINEL in payload
 
 
+class TestMarkdownBacktickBodyResolves:
+    """A ``--body`` with markdown inline-code backticks resolves to the body verbatim.
+
+    Markdown PR/issue bodies routinely carry inline-code spans (a function
+    name, a flag, a path in single backticks). The extracted ``--body`` value
+    is a literal argv element the gate only SCANS -- it is never re-fed to a
+    shell -- so a backtick is inert data, not a live command substitution. The
+    resolver must return such a body so the banned-terms scan runs against the
+    real text, rather than fail-closing on the presence of any backtick (which
+    forced agents into ``--body-file``/heredoc workarounds).
+    """
+
+    def test_gh_body_with_backtick_inline_code_resolves_verbatim(self) -> None:
+        body = "renamed the `resolve_inline_body_value` helper in the parser"
+        cmd = f'gh pr create -R o/r --title t --body "{body}"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "resolve_inline_body_value" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_glab_description_with_backtick_inline_code_resolves_verbatim(self) -> None:
+        body = "set `enabled = true` then run `t3 worktree start`"
+        cmd = f'glab mr create -R o/r --title t --description "{body}"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "t3 worktree start" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_backtick_body_still_blocks_a_banned_term(self) -> None:
+        # The fix only stops fail-closing on the backtick; the banned-terms scan
+        # is untouched, so a real term inside a backtick body is still surfaced.
+        body = "ship `the feature` to acmecorp next week"
+        cmd = f'gh pr create -R o/r --title t --body "{body}"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+
+class TestMixedCommandSubstitutionBodyStillFailsClosed:
+    """A body whose ``$(...)`` substitution content the gate cannot read fails closed.
+
+    Backticks being inert data does NOT relax the genuine
+    command-substitution guard. A mixed ``"prefix $(cat <path>)"`` body's
+    substitution content is unread (only the exact ``$(cat <path>)`` form is
+    resolved), so passing the literal would let a leak inside it slip -- it
+    still fails closed.
+    """
+
+    def test_mixed_dollar_paren_cat_subst_fails_closed(self) -> None:
+        body = "release notes header $(cat /no/such/secret-xyz.md)"
+        cmd = f'gh pr create -R o/r --title t --body "{body}"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_bare_dollar_paren_subst_fails_closed(self) -> None:
+        body = "$(printf nope)"
+        cmd = f'gh pr create -R o/r --title t --body "{body}"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
 class TestReadOnlyCommandsAreNotPublishes:
     """A read-only command that merely QUOTES a publish substring is NOT a post.
 
