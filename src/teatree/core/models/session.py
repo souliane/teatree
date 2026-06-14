@@ -5,9 +5,9 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.managers import SessionManager
+from teatree.core.modelkit.phases import CANONICAL_PHASES, normalize_phase
 from teatree.core.models.errors import QualityGateError
 from teatree.core.models.ticket import Ticket
-from teatree.core.phases import CANONICAL_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
 

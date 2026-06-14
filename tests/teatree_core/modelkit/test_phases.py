@@ -2,7 +2,7 @@
 
 import pytest
 
-from teatree.core.phases import normalize_phase, phase_transition
+from teatree.core.modelkit.phases import normalize_phase, phase_transition
 
 
 class TestNormalizePhase:

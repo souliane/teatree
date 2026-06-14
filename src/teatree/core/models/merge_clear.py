@@ -23,7 +23,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.db_retry import retry_on_locked
+from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.ticket import Ticket
 
 # §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation

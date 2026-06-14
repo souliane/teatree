@@ -94,7 +94,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
     """
-    from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
+    from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
     pending = (
         Task.objects.filter(

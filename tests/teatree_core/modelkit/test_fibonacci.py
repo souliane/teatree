@@ -2,7 +2,7 @@
 
 import pytest
 
-from teatree.core.gates.fibonacci import BACKOFF_BASE_MINUTES, fibonacci_minutes
+from teatree.core.modelkit.fibonacci import BACKOFF_BASE_MINUTES, fibonacci_minutes
 
 
 class TestFibonacciMinutes:

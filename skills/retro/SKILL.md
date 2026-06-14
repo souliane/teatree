@@ -133,7 +133,7 @@ Retro is an **orchestrator-level periodic synthesis**, not a per-ticket sub-agen
 - **Sub-agents** (per-ticket implementers/reviewers/shippers): do **not** run this skill as a per-ticket judgment step. As a lesson surfaces during the work, emit it as structured signal into durable state — task metadata or a `/tmp/t3-snapshot-*.md` snapshot — and keep going. Do not call `lifecycle visit-phase <ticket_id> retro` to satisfy a shipping gate; there is no such gate anymore.
 - **The orchestrator**: runs this skill periodically over the *accumulated durable signal across the whole session* (the snapshots and task metadata the sub-agents emitted), synthesises the cross-cutting pattern, and biases the output to the **smallest enforcement artifact** — a gate, a test, or a hook — rather than another prose rule. Prose that no agent reliably loads is the least-effective level; a deterministic check is the most-effective.
 
-`retro` remains a recordable phase for audit (`teatree.core.phases`); recording it is optional and never gates shipping. The durability discipline below (snapshots, durable task state, save-findings-immediately) is load-bearing and unchanged — it is exactly the channel the orchestrator's synthesis reads from.
+`retro` remains a recordable phase for audit (`teatree.core.modelkit.phases`); recording it is optional and never gates shipping. The durability discipline below (snapshots, durable task state, save-findings-immediately) is load-bearing and unchanged — it is exactly the channel the orchestrator's synthesis reads from.
 
 ## Fastest Reliable Tool
 

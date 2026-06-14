@@ -215,6 +215,54 @@ class TestNoLegacyPaths:
         assert not hits, f"legacy path '{label}' still referenced:\n" + "\n".join(hits)
 
 
+# PR-1 of #2385: three pure-helper leaves moved into the ``teatree.core.modelkit``
+# sub-package. ``gates/fibonacci.py`` (mis-filed under gates) → ``modelkit/fibonacci``,
+# ``db_retry.py`` → ``modelkit/db_retry``, ``phases.py`` → ``modelkit/phases``. The
+# old dotted paths are now dead. ``teatree.core.gates.fibonacci`` cannot use the
+# shared ``_hits`` (its ``teatree.core.gates.`` skip would swallow the hit), so it
+# scans without that guard.
+_MODELKIT_LEGACY_PATHS = (
+    "teatree.core.gates.fibonacci",
+    "teatree.core.db_retry",
+    "teatree.core.phases",
+)
+
+
+# The intra-core ratchet's companion test legitimately names the old
+# ``teatree.core.gates.fibonacci`` path (it pins that no model resurrects the
+# severed edge), so exclude it like ``_SELF``.
+_RATCHET_TEST = (_REPO_ROOT / "tests" / "quality" / "test_intra_core_deferred_import_ratchet.py").resolve()
+
+
+def _modelkit_legacy_hits(dotted: str) -> list[str]:
+    pattern = re.compile(rf"\b{re.escape(dotted)}\b")
+    out: list[str] = []
+    for path in _scan_files():
+        if path.resolve() == _RATCHET_TEST:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        out.extend(
+            f"{path.relative_to(_REPO_ROOT)}:{lineno}: {line.strip()}"
+            for lineno, line in enumerate(text.splitlines(), start=1)
+            if pattern.search(line)
+        )
+    return out
+
+
+class TestNoLegacyModelkitPaths:
+    @pytest.mark.parametrize("dotted", _MODELKIT_LEGACY_PATHS)
+    def test_moved_modelkit_path_has_zero_hits(self, dotted: str) -> None:
+        hits = _modelkit_legacy_hits(dotted)
+        assert not hits, f"legacy modelkit path '{dotted}' still referenced:\n" + "\n".join(hits)
+
+    def test_modelkit_submodules_import(self) -> None:
+        for name in ("fibonacci", "db_retry", "phases"):
+            importlib.import_module(f"teatree.core.modelkit.{name}")
+
+
 class TestFacadeImportSmoke:
     def test_merge_package_facade_re_exports(self) -> None:
         merge = importlib.import_module("teatree.core.merge")

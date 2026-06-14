@@ -9,7 +9,7 @@ routers here makes them trivially testable and keeps the dispatcher module
 focused on the seams and the consult order.
 """
 
-from teatree.core.phases import subagent_for_phase
+from teatree.core.modelkit.phases import subagent_for_phase
 from teatree.loop.dispatch_tables import (
     PR_SWEEP_FLAG_KINDS,
     SELF_UPDATE_CI_SKIP_REASONS,

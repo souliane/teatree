@@ -17,8 +17,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.management.commands import loop_dispatch as loop_dispatch_cmd
-from teatree.core.models import Session, Task, Ticket
-from teatree.core.phases import (
+from teatree.core.modelkit.phases import (
     _FANOUT_N_BOUNDS,
     CHAINING_ORCHESTRATOR,
     FANOUT_BY_PHASE,
@@ -26,6 +25,7 @@ from teatree.core.phases import (
     fanout_for_phase,
     subagent_for_phase,
 )
+from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScanSignal
 
@@ -256,7 +256,7 @@ class TestCorePhasesImportIsolation(TestCase):
     """
 
     def test_core_phases_has_no_runtime_config_agent_import(self) -> None:
-        spec = importlib.util.find_spec("teatree.core.phases")
+        spec = importlib.util.find_spec("teatree.core.modelkit.phases")
         assert spec is not None
         assert spec.origin is not None
         tree = ast.parse(Path(spec.origin).read_text(encoding="utf-8"))

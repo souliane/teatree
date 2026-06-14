@@ -15,7 +15,7 @@ proof.
 
 from typing import TypedDict
 
-from teatree.core.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase
 
 
 class FileChange(TypedDict, total=False):

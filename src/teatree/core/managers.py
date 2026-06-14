@@ -275,8 +275,8 @@ class TaskQuerySet(models.QuerySet):
         ``reviewing`` one, mirroring the ``normalize_phase`` contract the
         rest of the system honours.
         """
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.phases import phase_spellings  # noqa: PLC0415
 
         return self.filter(phase__in=phase_spellings(phase), status=Task.Status.COMPLETED)
 
@@ -290,8 +290,8 @@ class TaskQuerySet(models.QuerySet):
         as a zombie session. Same SSOT (``phase_spellings``), opposite
         status set.
         """
+        from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
-        from teatree.core.phases import phase_spellings  # noqa: PLC0415
 
         return self.filter(
             phase__in=phase_spellings(phase),

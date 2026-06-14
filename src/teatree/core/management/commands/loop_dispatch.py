@@ -17,15 +17,20 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
+from teatree.core.modelkit.phases import (
+    SUBAGENT_BY_PHASE,
+    phase_spellings,
+    resolve_fanout_directive,
+    subagent_for_phase,
+)
 from teatree.core.models import Task
-from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, resolve_fanout_directive, subagent_for_phase
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.statusline import default_path
 
 logger = logging.getLogger(__name__)
 
 # The phase → sub-agent authority is the single canonical map in
-# ``teatree.core.phases``. Each author phase dispatches to its OWN agent
+# ``teatree.core.modelkit.phases``. Each author phase dispatches to its OWN agent
 # (coding → t3:coder, testing → t3:tester, reviewing → t3:reviewer,
 # shipping → t3:shipper); the reviewer-role reviewing entry stays. The
 # loop is the per-phase dispatcher, never a single orchestrator that
@@ -147,7 +152,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     session-less task → byte-identical to today when no escalation is active.
     """
     from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
-    from teatree.core.phases import normalize_phase  # noqa: PLC0415
+    from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
 
     skill_bundle = _resolve_skill_bundle(task.phase)
     session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]

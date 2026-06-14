@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import cast
 
 from teatree.config_agent import resolve_agent_config
+from teatree.core.modelkit.phases import resolve_fanout_directive
 from teatree.core.models import Task, Ticket
-from teatree.core.phases import resolve_fanout_directive
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})

@@ -818,7 +818,7 @@ class TestMergeKeystoneTransientLockResilience(TestCase):
 
         lock_once = _LockOnce(MergeClear.objects.select_for_update)
         with (
-            patch("teatree.core.db_retry.time.sleep"),
+            patch("teatree.core.modelkit.db_retry.time.sleep"),
             patch.object(MergeClear.objects, "select_for_update", side_effect=lock_once),
         ):
             outcome = _run(clear, _GhStub())
@@ -853,7 +853,7 @@ class TestMergeKeystoneTransientLockResilience(TestCase):
             return real_create(*args, **kwargs)
 
         with (
-            patch("teatree.core.db_retry.time.sleep"),
+            patch("teatree.core.modelkit.db_retry.time.sleep"),
             patch.object(MergeClear.objects, "create", side_effect=_create_lock_once),
         ):
             clear = MergeClear.issue(request)
