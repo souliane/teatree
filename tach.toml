@@ -148,8 +148,14 @@ depends_on = [
   "teatree.trigger_parser",
   "teatree.hooks",
   "teatree.on_behalf_gate",
-  "teatree.slack_mrkdwn"
+  "teatree.slack_mrkdwn",
+  "teatree.core.modelkit"
 ]
+
+[[modules]]
+path = "teatree.core.modelkit"
+layer = "domain"
+depends_on = []
 
 [[modules]]
 path = "teatree.agents"
@@ -157,6 +163,7 @@ layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config",
@@ -292,6 +299,7 @@ path = "teatree.core.management"
 layer = "interface"
 depends_on = [
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.agents",
   "teatree.backends",
   "teatree.config",
@@ -321,6 +329,7 @@ depends_on = [
   "teatree.self_update",
   "teatree.config",
   "teatree.core",
+  "teatree.core.modelkit",
   "teatree.backends",
   "teatree.backends.github",
   "teatree.backends.gitlab",

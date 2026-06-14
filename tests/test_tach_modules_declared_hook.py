@@ -83,3 +83,20 @@ class TestTachModulesDeclaredHook:
         with m.patch.object(guard, "LEAF_MODULE_ALLOWLIST", guard_allow):
             _tach(fake_repo, "teatree.core")
             assert guard.main() == 0
+
+    def test_nested_core_module_declaration_does_not_disturb_top_level_check(self, fake_repo: Path) -> None:
+        # #2385 declares nested teatree.core.<child> [[modules]] entries
+        # (modelkit/managers/models). The hook only checks top-level units, so a
+        # nested entry neither satisfies a missing top-level package nor is
+        # flagged as undeclared — the top-level teatree.core declaration alone
+        # keeps the gate green.
+        _package(fake_repo, "core")
+        _tach(fake_repo, "teatree.core", "teatree.core.modelkit")
+        assert guard.main() == 0
+
+    def test_nested_entry_alone_does_not_satisfy_missing_top_level_core(self, fake_repo: Path) -> None:
+        # A nested teatree.core.modelkit entry without the top-level teatree.core
+        # entry must still flag teatree.core as undeclared.
+        _package(fake_repo, "core")
+        _tach(fake_repo, "teatree.core.modelkit")
+        assert guard.main() == 1

@@ -183,7 +183,7 @@ class TestSession(TestCase):
         canonical token; the import-time guard rejects any drift so a
         typo cannot silently make the gate compare against a stale set.
         """
-        from teatree.core.phases import CANONICAL_PHASES  # noqa: PLC0415
+        from teatree.core.modelkit.phases import CANONICAL_PHASES  # noqa: PLC0415
 
         assert Session._GATE_PHASES <= CANONICAL_PHASES
 

@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 
 from teatree.config import Speed, get_effective_settings
-from teatree.core.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends

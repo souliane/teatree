@@ -78,7 +78,7 @@ class Task(models.Model):
         task must run INTERACTIVE (subscription-covered). A pair with no
         registered agent is free-form headless work and is left HEADLESS.
         """
-        from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
         return bool(subagent_for_phase(role, phase))
 
@@ -275,7 +275,7 @@ class Task(models.Model):
         # phase is a short verb ("review"/"code"/...) must advance the
         # FSM too, not just record the session visit (#750). Raw
         # comparison silently desynced ticket.state from visited_phases.
-        from teatree.core.phases import normalize_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
 
         phase = normalize_phase(self.phase)
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
@@ -347,7 +347,7 @@ class Task(models.Model):
         separate ``lifecycle visit-phase`` CLI call. The phase is normalized
         so the loop path and the CLI path write the same canonical token.
         """
-        from teatree.core.phases import normalize_phase  # noqa: PLC0415
+        from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
 
         if not self.phase:
             return

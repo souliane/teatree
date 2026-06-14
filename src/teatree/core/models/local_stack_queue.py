@@ -24,7 +24,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
-from teatree.core.gates.fibonacci import fibonacci_minutes
+from teatree.core.modelkit.fibonacci import fibonacci_minutes
 from teatree.core.models.worktree import Worktree
 
 

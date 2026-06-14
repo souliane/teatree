@@ -41,8 +41,10 @@ graph TD
     teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
+    teatree.core --> teatree.core.modelkit
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
+    teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
@@ -121,6 +123,7 @@ graph TD
     teatree.eval --> teatree.trigger_parser
     teatree.eval --> teatree.claude_sessions
     teatree.core.management --> teatree.core
+    teatree.core.management --> teatree.core.modelkit
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
     teatree.core.management --> teatree.config
@@ -140,6 +143,7 @@ graph TD
     teatree.loop --> teatree.self_update
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
+    teatree.loop --> teatree.core.modelkit
     teatree.loop --> teatree.backends
     teatree.loop --> teatree.backends.github
     teatree.loop --> teatree.backends.gitlab
@@ -179,6 +183,7 @@ graph TD
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
+    teatree.core.modelkit
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts

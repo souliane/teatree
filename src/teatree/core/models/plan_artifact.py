@@ -16,7 +16,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.core.db_retry import retry_on_locked
+from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.errors import NoPlanArtifactError  # noqa: F401 (re-exported for caller convenience)
 
 

@@ -47,6 +47,7 @@ from teatree.core.management.commands._ship_gates import check_shipping_gate as 
 from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
 from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
 from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
@@ -55,7 +56,6 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.phases import normalize_phase
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.types import RawAPIDict

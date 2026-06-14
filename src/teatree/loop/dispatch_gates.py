@@ -11,7 +11,7 @@ dispatcher module stays focused on the consult order.
 import logging
 
 from teatree.config import get_effective_settings
-from teatree.core.phases import normalize_phase
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.loop.dispatch_reducer import slack_pr_url, task_pr_url
 from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload, DispatchAction
 from teatree.loop.scanners.base import ScanSignal

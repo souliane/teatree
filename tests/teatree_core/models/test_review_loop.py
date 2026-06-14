@@ -14,8 +14,8 @@ from django.db.utils import IntegrityError
 from django.test import TestCase
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.modelkit.phases import subagent_for_phase
 from teatree.core.models import ReviewLoop, ReviewVerdict, Task, Ticket
-from teatree.core.phases import subagent_for_phase
 
 
 def _complete(loop: ReviewLoop) -> None:

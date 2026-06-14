@@ -17,10 +17,10 @@ from teatree.core.branch_currency import require_current_branch
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.management.commands._ship_exec import ShippingGateFailure
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.phases import normalize_phase
 from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
