@@ -740,6 +740,48 @@ class TestCarveOutApplies:
             is True
         )
 
+    # A chained ``cd <wt> && git add -A && git commit -m …`` is the agent's
+    # standard worktree-commit idiom: the ``git commit`` sits in a LATER
+    # segment, not the command's first action. It must be recognised as a
+    # commit so the private-repo carve-out applies, exactly as the plain
+    # ``git commit`` above does (#2215).
+    def test_chained_cd_add_commit_downgrades(self, private_cfg: Path, private_repo: Path) -> None:
+        body = "fix the acmewidget refinery"
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'cd {private_repo} && git add -A && git commit -m "{body}"',
+                body,
+                private_repo,
+                config_path=private_cfg,
+            )
+            is True
+        )
+
+    # SAFETY TEST: a chained commit must NOT vouch for a publish segment in the
+    # same chain. A ``cd <wt> && git add && git commit … && gh issue create
+    # --repo <PUBLIC>`` carries a foreign term to a PUBLIC repo; the per-segment
+    # chain proof must still defeat it even though the commit segment alone
+    # would downgrade (#2215, the #2034 per-segment concern).
+    def test_chained_commit_then_public_gh_post_stays_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> the public --repo slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'cd {private_repo} && git add -A && git commit -m "acmewidget fix" '
+                '&& gh issue create --repo souliane/teatree --title x --body "someforeignbank"',
+                "acmewidget fix",
+                private_repo,
+                config_path=cfg,
+            )
+            is False
+        )
+
     # SAFETY TEST: This test is load-bearing. A commit whose CUMULATIVE
     # ``-C`` landing dir is a PUBLIC repo must stay hard-blocked even when the
     # bare last ``-C`` segment, resolved alone, would name a private repo.
@@ -1387,6 +1429,45 @@ class TestOwnSlugTermDowngrades:
                 config_path=cfg,
             )
             is True
+        )
+
+    # (a) The own-slug downgrade must also fire on the chained worktree-commit
+    # idiom ``cd <wt> && git add -A && git commit -m …`` where the ``git
+    # commit`` sits in a LATER segment, not the command's first action. Without
+    # per-segment recognition the chained commit is not seen as a commit and a
+    # legitimate own-slug commit is hard-blocked as if it were a publish (#2215).
+    def test_own_org_slug_term_chained_cd_add_commit_downgrades(self, cfg: Path, private_repo: Path) -> None:
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f"cd {private_repo} && git add -A "
+                '&& git commit -m "ref https://gitlab.com/acmecorp-engineering/acmecorp-product/-/issues/7"',
+                "acmecorp-engineering",
+                private_repo,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # (b) SAFETY: the chained own-slug commit must NOT vouch for a chained
+    # PUBLIC gh post. The per-segment chain proof must still defeat a
+    # ``cd <wt> && git add && git commit … && gh issue create --repo <PUBLIC>``
+    # so the chained-commit recognition never weakens the gate (#2215, #2034).
+    def test_chained_own_slug_commit_then_public_gh_post_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'cd {private_worktree} && git add -A && git commit -m "acmecorp-engineering ref" '
+                '&& gh issue create --repo souliane/teatree --title x --body "someforeignbank"',
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is False
         )
 
     # (a) An unresolvable LOCAL commit (cwd not in any repo) tripping on its
@@ -2390,6 +2471,23 @@ class TestProbeEnvResolution:
             f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
         )
         assert slug is None
+
+    def test_visibility_unknown_returns_commit_slug_for_chained_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The add-to-allowlist diagnostic must see the chained worktree-commit
+        # idiom ``cd <wt> && git add -A && git commit …`` and report the
+        # unresolvable target slug, exactly as it does for a plain commit. With
+        # only first-action recognition the chained commit is invisible to the
+        # hint and the operator gets no offline-allowlist guidance (#2215).
+        cfg = _config(tmp_path, [])  # not allowlisted
+        repo = _repo_with_remote(tmp_path / "r", _PRIV_REMOTE)
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        slug = publish_surface.visibility_unknown_for_block(
+            f'cd {repo} && git add -A && git commit -m "x"', repo, config_path=cfg
+        )
+        assert slug == publish_surface.slug_for_cwd(repo)
 
     def test_visibility_unknown_returns_none_when_genuinely_public(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
