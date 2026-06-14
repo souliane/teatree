@@ -1,4 +1,4 @@
-"""Self-DB schema pre-flight for the sanctioned merge path (#869).
+"""Self-DB schema pre-flight for the sanctioned merge path (#869, #2006).
 
 The sanctioned merge commands ``t3 teatree ticket clear`` and
 ``t3 teatree ticket merge`` write/read ``MergeClear``/``MergeAudit`` rows.
@@ -10,15 +10,22 @@ traceback.
 Since #863 mechanically prohibits raw ``gh pr merge`` on teatree-managed
 tickets, that opaque failure blocks the *entire* merge pipeline with no
 actionable signal. This module provides a cheap pre-flight that converts
-the silent traceback into a clear, sanctioned-remediation error and a
-``t3 doctor`` check that surfaces the gap proactively at session start.
+the silent traceback into a clear outcome and a ``t3 doctor`` check that
+surfaces the gap proactively at session start.
 
-The merge gate deliberately *refuses* (it does not auto-migrate): mutating
-the schema as a side effect of a merge command is surprising and unsafe if
-the migration itself fails partway. Instead :func:`migrate_self_db` (exposed
-as ``t3 teatree db migrate``) is the explicit, always-available, in-process
-self-rescue — reachable even while the gate is refusing, since it is a
-separate command not gated by the merge path (#126).
+The recurring footgun (#2006): the live editable install tracks the main
+clone, so a keystone merge of a migration-adding PR advances the install
+over a new migration and leaves the self-DB behind. Every subsequent
+sanctioned operation then crashed with ``no such table`` until a human ran
+``t3 teatree db migrate``. :func:`require_current_schema` now self-heals
+that state — it applies the pending self-DB migrations in place (the same
+non-destructive, forward-only ``migrate_self_db`` the manual command runs)
+before proceeding. Auto-migrating the self-DB is safe: it is a local SQLite
+state DB, not a tenant/product DB, and the migrate is fail-closed — a
+genuine migrate failure raises :class:`SelfDbMigrationError` with the
+actionable remediation rather than proceeding against a half-migrated DB.
+``migrate_self_db`` (exposed as ``t3 teatree db migrate``) stays the
+explicit, always-available manual self-rescue.
 """
 
 import typer
@@ -95,23 +102,35 @@ def migrate_self_db(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
 
 
 def require_current_schema(alias: str = DEFAULT_DB_ALIAS) -> None:
-    """Fail closed with an actionable message if the self-DB is unmigrated.
+    """Ensure the self-DB schema is current, auto-applying pending migrations (#2006).
 
     Called as a pre-flight by the sanctioned merge commands so an
     unmigrated self-DB can never produce a raw ``no such table`` traceback
-    on the critical merge path.
+    on the critical merge path. When the live editable install has advanced
+    over a new migration, the self-DB falls behind; rather than refuse and
+    force a manual ``t3 teatree db migrate``, this applies the pending
+    migrations in place via :func:`migrate_self_db` (probe-gated,
+    idempotent, non-destructive forward-only) and proceeds.
+
+    Fail LOUD if the migrate itself fails: :func:`migrate_self_db` raises
+    :class:`SelfDbMigrationError` on a genuine migrate failure, which is
+    re-raised with the actionable remediation so the caller surfaces it
+    instead of proceeding against a half-migrated DB.
     """
     pending = pending_migrations(alias)
     if not pending:
         return
-    listed = ", ".join(pending)
-    msg = (
-        f"teatree self-DB has {len(pending)} unapplied migration(s): {listed}. "
-        f"The sanctioned merge path (ticket clear/merge) needs a current schema "
-        f"(e.g. the MergeClear/MergeAudit tables) and refuses to run against a "
-        f"stale DB rather than fail with an opaque traceback.\n{_REMEDIATION}"
-    )
-    raise SelfDbMigrationError(msg)
+    try:
+        migrate_self_db(alias)
+    except SelfDbMigrationError as exc:
+        listed = ", ".join(pending)
+        msg = (
+            f"teatree self-DB has {len(pending)} unapplied migration(s): {listed}. "
+            f"The sanctioned merge path (ticket clear/merge) needs a current schema "
+            f"(e.g. the MergeClear/MergeAudit tables); auto-applying them failed: {exc}\n"
+            f"{_REMEDIATION}"
+        )
+        raise SelfDbMigrationError(msg) from exc
 
 
 def doctor_check_self_db_migrations(alias: str = DEFAULT_DB_ALIAS) -> bool:

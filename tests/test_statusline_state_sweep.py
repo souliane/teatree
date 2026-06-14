@@ -97,6 +97,19 @@ class TestSweepProtectsLiveReaderFiles:
         _sweep_stale_state_files()
         assert router._session_has_loop("live-session")
 
+    def test_aged_teatree_active_survives_while_ephemeral_is_swept(self) -> None:
+        teatree_active = _touch("live-session.teatree-active", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        ephemeral = _touch("live-session.loop-pending", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        _sweep_stale_state_files()
+        assert teatree_active.exists(), (
+            "an active session's .teatree-active gates the statusline by presence and "
+            "is not re-touched for the life of a normal session; it must survive the sweep"
+        )
+        assert not ephemeral.exists(), (
+            "an unprotected re-armed-on-demand marker of the same age must still be swept "
+            "(proves the test is not vacuously protecting everything)"
+        )
+
 
 class TestEnsureStateDirRunsSweep:
     def test_ensure_state_dir_invokes_sweep(self) -> None:
