@@ -111,6 +111,10 @@ class _FakeCodeHost:
         _ = (issue_url, comment_id, body)
         return {}
 
+    def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> dict[str, object]:
+        _ = (issue_url, comment_id)
+        return {}
+
     def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
         _ = assignee
         return []

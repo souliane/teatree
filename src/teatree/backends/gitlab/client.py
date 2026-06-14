@@ -473,6 +473,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         """Edit a note in place to keep ONE evidence note per ticket (delegates to :mod:`issue_notes`)."""
         return _issue_notes.update_issue_comment(self._client, issue_url=issue_url, comment_id=comment_id, body=body)
 
+    def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
+        return _issue_notes.delete_issue_comment(self._client, issue_url=issue_url, comment_id=comment_id)
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         """Return the approval state for an MR — used by ``GitLabApprovalsScanner`` (#936).
 

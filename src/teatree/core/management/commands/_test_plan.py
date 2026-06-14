@@ -60,6 +60,7 @@ __all__ = [
     "TestPlanState",
     "TestPlanValidationError",
     "WorkflowArtifacts",
+    "WorktreeNotFoundError",
     "build_validated_post",
     "find_existing_note",
     "merge_state",
@@ -70,6 +71,7 @@ __all__ = [
     "render_body",
     "render_mrs_line",
     "run_post_test_plan",
+    "run_retract_evidence",
     "test_plan_marker",
     "validate_template",
 ]
@@ -556,3 +558,32 @@ def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTes
         summary=f"Test plan ({', '.join(envs)}) on {post.issue_url}",
     )
     return PostTestPlanResult(issue_url=post.issue_url, comment_id=comment_id, envs=envs, action=action)
+
+
+def run_retract_evidence(
+    *,
+    ticket: str,
+    write_out: Callable[[str], None],
+    write_err: Callable[[str], None],
+) -> None:
+    host = code_host_from_overlay()
+    if host is None:
+        write_err("No code host configured (check overlay GitLab/GitHub token).")
+        raise SystemExit(1)
+    try:
+        worktree = resolve_worktree()
+    except WorktreeNotFoundError:
+        worktree = None
+    try:
+        resolved = _resolve_ticket(ticket, worktree)
+    except TestPlanResolutionError as err:
+        write_err(str(err))
+        raise SystemExit(1) from err
+    issue_url = str(resolved.issue_url)
+    comments = host.list_issue_comments(issue_url=issue_url)
+    existing = find_existing_note(comments, ticket_id=resolved.ticket_number)
+    if existing is None:
+        write_err(f"No test-plan note found on {issue_url}.")
+        raise SystemExit(1)
+    host.delete_issue_comment(issue_url=issue_url, comment_id=existing.comment_id)
+    write_out(f"  Test-plan note {existing.comment_id} retracted from {issue_url}.")

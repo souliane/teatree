@@ -74,6 +74,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `project` | Run E2E tests from the project's own test directory |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
 | `post-test-plan` | Post (or update) the ticket's single test-plan note from a manifest |
+| `retract-evidence` | Withdraw the ticket's single test-plan note |
 | `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
 ## `env`

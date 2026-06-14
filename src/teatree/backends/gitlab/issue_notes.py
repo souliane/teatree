@@ -85,3 +85,13 @@ def update_issue_comment(client: GitLabAPI, *, issue_url: str, comment_id: int, 
         return {"error": resolved}
     project_id, iid = resolved
     return client.put_json(f"projects/{project_id}/issues/{iid}/notes/{comment_id}", {"body": body}) or {}
+
+
+def delete_issue_comment(client: GitLabAPI, *, issue_url: str, comment_id: int) -> RawAPIDict:
+    """Delete a note on a GitLab issue / work item, or return ``{"error": ...}``."""
+    resolved = _resolve_issue(client, issue_url)
+    if isinstance(resolved, str):
+        return {"error": resolved}
+    project_id, iid = resolved
+    status = client.delete(f"projects/{project_id}/issues/{iid}/notes/{comment_id}")
+    return {"status": status}

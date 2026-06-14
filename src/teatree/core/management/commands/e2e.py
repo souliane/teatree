@@ -537,6 +537,19 @@ class Command(TyperCommand):
             template=template,
         )
 
+    @command(name="retract-evidence")
+    def retract_evidence(
+        self,
+        *,
+        ticket: str = "",
+    ) -> None:
+        """Withdraw the ticket's single test-plan note."""
+        return _test_plan.run_retract_evidence(
+            ticket=ticket,
+            write_out=self.stdout.write,
+            write_err=self.stderr.write,
+        )
+
     @command(name="post-evidence", hidden=True, deprecated=True)
     def post_evidence(  # noqa: PLR0913 — CLI entrypoint, each flag is a distinct user-facing option
         self,

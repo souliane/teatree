@@ -334,11 +334,8 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         """Close a GitHub issue, optionally leaving an audit-trail comment first.
 
-        Idempotent: GitHub's ``PATCH state=closed`` is a no-op on an
-        already-closed issue, so a re-tick that re-closes the same issue does
-        no harm. Returns ``{"error": ...}`` when the URL is not a recognised
-        GitHub issue URL so the caller never mistakes a parse failure for a
-        successful close.
+        Idempotent: ``PATCH state=closed`` is a no-op on an already-closed issue.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
         """
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
@@ -395,24 +392,13 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return cast("RawAPIDict", data) if isinstance(data, dict) else {"error": f"Issue not found: {issue_url}"}
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
-        """Return the ``<owner>/<repo>`` that owns *issue_url* (the note's own repo).
-
-        Parses the owner/repo out of a GitHub issue URL — the repo the note is
-        posted on. The evidence command targets this repo for artifact uploads
-        so they share the note's namespace. Returns ``""`` when the URL is not a
-        recognised GitHub issue URL.
-        """
+        """Return the ``<owner>/<repo>`` that owns *issue_url*, or ``""`` when unparsable."""
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
         return f"{match['owner']}/{match['repo']}" if match is not None else ""
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
-        """Post a comment to a GitHub issue.
-
-        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
-        Returns ``{"error": ...}`` when the URL is not a recognised GitHub
-        issue URL.
-        """
+        """Post a comment to a GitHub issue; returns ``{"error": ...}`` on a non-issue URL."""
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
         if match is None:
@@ -438,12 +424,7 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return result
 
     def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
-        """List the comments on a GitHub issue.
-
-        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
-        Returns an empty list when the URL is not a recognised GitHub issue
-        URL — the caller treats "no comments" and "unresolvable" identically.
-        """
+        """List the comments on a GitHub issue; returns ``[]`` on a non-issue URL."""
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
         if match is None:
@@ -453,12 +434,9 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return _gh_api_get_paginated(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
-        """Edit an existing GitHub issue comment in place.
+        """Edit a GitHub issue comment in place via /repos/{repo}/issues/comments/{id}.
 
-        GitHub issue-comment ids are globally unique within a repo, edited
-        via ``/repos/{repo}/issues/comments/{id}`` (the issue number is not
-        part of the path). Returns ``{"error": ...}`` when the URL is not a
-        recognised GitHub issue URL.
+        Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
         """
         path = urlparse(issue_url).path
         match = _ISSUE_URL_RE.match(path)
@@ -472,6 +450,24 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             token=self._token,
         )
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo = f"{match['owner']}/{match['repo']}"
+        _run_gh(
+            "gh",
+            "api",
+            f"repos/{repo}/issues/comments/{comment_id}",
+            "--method",
+            "DELETE",
+            "--header",
+            "Accept: application/vnd.github+json",
+            token=self._token,
+        )
+        return {}
 
     @staticmethod
     def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:
