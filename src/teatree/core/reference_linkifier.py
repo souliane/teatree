@@ -116,7 +116,7 @@ class ReferenceResolver:
     @staticmethod
     def _repo_context(overlay: "OverlayBase") -> tuple[str, str]:
         """Return ``(owner/repo slug, web_base)`` from the overlay's first repo remote."""
-        from teatree.utils import git  # noqa: PLC0415
+        from teatree.utils import git, git_remote  # noqa: PLC0415
 
         try:
             repos = overlay.get_repos()
@@ -128,9 +128,9 @@ class ReferenceResolver:
             except Exception as exc:  # noqa: BLE001 — a repo without a resolvable remote is skipped
                 logger.debug("reference_linkifier remote lookup failed for repo %r: %s", repo, exc)
                 continue
-            slug = git.slug_from_remote(remote)
+            slug = git_remote.slug_from_remote(remote)
             if slug:
-                return slug, git.web_base_from_remote(remote)
+                return slug, git_remote.web_base_from_remote(remote)
         return "", ""
 
     def resolve_mr(self, iid: int, *, slug: str = "") -> str | None:
