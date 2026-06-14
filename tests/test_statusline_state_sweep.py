@@ -103,7 +103,7 @@ class TestSweepProtectsLiveReaderFiles:
         _sweep_stale_state_files()
         assert teatree_active.exists(), (
             "an active session's .teatree-active gates the statusline by presence and "
-            "is touched once; it must survive the sweep"
+            "is not re-touched for the life of a normal session; it must survive the sweep"
         )
         assert not ephemeral.exists(), (
             "an unprotected re-armed-on-demand marker of the same age must still be swept "
