@@ -320,7 +320,7 @@ Read ``text`` aloud synchronously through the local speakers per [teatree.speak]
 | --- | --- |
 | `create` | Enqueue the next-phase task for a ticket |
 | `cancel` |  |
-| `complete` | Mark a claimed task COMPLETED for work finished out-of-band (#1031) |
+| `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
 | `claim` |  |
 | `start` | Claim an interactive task and exec ``claude`` in the current terminal |
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
