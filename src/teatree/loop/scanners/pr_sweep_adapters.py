@@ -76,7 +76,19 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         url=url,
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
+        behind_main=_gh_is_behind_main(raw),
     )
+
+
+def _gh_is_behind_main(raw: GhPrJson) -> bool:
+    """True iff GitHub reports the branch as behind its base (#2045).
+
+    ``mergeStateStatus == "BEHIND"`` is a clean branch whose base advanced —
+    distinct from ``DIRTY`` (a hard conflict). A repo-state check red on a
+    behind branch is the rerun-can't-fix case the sweep surfaces as
+    ``needs_branch_update``.
+    """
+    return _as_str(raw.get("mergeStateStatus")).upper() == "BEHIND"
 
 
 def _gh_is_conflicted(raw: GhPrJson) -> bool:

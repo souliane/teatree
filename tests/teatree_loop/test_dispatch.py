@@ -349,6 +349,14 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert action.kind == "statusline"
         assert action.zone == "action_needed"
 
+    def test_needs_branch_update_flag_surfaces_in_action_needed(self) -> None:
+        # #2045: a PR red only on repo-state checks against a stale base needs a
+        # merge-update; a rerun can't fix it, so it must reach the operator.
+        action = self._action("pr_sweep.needs_branch_update", "needs_branch_update")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
     def test_no_review_flag_with_review_dispatched_routes_to_in_flight(self) -> None:
         # #68: a flag whose review was auto-armed is in-flight work, not an
         # operator-triage item — the loop is handling it.

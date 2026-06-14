@@ -114,12 +114,15 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
     "review_request_merge_react.missing_scope": "action_needed",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
-    # (see _is_pr_sweep_flag): a conflicted open PR (#78) and a green
-    # solo-overlay PR with no recorded independent cold-review (#68). Both
-    # need an operator decision, so they surface in action_needed rather than
-    # being dropped with the rest of the diagnostic pr_sweep.* family.
+    # (see _is_pr_sweep_flag): a conflicted open PR (#78), a green
+    # solo-overlay PR with no recorded independent cold-review (#68), and a PR
+    # red only on repo-state checks against a stale base that a rerun can't fix
+    # (#2045 — only a merge-update can). All need an operator decision, so they
+    # surface in action_needed rather than being dropped with the rest of the
+    # diagnostic pr_sweep.* family.
     "pr_sweep.flag_conflict": "action_needed",
     "pr_sweep.flag_no_review": "action_needed",
+    "pr_sweep.needs_branch_update": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -150,12 +153,15 @@ _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 
 _SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
 
-# pr_sweep flag-level kinds the scanner deliberately did NOT act on (a merge
-# conflict, or a missing independent cold-review on a solo overlay). They share
-# the ``pr_sweep.`` prefix for log grouping but must escape the diagnostic drop
-# so the operator sees them — the same exemption shape as the CI-green-gate
-# self_update skip above.
-_PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset({"pr_sweep.flag_conflict", "pr_sweep.flag_no_review"})
+# pr_sweep flag-level kinds the scanner deliberately did NOT act on: a merge
+# conflict, a missing independent cold-review on a solo overlay, or a PR red
+# only on repo-state checks against a stale base that needs a merge-update
+# (#2045). They share the ``pr_sweep.`` prefix for log grouping but must escape
+# the diagnostic drop so the operator sees them — the same exemption shape as
+# the CI-green-gate self_update skip above.
+_PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset(
+    {"pr_sweep.flag_conflict", "pr_sweep.flag_no_review", "pr_sweep.needs_branch_update"}
+)
 
 
 def _is_pr_sweep_flag(signal: ScanSignal) -> bool:

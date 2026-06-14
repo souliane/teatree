@@ -1,0 +1,90 @@
+"""Leaf data types + check-name constants for the PR-sweep scanner.
+
+Held in a dependency-free leaf module so both the scanner core
+(:mod:`teatree.loop.scanners.pr_sweep`) and the decision predicates
+(:mod:`teatree.loop.scanners.pr_sweep_decision`) can import them without a
+circular edge. ``pr_sweep`` re-exports every name here, so existing
+``from teatree.loop.scanners.pr_sweep import CheckResult`` call sites are
+unaffected.
+"""
+
+from dataclasses import dataclass
+
+GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+REQUIRED_CHECK_NAME = "test (3.13)"
+UV_AUDIT_CHECK_NAME = "uv-audit"
+
+# Repo-state checks diff the PR head against ``origin/main`` (the base),
+# so a fix that already merged to ``main`` turns them red on a branch that
+# has not been merge-updated. ``gh run rerun --failed`` re-tests against the
+# original run's pinned merge commit (the OLD base), so a rerun can never
+# turn them green — only a fresh merge-update (``git merge origin/main``)
+# minting a new merge ref can. ``uv-audit`` is the same class the step-6
+# fallback already singles out; the cross-PR / doc-gate / tree-scan jobs
+# share the base-diffing property.
+REPO_STATE_CHECK_NAMES = frozenset(
+    {
+        UV_AUDIT_CHECK_NAME,
+        "blueprint-cross-pr",
+        "doc-update-gate",
+        "banned-terms-tree",
+        "overlay-leak-tree",
+    }
+)
+
+# GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
+# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
+# but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
+# empty is GitHub still computing mergeability — never flagged, to avoid a
+# false conflict alarm on a freshly-pushed head.
+GH_CONFLICT_MERGEABLE = "CONFLICTING"
+GH_CONFLICT_MERGE_STATE = "DIRTY"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckResult:
+    """One required-status check on a PR head."""
+
+    name: str
+    conclusion: str
+    status: str
+
+    @property
+    def verdict(self) -> str:
+        upper_status = self.status.upper()
+        if upper_status and upper_status != "COMPLETED":
+            return "pending"
+        upper_conclusion = self.conclusion.upper()
+        if upper_conclusion in GREEN_TERMINAL_CONCLUSIONS:
+            return "green"
+        return "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class PrSummary:
+    """Decoded subset of a PR's ``gh`` payload the sweep needs."""
+
+    slug: str
+    number: int
+    head_sha: str
+    is_draft: bool
+    has_changes_requested: bool
+    checks: tuple[CheckResult, ...]
+    url: str = ""
+    title: str = ""
+    is_conflicted: bool = False
+    behind_main: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MergeAttempt:
+    """The scanner's per-PR decision plus any merge outcome."""
+
+    slug: str
+    pr_id: int
+    decision: str
+    merged: bool = False
+    merged_sha: str = ""
+    reason: str = ""
+    url: str = ""
+    review_dispatched: bool = False
