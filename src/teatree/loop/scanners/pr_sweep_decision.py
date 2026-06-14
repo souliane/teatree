@@ -8,13 +8,34 @@ orchestration and under the module-health LOC cap (same split rationale as
 ``pr_sweep_adapters``).
 """
 
+from collections.abc import Iterable
+
 from teatree.core.models.merge_clear import MergeClear
+from teatree.core.review_candidate import author_is_self
 from teatree.loop.scanners.pr_sweep_types import (
     REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
     CheckResult,
 )
+
+
+def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
+    """True iff *author* is one of the operator's own forge identities (#2210).
+
+    The loop's review-sweep walks every open PR in a watched repo via
+    ``list_open_prs`` — colleagues' PRs included. Only the operator's own PRs
+    should be auto-scheduled for a cold review; a colleague's PR is theirs to
+    review (auto-scheduling it wastes a dispatch and risks an unattended
+    review note on their work). Reuses the single self-author signal
+    :func:`teatree.core.review_candidate.author_is_self` — an empty *author*
+    or an empty identity set never matches, so an unconfirmable author fails
+    closed (no arm) rather than being treated as ours.
+    """
+    identities = tuple(self_identities)
+    if not author or not identities:
+        return False
+    return author_is_self(author, current_user=identities[0], self_identities=identities)
 
 
 def classify_checks(checks: tuple[CheckResult, ...]) -> str:

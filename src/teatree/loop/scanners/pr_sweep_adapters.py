@@ -33,6 +33,13 @@ class GhPrJson(TypedDict, total=False):
     statusCheckRollup: list[object]
     mergeable: str
     mergeStateStatus: str
+    author: "GhAuthorJson"
+
+
+class GhAuthorJson(TypedDict, total=False):
+    """Shape of the ``GhPrJson.author`` block — the PR author identity."""
+
+    login: str
 
 
 class GhReviewJson(TypedDict, total=False):
@@ -53,6 +60,14 @@ class GhCheckJson(TypedDict, total=False):
 
 def _as_str(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _author_login(raw: GhPrJson) -> str:
+    """Read the PR author's login from the ``gh pr list --json author`` block."""
+    author = raw.get("author")
+    if isinstance(author, dict):
+        return _as_str(author.get("login"))
+    return ""
 
 
 def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
@@ -77,6 +92,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
         behind_main=_gh_is_behind_main(raw),
+        author=_author_login(raw),
     )
 
 
@@ -160,7 +176,7 @@ class GhPrApiClient:
             "--limit",
             "100",
             "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus",
+            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup,mergeable,mergeStateStatus,author",
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:

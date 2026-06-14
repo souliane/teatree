@@ -37,7 +37,12 @@ def _stage_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str) ->
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
 
 
-def _backend(*, name: str, repos: tuple[str, ...] = ("acme/repo",)) -> OverlayBackends:
+def _backend(
+    *,
+    name: str,
+    repos: tuple[str, ...] = ("acme/repo",),
+    identities: tuple[str, ...] = (),
+) -> OverlayBackends:
     config = MagicMock(spec=OverlayConfig)
     config.get_github_token = lambda: ""
     metadata = MagicMock(spec=OverlayMetadata)
@@ -51,6 +56,7 @@ def _backend(*, name: str, repos: tuple[str, ...] = ("acme/repo",)) -> OverlayBa
         messaging=None,
         ready_labels=(),
         overlay=overlay,
+        identities=identities,
     )
 
 
@@ -212,3 +218,24 @@ class TestPrSweepSoloOverlayGate:
         assert scanner.solo_overlay is True
         assert scanner.auto_review_dispatch is False
         assert scanner.review_dispatcher is None
+
+    def test_self_identities_threaded_from_backend(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#2210: the operator's identity set is wired so the review-arm is own-PR scoped.
+
+        ``backend.identities`` (the multi-alias self set) must reach the
+        scanner — without it ``pr_authored_by_self`` has no identity set to
+        match against and (fail-closed) would arm nothing, defeating #68.
+        """
+        _stage_config(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
+        )
+        backend = _backend(name="t3-teatree", identities=("souliane", "souliane-alt"))
+        scanner = _pr_sweep_scanner_for(backend, slack_user_id="")
+        assert scanner is not None
+        assert scanner.self_identities == ("souliane", "souliane-alt")

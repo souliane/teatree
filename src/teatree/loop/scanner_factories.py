@@ -309,6 +309,9 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         solo_overlay=solo_overlay,
         auto_review_dispatch=auto_review_dispatch,
         review_dispatcher=AutoReviewTaskDispatcher() if auto_review_dispatch else None,
+        # #2210: scope the review-arm to the operator's own PRs — a colleague's
+        # open PR in a watched repo must never be auto-scheduled for review.
+        self_identities=backend.identities,
     )
 
 

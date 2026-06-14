@@ -42,6 +42,8 @@ SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 STALE = "deadbeef00000000000000000000000000000000"
 MAIN_SHA = "abcdef1234567890abcdef1234567890abcdef12"
+SELF_LOGIN = "souliane"
+COLLEAGUE_LOGIN = "a-teammate"
 
 
 def _green_required() -> CheckResult:
@@ -81,6 +83,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     changes_requested: bool = False,
     checks: tuple[CheckResult, ...] = (),
     behind_main: bool = False,
+    author: str = SELF_LOGIN,
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -92,6 +95,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
         behind_main=behind_main,
+        author=author,
     )
 
 
@@ -167,6 +171,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
     solo_overlay: bool = False,
     auto_review_dispatch: bool = False,
     dispatcher: FakeReviewDispatcher | None = None,
+    self_identities: tuple[str, ...] = (SELF_LOGIN,),
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
@@ -179,6 +184,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
             solo_overlay=solo_overlay,
             auto_review_dispatch=auto_review_dispatch,
             review_dispatcher=dispatcher,
+            self_identities=self_identities,
         ),
         notifier,
     )
@@ -860,6 +866,136 @@ class TestAutoReviewDispatch:
 
         assert signals[0].kind == "pr_sweep.flag_no_review"
         assert signals[0].payload["review_dispatched"] is False
+
+
+class TestReviewArmScopedToOwnPrs:
+    """The loop review-sweep auto-arms a review ONLY for PRs the operator authored (#2210).
+
+    ``list_open_prs`` returns every open PR in a watched repo — colleagues'
+    included. Before #2210 the solo-overlay ``flag_no_review`` path armed a
+    reviewing task for ANY green+clean PR with no CLEAR, so a teammate's MR
+    in a customer repo was auto-scheduled for a cold review (wasted dispatch +
+    an unattended review note on their work). The arm is now gated on
+    ``author_is_self``: a colleague's PR is excluded, the operator's own PR is
+    still armed.
+    """
+
+    def test_colleague_pr_is_not_armed_for_review(self) -> None:
+        # RED before the fix: the colleague's green+clean PR with no CLEAR flowed
+        # through _evaluate_solo_overlay -> _flag_no_review -> _enqueue_review and
+        # armed a reviewing task. The flag-level signal still fires (operator
+        # triage), but no review is dispatched on the teammate's PR.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=COLLEAGUE_LOGIN)]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+            self_identities=(SELF_LOGIN,),
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is False
+
+    def test_own_pr_is_still_armed_for_review(self) -> None:
+        # The symmetric must-still-fire: a PR authored by the operator (default
+        # author=SELF_LOGIN) is armed exactly as before.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=SELF_LOGIN)]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+            self_identities=(SELF_LOGIN,),
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is True
+
+    def test_own_pr_under_secondary_alias_is_armed(self) -> None:
+        # Multi-identity: a PR authored under a secondary github login is still
+        # the operator's own work and is armed (reuses the full identity set).
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="souliane-alt")]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+            self_identities=(SELF_LOGIN, "souliane-alt"),
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].payload["review_dispatched"] is True
+
+    def test_unknown_author_is_not_armed(self) -> None:
+        # Fail closed: a PR whose author the payload omitted is not provably ours,
+        # so it is not auto-scheduled for review.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="")]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+            self_identities=(SELF_LOGIN,),
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].payload["review_dispatched"] is False
+
+    def test_colleague_pr_with_recorded_verdict_still_merges(self) -> None:
+        # The author scope gates only the review-ARM, not the merge path. A
+        # colleague PR with a recorded independent cold-review at head still
+        # merges (the verdict is authoritative); the arm gate never runs.
+        _record_cold_review()
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=COLLEAGUE_LOGIN)]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=dispatcher,
+            self_identities=(SELF_LOGIN,),
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].kind == "pr_sweep.merged"
+
+
+class TestDecodeAuthor:
+    """``_decode_pr`` reads the PR author login from ``gh pr list --json author`` (#2210)."""
+
+    def test_author_login_decoded(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "author": {"login": "souliane"}})
+        assert pr.author == "souliane"
+
+    def test_missing_author_decodes_to_empty(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD})
+        assert pr.author == ""
+
+    def test_malformed_author_decodes_to_empty(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "author": "not-a-dict"})
+        assert pr.author == ""
 
 
 class TestConflictFlag:

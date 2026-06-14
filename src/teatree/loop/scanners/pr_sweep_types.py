@@ -62,7 +62,13 @@ class CheckResult:
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:
-    """Decoded subset of a PR's ``gh`` payload the sweep needs."""
+    """Decoded subset of a PR's ``gh`` payload the sweep needs.
+
+    ``author`` is the PR author's forge login (GitHub ``author.login``); it
+    scopes the loop's auto-review-arm to PRs the user authored so a
+    colleague's open PR in a watched repo is never auto-scheduled for review
+    (#2210). Empty when the payload omits the author — treated as "not ours".
+    """
 
     slug: str
     number: int
@@ -74,6 +80,7 @@ class PrSummary:
     title: str = ""
     is_conflicted: bool = False
     behind_main: bool = False
+    author: str = ""
 
 
 @dataclass(frozen=True, slots=True)
