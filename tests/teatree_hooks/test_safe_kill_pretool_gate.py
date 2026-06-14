@@ -49,13 +49,21 @@ class TestDeniesRawPidKill:
         payload = _parse_deny(capsys)
         assert payload is not None
         assert payload["permissionDecision"] == "deny"
-        assert "safe_kill" in payload["permissionDecisionReason"]
+        assert "t3 teatree safe-kill" in payload["permissionDecisionReason"]
 
 
 class TestAllowsSafeCommands:
     @pytest.mark.parametrize(
         "command",
-        ["pkill -9 chrome", "killall node", "kill %1", "kill $PID", "ps -axo pid,comm"],
+        [
+            "kill -0 4242",
+            "pkill -9 chrome",
+            "killall node",
+            "kill %1",
+            "kill $PID",
+            "kill -9 $(pgrep claude)",
+            "ps -axo pid,comm",
+        ],
     )
     def test_non_raw_pid_kill_passes(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_block_raw_pid_kill(_bash_event(command)) is False

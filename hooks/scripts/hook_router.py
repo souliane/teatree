@@ -6871,15 +6871,20 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
     """Deny a Bash command that signals a process by a raw, guessed pid (#2225).
 
     The agent has twice killed the WRONG, LIVE process by guessing which
-    ``claude`` pid 'looked dead'. A bare ``kill <pid>`` / ``kill -9 <pid>`` is
-    exactly that guessed-pid shape; it is denied so the agent must go through
-    ``teatree.core.safe_kill.safe_kill`` (positive session/task id + non-live
-    proof) instead. ``pkill``/``killall`` (signal by name) and ``%job``/``$VAR``
-    targets are NOT flagged.
+    ``claude`` pid 'looked dead'. A bare ``kill <pid>`` / ``kill -9 <pid>`` at a
+    command position is exactly that guessed-pid shape; it is denied so the agent
+    must go through the runnable ``t3 teatree safe-kill <pid> --hang-cause``
+    command (positive session/task id + non-live proof) instead. ``kill -0``
+    (the no-op liveness probe), ``pkill``/``killall`` (signal by name),
+    ``%job``/``$VAR``/``$(…)`` targets, and a ``kill`` token inside a comment /
+    string / as another command's argument are NOT flagged.
 
-    Fails OPEN on any import/internal error — a gate bug must never wedge the
-    agent (consistent with the other Bash-deny gates). The handler bootstraps
-    ``sys.path`` to import ``teatree`` from the sibling ``src/`` (#1314).
+    Because the gate sits on the broad ``Bash`` matcher, its deny is routed
+    through :func:`_fail_open_or_deny` so the always-allowed self-rescue commands
+    and the master ``[teatree] danger_gate_fail_open`` kill-switch keep it from
+    ever wedging a session (the never-lockout contract, #2349). Fails OPEN on any
+    import/internal error — a gate bug must never wedge the agent. The handler
+    bootstraps ``sys.path`` to import ``teatree`` from the sibling ``src/`` (#1314).
     """
     if data.get("tool_name") != "Bash":
         return False
@@ -6903,7 +6908,7 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
     if not detection.is_raw_pid_kill:
         return False
-    return emit_pretooluse_deny(detection.message)
+    return _fail_open_or_deny(data, detection.message)
 
 
 # ── PreToolUse: block-secret-file-print (#2306) ──────────────────────
