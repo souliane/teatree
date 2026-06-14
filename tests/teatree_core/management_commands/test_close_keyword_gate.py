@@ -22,6 +22,7 @@ import teatree.core.management.commands.pr as pr_mod
 from teatree.core.management.commands._close_keyword_gate import _scan_sources, _suggest_rewrite
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.utils import git as git_mod
+from teatree.utils import git_commit as git_commit_mod
 from tests.teatree_core.management_commands._overlays import (
     FORBID_CLOSE_KEYWORDS_OVERLAY,
     FULL_OVERLAY,
@@ -221,7 +222,7 @@ class TestCommitMessagesHelper(TestCase):
 
     def test_splits_on_record_separator_keeping_multiline_bodies(self) -> None:
         raw = "feat: a\n\nbody line 1\n\nbody line 2\x1e\nfix: b\n\nFixes #1\x1e\n"
-        with patch.object(git_mod, "run", return_value=raw):
+        with patch.object(git_commit_mod, "run", return_value=raw):
             assert git_mod.commit_messages(repo="/tmp/wt", range_spec="origin/main..feat") == [
                 "feat: a\n\nbody line 1\n\nbody line 2",
                 "fix: b\n\nFixes #1",

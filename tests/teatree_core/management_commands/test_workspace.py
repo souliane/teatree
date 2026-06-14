@@ -25,6 +25,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
+import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
@@ -2006,6 +2007,7 @@ class TestPruneBranches(TestCase):
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
             patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_commit_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
             # Squash-merged: the content is on the remote, nothing absent (#710).

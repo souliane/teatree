@@ -6,6 +6,9 @@ from unittest.mock import patch
 import pytest
 
 from teatree.utils import git as git_mod
+from teatree.utils import git_branch as git_branch_mod
+from teatree.utils import git_remote_ops as git_remote_ops_mod
+from teatree.utils import git_sync as git_sync_mod
 from teatree.utils.git import GitRepo
 
 
@@ -80,13 +83,13 @@ class TestDefaultBranchDetection:
             # show-ref --verify --quiet refs/remotes/origin/<name>
             return args[-1] == "refs/remotes/origin/main"
 
-        monkeypatch.setattr(git_mod, "run", fake_run)
-        monkeypatch.setattr(git_mod, "check", fake_check)
+        monkeypatch.setattr(git_branch_mod, "run", fake_run)
+        monkeypatch.setattr(git_branch_mod, "check", fake_check)
         assert git_mod.default_branch("/r") == "main"
 
     def test_raises_when_no_default_branch_detectable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "run", lambda **_: "")
-        monkeypatch.setattr(git_mod, "check", lambda **_: False)
+        monkeypatch.setattr(git_branch_mod, "run", lambda **_: "")
+        monkeypatch.setattr(git_branch_mod, "check", lambda **_: False)
         with pytest.raises(RuntimeError, match="Could not detect default branch"):
             git_mod.default_branch("/r")
 
@@ -99,14 +102,14 @@ class TestPush:
             recorded.append(args)
             return ""
 
-        monkeypatch.setattr(git_mod, "run_strict", fake_run_strict)
+        monkeypatch.setattr(git_sync_mod, "run_strict", fake_run_strict)
         git_mod.push("/r", remote="origin", branch="feat")
         assert recorded == [["push", "--set-upstream", "origin", "feat"]]
 
     def test_push_without_branch_only_sets_upstream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[list[str]] = []
         monkeypatch.setattr(
-            git_mod,
+            git_sync_mod,
             "run_strict",
             lambda *, repo, args: recorded.append(args) or "",
         )
@@ -116,30 +119,30 @@ class TestPush:
 
 class TestBranchMerged:
     def test_matches_branch_in_merged_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "run", lambda **_: "  main\n  feat\n* dev")
+        monkeypatch.setattr(git_branch_mod, "run", lambda **_: "  main\n  feat\n* dev")
         assert git_mod.branch_merged("/r", "feat") is True
 
     def test_returns_false_when_branch_not_in_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "run", lambda **_: "  main\n  other")
+        monkeypatch.setattr(git_branch_mod, "run", lambda **_: "  main\n  other")
         assert git_mod.branch_merged("/r", "feat") is False
 
 
 class TestRemoteSlug:
     def test_returns_slug_for_ssh_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "remote_url", lambda **_: "git@github.com:org/repo.git")
+        monkeypatch.setattr(git_remote_ops_mod, "remote_url", lambda **_: "git@github.com:org/repo.git")
         assert git_mod.remote_slug(repo="/r") == "org/repo"
 
     def test_returns_slug_for_https_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "remote_url", lambda **_: "https://gitlab.com/org/repo.git")
+        monkeypatch.setattr(git_remote_ops_mod, "remote_url", lambda **_: "https://gitlab.com/org/repo.git")
         assert git_mod.remote_slug(repo="/r") == "org/repo"
 
     def test_returns_empty_when_remote_url_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "remote_url", lambda **_: "")
+        monkeypatch.setattr(git_remote_ops_mod, "remote_url", lambda **_: "")
         assert git_mod.remote_slug(repo="/r") == ""
 
     def test_passes_through_when_repo_already_slug_shaped(self) -> None:
         assert git_mod.remote_slug(repo="org/repo") == "org/repo"
 
     def test_returns_empty_for_unparseable_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(git_mod, "remote_url", lambda **_: "noscheme")
+        monkeypatch.setattr(git_remote_ops_mod, "remote_url", lambda **_: "noscheme")
         assert git_mod.remote_slug(repo="/r") == ""

@@ -1,0 +1,51 @@
+"""Working-tree status reads and the full-worktree diff capture.
+
+The status/diff partition of :mod:`teatree.utils.git`. Holds the porcelain
+status reads (lenient and fail-closed) and the data-loss-guard diff capture
+(#835), all via the :mod:`teatree.utils.git_run` runners.
+"""
+
+from teatree.utils.git_run import git_env_without_overrides, run, run_strict
+from teatree.utils.run import run_checked
+
+
+def status_porcelain(repo: str = ".") -> str:
+    return run(repo=repo, args=["status", "--porcelain"])
+
+
+def status_porcelain_strict(repo: str = ".") -> str:
+    """Like :func:`status_porcelain` but raises on a non-zero ``git status`` exit.
+
+    :func:`status_porcelain` swallows git errors and returns whatever (possibly
+    empty) stdout it got, so an inconclusive status (lock contention, corrupt
+    index, missing dir) is indistinguishable from a genuinely clean tree. For a
+    data-loss decision that must fail closed, use this variant: a git error
+    raises ``CommandFailedError`` so the caller can treat "couldn't determine"
+    as "might be dirty" rather than "clean".
+    """
+    return run_strict(repo=repo, args=["status", "--porcelain"])
+
+
+def full_worktree_diff(repo: str) -> str:
+    """Return a single patch covering staged, unstaged, AND untracked changes.
+
+    ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
+    (``git add -N``) makes them appear in the diff as new-file hunks (without
+    staging their content), so a single ``git apply`` of the returned patch
+    restores edits and brand-new files alike. The intent-to-add marks are
+    harmless: the worktree is about to be removed.
+
+    The prefixes are forced explicitly with ``--src-prefix=a/
+    --dst-prefix=b/``: ``git diff`` otherwise honours the caller's git config,
+    and a user with ``diff.noprefix=true`` (common) would get a patch with no
+    ``a/``/``b/`` prefixes that a plain ``git apply`` cannot restore — total
+    loss of the captured work, the exact #835 scenario. Forcing the prefixes
+    keeps the patch standard and ``git apply``-able regardless of user config.
+    """
+    env = git_env_without_overrides()
+    run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
+    result = run_checked(
+        ["git", "-C", repo, "diff", "HEAD", "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+        env=env,
+    )
+    return result.stdout
