@@ -560,6 +560,18 @@ def _raw_review_allow(_ctx: GateContext) -> dict:
     return _bash("glab api projects/1/merge_requests/1/discussions")
 
 
+# block-raw-pid-kill (PreToolUse Bash): a raw `kill <pid>` of a guessed pid
+# denies; the `kill -0` no-op liveness probe allows.
+
+
+def _raw_pid_kill_deny(_ctx: GateContext) -> dict:
+    return _bash("kill -9 4242")
+
+
+def _raw_pid_kill_allow(_ctx: GateContext) -> dict:
+    return _bash("kill -0 4242")
+
+
 # block-secret-file-print (PreToolUse Bash): printing a credential file to the
 # transcript denies; capturing the value into a variable allows.
 
@@ -763,6 +775,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_review_deny,
         allow_input=_raw_review_allow,
+    ),
+    GateRow(
+        gate_id="block-raw-pid-kill",
+        handler=router.handle_block_raw_pid_kill,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_pid_kill_deny,
+        allow_input=_raw_pid_kill_allow,
     ),
     GateRow(
         gate_id="block-secret-file-print",

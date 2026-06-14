@@ -3696,6 +3696,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ full-status     Show ticket, worktree, and session state summary.            │
 │ ship            Code to PR — create pull request for the ticket.             │
 │ daily           Daily followup — sync MRs, check gates, remind reviewers.    │
+│ safe-kill       Signal a pid only if it maps to a dead target AND is         │
+│                 confirmed non-live (#2225).                                  │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
 │ config          Overlay configuration.                                       │
@@ -3798,6 +3800,15 @@ Usage: t3 teatree daily [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree safe-kill`
+
+```
+Usage: t3 teatree safe-kill [OPTIONS]
+
+ Signal a pid only if it maps to a dead target AND is confirmed non-live
+ (#2225).
 ```
 
 #### `t3 teatree agent`

@@ -580,6 +580,11 @@
       ]
     },
     {
+      "help": "Signal *pid* only if it maps to a dead target AND is confirmed non-live.",
+      "name": "safe_kill",
+      "subcommands": []
+    },
+    {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
       "subcommands": []
