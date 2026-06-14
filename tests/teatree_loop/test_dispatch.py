@@ -3,7 +3,7 @@
 #1927/#1961: the review-request routing tests below assert which ZONE a
 ``slack.review_intent``/``slack.mention`` signal routes to. That routing sits
 behind two ambient gates inside ``dispatch`` — ``review_loop_enabled()`` (#79)
-and ``_review_target_is_dead()`` (#2081, a live ``get_pr_open_state`` lookup
+and ``review_target_is_dead()`` (#2081, a live ``get_pr_open_state`` lookup
 through the per-URL code host). Both are read from process-global state (the
 real ``~/.teatree.toml`` loop config and the cached/credentialed code-host
 backend), so a sibling test that leaves a code host resolving the test URL to
@@ -29,6 +29,7 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.backend_protocols import PrOpenState
 from teatree.loop import dispatch as dispatch_module
+from teatree.loop import dispatch_gates
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners.base import ScanSignal
 
@@ -38,14 +39,14 @@ def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the two ambient review-request gates so routing tests are deterministic.
 
     ``review_loop_enabled`` → ``True`` (the loop is on) and
-    ``_review_target_is_dead`` → ``False`` (the target is live) are the
+    ``review_target_is_dead`` → ``False`` (the target is live) are the
     no-suppression verdicts. Without this, ambient process state another test
     leaves behind (a code host resolving the test MR URL to MERGED/CLOSED, or a
     disabled review loop) makes the reviewer dispatch vanish and the routing
     assertions ``StopIteration`` — the #1927/#1961 order-dependence.
     """
     monkeypatch.setattr("teatree.loop.review_claim.review_loop_enabled", lambda: True)
-    monkeypatch.setattr(dispatch_module, "_review_target_is_dead", lambda _pr_url: False)
+    monkeypatch.setattr(dispatch_gates, "review_target_is_dead", lambda _pr_url: False)
 
 
 class MyPrFailedDispatchTests(TestCase):
@@ -222,14 +223,14 @@ def test_review_intent_routing_is_immune_to_ambient_merged_host(monkeypatch: pyt
     """Routing must not vanish when ambient state resolves the target to MERGED (#1927/#1961).
 
     The order-dependent flake: a sibling test leaves the per-URL code host
-    resolving the review-intent MR to MERGED. ``_review_target_is_dead`` then
-    returns ``True``, ``_gate_review_intent`` suppresses the reviewer dispatch,
+    resolving the review-intent MR to MERGED. ``review_target_is_dead`` then
+    returns ``True``, ``gate_review_intent`` suppresses the reviewer dispatch,
     ``dispatch`` returns no agent action, and the routing test's
     ``next(a for a in actions if a.kind == "agent")`` raises ``StopIteration``.
 
     This test installs exactly that leak (a MERGED host bound into the live
     resolver) and asserts the reviewer dispatch still happens — which holds only
-    because ``_pin_review_intent_gate`` pins ``_review_target_is_dead`` to the
+    because ``_pin_review_intent_gate`` pins ``review_target_is_dead`` to the
     no-suppression verdict for this routing module. Reverting that pin makes
     this test raise ``StopIteration`` (anti-vacuous: it guards the fix).
     """
@@ -454,7 +455,7 @@ def _pin_settings(monkeypatch: pytest.MonkeyPatch, settings: UserSettings) -> No
     def _resolve() -> UserSettings:
         return settings
 
-    monkeypatch.setattr("teatree.loop.dispatch.get_effective_settings", _resolve)
+    monkeypatch.setattr("teatree.loop.dispatch_gates.get_effective_settings", _resolve)
 
 
 @pytest.fixture
