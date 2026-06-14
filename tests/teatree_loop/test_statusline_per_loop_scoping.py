@@ -18,7 +18,8 @@ from django.utils import timezone
 
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, owned_per_loop_slots
-from teatree.loop.statusline import _live_lease_chunks, live_loops_anchor
+from teatree.loop.statusline import live_loops_anchor
+from teatree.loop.statusline_loops import _live_lease_chunks
 
 _OWNED_SLOTS_TARGET = "teatree.loop.loop_scoping.owned_per_loop_slots"
 
@@ -33,8 +34,8 @@ class TestPerLoopChunkScoping:
     def test_infra_leases_unaffected_by_scoping(self) -> None:
         """The infra leases (``loop-tick`` etc.) are never per-loop-scoped — they always show."""
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", _at(120))]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", _at(120))]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(_OWNED_SLOTS_TARGET, return_value=set()),
         ):
             chunks = _live_lease_chunks()
@@ -44,8 +45,8 @@ class TestPerLoopChunkScoping:
         """A ``loop:<name>`` lease this session does NOT own is dropped from the line."""
         leases = [("loop-tick", _at(120)), ("loop:dispatch", _at(120)), ("loop:review", _at(120))]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             # This session owns only loop:dispatch.
             patch(_OWNED_SLOTS_TARGET, return_value={"loop:dispatch"}),
         ):
@@ -59,8 +60,8 @@ class TestPerLoopChunkScoping:
     def test_owned_per_loop_chunk_kept(self) -> None:
         leases = [("loop:dispatch", _at(120))]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(_OWNED_SLOTS_TARGET, return_value={"loop:dispatch"}),
         ):
             chunks = _live_lease_chunks()
@@ -70,8 +71,8 @@ class TestPerLoopChunkScoping:
         """No resolvable session ⇒ every ``loop:<name>`` chunk is kept (never blanked)."""
         leases = [("loop:dispatch", _at(120)), ("loop:review", _at(120))]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             # The sentinel ``None`` is the fail-open marker (no session / read error).
             patch(_OWNED_SLOTS_TARGET, return_value=None),
         ):
@@ -84,14 +85,14 @@ class TestPerLoopChunkScoping:
         """With no ``loop:<name>`` lease the chunk list is identical regardless of ownership read."""
         leases = [("loop-tick", _at(120)), ("loop-self-improve", _at(120))]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(_OWNED_SLOTS_TARGET, return_value=set()),
         ):
             scoped = _live_lease_chunks()
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(_OWNED_SLOTS_TARGET, return_value=None),
         ):
             failopen = _live_lease_chunks()
@@ -146,11 +147,11 @@ class TestLiveLoopsAnchorIntegration:
     def test_anchor_drops_foreign_per_loop_chunk(self) -> None:
         leases = [("loop-tick", _at(120)), ("loop:review", _at(120))]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._mini_loop_schedules", return_value=[]),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
             patch(_OWNED_SLOTS_TARGET, return_value=set()),
         ):
             lines = live_loops_anchor()

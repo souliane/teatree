@@ -44,8 +44,8 @@ class TestAvailabilitySegmentRidesLoopLineLive:
     def _loop_line(self) -> str:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, lines

@@ -20,7 +20,9 @@ from unittest.mock import patch
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering import zones_for
-from teatree.loop.statusline import _format_duration, _mini_loop_chunk, live_loops_anchor, mini_loops_anchor, render
+from teatree.loop.statusline import live_loops_anchor, mini_loops_anchor, render
+from teatree.loop.statusline_loops import _mini_loop_chunk
+from teatree.loop.statusline_render import _format_duration
 
 
 def _active_ticket(num: str, state: str, *, url: str = "", overlay: str = "ov") -> DispatchAction:
@@ -61,8 +63,8 @@ class TestConsolidatedLoopAnchor:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
         leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -77,9 +79,9 @@ class TestConsolidatedLoopAnchor:
     def test_names_only_when_no_lease_history(self) -> None:
         leases = [("loop-tick", None)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick"], repr(lines)
@@ -89,9 +91,9 @@ class TestConsolidatedLoopAnchor:
         acquired_at = datetime.now(UTC) - timedelta(hours=1)
         leases = [("loop-tick", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["tick due"], repr(lines)
@@ -100,8 +102,8 @@ class TestConsolidatedLoopAnchor:
         """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
         leases = [("loop-tick", None), ("loop-owner", None), ("loop-self-improve", None)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -112,15 +114,15 @@ class TestConsolidatedLoopAnchor:
 
     def test_empty_when_no_loops_live(self) -> None:
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[]),
-            patch("teatree.loop.statusline._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
         ):
             assert live_loops_anchor() == []
 
     def test_fails_open_on_db_error(self) -> None:
         with (
-            patch("teatree.loop.statusline._live_loop_leases", side_effect=RuntimeError("db down")),
-            patch("teatree.loop.statusline._mini_loop_schedules", return_value=[]),
+            patch("teatree.loop.statusline_loops._live_loop_leases", side_effect=RuntimeError("db down")),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]),
         ):
             assert live_loops_anchor() == []
 
@@ -140,26 +142,26 @@ class TestMiniLoopsAnchor:
             ("tickets", now + timedelta(seconds=240), 600),
             ("news", now + timedelta(seconds=18 * 60), 3600),
         ]
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=schedules):
+        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules):
             chunks = mini_loops_anchor()
         # Each loop carries its OWN countdown, not a shared value.
         assert chunks == ["dispatch 2m", "tickets 4m", "news 18m"], chunks
 
     def test_never_fired_loop_reads_due(self) -> None:
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("inbox", None, 300)]):
+        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]):
             assert mini_loops_anchor() == ["inbox due"]
 
     def test_overdue_loop_reads_due(self) -> None:
         past = datetime.now(UTC) - timedelta(minutes=5)
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("review", past, 300)]):
+        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("review", past, 300)]):
             assert mini_loops_anchor() == ["review due"]
 
     def test_empty_when_no_mini_loops_enabled(self) -> None:
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[]):
+        with patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[]):
             assert mini_loops_anchor() == []
 
     def test_fails_open_on_db_error(self) -> None:
-        with patch("teatree.loop.statusline._mini_loop_schedules", side_effect=RuntimeError("db down")):
+        with patch("teatree.loop.statusline_loops._mini_loop_schedules", side_effect=RuntimeError("db down")):
             assert mini_loops_anchor() == []
 
     def test_chunk_countdown_is_relative_to_now_not_static(self) -> None:
@@ -168,11 +170,13 @@ class TestMiniLoopsAnchor:
         # not a cached constant.
         now = datetime.now(UTC)
         with patch(
-            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=600), 1200)]
+            "teatree.loop.statusline_loops._mini_loop_schedules",
+            return_value=[("ship", now + timedelta(seconds=600), 1200)],
         ):
             far = mini_loops_anchor()
         with patch(
-            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=120), 1200)]
+            "teatree.loop.statusline_loops._mini_loop_schedules",
+            return_value=[("ship", now + timedelta(seconds=120), 1200)],
         ):
             near = mini_loops_anchor()
         assert far == ["ship 10m"], far
@@ -185,13 +189,13 @@ class TestLoopLineComposesLeasesAndMiniLoops:
     def test_both_sources_appear_on_one_line(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch(
-                "teatree.loop.statusline._mini_loop_schedules",
+                "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
             ),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
         assert lines == ["tick 10m · dispatch 2m"], lines
@@ -200,12 +204,12 @@ class TestLoopLineComposesLeasesAndMiniLoops:
         # The user's complaint: crons were invisible when no infra lease was
         # live. A mini-loop alone now surfaces the loop line.
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
             patch(
-                "teatree.loop.statusline._mini_loop_schedules",
+                "teatree.loop.statusline_loops._mini_loop_schedules",
                 return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
             ),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor(colorize=False)
         assert lines == ["resource_pressure 1m"], lines
@@ -248,7 +252,7 @@ class TestAnchorStatePriorityOrder:
             _active_ticket("100", "coded", overlay="ov"),
             _active_ticket("200", "started", overlay="ov"),
         ]
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -264,7 +268,7 @@ class TestActiveStateOverflowCap:
 
     def test_started_caps_at_five(self, tmp_path: Path) -> None:
         actions = [_active_ticket(str(i), "started", overlay="ov") for i in range(1, 11)]
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -280,7 +284,7 @@ class TestReadyOverflowPhrasing:
 
     def test_ready_overflow_says_more(self, tmp_path: Path) -> None:
         actions = [_ready(str(i), overlay="ov") for i in range(10)]
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -297,8 +301,8 @@ class TestZonesForIntegration:
         # (it is rendered as a per-session badge in statusline.sh instead).
         leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             zones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
