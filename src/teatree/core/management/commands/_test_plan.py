@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.core import test_plan_validation as _tpv
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.management.commands._test_plan_render import (
@@ -45,7 +46,6 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
-from teatree.core.test_plan_validation import TestPlanImageValidationError, validate_test_plan_images
 from teatree.types import RawAPIDict
 
 # Re-exports so callers/tests import the test-plan surface from one module.
@@ -166,7 +166,9 @@ class TestPlanFlags:
     it. ``skip_validation`` is the user-authorised bypass of the image preflight
     (red-box / duplicate gates) — the agent never sets it on its own. ``body_file``
     is a path to a pre-authored markdown body to post directly without upload or
-    manifest processing; mutually exclusive with ``manifest``.
+    manifest processing; mutually exclusive with ``manifest``. ``allow_no_video``
+    is the user-authorised escape for the stills-only gate (a manifest with
+    screenshots but no video on any present side is refused without it).
     """
 
     ticket: str = ""
@@ -177,6 +179,7 @@ class TestPlanFlags:
     skip_validation: bool = False
     body_file: str = ""
     template: str = ""
+    allow_no_video: bool = False
 
 
 def _resolve_worktree_or_none() -> Worktree | None:
@@ -217,26 +220,25 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
     return resolved
 
 
-def _manifest_image_paths(manifest: TestPlanManifest) -> list[Path]:
-    """Every screenshot path the manifest references, across both sides + all workflows."""
-    return [
-        Path(image) for side in (manifest.dev, manifest.local) for wf in side.workflows.values() for image in wf.images
-    ]
+def _preflight_images(manifest: TestPlanManifest, *, skip: bool, allow_no_video: bool) -> None:
+    """Run the deterministic media preflight; re-raise a hard failure for the single catch arm.
 
-
-def _preflight_images(manifest: TestPlanManifest, *, skip: bool) -> None:
-    """Run the deterministic image preflight; re-raise a hard failure for the single catch arm.
-
-    Refuses (fail-loud) on a missing red box or a byte-identical duplicate by
+    Refuses (fail-loud) on a missing red box, a byte-identical duplicate, or a
+    stills-only manifest (screenshots but no video on any present side) by
     re-raising the :class:`TestPlanImageValidationError` as an
     :class:`TestPlanValidationError` so the command's existing single
     ``except TestPlanValidationError`` arm exits non-zero before any upload.
     Staleness warnings never refuse — they are logged loudly and the post
-    proceeds. ``skip`` is the user-authorised bypass (runs nothing dangerous).
+    proceeds. ``skip`` bypasses the image gates; ``allow_no_video`` is the
+    stills-only escape (both user-authorised, the agent never sets them itself).
     """
+    wfs = [wf for side in (manifest.dev, manifest.local) if side.present for wf in side.workflows.values()]
     try:
-        warnings = validate_test_plan_images(_manifest_image_paths(manifest), skip=skip)
-    except TestPlanImageValidationError as exc:
+        warnings = _tpv.validate_test_plan_images([img for wf in wfs for img in wf.images], skip=skip)
+        _tpv.refuse_stills_only(
+            has_image=any(wf.images for wf in wfs), has_video=any(wf.video for wf in wfs), allow_no_video=allow_no_video
+        )
+    except _tpv.TestPlanImageValidationError as exc:
         raise TestPlanValidationError(str(exc)) from exc
     for warning in warnings:
         _log.warning(warning)
@@ -259,7 +261,7 @@ def build_validated_post(flags: TestPlanFlags) -> TestPlanPost:
     worktree = _resolve_worktree_or_none()
     base_dir = Path(flags.manifest_dir) if flags.manifest_dir else None
     manifest = parse_manifest(flags.manifest, base_dir=base_dir)
-    _preflight_images(manifest, skip=flags.skip_validation)
+    _preflight_images(manifest, skip=flags.skip_validation, allow_no_video=flags.allow_no_video)
     ticket = _resolve_ticket(flags.ticket, worktree, manifest_ticket=manifest.ticket)
     issue_url = str(ticket.issue_url)
 
@@ -354,6 +356,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
     write_err: Callable[[str], None],
     body_file: str = "",
     template: str = "",
+    allow_no_video: bool = False,
 ) -> PostTestPlanResult:
     """Read the manifest (or body file), resolve the host, validate, and post-or-update the note.
 
@@ -385,10 +388,6 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
         worktree = _resolve_worktree_or_none()
         try:
             resolved_ticket = _resolve_ticket(ticket, worktree)
-        except TestPlanValidationError as err:
-            write_err(str(err))
-            raise SystemExit(1) from err
-        try:
             result = post_body_file_comment(
                 host,
                 issue_url=str(resolved_ticket.issue_url),
@@ -411,6 +410,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
         manifest_dir=manifest_dir,
         skip_validation=skip_validation,
         template=template,
+        allow_no_video=allow_no_video,
     )
     try:
         post = build_validated_post(flags)
@@ -418,10 +418,8 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
     except (TestPlanValidationError, OnBehalfPostBlockedError) as err:
         write_err(str(err))
         raise SystemExit(1) from err
-    write_out(
-        f"  Test plan {result['action']} ({', '.join(result['envs'])}) "
-        f"on {post.issue_url} (comment {result['comment_id']}).",
-    )
+    envs = ", ".join(result["envs"])
+    write_out(f"  Test plan {result['action']} ({envs}) on {post.issue_url} (comment {result['comment_id']}).")
     return result
 
 

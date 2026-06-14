@@ -28,6 +28,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core import test_plan_validation as _validation
 from teatree.core.backend_protocols import UploadVerification
 from teatree.core.management.commands import _test_plan
 from teatree.core.management.commands import _test_plan_render as _render
@@ -481,6 +482,72 @@ class TestParseManifest:
         assert "Search" not in parsed.steps
 
 
+class TestRefuseStillsOnly:
+    """The stills-only validator: screenshots present + no video anywhere → refuse."""
+
+    def test_stills_only_refused(self) -> None:
+        with pytest.raises(_validation.TestPlanImageValidationError, match="no video"):
+            _validation.refuse_stills_only(has_image=True, has_video=False, allow_no_video=False)
+
+    def test_stills_only_passes_with_allow_no_video(self) -> None:
+        _validation.refuse_stills_only(has_image=True, has_video=False, allow_no_video=True)
+
+    def test_with_video_passes(self) -> None:
+        _validation.refuse_stills_only(has_image=True, has_video=True, allow_no_video=False)
+
+    def test_no_image_is_not_stills_only(self) -> None:
+        # A steps-only / no-media manifest never trips this gate (#2269 owns it).
+        _validation.refuse_stills_only(has_image=False, has_video=False, allow_no_video=False)
+
+
+class TestNoVideoGateAtCommand(TestCase):
+    """``build_validated_post`` refuses a stills-only manifest unless ``--allow-no-video``."""
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._tmp = tmp_path
+        monkeypatch.setattr(
+            _test_plan,
+            "resolve_worktree",
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+        )
+
+    def _ticket(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+
+    def _manifest(self, *, video: bool) -> str:
+        local: dict[str, object] = {"images": [str(_red_boxed_png(self._tmp / "a.png"))]}
+        if video:
+            local["video"] = _write_webm(self._tmp / "v.webm", b"V")
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "local": local}],
+            },
+        )
+
+    def test_stills_only_manifest_is_refused(self) -> None:
+        self._ticket()
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=False))
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no video"):
+            _test_plan.build_validated_post(flags)
+
+    def test_stills_only_manifest_passes_with_allow_no_video(self) -> None:
+        self._ticket()
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=False), allow_no_video=True)
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+    def test_manifest_with_a_video_passes(self) -> None:
+        self._ticket()
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=True))
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+
 class TestManifestPathResolution:
     """Relative image/video paths resolve against the manifest file's directory (#friction)."""
 
@@ -556,7 +623,7 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest)
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
         post = _test_plan.build_validated_post(flags)
         assert post.issue_url == _ISSUE_URL
 
@@ -568,7 +635,7 @@ class TestTicketFallbackFromManifest(TestCase):
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
         )
-        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest)
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=manifest, allow_no_video=True)
         with pytest.raises(_test_plan.TestPlanResolutionError, match="Could not determine the ticket"):
             _test_plan.build_validated_post(flags)
 
@@ -855,6 +922,7 @@ class TestImagePreflightAtCommand(_EvidenceTestBase):
                     ticket=_ISSUE_URL,
                     manifest=self._no_red_box_manifest(),
                     skip_validation=True,
+                    allow_no_video=True,
                 ),
             )
         assert result["action"] == "created"
