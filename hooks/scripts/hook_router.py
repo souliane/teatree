@@ -6867,6 +6867,45 @@ def handle_block_direct_commands(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
+def handle_block_raw_pid_kill(data: dict) -> bool:
+    """Deny a Bash command that signals a process by a raw, guessed pid (#2225).
+
+    The agent has twice killed the WRONG, LIVE process by guessing which
+    ``claude`` pid 'looked dead'. A bare ``kill <pid>`` / ``kill -9 <pid>`` is
+    exactly that guessed-pid shape; it is denied so the agent must go through
+    ``teatree.core.safe_kill.safe_kill`` (positive session/task id + non-live
+    proof) instead. ``pkill``/``killall`` (signal by name) and ``%job``/``$VAR``
+    targets are NOT flagged.
+
+    Fails OPEN on any import/internal error — a gate bug must never wedge the
+    agent (consistent with the other Bash-deny gates). The handler bootstraps
+    ``sys.path`` to import ``teatree`` from the sibling ``src/`` (#1314).
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command:
+        return False
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import safe_kill_detect  # noqa: PLC0415
+
+        detection = safe_kill_detect.detect_raw_pid_kill(command)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    if not detection.is_raw_pid_kill:
+        return False
+    return emit_pretooluse_deny(detection.message)
+
+
 # ── PreToolUse: block-secret-file-print (#2306) ──────────────────────
 #
 # Blocks Bash commands that route a known secret-bearing source to stdout.
@@ -8655,6 +8694,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_raw_pid_kill,
         handle_block_secret_file_print,
         handle_block_out_of_band_merge,
         handle_block_raw_review_post,
