@@ -168,6 +168,8 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 
 **Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
 
+The deterministic enforcement of this rule is `teatree.core.doc_evidence` (#2296): parse the document into a `StructuredDoc` (named `fields` + labelled table `rows`) and verify with `check_doc_evidence(doc, FieldClaim(term=…, field_label=…))` or `ColumnClaim(term=…, column_label=…)`. The probe binds the assertion to the field/column the AC constrains and **fails loud** (`DocEvidenceError`) when that anchor is absent — never falling back to an incidental free-text match. A bare page-wide substring is rejected outright (`reject_page_wide_substring`); it is not evidence.
+
 ## Post Testing Evidence on the Ticket
 
 **Use `t3 <overlay> e2e post-test-plan --manifest <json>`.** It maintains ONE structured test-plan note on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
