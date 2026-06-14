@@ -630,3 +630,117 @@ class TestCleanupStalePumpArmed:
         assert not (router.STATE_DIR / "dead-sess.pump-armed").exists()
         assert not (router.STATE_DIR / "dead-sess.loop-pending").exists()
         assert (router.STATE_DIR / "live-sess.pump-armed").exists()
+
+
+class TestSelfPumpHonorsPause:
+    """An explicit user pause wins over the standing loop directive (#2247/#2250).
+
+    The self-pump is teatree's own re-firing Stop directive: it re-emits
+    ``{"decision": "block", ...}`` to resume the loop every turn while
+    consolidated work remains. When the user has explicitly paused
+    (availability resolves to ``away``), that nag must SUPPRESS — the same
+    away/present precedence the AskUserQuestion deferral already honours.
+    Failing safe means an indeterminate pause signal also suppresses the
+    pump (allow the stop) rather than nagging through a pause.
+    """
+
+    def _set_pause(self, monkeypatch: pytest.MonkeyPatch, *, suppressed: bool) -> None:
+        monkeypatch.setattr(router, "_pause_suppresses_self_pump", lambda: suppressed)
+
+    def test_away_suppresses_the_pump_even_with_pending_work(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        self._set_pause(monkeypatch, suppressed=True)
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys) == {}  # no block: the pause wins over the goal
+        assert result is not True
+
+    def test_present_still_pumps_as_before(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Control: with the pause NOT active, the standing directive fires
+        # exactly as before — proves the fix did not just disable the gate.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        self._set_pause(monkeypatch, suppressed=False)
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_away_pump_does_not_probe_pending_work(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The pause check short-circuits before any ``pending-spawn``
+        # subprocess — a paused owner does not even shell out to ``t3``.
+        _own_loop("owner-1")
+        probed = {"called": False}
+
+        def _spy() -> list[dict]:
+            probed["called"] = True
+            return [{"task_id": 1, "subagent": "x", "phase": "c", "issue_url": "u"}]
+
+        monkeypatch.setattr(router, "_consolidated_pending_work", _spy)
+        self._set_pause(monkeypatch, suppressed=True)
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert probed["called"] is False
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_pause_detection_raising_fails_safe_to_suppress(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fail-safe: if the pause query itself raises, the predicate must
+        # resolve to SUPPRESS (indeterminate ⇒ allow stop, never nag through
+        # a possible pause). The outer crash-guard would also contain a raise,
+        # but the predicate owns the suppress-on-indeterminate direction.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        def _boom() -> bool:
+            msg = "availability backend unreachable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(router, "_pause_suppresses_self_pump", _boom)
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys) == {}  # suppressed, stop allowed
+        assert result is None
+
+
+class TestPauseSuppressionPredicate:
+    """``_pause_suppresses_self_pump`` maps availability → suppress decision.
+
+    True (suppress) when the user is away OR the signal is indeterminate;
+    False (pump) only when availability resolves cleanly to ``present``.
+    """
+
+    def test_away_resolves_to_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_resolved_away_mode", lambda: True)
+        assert router._pause_suppresses_self_pump() is True
+
+    def test_present_resolves_to_pump(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_resolved_away_mode", lambda: False)
+        assert router._pause_suppresses_self_pump() is False
+
+    def test_availability_read_raising_resolves_to_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Guards the predicate's OWN internal try/except: a raising
+        # availability read (not a return) must resolve to suppress —
+        # indeterminate ⇒ allow stop, never nag through a possible pause.
+        # Patching the inner `_resolved_away_mode` (not the whole predicate)
+        # is what exercises the internal except rather than the outer
+        # handle_loop_self_pump crash-guard.
+        def _boom() -> bool:
+            msg = "availability backend unreachable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(router, "_resolved_away_mode", _boom)
+        assert router._pause_suppresses_self_pump() is True
