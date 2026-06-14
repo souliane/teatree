@@ -4839,8 +4839,9 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
  issue; ``--title`` overrides the heading; ``--template``
  (``capture-matrix`` / ``browser-click-first`` / ``link-api``) selects
  the body shape, overriding the manifest's ``template``;
- ``--skip-validation`` bypasses the image preflight; ``--body-file`` posts
- a pre-authored body verbatim (no upload; mutually exclusive with
+ ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
+ permits a stills-only manifest (refused by default); ``--body-file``
+ posts a pre-authored body verbatim (no upload; mutually exclusive with
  ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
  deprecated alias.
 
@@ -4866,6 +4867,13 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 │                                                    browser-click-first, or   │
 │                                                    link-api. Overrides the   │
 │                                                    manifest's.               │
+│ --allow-no-video     --no-allow-no-video           Post a stills-only        │
+│                                                    manifest (screenshots, no │
+│                                                    video). Refused by        │
+│                                                    default — capture         │
+│                                                    video:'on' instead.       │
+│                                                    [default:                 │
+│                                                    no-allow-no-video]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4902,6 +4910,13 @@ Usage: t3 teatree e2e post-evidence [OPTIONS]
 │                                                    browser-click-first, or   │
 │                                                    link-api. Overrides the   │
 │                                                    manifest's.               │
+│ --allow-no-video     --no-allow-no-video           Post a stills-only        │
+│                                                    manifest (screenshots, no │
+│                                                    video). Refused by        │
+│                                                    default — capture         │
+│                                                    video:'on' instead.       │
+│                                                    [default:                 │
+│                                                    no-allow-no-video]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯

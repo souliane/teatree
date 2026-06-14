@@ -25,6 +25,7 @@ from teatree.cli.update import (
     RepoUpdate,
     UpdateStatus,
     _collect_repos,
+    _declared_deps_missing,
     _git_toplevel,
     _reinstall_and_resetup,
     update_repo,
@@ -512,16 +513,17 @@ class TestReinstallAndResetup:
     skip when nothing advanced, and surface the seam's outcome.
     """
 
-    def test_noop_when_nothing_advanced(
+    def test_noop_when_nothing_advanced_and_deps_in_sync(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         called: list[bool] = []
         monkeypatch.setattr(update_mod, "reinstall_running_editable", lambda: called.append(True))
+        monkeypatch.setattr(update_mod, "_declared_deps_missing", list)
 
         _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UP_TO_DATE)])
 
         assert "skipping reinstall + setup" in capsys.readouterr().out
-        assert called == [], "the reinstall seam must not run when nothing advanced"
+        assert called == [], "the reinstall seam must not run when nothing advanced and deps are in sync"
 
     def test_reports_success_when_advanced(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -564,6 +566,57 @@ class TestReinstallAndResetup:
         _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UPDATED, old_sha="a", new_sha="b")])
 
         assert "reinstall/setup reported a problem: setup: boom" in capsys.readouterr().out
+
+    def test_resyncs_when_no_repo_advanced_but_dep_missing(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #2377: an out-of-band ff-merge advanced the SHA + added a top-level
+        # dependency, so NO repo advances *this run* yet the tool venv is
+        # missing the new dep. The reinstall seam (the only mocked external)
+        # MUST still fire — the bare advance flag would have skipped it.
+        reinstalled: list[bool] = []
+        monkeypatch.setattr(update_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+        monkeypatch.setattr(update_mod, "_declared_deps_missing", lambda: ["django-linear-migrations"])
+        monkeypatch.setattr(
+            update_mod,
+            "reinstall_running_editable",
+            lambda: reinstalled.append(True) or ReinstallResult(ok=True, reinstalled=True),
+        )
+
+        _reinstall_and_resetup([RepoUpdate("core", UpdateStatus.UP_TO_DATE)])
+
+        out = capsys.readouterr().out
+        assert reinstalled == [True], "the reinstall seam must run on dep drift even with no repo advance"
+        assert "django-linear-migrations" in out
+        assert "resyncing" in out.lower()
+
+
+class TestDeclaredDepsMissing:
+    """The drift probe that decouples the dep re-sync from the per-run flag (#2377).
+
+    Detection reuses ``teatree.utils.dep_drift`` against the running ``t3``'s
+    editable source; the only thing stubbed is that source resolution, which
+    reaches into the host install metadata.
+    """
+
+    def test_non_editable_install_reports_no_drift(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(update_mod, "editable_source_path", lambda: None)
+
+        assert _declared_deps_missing() == []
+
+    def test_missing_pyproject_reports_no_drift(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(update_mod, "editable_source_path", lambda: tmp_path)
+
+        assert _declared_deps_missing() == []
+
+    def test_reports_declared_dep_absent_from_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\ndependencies = ["a-dep-that-is-not-installed-xyz>=1.0"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(update_mod, "editable_source_path", lambda: tmp_path)
+
+        assert _declared_deps_missing() == ["a-dep-that-is-not-installed-xyz"]
 
 
 class TestSelfDbMigrationOnUpdate:

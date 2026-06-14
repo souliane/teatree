@@ -13,7 +13,10 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     running editable ``t3`` must never silently rot behind origin). A
     tracked-dirty tree is refused loudly. Untracked-only files do not block.
 4. Otherwise ``git pull --ff-only`` — fast-forward only, never merge/rebase.
-5. Reinstalls advanced editable installs, then runs ``t3 setup``.
+5. Reinstalls editable installs + runs ``t3 setup`` when a repo advanced this
+    run OR when the tool venv is missing a declared dep — gated on actual
+    dep-closure drift, NOT only a same-run advance, so an out-of-band ff-merge
+    that added a top-level dependency still re-syncs the venv (#2377).
 6. Probes the teatree self-DB (``python -m teatree migrate --check`` in the
     *runtime* interpreter) and applies pending migrations non-destructively
     — gated on *migrations actually pending*, NOT on whether a repo advanced
@@ -39,6 +42,7 @@ from pathlib import Path
 import typer
 
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
+from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 __all__ = [
@@ -384,17 +388,48 @@ def _git_toplevel(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
+def _declared_deps_missing() -> list[str]:
+    """Return declared deps absent from the *running* interpreter's env, or [].
+
+    Mirrors :func:`teatree.cli.dep_drift_repair.repair_dep_drift`'s detection:
+    the running ``t3``'s editable source supplies the ``pyproject.toml`` whose
+    ``[project].dependencies`` are compared against the dists installed in the
+    interpreter that actually executes ``t3``. Empty when the install is
+    non-editable (no editable source to diff against) or when nothing is
+    missing.
+    """
+    source = editable_source_path()
+    if source is None:
+        return []
+    pyproject = source / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+    return find_missing_dependencies(pyproject)
+
+
 def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
-    """Reinstall editable installs whose source advanced, then re-run setup.
+    """Reinstall editable installs, then re-run setup, on advance OR dep drift.
 
     Reinstalling re-anchors the running ``t3`` (and overlay code) on the new
     sources; ``t3 setup`` afterwards re-syncs skill symlinks/config.  Both run
     through the audited subprocess wrapper; failures are surfaced but do not by
     themselves fail the run — the per-repo git outcome already did its job.
+
+    The re-sync runs when a repo advanced this run OR when the tool venv is
+    missing a declared dependency (#2377). An out-of-band ff-merge that added a
+    top-level dep advances the SHA without any repo advancing *during this run*,
+    so the bare advance flag would skip the reinstall and leave the venv stale —
+    the keystone path then crashes with ``ModuleNotFoundError``. The drift probe
+    mirrors the #929 self-DB migrate, which is likewise decoupled from the
+    per-run advance flag and gated on the actual drift it must repair.
     """
-    if not any(r.status is UpdateStatus.UPDATED for r in updated):
-        typer.echo("No repo advanced — skipping reinstall + setup.")
+    advanced = any(r.status is UpdateStatus.UPDATED for r in updated)
+    missing = _declared_deps_missing()
+    if not advanced and not missing:
+        typer.echo("No repo advanced and tool deps in sync — skipping reinstall + setup.")
         return
+    if not advanced and missing:
+        typer.echo(f"No repo advanced, but tool deps drifted ({', '.join(missing)}) — resyncing.")
 
     if not shutil.which("uv"):
         typer.echo("WARN  `uv` not on PATH — skipping editable reinstall.")
