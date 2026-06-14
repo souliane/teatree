@@ -1,7 +1,8 @@
 import logging
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from django.apps import apps
 from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -16,13 +17,16 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
-from teatree.core.models.errors import RedisSlotsExhaustedError
+from teatree.core.modelkit.errors import RedisSlotsExhaustedError
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 from teatree.utils import redis_container
 
 if TYPE_CHECKING:
+    from teatree.core.models.incoming_event import IncomingEvent
+    from teatree.core.models.reply_dispatch import ReplyDispatch
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
+    from teatree.core.models.worktree import Worktree
 
 __all__ = [
     "GLOBAL_OWNER_SLOT",
@@ -67,12 +71,12 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         identifier set (#694) — callers naturally pass the forge issue number
         and must not silently hit ``DoesNotExist``.
         """
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         if ref.isdigit():
             try:
                 return self.get(pk=int(ref))
-            except Ticket.DoesNotExist:
+            except ticket_model.DoesNotExist:
                 # No such pk — fall back to issue_url. Match either a forge
                 # URL ending in /<ref> or a bare-number issue_url stored as
                 # just the issue number (#707), keeping the match exact.
@@ -83,15 +87,15 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         ticket = self.filter(issue_url=ref).first()
         if ticket is None:
             msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
-            raise Ticket.DoesNotExist(msg)
+            raise ticket_model.DoesNotExist(msg)
         return ticket
 
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
             self.for_overlay(overlay)
-            .exclude(state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED])
+            .exclude(state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
@@ -188,11 +192,11 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
 
         Matches the worktrees panel one-to-one so the KPI count and table size agree.
         """
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
         return (
             self.for_overlay(overlay)
-            .exclude(ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED])
+            .exclude(ticket__state__in=[ticket_model.State.DELIVERED, ticket_model.State.IGNORED])
             .order_by("pk")
         )
 
@@ -207,11 +211,11 @@ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
         """
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
+        worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
 
         return self.filter(
             ticket_id=ticket_pk,
-            state__in=[Worktree.State.SERVICES_UP, Worktree.State.READY],
+            state__in=[worktree_model.State.SERVICES_UP, worktree_model.State.READY],
         ).update(last_e2e_run=now or timezone.now())
 
 
@@ -225,12 +229,12 @@ class IncomingEventQuerySet(models.QuerySet):
         return self.filter(processed_at__isnull=True)
 
     def active_dm_thread(self, *, channel: str) -> str:
-        from teatree.core.models.incoming_event import IncomingEvent  # noqa: PLC0415
+        incoming_event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
 
         if not channel:
             return ""
         latest = (
-            self.filter(source=IncomingEvent.Source.SLACK, channel_ref=channel)
+            self.filter(source=incoming_event_model.Source.SLACK, channel_ref=channel)
             .order_by("-received_at", "-pk")
             .values_list("thread_ref", flat=True)
             .first()
@@ -242,11 +246,11 @@ class ReplyDispatchQuerySet(models.QuerySet):
     def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.models.reply_dispatch import ReplyDispatch  # noqa: PLC0415
+        reply_dispatch_model = cast("type[ReplyDispatch]", apps.get_model("core", "ReplyDispatch"))
 
         moment = now or timezone.now()
         return (
-            self.filter(status=ReplyDispatch.Status.FAILED)
+            self.filter(status=reply_dispatch_model.Status.FAILED)
             .exclude(action_name="dead_letter_alert")
             .filter(models.Q(next_retry_at__isnull=True) | models.Q(next_retry_at__lte=moment))
             .order_by("next_retry_at", "pk")
@@ -276,9 +280,10 @@ class TaskQuerySet(models.QuerySet):
         rest of the system honours.
         """
         from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
 
-        return self.filter(phase__in=phase_spellings(phase), status=Task.Status.COMPLETED)
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+
+        return self.filter(phase__in=phase_spellings(phase), status=task_model.Status.COMPLETED)
 
     def pending_in_phase(self, phase: str) -> models.QuerySet:
         """Non-terminal tasks whose phase normalizes to ``phase`` (#769).
@@ -291,22 +296,23 @@ class TaskQuerySet(models.QuerySet):
         status set.
         """
         from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         return self.filter(
             phase__in=phase_spellings(phase),
-            status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+            status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
         )
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self._claimable_for_target(Task.ExecutionTarget.HEADLESS, overlay)
+        return self._claimable_for_target(task_model.ExecutionTarget.HEADLESS, overlay)
 
     def claimable_for_interactive(self, overlay: str | None = None) -> models.QuerySet:
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-        return self._claimable_for_target(Task.ExecutionTarget.INTERACTIVE, overlay)
+        return self._claimable_for_target(task_model.ExecutionTarget.INTERACTIVE, overlay)
 
     def claim_next_pending(
         self,
@@ -341,10 +347,10 @@ class TaskQuerySet(models.QuerySet):
         semantics are byte-identical with or without it.
         Returns the claimed task, or ``None`` when nothing is claimable.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        candidates = self.filter(status=Task.Status.PENDING)
+        candidates = self.filter(status=task_model.Status.PENDING)
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
         with transaction.atomic():
@@ -355,8 +361,8 @@ class TaskQuerySet(models.QuerySet):
             # the row PENDING wins; a concurrent tick updates 0 rows. The
             # session attribution rides the SET clause only — the WHERE
             # predicate is the status CAS token and stays untouched by it.
-            claimed_count = self.filter(pk=oldest_pk, status=Task.Status.PENDING).update(
-                status=Task.Status.CLAIMED,
+            claimed_count = self.filter(pk=oldest_pk, status=task_model.Status.PENDING).update(
+                status=task_model.Status.CLAIMED,
                 claimed_by=claimed_by,
                 claimed_by_session=claimed_by_session,
                 claimed_at=now,
@@ -393,12 +399,12 @@ class TaskQuerySet(models.QuerySet):
         and the losers update 0 rows. Runs *before* ``reap_stale_claims``
         in the tick so a recoverable orphan is taken over, not failed.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
         with transaction.atomic():
-            return self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now).update(
-                status=Task.Status.PENDING,
+            return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
+                status=task_model.Status.PENDING,
                 claimed_at=None,
                 claimed_by="",
                 claimed_by_session="",
@@ -443,11 +449,11 @@ class TaskQuerySet(models.QuerySet):
         # backend-agnostic lesson), so this stays a plain ordered scan.
         from django_fsm import TransitionNotAllowed  # noqa: PLC0415
 
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         replayed = 0
         seen: set[int] = set()
-        for task in self.filter(status=Task.Status.COMPLETED).select_related("ticket").order_by("-pk"):
+        for task in self.filter(status=task_model.Status.COMPLETED).select_related("ticket").order_by("-pk"):
             if task.ticket_id in seen:
                 continue
             seen.add(task.ticket_id)
@@ -478,12 +484,12 @@ class TaskQuerySet(models.QuerySet):
         no-op) because the conditional UPDATE is itself atomic — the
         same shape as ``claim_next_pending`` / ``LoopLease.acquire``.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
         with transaction.atomic():
-            return self.filter(status=Task.Status.CLAIMED, lease_expires_at__lt=now).update(
-                status=Task.Status.FAILED,
+            return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
+                status=task_model.Status.FAILED,
                 claimed_at=None,
                 claimed_by="",
                 claimed_by_session="",
@@ -500,10 +506,12 @@ class TaskQuerySet(models.QuerySet):
         lease has expired is excluded — the reaper will reclaim it and it is
         not truly in flight.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(status=Task.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
+        return (
+            self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).filter(dispatchable_filter).count()
+        )
 
     def active_claim_exists(self) -> bool:
         """True iff some task is CLAIMED with a still-live lease.
@@ -515,19 +523,19 @@ class TaskQuerySet(models.QuerySet):
         An expired lease is not in-flight (the worker is gone; the reaper /
         reclaimer will sweep it).
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        return self.filter(status=Task.Status.CLAIMED, lease_expires_at__gt=now).exists()
+        return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__gt=now).exists()
 
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
-        from teatree.core.models.task import Task  # noqa: PLC0415
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
         qs = (
             self.filter(
                 execution_target=target,
-                status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
+                status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
             )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
             .order_by("pk")

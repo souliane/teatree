@@ -4,6 +4,8 @@
 graph TD
     teatree.project --> teatree.paths
     teatree.teams --> teatree.core
+    teatree.teams --> teatree.core.models
+    teatree.teams --> teatree.core.loop_lease_manager
     teatree.teams --> teatree.config
     teatree.teams --> teatree.agents
     teatree.teams --> teatree.skill_support
@@ -42,9 +44,22 @@ graph TD
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
     teatree.core --> teatree.core.modelkit
+    teatree.core --> teatree.core.models.errors
+    teatree.core --> teatree.core.models
+    teatree.core.loop_lease_manager --> teatree.utils
+    teatree.core.managers --> teatree.config
+    teatree.core.managers --> teatree.utils
+    teatree.core.managers --> teatree.core.modelkit
+    teatree.core.managers --> teatree.core.models.errors
+    teatree.core.managers --> teatree.core.loop_lease_manager
+    teatree.core.managers --> teatree.core.session_handover_manager
+    teatree.core.models --> teatree.core.modelkit
+    teatree.core.models --> teatree.core.managers
+    teatree.core.models --> teatree.core.models.errors
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
+    teatree.agents --> teatree.core.models
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
@@ -65,11 +80,13 @@ graph TD
     teatree.backends.slack --> teatree.types
     teatree.backends.slack --> teatree.utils
     teatree.backends.slack --> teatree.core
+    teatree.backends.slack --> teatree.core.models
     teatree.backends.slack --> teatree.identity
     teatree.backends.slack --> teatree.url_classify
     teatree.backends.gitlab --> teatree.types
     teatree.backends.gitlab --> teatree.utils
     teatree.backends.gitlab --> teatree.core
+    teatree.backends.gitlab --> teatree.core.models
     teatree.backends.gitlab --> teatree.backends.errors
     teatree.backends.gitlab --> teatree.backends.types
     teatree.backends.gitlab --> teatree.backends.forge_merge_rpc
@@ -77,6 +94,7 @@ graph TD
     teatree.backends.github --> teatree.types
     teatree.backends.github --> teatree.utils
     teatree.backends.github --> teatree.core
+    teatree.backends.github --> teatree.core.models
     teatree.backends.github --> teatree.backends.errors
     teatree.backends.github --> teatree.backends.types
     teatree.backends.github --> teatree.backends.forge_merge_rpc
@@ -184,6 +202,8 @@ graph TD
     teatree.claude_sessions
     teatree.overlay_init
     teatree.core.modelkit
+    teatree.core.models.errors
+    teatree.core.session_handover_manager
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts
