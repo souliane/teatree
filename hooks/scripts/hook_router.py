@@ -240,10 +240,15 @@ _SWEEP_SENTINEL = ".last-sweep"
 # long-lived session that never changes its crons keeps an unmodified ``.crons``
 # that ages past the retention window. Sweeping it would make
 # ``_session_has_loop`` return False and re-emit the loop-registration nag for a
-# session that is already running the loop. The throttle-and-recreate markers
-# (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT listed: their
-# absence is the safe default and they are re-armed on demand.
-_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons"})
+# session that is already running the loop. ``.teatree-active`` is the same
+# class: it is touched by ``handle_track_skill_usage`` when a teatree-activating
+# skill loads — in a normal session that happens at the start and is not
+# repeated for the life of the session — and ``statusline.sh`` gates the WHOLE
+# statusline on its presence (exits blank when absent). Sweeping it makes a
+# long-lived session's statusline silently go blank. The throttle-and-recreate
+# markers (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT
+# listed: their absence is the safe default and they are re-armed on demand.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons", "teatree-active"})
 
 
 def _sweep_stale_state_files() -> None:
