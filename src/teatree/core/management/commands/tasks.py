@@ -119,12 +119,16 @@ class Command(TyperCommand):
             typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'work landed via !6219')."),
         ] = "",
     ) -> None:
-        """Mark a claimed task COMPLETED for work finished out-of-band (#1031).
+        """Mark a claimed or failed task COMPLETED for work finished out-of-band.
 
         Drives the Task FSM ``claimed → completed`` (releasing the lease and
         auto-advancing the ticket). Idempotent: completing an already-completed
-        task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
-        (``pending``, ``failed``) with a clear error.
+        task is a no-op with exit 0.
+
+        A ``failed`` task whose work later landed out-of-band is resolved the same
+        way (``failed → completed``), but ONLY with a mandatory evidence ``--note``
+        — the pointer to where that work landed (#1949). Without it there is no
+        record of why a failed task was marked done. A ``pending`` task is rejected.
 
         Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
         outcome (merged / posted / shipped / deployed) it must also carry a
@@ -162,9 +166,17 @@ class Command(TyperCommand):
                 self.stdout.write(f"Task {task_id} already completed; nothing to do.")
                 return
 
-            if task.status != Task.Status.CLAIMED:
+            if task.status == Task.Status.FAILED and not note.strip():
                 self.stderr.write(
-                    f"Task {task_id} is '{task.status}', not 'claimed'. Only a claimed task can be completed.",
+                    f"Task {task_id} is 'failed'. Completing it out-of-band requires a mandatory evidence "
+                    "--note pointing at where the work landed (e.g. --note 'merged via <url-or-!id-or-sha>').",
+                )
+                raise SystemExit(1)
+
+            if task.status not in {Task.Status.CLAIMED, Task.Status.FAILED}:
+                self.stderr.write(
+                    f"Task {task_id} is '{task.status}', not 'claimed' or 'failed'. "
+                    "Only a claimed or failed task can be completed.",
                 )
                 raise SystemExit(1)
 

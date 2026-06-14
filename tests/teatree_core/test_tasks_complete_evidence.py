@@ -32,6 +32,17 @@ class TestTasksCompleteEvidenceGate(TestCase):
         task.claim(claimed_by="worker-1")
         return task
 
+    def _failed_task(self) -> Task:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+            status=Task.Status.FAILED,
+        )
+
     def test_outcome_claim_without_pointer_refused_fail_closed(self) -> None:
         task = self._claimed_task()
         stderr = io.StringIO()
@@ -100,6 +111,61 @@ class TestTasksCompleteEvidenceGate(TestCase):
 
     def test_completion_with_no_note_still_succeeds(self) -> None:
         # The plainest internal path: no note at all is never gated.
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_failed_task_completes_with_valid_note(self) -> None:
+        # #1949: a failed, unclaimed task whose work landed out-of-band is
+        # resolved through the CLI by `complete --note "<artifact-pointer>"`.
+        # The transition is failed -> completed; the #1280 evidence gate vets
+        # the note, then the task is marked completed and the note recorded.
+        task = self._failed_task()
+
+        call_command("tasks", "complete", task.pk, note="merged via https://example.com/pr/49")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.result == {"complete_note": "merged via https://example.com/pr/49"}
+
+    def test_failed_task_rejected_without_note(self) -> None:
+        # #1949: completing a failed task out-of-band demands evidence — a
+        # missing or blank --note is refused and the task stays failed.
+        task = self._failed_task()
+        stderr = io.StringIO()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk, stderr=stderr)
+
+        assert exc.value.code == 1
+        assert "--note" in stderr.getvalue()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_failed_task_rejected_with_blank_note(self) -> None:
+        # #1949: a whitespace-only --note carries no evidence and is refused.
+        task = self._failed_task()
+        stderr = io.StringIO()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk, note="   ", stderr=stderr)
+
+        assert exc.value.code == 1
+        assert "--note" in stderr.getvalue()
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_claimed_task_completion_unchanged_by_failed_path(self) -> None:
+        # #1949 regression: the existing claimed -> completed path keeps
+        # working with no note required (note remains whatever it is today).
         task = self._claimed_task()
 
         call_command("tasks", "complete", task.pk)
