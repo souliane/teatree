@@ -3422,9 +3422,10 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None")
     marker (an unresolvable body, an unavailable scanner). For a real term this
     returns ``None`` so the caller takes the destination-aware banned-term path.
 
-    For the UNRESOLVABLE-body marker the decision is destination-aware: an
+    For the two unreadable-body markers the decision is destination-aware: an
     UNREADABLE body file (a ``git commit -F <path>`` whose file does not exist
-    at cold-hook scan time, a missing ``--body-file``) hard-blocks on a PUBLIC
+    at cold-hook scan time, a missing ``--body-file``) OR an UNAVAILABLE body
+    source (an unexpanded ``$VAR`` / a stdin body, #2369) hard-blocks on a PUBLIC
     surface — an unscanned body must never slip into public history — but a
     ``git commit`` landing in a PRIVATE repo (or a pure private gh/glab post) is
     not a public surface, so the unread body cannot leak and the gate downgrades
@@ -3437,9 +3438,11 @@ def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None")
     marker_message = banned_terms_scanner.marker_deny_message(term)
     if marker_message is None:
         return None
-    if term == banned_terms_scanner.UNRESOLVABLE_BODY_MARKER and publish_surface.command_targets_private_only(
-        command, cwd_repo
-    ):
+    unreadable_body_markers = {
+        banned_terms_scanner.UNRESOLVABLE_BODY_MARKER,
+        banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER,
+    }
+    if term in unreadable_body_markers and publish_surface.command_targets_private_only(command, cwd_repo):
         sys.stderr.write(
             "WARNING: banned-terms gate (#1415) — could not read the commit/post body, but the "
             "destination is a private repo; downgraded to warn. A private-repo body is not a public leak.\n"

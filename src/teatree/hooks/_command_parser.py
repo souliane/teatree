@@ -84,23 +84,55 @@ _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
 FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
 
 
+# A SECOND fail-closed sentinel for the body sources that are FUNDAMENTALLY
+# unavailable at PreToolUse -- an unexpanded ``$VAR`` (the value is not in the
+# hook env) and a stdin body (``gh api --input -``, ``git commit -F -``). The
+# generic :data:`FAIL_CLOSED_SENTINEL` covers a missing/unreadable FILE, where
+# the actionable advice is "the file is missing"; these two cases need the
+# OPPOSITE advice (write the body to an absolute file and pass ``--body-file
+# <abspath>``), so they carry a distinct sentinel the gate maps to a distinct,
+# actionable message (#2369). The block is identical -- both sentinels fail
+# closed -- only the operator-facing reason differs. It too must not self-match
+# any quote-scanner HIGH pattern.
+UNAVAILABLE_BODY_SOURCE_SENTINEL: Final[str] = (
+    "[teatree-gate] pre-publish body source is unavailable before the command runs; failing closed"
+)
+
+
 def is_fail_closed_sentinel(text: str) -> bool:
     """Return True iff ``text`` carries an INJECTED fail-closed sentinel.
 
-    The parser emits the sentinel as its own discrete payload fragment for
-    every unresolvable/ambiguous body source, and the fragments are joined
-    by newlines — so a genuinely-injected sentinel is always a standalone
-    newline-delimited line equal to :data:`FAIL_CLOSED_SENTINEL`. The gate
-    fails closed on that NAMED reason (#126).
+    The parser emits a sentinel as its own discrete payload fragment for every
+    unresolvable/ambiguous body source, and the fragments are joined by newlines
+    — so a genuinely-injected sentinel is always a standalone newline-delimited
+    line equal to :data:`FAIL_CLOSED_SENTINEL` or
+    :data:`UNAVAILABLE_BODY_SOURCE_SENTINEL`. The gate fails closed on either
+    NAMED reason (#126/#2369); both spellings are recognised here so every
+    downstream gate (quote-scanner, AI-signature, banned-terms) keeps failing
+    closed regardless of which body-source class injected the sentinel.
 
-    A body that merely MENTIONS the sentinel as inert prose inside a
+    A body that merely MENTIONS a sentinel as inert prose inside a
     properly-quoted argument value (a commit message or PR body that
     DISCUSSES the gate) embeds the phrase mid-line, not as a standalone
     line. That is not a quoting hazard — the argument is correctly quoted —
     so the line-exact test allows it while every genuine injection (the
     sentinel on its own line) still fails closed (#1213).
     """
-    return any(line.strip() == FAIL_CLOSED_SENTINEL for line in text.split("\n"))
+    sentinels = {FAIL_CLOSED_SENTINEL, UNAVAILABLE_BODY_SOURCE_SENTINEL}
+    return any(line.strip() in sentinels for line in text.split("\n"))
+
+
+def is_unavailable_body_source_sentinel(text: str) -> bool:
+    """Return True iff ``text`` carries an injected UNAVAILABLE-body-source sentinel.
+
+    Distinguishes the ``$VAR`` / stdin class (fundamentally unavailable before
+    the command runs) from a missing/unreadable FILE, so the gate can render the
+    actionable "write the body to an absolute file and use ``--body-file
+    <abspath>``" message for it instead of the misleading "body file is missing"
+    one (#2369). Line-exact for the same inert-prose reason as
+    :func:`is_fail_closed_sentinel`.
+    """
+    return any(line.strip() == UNAVAILABLE_BODY_SOURCE_SENTINEL for line in text.split("\n"))
 
 
 def _segment_is_t3_publish(words: list[str]) -> bool:
@@ -334,9 +366,16 @@ def _walk_body_flags(words: list[str], payloads: list[str], base: "Path | None")
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:
-    """Read a ``--input`` argument: stdin or missing file → fail closed."""
+    """Read a ``--input`` argument: stdin or missing file → fail closed.
+
+    A literal ``-`` is a STDIN body the PreToolUse hook cannot read before the
+    command runs, so it carries :data:`UNAVAILABLE_BODY_SOURCE_SENTINEL` and the
+    gate renders the actionable "write the body to an absolute file" message
+    (#2369). A NAMED file that does not exist is a missing FILE, so it keeps the
+    generic :data:`FAIL_CLOSED_SENTINEL` whose "body file is missing" advice fits.
+    """
     if arg == "-":
-        payloads.append(FAIL_CLOSED_SENTINEL)
+        payloads.append(UNAVAILABLE_BODY_SOURCE_SENTINEL)
         return
     content = read_file_arg(arg)
     if content is None:
