@@ -13,7 +13,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import E2eMandatoryRun, Ticket
+from teatree.core.models import E2eMandatoryRun, Ticket, Worktree
 
 _SHA = "5" * 40
 _URL = "https://example.com/i/50#note_3"
@@ -56,3 +56,59 @@ class TestRecordE2ERunCommand(TestCase):
     def test_refuses_bad_sha(self) -> None:
         result = self._run("--spec", "x", "--result", "green", "--head-sha", "abc", "--posted-url", _URL)
         assert result["recorded"] is False
+
+
+class TestRecordE2ERunStampsWorktree(TestCase):
+    """#2227: recording an E2E run stamps ``last_e2e_run`` on the running worktree.
+
+    The idle-stack reaper reads ``last_e2e_run`` to KEEP the live target of
+    in-flight evidence work, so the stamp is what prevents the reaper from
+    tearing down a stack an E2E run just touched.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/60", overlay="t3-teatree")
+
+    def _worktree(self, *, state: Worktree.State) -> Worktree:
+        return Worktree.objects.create(
+            overlay="t3-teatree",
+            ticket=self.ticket,
+            repo_path="backend",
+            branch="60-feat",
+            state=state,
+        )
+
+    def _run(self) -> None:
+        with patch("teatree.core.management.commands.lifecycle.assert_lifecycle_db_is_canonical", return_value=None):
+            call_command(
+                "lifecycle",
+                "record-e2e-run",
+                str(self.ticket.pk),
+                "--spec",
+                "e2e/loan.spec.ts",
+                "--result",
+                "green",
+                "--head-sha",
+                _SHA,
+                "--posted-url",
+                _URL,
+            )
+
+    def test_running_worktree_is_stamped(self) -> None:
+        wt = self._worktree(state=Worktree.State.SERVICES_UP)
+        assert wt.last_e2e_run is None
+        self._run()
+        wt.refresh_from_db()
+        assert wt.last_e2e_run is not None
+
+    def test_ready_worktree_is_stamped(self) -> None:
+        wt = self._worktree(state=Worktree.State.READY)
+        self._run()
+        wt.refresh_from_db()
+        assert wt.last_e2e_run is not None
+
+    def test_dormant_worktree_is_not_stamped(self) -> None:
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        self._run()
+        wt.refresh_from_db()
+        assert wt.last_e2e_run is None

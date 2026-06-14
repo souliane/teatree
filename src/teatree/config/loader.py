@@ -275,6 +275,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         idle_stack_reaper_disabled=bool(teatree.get("idle_stack_reaper_disabled", False)),
         idle_stack_idle_minutes=int(teatree.get("idle_stack_idle_minutes", 30)),
         idle_stack_reaper_cadence_minutes=int(teatree.get("idle_stack_reaper_cadence_minutes", 5)),
+        idle_stack_e2e_recent_minutes=int(teatree.get("idle_stack_e2e_recent_minutes", 60)),
         stale_stack_min_age_minutes=int(teatree.get("stale_stack_min_age_minutes", 0)),
         local_stack_queue_disabled=bool(teatree.get("local_stack_queue_disabled", False)),
         local_stack_queue_max_attempts=int(teatree.get("local_stack_queue_max_attempts", 13)),

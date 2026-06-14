@@ -20,8 +20,9 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.gates import idle_stack as idle_mod
-from teatree.core.gates.idle_stack import reapable_worktrees
+from teatree.core.gates.idle_stack import classify_running_worktrees, reapable_worktrees
 from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 
 
 def _running_worktree(
@@ -134,6 +135,101 @@ class TestActiveStackNotReaped(_StackLiveBase):
         assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
 
 
+class TestActiveDeliveryNotReaped(_StackLiveBase):
+    """#2227: a stack under active delivery / fresh E2E evidence / a pin is KEPT.
+
+    The anti-vacuous core for #2227: revert any one guard in
+    ``idle_stack.preserve_reason`` and the matching test goes RED (the live
+    target of in-flight work would be wrongly reaped, forcing a re-provision).
+    A genuinely idle stack carrying NONE of the three is still reaped.
+    """
+
+    def test_live_external_delivery_lease_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="220")
+        mark_external_delivery(wt.ticket)
+        assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_expired_external_delivery_lease_does_not_keep_stack(self) -> None:
+        wt = _running_worktree(ticket_number="221")
+        mark_external_delivery(wt.ticket, lease_seconds=-1)
+        assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_recent_e2e_run_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="222")
+        wt.last_e2e_run = timezone.now() - timedelta(minutes=5)
+        wt.save(update_fields=["last_e2e_run"])
+        assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+
+    def test_stale_e2e_run_does_not_keep_stack(self) -> None:
+        wt = _running_worktree(ticket_number="223")
+        wt.last_e2e_run = timezone.now() - timedelta(minutes=120)
+        wt.save(update_fields=["last_e2e_run"])
+        assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+
+    def test_null_e2e_run_does_not_keep_stack(self) -> None:
+        wt = _running_worktree(ticket_number="224")
+        assert wt.last_e2e_run is None
+        assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+
+    def test_explicit_pin_keeps_stack(self) -> None:
+        wt = _running_worktree(ticket_number="225")
+        wt.extra = {**wt.extra, "reaper_pinned": True}
+        wt.save(update_fields=["extra"])
+        assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_genuinely_idle_with_none_is_reaped(self) -> None:
+        wt = _running_worktree(ticket_number="226")
+        assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+
+    def test_preserve_reason_names_the_lease(self) -> None:
+        wt = _running_worktree(ticket_number="227")
+        mark_external_delivery(wt.ticket)
+        classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30))
+        assert classified[wt] is not None
+        assert "external-delivery lease" in classified[wt]
+
+    def test_preserve_reason_names_the_e2e_run(self) -> None:
+        wt = _running_worktree(ticket_number="228")
+        wt.last_e2e_run = timezone.now() - timedelta(minutes=5)
+        wt.save(update_fields=["last_e2e_run"])
+        classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+        assert classified[wt] is not None
+        assert "E2E" in classified[wt]
+
+    def test_preserve_reason_names_the_pin(self) -> None:
+        wt = _running_worktree(ticket_number="229")
+        wt.extra = {**wt.extra, "reaper_pinned": True}
+        wt.save(update_fields=["extra"])
+        classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30))
+        assert classified[wt] is not None
+        assert "pinned" in classified[wt]
+
+    def test_reapable_idle_classifies_with_no_reason(self) -> None:
+        wt = _running_worktree(ticket_number="230")
+        classified = dict(classify_running_worktrees(overlay="t3-heavy", idle_minutes=30, e2e_recent_minutes=60))
+        assert classified[wt] is None
+
+
+class TestEffectiveE2eWindowFromConfig(_StackLiveBase):
+    """The E2E window defaults to ``idle_stack_e2e_recent_minutes`` when not passed."""
+
+    def test_default_window_keeps_a_recent_e2e_run(self) -> None:
+        wt = _running_worktree(ticket_number="240")
+        wt.last_e2e_run = timezone.now() - timedelta(minutes=5)
+        wt.save(update_fields=["last_e2e_run"])
+        with patch.object(idle_mod, "get_effective_settings") as settings:
+            settings.return_value.idle_stack_e2e_recent_minutes = 60
+            assert wt not in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+    def test_zero_window_disables_the_e2e_guard(self) -> None:
+        wt = _running_worktree(ticket_number="241")
+        wt.last_e2e_run = timezone.now() - timedelta(minutes=5)
+        wt.save(update_fields=["last_e2e_run"])
+        with patch.object(idle_mod, "get_effective_settings") as settings:
+            settings.return_value.idle_stack_e2e_recent_minutes = 0
+            assert wt in list(reapable_worktrees(overlay="t3-heavy", idle_minutes=30))
+
+
 class TestCrossOverlayScope(_StackLiveBase):
     def test_other_overlays_worktrees_are_not_returned(self) -> None:
         _running_worktree(overlay="t3-other", ticket_number="300")
@@ -207,19 +303,29 @@ class TestIsCurrentlyActiveHelper(TestCase):
         assert idle_mod._is_currently_active(wt, Path("/ws/902/backend/src/app")) is True
 
 
-class TestIsReapableFailSafeGuards(TestCase):
-    """``_is_reapable`` directly — the defensive fail-safe guards still hold."""
+class TestPreserveReasonFailSafeGuards(TestCase):
+    """``preserve_reason`` directly — the defensive fail-safe guards still hold.
+
+    A non-``None`` reason means KEEP; ``None`` means reapable.
+    """
 
     def _cutoff(self) -> object:
         return timezone.now() - timedelta(minutes=30)
 
+    def _e2e_cutoff(self) -> object:
+        return timezone.now() - timedelta(minutes=60)
+
     def test_non_running_state_cannot_proceed_is_kept(self) -> None:
         """A PROVISIONED row can't ``stop_services`` → kept (the can_proceed guard)."""
         wt = _running_worktree(ticket_number="910", state=Worktree.State.PROVISIONED)
-        assert idle_mod._is_reapable(wt, cutoff=self._cutoff(), active_path=None) is False
+        reason = idle_mod.preserve_reason(wt, cutoff=self._cutoff(), e2e_cutoff=self._e2e_cutoff(), active_path=None)
+        assert reason is not None
 
     def test_null_last_used_at_is_kept(self) -> None:
         wt = _running_worktree(ticket_number="911")
         wt.last_used_at = None
         with patch.object(idle_mod, "_running_container_count", return_value=1):
-            assert idle_mod._is_reapable(wt, cutoff=self._cutoff(), active_path=None) is False
+            reason = idle_mod.preserve_reason(
+                wt, cutoff=self._cutoff(), e2e_cutoff=self._e2e_cutoff(), active_path=None
+            )
+        assert reason is not None

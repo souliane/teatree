@@ -242,6 +242,7 @@ class Command(TyperCommand):
         """
         from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415
         from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415
+        from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
         ticket = Ticket.objects.resolve(ticket_id)
         assert_lifecycle_db_is_canonical(ticket)
@@ -254,6 +255,7 @@ class Command(TyperCommand):
             )
             return {"recorded": False, "error": "--head-sha must be a full 40-char hex SHA"}
         run = E2eMandatoryRun.record(ticket=ticket, head_sha=head_sha, spec=spec, result=result, posted_url=posted_url)
+        Worktree.objects.stamp_e2e_run(int(ticket.pk))
         posted_note = "" if run.posted_url else " (UNPOSTED — does not satisfy the gate until --posted-url is set)"
         self.stdout.write(
             f"  recorded E2E run ({run.result}) for ticket {ticket.pk} @ {run.head_sha[:8]} ({run.spec}){posted_note}"

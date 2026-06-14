@@ -37,8 +37,8 @@ class TestIdleStackReaperScanner(TestCase):
         wt = _worktree(overlay="t3-heavy", ticket_number="600", state=Worktree.State.SERVICES_UP)
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
         with patch(
-            "teatree.loop.scanners.idle_stack_reaper.reapable_worktrees",
-            return_value=[wt],
+            "teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees",
+            return_value=[(wt, None)],
         ):
             signals = scanner.scan()
         assert len(signals) == 1
@@ -47,8 +47,35 @@ class TestIdleStackReaperScanner(TestCase):
 
     def test_emits_nothing_when_no_idle_worktree(self) -> None:
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
-        with patch("teatree.loop.scanners.idle_stack_reaper.reapable_worktrees", return_value=[]):
+        with patch("teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees", return_value=[]):
             assert scanner.scan() == []
+
+    def test_preserved_worktree_emits_no_signal_and_logs_reason(self) -> None:
+        """#2227: a KEPT worktree is NOT reaped and its reason is surfaced in the log."""
+        wt = _worktree(overlay="t3-heavy", ticket_number="610", state=Worktree.State.SERVICES_UP)
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
+        with (
+            patch(
+                "teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees",
+                return_value=[(wt, "ticket carries a live external-delivery lease")],
+            ),
+            self.assertLogs("teatree.loop.scanners.idle_stack_reaper", level="INFO") as logs,
+        ):
+            signals = scanner.scan()
+        assert signals == []
+        assert any("preserving" in line and "external-delivery lease" in line for line in logs.output)
+
+    def test_mixed_batch_reaps_only_the_unpreserved(self) -> None:
+        """#2227: in one tick, a preserved stack is kept while an idle one is reaped."""
+        kept = _worktree(overlay="t3-heavy", ticket_number="611", state=Worktree.State.SERVICES_UP)
+        idle = _worktree(overlay="t3-heavy", ticket_number="612", state=Worktree.State.SERVICES_UP)
+        scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
+        with patch(
+            "teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees",
+            return_value=[(kept, "a recent E2E/evidence run touched it"), (idle, None)],
+        ):
+            signals = scanner.scan()
+        assert [s.payload["worktree_id"] for s in signals] == [idle.pk]
 
     def test_name_is_stable(self) -> None:
         assert IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30).name == "idle_stack_reaper"
@@ -58,14 +85,14 @@ class TestIdleStackReaperScanner(TestCase):
 
         LocalStackReaperMarker.load().stamp_run()  # last_run_at = now
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30, cadence_minutes=5)
-        with patch("teatree.loop.scanners.idle_stack_reaper.reapable_worktrees") as reapable:
+        with patch("teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees") as classify:
             assert scanner.scan() == []
-        reapable.assert_not_called()
+        classify.assert_not_called()
 
-    def test_reapable_exception_returns_empty(self) -> None:
+    def test_classify_exception_returns_empty(self) -> None:
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
         with patch(
-            "teatree.loop.scanners.idle_stack_reaper.reapable_worktrees",
+            "teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees",
             side_effect=RuntimeError("boom"),
         ):
             assert scanner.scan() == []
@@ -82,7 +109,7 @@ class TestIdleStackReaperScanner(TestCase):
         wt = _worktree(overlay="t3-heavy", ticket_number="603", state=Worktree.State.SERVICES_UP)
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
         with (
-            patch("teatree.loop.scanners.idle_stack_reaper.reapable_worktrees", return_value=[wt]),
+            patch("teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees", return_value=[(wt, None)]),
             patch(
                 "teatree.core.models.local_stack_reaper_marker.LocalStackReaperMarker.stamp_run",
                 side_effect=RuntimeError("write failed"),

@@ -90,7 +90,8 @@ def _make_alias(tmp_path: Path) -> str:
                 state VARCHAR(32) NOT NULL DEFAULT 'created',
                 db_name VARCHAR(255) NOT NULL DEFAULT '',
                 extra TEXT NOT NULL DEFAULT '{}',
-                last_used_at DATETIME NULL
+                last_used_at DATETIME NULL,
+                last_e2e_run DATETIME NULL
             )
             """
         )
