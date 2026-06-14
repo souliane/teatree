@@ -14,6 +14,7 @@ import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
+    OverlayConfigResolver,
     _discover_toml_overlays,
     frontend_repos_for_overlay,
     get_overlay_for_repo,
@@ -21,6 +22,9 @@ from teatree.core.overlay_loader import (
     infer_overlay_for_url,
     resolve_overlay_name,
 )
+
+owned_repos_for_overlay = OverlayConfigResolver.owned_repos
+path_only_owned_scopes = OverlayConfigResolver.path_only_owned_scopes
 
 _GIT = shutil.which("git") or "git"
 
@@ -487,6 +491,89 @@ class TestFrontendReposForOverlay:
 
         with self._patch_landscape({}, discovered={}), pytest.raises(ImproperlyConfigured):
             frontend_repos_for_overlay("removed-or-typo")
+
+
+class TestOwnedReposForOverlay:
+    """``owned_repos_for_overlay`` resolves a path-only overlay's SCOPE dict.
+
+    The SCOPE-axis twin of ``frontend_repos_for_overlay``. A path-only TOML
+    overlay (``path`` but no ``class``) is skipped by ``get_all_overlays()``,
+    so its forge-host-keyed ``owned_repos`` is invisible to the fail-CLOSED
+    owned-repo gate. This resolver answers from the ``[overlays.<name>]`` raw
+    TOML table for a path-only overlay (defaulting to ``{}`` when undeclared),
+    answers from ``config.owned_repos`` for an instantiable overlay, and
+    raises ``ImproperlyConfigured`` for a genuinely unknown overlay so the
+    gate's fail-closed posture survives.
+    """
+
+    def _patch_landscape(self, overlays: dict, discovered: dict | None):
+        from contextlib import ExitStack  # noqa: PLC0415
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(config_mod, "load_config", return_value=_make_config(overlays)))
+        stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=discovered or {}))
+        return stack
+
+    def test_path_only_overlay_with_no_owned_repos_resolves_empty_dict(self):
+        overlays = {"t3-path": {"path": "~/x/t3-path", "protected_branches": ["development"]}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert owned_repos_for_overlay("t3-path") == {}
+
+    def test_path_only_overlay_with_declared_owned_repos_resolves_them(self):
+        owned = {"github.com": ["acme-eng"], "gitlab.acme.internal": ["*"]}
+        overlays = {"t3-path": {"path": "~/x/t3-path", "owned_repos": owned}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert owned_repos_for_overlay("t3-path") == owned
+
+    def test_instantiable_overlay_answers_from_its_config(self):
+        overlay = _StubOverlay()
+        overlay.config.owned_repos = {"github.com": ["souliane"]}
+        with self._patch_landscape({}, discovered={"t3-stub": overlay}):
+            assert owned_repos_for_overlay("t3-stub") == {"github.com": ["souliane"]}
+
+    def test_genuinely_unknown_overlay_raises_for_fail_closed(self):
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        with self._patch_landscape({}, discovered={}), pytest.raises(ImproperlyConfigured):
+            owned_repos_for_overlay("removed-or-typo")
+
+
+class TestPathOnlyOwnedScopes:
+    """``path_only_owned_scopes`` yields opted-in path-only overlay scopes."""
+
+    def _patch_landscape(self, overlays: dict, discovered: dict | None):
+        from contextlib import ExitStack  # noqa: PLC0415
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(config_mod, "load_config", return_value=_make_config(overlays)))
+        stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=discovered or {}))
+        return stack
+
+    def test_opted_in_path_only_overlay_yields_its_owned_repos(self):
+        owned = {"github.com": ["acme-eng"]}
+        overlays = {
+            "t3-path": {"path": "~/x/t3-path", "owned_repos": owned, "require_owned_repo_approval": True},
+        }
+        with self._patch_landscape(overlays, discovered={}):
+            assert path_only_owned_scopes() == [owned]
+
+    def test_path_only_overlay_not_opted_in_is_excluded(self):
+        overlays = {"t3-path": {"path": "~/x/t3-path", "owned_repos": {"github.com": ["acme-eng"]}}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert path_only_owned_scopes() == []
+
+    def test_opted_in_but_empty_owned_repos_is_excluded(self):
+        overlays = {"t3-path": {"path": "~/x/t3-path", "require_owned_repo_approval": True}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert path_only_owned_scopes() == []
+
+    def test_instantiable_overlay_is_not_yielded_by_path_only_scopes(self):
+        overlay = _StubOverlay()
+        overlay.config.owned_repos = {"github.com": ["souliane"]}
+        overlay.config.require_owned_repo_approval = True
+        overlays = {"t3-stub": {"class": "tests.test_overlay_loader:_StubOverlay"}}
+        with self._patch_landscape(overlays, discovered={"t3-stub": overlay}):
+            assert path_only_owned_scopes() == []
 
 
 # ── Test helpers ─────────────────────────────────────────────────────

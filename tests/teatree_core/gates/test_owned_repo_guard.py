@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.gates.owned_repo_guard import UnownedRepoError, require_owned_or_approved
+from teatree.core.gates.owned_repo_guard import (
+    PushScopeVerdict,
+    UnownedRepoError,
+    classify_push_for_overlays,
+    merge_scope_verdict,
+    require_owned_or_approved,
+)
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.review_candidate import should_review_candidate
 
@@ -105,3 +111,52 @@ class TestOrthogonalToCollaboration:
     def test_owned_repo_with_self_author_is_not_a_review_candidate(self) -> None:
         own_pr = {"user": {"login": "souliane"}, "state": "open"}
         assert should_review_candidate(own_pr, current_user="souliane") is False
+
+
+_ACME_PATH_ONLY = {"github.com": ["acme-eng"]}
+
+
+class TestPathOnlyOwnedScope:
+    """A path-only overlay's opted-in ``owned_repos`` is honored by the gate.
+
+    A path-only TOML overlay cannot be instantiated, so it never appears in
+    ``get_all_overlays()`` and its ``owned_repos`` is invisible to a gate that
+    only iterates instantiable overlays. The push and merge classifiers accept
+    the path-only opted-in scopes alongside the instantiable overlays so a
+    repo owned by a path-only overlay is in scope (ALLOW) and one owned by
+    neither is held (REQUIRE_APPROVAL). Before the fix the classifiers had no
+    ``path_only_scopes`` parameter at all, so this is a TypeError RED.
+    """
+
+    def test_repo_owned_only_by_a_path_only_overlay_is_allowed(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path / "acme", "git@github.com:acme-eng/widget.git")
+        verdict = classify_push_for_overlays(repo, {}, path_only_scopes=[_ACME_PATH_ONLY])
+        assert verdict is PushScopeVerdict.ALLOW
+
+    def test_repo_owned_by_no_scope_including_path_only_requires_approval(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path / "other", "git@github.com:randomuser/randomrepo.git")
+        verdict = classify_push_for_overlays(repo, {}, path_only_scopes=[_ACME_PATH_ONLY])
+        assert verdict is PushScopeVerdict.REQUIRE_APPROVAL
+
+    def test_no_opted_in_scope_at_all_allows(self, tmp_path: Path) -> None:
+        repo = _repo(tmp_path / "none", "git@github.com:randomuser/randomrepo.git")
+        verdict = classify_push_for_overlays(repo, {}, path_only_scopes=[])
+        assert verdict is PushScopeVerdict.ALLOW
+
+    def test_merge_target_owned_by_path_only_overlay_is_allowed(self) -> None:
+        verdict = merge_scope_verdict(
+            "https://github.com/acme-eng/widget/pull/3",
+            "acme-eng/widget",
+            {},
+            path_only_scopes=[_ACME_PATH_ONLY],
+        )
+        assert verdict is PushScopeVerdict.ALLOW
+
+    def test_merge_target_owned_by_no_scope_requires_approval(self) -> None:
+        verdict = merge_scope_verdict(
+            "https://github.com/randomuser/randomrepo/pull/3",
+            "randomuser/randomrepo",
+            {},
+            path_only_scopes=[_ACME_PATH_ONLY],
+        )
+        assert verdict is PushScopeVerdict.REQUIRE_APPROVAL

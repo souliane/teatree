@@ -103,7 +103,31 @@ def require_owned_or_approved(cwd: Path, overlay: "OverlayBase", *, approved: bo
         raise UnownedRepoError(_remediation(target))
 
 
-def classify_push_for_overlays(cwd: Path, overlays: dict[str, "OverlayBase"]) -> PushScopeVerdict:
+def _opted_in_scopes(
+    overlays: dict[str, "OverlayBase"],
+    path_only_scopes: "list[dict[str, list[str]]] | None",
+) -> list[dict[str, list[str]]]:
+    """The opted-in ``owned_repos`` of instantiable AND path-only overlays.
+
+    A path-only TOML overlay is skipped by ``get_all_overlays()`` so its scope
+    never reaches *overlays*; its opted-in ``owned_repos`` arrive separately
+    via *path_only_scopes* (already filtered to opted-in + non-empty). Both are
+    pooled into one list of scope dicts the verdict functions match against.
+    """
+    instantiable = [
+        overlay.config.owned_repos
+        for overlay in overlays.values()
+        if overlay.config.require_owned_repo_approval and overlay.config.owned_repos
+    ]
+    return instantiable + list(path_only_scopes or [])
+
+
+def classify_push_for_overlays(
+    cwd: Path,
+    overlays: dict[str, "OverlayBase"],
+    *,
+    path_only_scopes: "list[dict[str, list[str]]] | None" = None,
+) -> PushScopeVerdict:
     """Classify a push from *cwd* against every registered overlay's scope.
 
     Mirrors the §7 verdict structure for the multi-overlay PreToolUse push
@@ -114,20 +138,19 @@ def classify_push_for_overlays(cwd: Path, overlays: dict[str, "OverlayBase"]) ->
         (``require_owned_repo_approval`` AND non-empty ``owned_repos``), AND
     *   NO opted-in overlay owns the cwd repo's ``(host, namespace)``.
 
-    Otherwise :attr:`PushScopeVerdict.ALLOW`: no overlay opted in (back-compat),
-    or some opted-in overlay owns the repo. The polarity is fail-CLOSED on the
-    clean unknown verdict; a resolver EXCEPTION is the caller's fail-open
-    concern, not this pure function's.
+    *path_only_scopes* carries the opted-in ``owned_repos`` of PATH-ONLY
+    overlays (``path`` but no ``class``), which ``get_all_overlays()`` skips —
+    so a repo a path-only overlay owns is in scope. Otherwise
+    :attr:`PushScopeVerdict.ALLOW`: no overlay opted in (back-compat), or some
+    opted-in overlay owns the repo. The polarity is fail-CLOSED on the clean
+    unknown verdict; a resolver EXCEPTION is the caller's fail-open concern,
+    not this pure function's.
     """
-    opted_in = [
-        overlay
-        for overlay in overlays.values()
-        if overlay.config.require_owned_repo_approval and overlay.config.owned_repos
-    ]
-    if not opted_in:
+    scopes = _opted_in_scopes(overlays, path_only_scopes)
+    if not scopes:
         return PushScopeVerdict.ALLOW
     identity = repo_identity_for_cwd(cwd)
-    if any(host_aware_owns(overlay.config.owned_repos, identity) for overlay in opted_in):
+    if any(host_aware_owns(owned, identity) for owned in scopes):
         return PushScopeVerdict.ALLOW
     return PushScopeVerdict.REQUIRE_APPROVAL
 
@@ -140,16 +163,23 @@ def classify_active_push(cwd: Path) -> PushScopeVerdict:
     (never-lockout on the internal-exception axis, distinct from the clean
     unknown verdict above which fails closed).
     """
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+    from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
 
     try:
         overlays = get_all_overlays()
+        path_only_scopes = OverlayConfigResolver.path_only_owned_scopes()
     except Exception:  # noqa: BLE001 — broken overlay must not wedge a push; fail OPEN.
         return PushScopeVerdict.ALLOW
-    return classify_push_for_overlays(cwd, overlays)
+    return classify_push_for_overlays(cwd, overlays, path_only_scopes=path_only_scopes)
 
 
-def merge_scope_verdict(host: str, slug: str, overlays: dict[str, "OverlayBase"]) -> PushScopeVerdict:
+def merge_scope_verdict(
+    host: str,
+    slug: str,
+    overlays: dict[str, "OverlayBase"],
+    *,
+    path_only_scopes: "list[dict[str, list[str]]] | None" = None,
+) -> PushScopeVerdict:
     """Classify a keystone-merge target ``(host, slug)`` against every overlay's scope.
 
     The merge keystone carries the namespace as a bare ``slug`` (no host); the
@@ -158,23 +188,23 @@ def merge_scope_verdict(host: str, slug: str, overlays: dict[str, "OverlayBase"]
     some overlay opted in AND the target is identifiably out-of-scope (host
     known, namespace owned by no opted-in overlay). ALLOW otherwise.
 
+    *path_only_scopes* carries the opted-in ``owned_repos`` of PATH-ONLY
+    overlays (skipped by ``get_all_overlays()``), so a merge target a path-only
+    overlay owns is in scope.
+
     An UNRESOLVABLE host (no issue/PR URL to recover it from) is the
     *uncertainty* axis, NOT a clean unknown verdict — the merge cannot be
     classified, so it fails OPEN (never-lockout), exactly as the push gate
     allows an unresolvable cwd. The merge keystone's other gates (independent
     cold-review, SHA-binding, substrate authorization) remain in force.
     """
-    opted_in = [
-        overlay
-        for overlay in overlays.values()
-        if overlay.config.require_owned_repo_approval and overlay.config.owned_repos
-    ]
-    if not opted_in:
+    scopes = _opted_in_scopes(overlays, path_only_scopes)
+    if not scopes:
         return PushScopeVerdict.ALLOW
     identity = identity_from_host_and_slug(host, slug)
     if not identity.host:
         return PushScopeVerdict.ALLOW
-    if any(host_aware_owns(overlay.config.owned_repos, identity) for overlay in opted_in):
+    if any(host_aware_owns(owned, identity) for owned in scopes):
         return PushScopeVerdict.ALLOW
     return PushScopeVerdict.REQUIRE_APPROVAL
 
@@ -203,10 +233,15 @@ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKey
     if approved:
         return None
     try:
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+        from teatree.core.overlay_loader import OverlayConfigResolver, get_all_overlays  # noqa: PLC0415
 
         issue_url = str(getattr(clear.ticket, "issue_url", "") or "")
-        verdict = merge_scope_verdict(issue_url, clear.slug, get_all_overlays())
+        verdict = merge_scope_verdict(
+            issue_url,
+            clear.slug,
+            get_all_overlays(),
+            path_only_scopes=OverlayConfigResolver.path_only_owned_scopes(),
+        )
     except Exception:  # noqa: BLE001 — a resolver error must never wedge a merge; fail OPEN.
         return None
     if verdict is not PushScopeVerdict.REQUIRE_APPROVAL:
