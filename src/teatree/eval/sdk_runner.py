@@ -70,6 +70,7 @@ from teatree.eval.transcript import (
     parse_stream_json,
     requested_model_present,
 )
+from teatree.eval.under_load import build_system_prompt, build_user_prompt
 
 #: Env var names for the metered lane's GENEROUS, configurable resource caps. A
 #: truncated run measures the cap, not behaviour (the first full metered run lost
@@ -481,7 +482,8 @@ class SdkInProcessRunner:
                 raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
 
-        system_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
+        clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
+        system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
         max_turns = self._max_turns_override if self._max_turns_override is not None else spec.max_turns
         try:
             messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
@@ -542,7 +544,7 @@ class SdkInProcessRunner:
                     max_budget_usd=self._max_budget_usd,
                 )
             )
-            return await asyncio.wait_for(_collect(spec.prompt, options), timeout=WATCHDOG_SECONDS)
+            return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=WATCHDOG_SECONDS)
 
     @staticmethod
     def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:

@@ -247,7 +247,7 @@ class TestEvalRun:
 
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.app.find_spec", return_value=specs[0]),
+            patch("teatree.cli.eval.app_helpers.find_spec", return_value=specs[0]),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--no-persist"])
@@ -258,8 +258,8 @@ class TestEvalRun:
     def test_unknown_scenario_exits_with_code_2_and_lists_available(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
         with (
-            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.app.find_spec", return_value=None),
+            patch("teatree.cli.eval.app_helpers.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.app_helpers.find_spec", return_value=None),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "missing"])
         assert result.exit_code == 2
@@ -268,8 +268,8 @@ class TestEvalRun:
 
     def test_unknown_scenario_shows_none_when_empty_inventory(self) -> None:
         with (
-            patch("teatree.cli.eval.app.discover_specs", return_value=[]),
-            patch("teatree.cli.eval.app.find_spec", return_value=None),
+            patch("teatree.cli.eval.app_helpers.discover_specs", return_value=[]),
+            patch("teatree.cli.eval.app_helpers.find_spec", return_value=None),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "missing"])
         assert result.exit_code == 2
@@ -1680,7 +1680,7 @@ class TestEvalSubcommandsStillWork:
         specs = [_spec("alpha"), _spec("beta")]
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.app.find_spec", return_value=specs[0]),
+            patch("teatree.cli.eval.app_helpers.find_spec", return_value=specs[0]),
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--no-persist"])

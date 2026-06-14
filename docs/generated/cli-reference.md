@@ -1665,6 +1665,16 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --lane                                     TEXT     Run only scenarios in    │
+│                                                     this lane (clean_room |  │
+│                                                     under_load). Omit to run │
+│                                                     every lane (default,     │
+│                                                     unchanged). The cheap    │
+│                                                     PR-path gate and the     │
+│                                                     weekly metered lane read │
+│                                                     the same catalog but     │
+│                                                     pass different --lane    │
+│                                                     subsets.                 │
 │ --format                                   TEXT     Report format: text,     │
 │                                                     json, or html            │
 │                                                     (single-trial; html is a │

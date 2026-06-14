@@ -21,6 +21,7 @@ class RunDockerArgs:
     """The ``t3 eval run`` flags forwarded into the CI image by ``--docker``."""
 
     name: str | None
+    lane: str | None
     output_format: str
     max_turns: int | None
     max_budget_usd: float
@@ -36,6 +37,8 @@ class RunDockerArgs:
         args = ["run"]
         if self.name is not None:
             args.append(self.name)
+        if self.lane is not None:
+            args += ["--lane", self.lane]
         if self.output_format != "text":
             args += ["--format", self.output_format]
         if self.max_turns is not None:

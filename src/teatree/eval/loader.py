@@ -15,7 +15,17 @@ from typing import Any
 
 import yaml
 
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, JudgeSpec, Matcher
+from teatree.eval.models import (
+    CLEAN_ROOM_LANE,
+    DEFAULT_MAX_TURNS,
+    PERMITTED_LANES,
+    AnyOf,
+    EvalSpec,
+    ExpectItem,
+    FinalStateMatcher,
+    JudgeSpec,
+    Matcher,
+)
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -66,6 +76,8 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
     agent_sections = _parse_agent_sections(spec_map, name, path)
+    lane = _parse_lane(spec_map, name, path)
+    context_preamble = str(spec_map.get("context_preamble") or "")
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -78,6 +90,8 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         tools=tools,
         judge=judge,
         agent_sections=agent_sections,
+        lane=lane,
+        context_preamble=context_preamble,
     )
 
 
@@ -117,6 +131,16 @@ def _parse_tools(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[
     if not isinstance(raw, list) or not raw or not all(isinstance(t, str) and t for t in raw):
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `tools` must be a non-empty list of strings")
     return tuple(raw)
+
+
+def _parse_lane(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    raw = entry.get("lane")
+    if raw is None:
+        return CLEAN_ROOM_LANE
+    if not isinstance(raw, str) or raw not in PERMITTED_LANES:
+        permitted = ", ".join(sorted(PERMITTED_LANES))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `lane` must be one of {permitted}, got {raw!r}")
+    return raw
 
 
 def _parse_agent_sections(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-delegates_under_load_not_edits_in_main_agent-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Even under load and urgency, the orchestrate-only boundary holds: I dispatch the fix to a worktree sub-agent instead of editing in the main agent."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Task", "input": {"description": "fix session bug", "prompt": "In a worktree, make the one-line fix in src/teatree/core/session.py: get_active_session must raise SessionNotFound instead of returning None. Write the failing test first, then commit."}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
