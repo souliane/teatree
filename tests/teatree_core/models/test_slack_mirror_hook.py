@@ -9,7 +9,7 @@ post fits inside the hook timeout.
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -234,105 +234,21 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures:
         assert capsys.readouterr().out.strip() == ""
 
 
-class TestSlackPostMessageReturnsTs:
-    def test_returns_ts_on_success(self) -> None:
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({"ok": True, "ts": "1700.0001"}).encode()
-        with patch("urllib.request.urlopen", return_value=resp):
-            ts = router._slack_post_message("tok", "D1", "hi", timeout=2.0)
-        assert ts == "1700.0001"
+class TestRouterDomainWiring:
+    """The router owns the platform→domain edges the leaf must not carry.
 
-    def test_returns_empty_on_failure(self) -> None:
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("down")):
-            ts = router._slack_post_message("tok", "D1", "hi", timeout=2.0)
-        assert ts == ""
+    The ``teatree.hooks.slack_mirror`` leaf is a pure platform leaf, so the
+    Slack ``post`` (``teatree.backends.slack``) and the active-DM-thread lookup
+    (``teatree.core``) are built HERE and injected. These pin that wiring.
+    """
 
+    def test_http_poster_is_slack_client_post_with_no_retry(self) -> None:
+        poster = router._slack_http_poster()
+        client = poster.__self__
+        assert client._max_retries == 0
+        assert client._timeout == pytest.approx(router._SLACK_POST_TIMEOUT_SECONDS)
 
-class TestDmChannelCache:
-    def test_round_trip_through_cache_file(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        assert router._read_dm_channel_cache("U1") == ""
-        router._write_dm_channel_cache("U1", "D123")
-        assert router._read_dm_channel_cache("U1") == "D123"
-
-    def test_multiple_users_in_same_cache(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        router._write_dm_channel_cache("U1", "D1")
-        router._write_dm_channel_cache("U2", "D2")
-        assert router._read_dm_channel_cache("U1") == "D1"
-        assert router._read_dm_channel_cache("U2") == "D2"
-
-    def test_corrupt_cache_returns_empty(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        path = router._slack_dm_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("not json", encoding="utf-8")
-        assert router._read_dm_channel_cache("U1") == ""
-
-
-class TestSlackPostDm:
-    def test_cache_hit_skips_open_dm(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        router._write_dm_channel_cache("U1", "D-cached")
-        with (
-            patch.object(router, "_slack_open_dm") as mock_open,
-            patch.object(router, "_active_dm_thread_for_channel", return_value=""),
-            patch.object(router, "_slack_post_message", return_value=True) as mock_post,
-        ):
-            router._slack_post_dm("xoxb-tok", "U1", "hello")
-        mock_open.assert_not_called()
-        mock_post.assert_called_once_with("xoxb-tok", "D-cached", "hello", timeout=2.0, thread_ts="")
-
-    def test_cache_miss_opens_dm_and_caches(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        with (
-            patch.object(router, "_slack_open_dm", return_value="D-new") as mock_open,
-            patch.object(router, "_active_dm_thread_for_channel", return_value=""),
-            patch.object(router, "_slack_post_message", return_value=True) as mock_post,
-        ):
-            router._slack_post_dm("xoxb-tok", "U1", "hello")
-        mock_open.assert_called_once()
-        mock_post.assert_called_once_with("xoxb-tok", "D-new", "hello", timeout=2.0, thread_ts="")
-        assert router._read_dm_channel_cache("U1") == "D-new"
-
-    def test_stale_cache_falls_back_to_open(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        router._write_dm_channel_cache("U1", "D-stale")
-        with (
-            patch.object(router, "_slack_open_dm", return_value="D-fresh") as mock_open,
-            patch.object(router, "_active_dm_thread_for_channel", return_value=""),
-            patch.object(router, "_slack_post_message", side_effect=[False, True]) as mock_post,
-        ):
-            router._slack_post_dm("xoxb-tok", "U1", "hello")
-        mock_open.assert_called_once()
-        assert mock_post.call_count == 2
-        assert router._read_dm_channel_cache("U1") == "D-fresh"
-
-    def test_cache_hit_threads_under_active_dm_thread(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        router._write_dm_channel_cache("U1", "D-cached")
-        with (
-            patch.object(router, "_active_dm_thread_for_channel", return_value="1700000000.0009") as mock_thread,
-            patch.object(router, "_slack_post_message", return_value=True) as mock_post,
-        ):
-            router._slack_post_dm("xoxb-tok", "U1", "hello")
-        mock_thread.assert_called_once_with("D-cached")
-        mock_post.assert_called_once_with("xoxb-tok", "D-cached", "hello", timeout=2.0, thread_ts="1700000000.0009")
-
-    def test_opened_channel_threads_under_active_dm_thread(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        with (
-            patch.object(router, "_slack_open_dm", return_value="D-new"),
-            patch.object(router, "_active_dm_thread_for_channel", return_value="1700000000.0042") as mock_thread,
-            patch.object(router, "_slack_post_message", return_value=True) as mock_post,
-        ):
-            router._slack_post_dm("xoxb-tok", "U1", "hello")
-        mock_thread.assert_called_once_with("D-new")
-        mock_post.assert_called_once_with("xoxb-tok", "D-new", "hello", timeout=2.0, thread_ts="1700000000.0042")
-
-
-class TestActiveDmThreadResolver:
-    def test_resolves_most_recent_slack_thread_ref_for_channel(self) -> None:
+    def test_active_dm_thread_resolves_most_recent_ref_for_channel(self) -> None:
         from teatree.core.models import IncomingEvent  # noqa: PLC0415
 
         IncomingEvent.objects.create(
@@ -344,7 +260,10 @@ class TestActiveDmThreadResolver:
 
         assert router._active_dm_thread_for_channel("D-cached") == "1700000000.0009"
 
-    def test_empty_when_django_unavailable(self) -> None:
+    def test_active_dm_thread_empty_when_no_channel(self) -> None:
+        assert router._active_dm_thread_for_channel("") == ""
+
+    def test_active_dm_thread_empty_when_django_unavailable(self) -> None:
         with patch.object(router, "bootstrap_teatree_django", return_value=False):
             assert router._active_dm_thread_for_channel("D-cached") == ""
 
