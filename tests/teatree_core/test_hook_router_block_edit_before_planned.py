@@ -14,7 +14,6 @@ the resolver runs for real. RED with the field-name bug reintroduced.
 """
 
 import json
-import subprocess
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -23,23 +22,13 @@ from django.test import TestCase
 
 import hooks.scripts.hook_router as router
 from teatree.core.models import Ticket, Worktree
-
-_GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+from tests._git_repo import make_git_repo, run_git
 
 
 def _git_repo(path: Path) -> str:
     """Init a real git repo at *path* and return its resolved toplevel."""
-    import os  # noqa: PLC0415
-
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | _GIT_ENV
-    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True, env=env)  # noqa: S607
-    return subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],  # noqa: S607
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    ).stdout.strip()
+    make_git_repo(path, initial_commit=False)
+    return run_git(path, "rev-parse", "--show-toplevel")
 
 
 def _capture_block(data: dict) -> tuple[bool, dict | None]:

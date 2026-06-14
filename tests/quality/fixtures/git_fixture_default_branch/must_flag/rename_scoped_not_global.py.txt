@@ -1,0 +1,13 @@
+import subprocess
+
+
+def bare_init_no_rename(p):
+    # A bare init with neither ``-b main`` nor a rename — still flagged. Proves
+    # the rename exemption did not gut the gate.
+    subprocess.run(["git", "init", str(p)], check=True)
+
+
+def renames_a_different_repo(p):
+    # The rename lives in a different function, so it does not exempt the bare
+    # init above — the exemption is function-scoped.
+    subprocess.run(["git", "-C", str(p), "branch", "-M", "main"], check=True)
