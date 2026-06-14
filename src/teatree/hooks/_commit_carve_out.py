@@ -213,20 +213,20 @@ def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, confi
     The landing repo must still clear :func:`commit_branch_downgrades` -- be
     PROVABLY private (allowlist or probe) or a genuinely-unresolvable LOCAL
     commit -- so a resolvable PUBLIC/UNKNOWN landing keeps the hard block (the
-    commit could genuinely land in a public repo; never a leak). The SAME
-    per-segment chain proof runs, so an own-slug term never relaxes a chained
-    PUBLIC post: ``is_git_commit_command`` matches the FIRST segment only and
-    the scanner reports the FIRST matched term, so a chained ``&& gh issue
-    create --repo <PUBLIC>`` still defeats the downgrade.
+    commit could genuinely land in a public repo; never a leak). The commit is
+    recognised PER SEGMENT (:func:`command_has_git_commit_segment`), so the
+    chained worktree idiom ``cd <wt> && git add -A && git commit -m …`` -- whose
+    ``git commit`` is a LATER segment, not the command's first action -- still
+    qualifies (#2215). The SAME per-segment chain proof runs, so an own-slug
+    term never relaxes a chained PUBLIC post: a chained ``&& gh issue create
+    --repo <PUBLIC>`` fails the proof and defeats the downgrade.
 
     The over-block this closes (#1958): the org PREFIX of a multi-token private
     slug now qualifies as the repo's own identity, so an own-org work-item URL
     whose scanner-reported token is the prefix downgrades on the repo's OWN
     private commit exactly as the whole-slug spelling already did.
     """
-    from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
-
-    if not is_git_commit_command(command):
+    if not command_has_git_commit_segment(command):
         return False
     if not _repo_visibility.term_is_own_repo_slug(term, config_path):
         return False

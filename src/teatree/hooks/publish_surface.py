@@ -542,9 +542,13 @@ def visibility_unknown_for_block(
     Returns ``None`` when every resolvable target is allowlisted-private or
     genuinely PUBLIC (a public target is correctly blocked, not "unknown" --
     emitting the add-to-allowlist hint there would be misleading).
+
+    The commit is recognised PER SEGMENT, so the chained worktree idiom
+    ``cd <wt> && git add -A && git commit …`` -- whose ``git commit`` is a
+    LATER segment -- still surfaces the commit-target hint (#2215).
     """
     slugs: list[str] = []
-    if is_git_commit_command(command) and cwd is not None:
+    if _commit_carve_out.command_has_git_commit_segment(command) and cwd is not None:
         slugs.append(_repo_visibility.slug_for_cwd(cwd))
     slugs.extend(
         _segment_target_slug(words, cwd) for words in _command_segments(command) if _segment_is_posting_verb(words)
