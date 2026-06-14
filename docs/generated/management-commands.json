@@ -616,7 +616,7 @@
           "name": "cancel"
         },
         {
-          "help": "Mark a claimed task COMPLETED for work finished out-of-band (#1031)",
+          "help": "Mark a claimed or failed task COMPLETED for work finished out-of-band",
           "name": "complete"
         },
         {

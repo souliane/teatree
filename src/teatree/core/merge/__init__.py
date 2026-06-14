@@ -22,6 +22,7 @@ from teatree.core.merge.execution import (
     merge_ticket_pr,
     record_merge_and_advance,
 )
+from teatree.core.merge.head_guard import restore_caller_branch
 from teatree.core.merge.pr_slug_resolution import _GIT_BRANCH_PREFIXES, _looks_like_owner_repo, resolve_pr_repo_slug
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "merge_ticket_pr",
     "record_merge_and_advance",
     "resolve_pr_repo_slug",
+    "restore_caller_branch",
 ]
