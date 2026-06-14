@@ -7371,130 +7371,42 @@ def handle_block_raw_review_post(data: dict) -> bool:
 
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
+#
+# The Slack TRANSPORT (open DM, post message, channel cache, question text)
+# lives in the ``teatree.hooks.slack_mirror`` leaf, which posts through the
+# hardened ``SlackHttpClient`` (#1110) instead of the raw ``urllib`` this
+# router carried. The leaf is a pure ``teatree.hooks`` (platform-layer) leaf:
+# it must not import ``teatree.backends.slack`` / ``teatree.core`` (a backwards
+# layer edge tach forbids), so the router — which lives outside ``src`` and may
+# touch the domain — builds the Slack ``post`` and the active-DM-thread resolver
+# here and INJECTS them into the leaf. The router keeps the ROUTING decision
+# (which present-/away-mode arm fires, the DeferredQuestion capture); these thin
+# wrappers preserve the ``patch.object(router, "_perform_slack_post" /
+# "_slack_config_from_toml" / "_read_dm_channel_cache")`` seam the handler tests
+# intercept.
+
+_SLACK_POST_TIMEOUT_SECONDS = 2.0
 
 
-def _slack_config_from_toml() -> tuple[str, str] | None:
-    """Return (bot_token_ref, user_id) from the first slack-enabled overlay."""
-    import tomllib  # noqa: PLC0415
+def _slack_http_poster():  # noqa: ANN202 — Poster protocol from the lazily-imported leaf.
+    """Build the hook-budget Slack poster: ``SlackHttpClient.post``, no retry.
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return None
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return None
-    for overlay_cfg in (config.get("overlays") or {}).values():
-        if overlay_cfg.get("messaging_backend") == "slack":
-            ref = overlay_cfg.get("slack_token_ref", "")
-            uid = overlay_cfg.get("slack_user_id", "")
-            if ref and uid:
-                return ref, uid
-    return None
-
-
-def _format_question_text(questions: list[dict]) -> str:
-    lines: list[str] = []
-    for q in questions:
-        lines.append(f"*{q.get('question', '')}*")
-        for i, opt in enumerate(q.get("options", []), 1):
-            label = opt.get("label", "")
-            desc = opt.get("description", "")
-            lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
-    lines.append("\n_Reply with the number (e.g. `1`) or type your answer._")
-    return "\n".join(lines)
-
-
-def _slack_dm_cache_path() -> Path:
-    base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
-    return base / "teatree" / "slack_dm_channels.json"
-
-
-def _read_dm_channel_cache(user_id: str) -> str:
-    path = _slack_dm_cache_path()
-    if not path.is_file():
-        return ""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    cached = data.get(user_id)
-    return cached if isinstance(cached, str) else ""
-
-
-def _write_dm_channel_cache(user_id: str, channel: str) -> None:
-    path = _slack_dm_cache_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        existing = {}
-    if not isinstance(existing, dict):
-        existing = {}
-    existing[user_id] = channel
-    path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def _slack_open_dm(bot_token: str, user_id: str, *, timeout: float) -> str:
-    import urllib.request  # noqa: PLC0415
-
-    payload = json.dumps({"users": user_id}).encode()
-    req = urllib.request.Request(
-        "https://slack.com/api/conversations.open",
-        data=payload,
-        headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
-    )
-    try:
-        resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())  # noqa: S310
-    except Exception:  # noqa: BLE001
-        return ""
-    if not isinstance(resp, dict):
-        return ""
-    channel = resp.get("channel")
-    if not isinstance(channel, dict):
-        return ""
-    cid = channel.get("id")
-    return cid if isinstance(cid, str) else ""
-
-
-def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float, thread_ts: str = "") -> str:
-    """Post ``text`` to ``channel``. Return the posted ``ts`` (``""`` on failure).
-
-    The truthiness contract is preserved for callers that branch on the
-    result (a non-empty ts is truthy, ``""`` is falsy), and the ts is the
-    (tool_use_id, slack_ts) link the #1174 reply matcher needs.
+    The mirror runs synchronously inside the ~5s hook timeout, so the client
+    carries the short per-call timeout and NO retry (a retry-with-backoff could
+    blow the budget). This is the router's platform→domain edge (the router is
+    tach-invisible), injected into the pure leaf.
     """
-    import urllib.request  # noqa: PLC0415
+    from teatree.backends.slack.http import SlackHttpClient  # noqa: PLC0415
 
-    body: dict[str, str] = {"channel": channel, "text": text}
-    if thread_ts:
-        body["thread_ts"] = thread_ts
-    payload = json.dumps(body).encode()
-    req = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=payload,
-        headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
-    )
-    try:
-        resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())  # noqa: S310
-    except Exception:  # noqa: BLE001
-        return ""
-    if not (isinstance(resp, dict) and resp.get("ok") is True):
-        return ""
-    ts = resp.get("ts")
-    return ts if isinstance(ts, str) else ""
+    return SlackHttpClient(timeout=_SLACK_POST_TIMEOUT_SECONDS, max_retries=0).post
 
 
 def _active_dm_thread_for_channel(channel: str) -> str:
     """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
 
-    Threads the mirrored question under the conversation the user is
-    already in instead of opening a new top-level message. Fail-open:
-    any bootstrap or DB error yields ``""`` (post at root) so the hook
-    stays crash-proof.
+    Threads the mirrored question under the conversation the user is already in
+    instead of opening a new top-level message. Fail-open: any bootstrap or DB
+    error yields ``""`` (post at root) so the hook stays crash-proof.
     """
     if not channel or not bootstrap_teatree_django():
         return ""
@@ -7506,52 +7418,27 @@ def _active_dm_thread_for_channel(channel: str) -> str:
         return ""
 
 
-def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> str:
-    """Post ``text`` to ``user_id``'s DM. Resolves channel via cache when possible.
+def _slack_config_from_toml() -> tuple[str, str] | None:
+    from teatree.hooks.slack_mirror import slack_config_from_toml  # noqa: PLC0415
 
-    Cache hit → single ``chat.postMessage`` call (sub-second on a normal
-    connection, fits inside the 3s hook timeout). Cache miss or
-    ``channel_not_found`` → open the DM, cache the channel id, retry.
-    Threads under the user's active DM conversation when one exists.
-    Returns the posted ``ts`` (``""`` on failure) for the #1174 matcher.
-    """
-    cached = _read_dm_channel_cache(user_id)
-    if cached:
-        thread_ts = _active_dm_thread_for_channel(cached)
-        ts = _slack_post_message(bot_token, cached, text, timeout=timeout, thread_ts=thread_ts)
-        if ts:
-            return ts
-    channel = _slack_open_dm(bot_token, user_id, timeout=timeout)
-    if not channel:
-        return ""
-    thread_ts = _active_dm_thread_for_channel(channel)
-    ts = _slack_post_message(bot_token, channel, text, timeout=timeout, thread_ts=thread_ts)
-    if ts:
-        _write_dm_channel_cache(user_id, channel)
-    return ts
+    return slack_config_from_toml()
 
 
 def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:
-    """Resolve the bot token and post the question — runs synchronously.
+    from teatree.hooks.slack_mirror import perform_slack_post  # noqa: PLC0415
 
-    Synchronous so the Slack DM lands **before** the AskUserQuestion prompt
-    renders in the terminal. The previous fork-and-detach variant caused
-    the message to arrive *after* the user had already answered. Returns
-    the posted ``ts`` (``""`` on any failure) so the #1174 capture path can
-    link the mirror row to its DM.
-    """
-    token_ref, user_id = slack_cfg
-    result = subprocess.run(  # noqa: S603
-        ["pass", "show", f"{token_ref}-bot"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        timeout=2,
-        check=False,
+    return perform_slack_post(
+        slack_cfg,
+        questions,
+        poster=_slack_http_poster(),
+        resolve_thread=_active_dm_thread_for_channel,
     )
-    bot_token = result.stdout.strip() if result.returncode == 0 else ""
-    if not bot_token:
-        return ""
-    return _slack_post_dm(bot_token, user_id, _format_question_text(questions))
+
+
+def _read_dm_channel_cache(user_id: str) -> str:
+    from teatree.hooks.slack_mirror import read_dm_channel_cache  # noqa: PLC0415
+
+    return read_dm_channel_cache(user_id)
 
 
 def _post_question_to_slack(data: dict) -> None:
