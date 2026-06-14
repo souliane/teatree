@@ -148,3 +148,21 @@ def validate_test_plan_images(images: list[Path], *, skip: bool = False) -> list
     _refuse_images_without_red_box(images)
     _refuse_duplicate_images(images)
     return _staleness_warnings(images)
+
+
+def refuse_stills_only(*, has_image: bool, has_video: bool, allow_no_video: bool) -> None:
+    """Refuse a stills-only test plan: screenshots present, no video on any workflow.
+
+    A test plan with screenshots but zero video across every present-side
+    workflow is below the documented evidence bar (a recorded video is the
+    minimum proof a flow actually ran). ``allow_no_video=True`` is the
+    user-authorised escape. A no-media (steps-only) manifest never reaches here
+    — ``has_image`` is False — so this composes with the steps-or-media gate.
+    """
+    if allow_no_video or has_video or not has_image:
+        return
+    msg = (
+        "Test plan refused: no video on any workflow (stills-only). A test plan with zero "
+        "video is below the evidence bar — capture with video:'on', or pass --allow-no-video."
+    )
+    raise TestPlanImageValidationError(msg)
