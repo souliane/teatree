@@ -20,6 +20,7 @@ overlay owns the new ticket (the Source alone is not enough).
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -27,6 +28,7 @@ from django.apps import apps
 from django.db import OperationalError, ProgrammingError
 
 import teatree.core.overlay_loader as _overlay_loader
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.event_router import RoutedAction, route_event
 from teatree.core.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
@@ -36,6 +38,14 @@ if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
 
 logger = logging.getLogger(__name__)
+
+type MessagingResolver = Callable[[str], MessagingBackend | None]
+
+
+def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+
+    return messaging_from_overlay(overlay or None)
 
 
 def _event_forge_url(event: "IncomingEvent") -> str:
@@ -69,6 +79,7 @@ class IncomingEventsScanner:
     limit: int = 25
     name: str = "incoming_events"
     replier: Replier = field(default_factory=NoopReplier)
+    messaging_resolver: MessagingResolver = field(default=_default_messaging_resolver)
 
     def scan(self) -> list[ScanSignal]:
         event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
@@ -100,9 +111,38 @@ class IncomingEventsScanner:
         return signals
 
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
+        self._resolve_parent_text(event)
         classification = classify_event(event)
         action = route_event(event, classification)
         return self._execute(event, action)
+
+    def _resolve_parent_text(self, event: "IncomingEvent") -> None:
+        """Fetch and persist the parent message's text for a thread reply (#2230).
+
+        The webhook records ``parent_ts`` deterministically (no network on
+        the fast-return path) but a reply payload never carries the parent's
+        text. Here in the loop — off the receiver's fast path — the parent
+        text is fetched via the messaging backend and persisted so the
+        answerer reads the referent ("approve posting the evidence?") rather
+        than guessing from the bare reply. The backend resolves against the
+        ambient single-overlay default (a Slack DM/channel event carries no
+        forge URL to disambiguate); a backend-unavailable resolve, a missing
+        message, or a raise leaves ``parent_text`` blank — the answerer still
+        has ``parent_ts`` to read the thread itself.
+        """
+        if not event.is_thread_reply or event.parent_text:
+            return
+        backend = self.messaging_resolver("")
+        if backend is None:
+            return
+        try:
+            message = backend.fetch_message(channel=event.channel_ref, ts=event.parent_ts)
+        except Exception as exc:  # noqa: BLE001 — a read raise must never block the queue
+            logger.warning("Parent-text resolve raised for event %s: %s", event.pk, exc)
+            return
+        text = message.get("text") if isinstance(message, dict) else ""
+        if isinstance(text, str) and text:
+            event.record_parent_text(text)
 
     def _execute(self, event: "IncomingEvent", action: RoutedAction) -> ScanSignal | None:
         match action.kind:
@@ -122,6 +162,8 @@ class IncomingEventsScanner:
                 # `detail` carries the inbound body so the dispatcher can
                 # spot a Slack review request (a PR/MR URL) and route it
                 # to an independent review instead of a passive note (#219).
+                # `parent_ts`/`parent_text` carry the replied-to message so
+                # the answerer resolves the referent in context (#2230).
                 return ScanSignal(
                     kind="incoming_event.task_needed",
                     summary=f"task request from {event.source} ({action.phase}): {action.detail}",
@@ -130,6 +172,8 @@ class IncomingEventsScanner:
                         "phase": action.phase,
                         "target_ref": action.target_ref,
                         "detail": action.detail,
+                        "parent_ts": event.parent_ts,
+                        "parent_text": event.parent_text,
                     },
                 )
             case RoutedAction.Kind.SCHEDULE_MERGE:

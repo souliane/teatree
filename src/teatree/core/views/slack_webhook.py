@@ -74,7 +74,21 @@ class SlackWebhookView(View):
                 actor=event.get("user", "") or "",
                 channel_ref=event.get("channel", "") or "",
                 thread_ref=event.get("thread_ts", "") or event.get("ts", "") or "",
+                parent_ts=_reply_parent_ts(event),
                 body=event.get("text", "") or "",
                 payload_json=payload,
             ),
         )
+
+
+def _reply_parent_ts(event: dict) -> str:
+    """The parent/root ts of a thread reply, or ``""`` for a root message (#2230).
+
+    A Slack message is a reply iff it carries a ``thread_ts`` that differs
+    from its own ``ts`` — the root of a thread has ``thread_ts == ts``, and
+    a standalone message has no ``thread_ts`` at all. The parent text is not
+    in the reply payload; the loop scanner resolves and persists it.
+    """
+    thread_ts = event.get("thread_ts", "") or ""
+    ts = event.get("ts", "") or ""
+    return thread_ts if thread_ts and thread_ts != ts else ""

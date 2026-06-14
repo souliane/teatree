@@ -69,6 +69,50 @@ class TestSlackWebhookView(TestCase):
         assert event.idempotency_key == "slack:Ev0PV52K21"
         assert event.payload_json["event"]["type"] == "app_mention"
 
+    def test_thread_reply_persists_parent_ts(self) -> None:
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev0THREADRPLY",
+            "event": {
+                "type": "message",
+                "user": "U02ABCDEF",
+                "text": "where is the URL?",
+                "channel": "C024BE91L",
+                "ts": "1234567890.000200",
+                "thread_ts": "1234567890.000100",
+            },
+        }
+        body = json.dumps(payload).encode()
+
+        response = _post(self.client, body)
+
+        assert response.status_code == 200
+        event = IncomingEvent.objects.get()
+        assert event.parent_ts == "1234567890.000100"
+        assert event.is_thread_reply is True
+
+    def test_thread_root_message_has_no_parent_ts(self) -> None:
+        payload = {
+            "type": "event_callback",
+            "event_id": "Ev0ROOTMSG",
+            "event": {
+                "type": "message",
+                "user": "U02ABCDEF",
+                "text": "approve posting the evidence?",
+                "channel": "C024BE91L",
+                "ts": "1234567890.000100",
+                "thread_ts": "1234567890.000100",
+            },
+        }
+        body = json.dumps(payload).encode()
+
+        response = _post(self.client, body)
+
+        assert response.status_code == 200
+        event = IncomingEvent.objects.get()
+        assert event.parent_ts == ""
+        assert event.is_thread_reply is False
+
     def test_replays_are_idempotent(self) -> None:
         payload = {"type": "event_callback", "event_id": "Ev0DUPLICATE", "event": {"type": "message"}}
         body = json.dumps(payload).encode()

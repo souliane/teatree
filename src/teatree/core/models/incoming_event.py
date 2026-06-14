@@ -26,6 +26,8 @@ class IncomingEvent(models.Model):
     actor = models.CharField(max_length=255, blank=True)
     channel_ref = models.CharField(max_length=255, blank=True)
     thread_ref = models.CharField(max_length=255, blank=True)
+    parent_ts = models.CharField(max_length=255, blank=True)
+    parent_text = models.TextField(blank=True)
     body = models.TextField(blank=True)
     payload_json = models.JSONField(default=dict, blank=True)
     received_at = models.DateTimeField(default=timezone.now)
@@ -45,6 +47,16 @@ class IncomingEvent(models.Model):
     def __str__(self) -> str:
         return f"{self.source}:{self.idempotency_key}"
 
+    @property
+    def is_thread_reply(self) -> bool:
+        """True iff this event is a reply under a parent message (#2230)."""
+        return bool(self.parent_ts)
+
     def mark_processed(self) -> None:
         self.processed_at = timezone.now()
         self.save(update_fields=["processed_at"])
+
+    def record_parent_text(self, text: str) -> None:
+        """Persist the resolved parent-message *text* (single-field write)."""
+        self.parent_text = text
+        self.save(update_fields=["parent_text"])
