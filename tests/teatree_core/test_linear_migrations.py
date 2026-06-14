@@ -13,15 +13,23 @@ from pathlib import Path
 
 import django.conf
 from django.core.checks import run_checks
+from django.db.migrations.loader import MigrationLoader
 from django.test import SimpleTestCase
 
 _CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
 _MAX_MIGRATION_TXT = _CORE_MIGRATIONS_DIR / "max_migration.txt"
+_SIBLING_LEAF = _CORE_MIGRATIONS_DIR / "0001_sibling_leaf_fork.py"
 
 
 def _real_latest_migration() -> str:
     names = sorted(p.stem for p in _CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
     return names[-1]
+
+
+def _core_leaf_parent() -> str:
+    loader = MigrationLoader(None, ignore_no_migrations=True)
+    leaf = max(node for node in loader.graph.leaf_nodes() if node[0] == "core")
+    return next(parent.key[1] for parent in loader.graph.node_map[leaf].parents)
 
 
 class LinearMigrationsCheckTest(SimpleTestCase):
@@ -33,6 +41,7 @@ class LinearMigrationsCheckTest(SimpleTestCase):
             self._original_content = _MAX_MIGRATION_TXT.read_text()
 
     def tearDown(self) -> None:
+        _SIBLING_LEAF.unlink(missing_ok=True)
         if self._original_content is None:
             _MAX_MIGRATION_TXT.unlink(missing_ok=True)
         else:
@@ -63,6 +72,19 @@ class LinearMigrationsCheckTest(SimpleTestCase):
         _MAX_MIGRATION_TXT.write_text("0001_initial\n")
         errors = self._dlm_errors()
         assert "dlm.E004" in errors, f"stale max_migration.txt must yield dlm.E004; got {errors}"
+
+    def test_multiple_leaf_nodes_raises_e005(self) -> None:
+        parent = _core_leaf_parent()
+        _SIBLING_LEAF.write_text(
+            "from django.db import migrations\n\n\n"
+            "class Migration(migrations.Migration):\n"
+            f'    dependencies = [("core", "{parent}")]\n'
+            "    operations: list = []\n"
+        )
+        errors = self._dlm_errors()
+        assert "dlm.E005" in errors, (
+            f"a forked migration graph (two leaf nodes off {parent!r}) must yield dlm.E005; got {errors}"
+        )
 
     def test_dlm_installed_in_apps(self) -> None:
         assert "django_linear_migrations" in django.conf.settings.INSTALLED_APPS, (
