@@ -19,16 +19,19 @@ kill-switch both ALLOW; an unresolvable cwd/slug fails OPEN; and the deny
 routes through ``_fail_open_or_deny`` so the self-rescue allowlist + master
 fail-open switch + circuit breaker all apply.
 
-The push-classification helpers that resolve overlays and emit the deny
-(``_bootstrap_teatree_django``, ``_resolve_cwd_repo``, ``_fail_open_or_deny``,
-``_teatree_bool_setting``) live in ``hook_router`` and are imported lazily at
-call time — ``hook_router`` imports this module at top level, so importing it
-back at top level here would be a cycle.
+``bootstrap_teatree_django`` comes from the shared ``django_bootstrap`` leaf
+(no dependency on ``hook_router``, so it imports at top level). The remaining
+helpers that resolve overlays and emit the deny (``_resolve_cwd_repo``,
+``_fail_open_or_deny``, ``_teatree_bool_setting``) live in ``hook_router`` and
+are imported lazily at call time — ``hook_router`` imports this module at top
+level, so importing it back at top level here would be a cycle.
 """
 
 import re
 import sys
 from pathlib import Path
+
+from django_bootstrap import bootstrap_teatree_django
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -86,9 +89,7 @@ def _classify_push_for_cwd(cwd: Path) -> str:
     ``allow`` (never-lockout on the internal-exception axis) — distinct from a
     clean ``require_approval`` verdict, which holds the push.
     """
-    from hook_router import _bootstrap_teatree_django  # noqa: PLC0415, PLC2701
-
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return "allow"
     try:
         from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415

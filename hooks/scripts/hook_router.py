@@ -33,15 +33,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from types import ModuleType
 
-# Resolve the bare sibling name whether this router runs as a script (the live
-# hook) or is imported as ``hooks.scripts.hook_router`` (the tests), and alias
-# this module under the bare name so the sibling's lazy ``from hook_router
-# import …`` lands on THIS object, not a second copy.
+# Put this script's own dir on sys.path so the bare sibling-module imports
+# resolve whether the router runs as a script (the live hook) or is imported
+# as ``hooks.scripts.hook_router`` in a subprocess test.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.modules.setdefault("hook_router", sys.modules[__name__])
 
-from unknown_repo_push_gate import handle_block_unknown_repo_push  # noqa: E402
+from django_bootstrap import bootstrap_teatree_django
+from unknown_repo_push_gate import handle_block_unknown_repo_push
 
 STATE_DIR = Path(
     os.environ.get(
@@ -986,7 +985,7 @@ def handle_record_presence(data: dict) -> None:
     # genuine user content beyond it proves presence and must stamp.
     if _is_bare_loop_prompt(prompt):
         return
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return
     try:
         from teatree.core.availability import PRESENCE  # noqa: PLC0415
@@ -5402,7 +5401,7 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     """
     if _db_lease_consult_disabled():
         return ""
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return ""
     try:
         import datetime  # noqa: PLC0415
@@ -5455,7 +5454,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     """
     if _db_lease_consult_disabled():
         return
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return
     try:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -5482,7 +5481,7 @@ def _claim_session_handover(session_id: str) -> str | None:
     """
     payload = ""
     from_session = ""
-    if _bootstrap_teatree_django():
+    if bootstrap_teatree_django():
         try:
             from teatree.core.models import SessionHandover  # noqa: PLC0415
 
@@ -7488,7 +7487,7 @@ def _active_dm_thread_for_channel(channel: str) -> str:
     any bootstrap or DB error yields ``""`` (post at root) so the hook
     stays crash-proof.
     """
-    if not channel or not _bootstrap_teatree_django():
+    if not channel or not bootstrap_teatree_django():
         return ""
     try:
         from teatree.core.models import IncomingEvent  # noqa: PLC0415
@@ -7649,26 +7648,6 @@ def _mirror_question_to_slack(question: dict, session_id: str, *, mode: str) -> 
 # ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
 
 
-def _bootstrap_teatree_django() -> bool:
-    """Import teatree and run ``django.setup()`` once per hook process.
-
-    Returns ``True`` when the bootstrap succeeded (the away-mode handler
-    can record a ``DeferredQuestion`` row) and ``False`` when ``teatree``
-    is unavailable (the handler then fails open — never intercepts).
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-    try:
-        import django  # noqa: PLC0415
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
-    except Exception:  # noqa: BLE001
-        return False
-    return True
-
-
 def _run_id(data: dict) -> str:
     """Harness run id when the payload exposes one; fall back to session id.
 
@@ -7705,7 +7684,7 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
     this generation. Returns the new row id, or ``None`` when teatree is
     unavailable (the caller then fails open — the in-client modal renders).
     """
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return None
     try:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
@@ -7746,7 +7725,7 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
 
 def _resolved_away_mode() -> bool:
     """Resolve the effective availability mode; True when ``away``."""
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return False
     try:
         from teatree.core.availability import MODE_AWAY, resolve_mode  # noqa: PLC0415
@@ -7769,7 +7748,7 @@ def _is_live_user_turn(data: dict) -> bool:
     ``False`` so an autonomous turn always falls through to the durable
     deferral path (BLUEPRINT §17.1 invariant 9 unweakened).
     """
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return False
     try:
         from teatree.core import availability  # noqa: PLC0415
@@ -7789,7 +7768,7 @@ def _refresh_live_turn(data: dict) -> None:
     underlying primitive only re-stamps an ALREADY-live same-session turn, so
     this can never promote an autonomous turn to live (invariant 9 intact).
     """
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return
     try:
         from teatree.core import availability  # noqa: PLC0415
@@ -7874,7 +7853,7 @@ def handle_inject_pending_questions(data: dict) -> None:
     - Backlog leg (#58): the still-pending questions are listed so the
     agent prioritises work that does NOT depend on those answers.
     """
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return
     try:
         from teatree.core.availability import pending_questions_count  # noqa: PLC0415
@@ -7943,7 +7922,7 @@ def handle_inject_pending_chat(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return
     try:
         from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
@@ -8002,7 +7981,7 @@ def handle_enforce_answered_questions(data: dict) -> bool | None:
 def _enforce_answered_questions(data: dict) -> bool | None:
     if data.get("stop_hook_active"):
         return None
-    if not _bootstrap_teatree_django():
+    if not bootstrap_teatree_django():
         return None
     try:
         from datetime import timedelta  # noqa: PLC0415

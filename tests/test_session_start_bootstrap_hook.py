@@ -717,7 +717,7 @@ class TestNewSessionHijackFix(TestCase):
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # Simulate bootstrap failure for _db_live_foreign_owner.
-        with mock.patch("hooks.scripts.hook_router._bootstrap_teatree_django", return_value=False):
+        with mock.patch("hooks.scripts.hook_router.bootstrap_teatree_django", return_value=False):
             handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
 
         # Session fell through to the owner path (fail-open).

@@ -206,7 +206,7 @@ class TestCrashProof:
         def _bootstrap_boom() -> bool:
             raise bootstrap_error
 
-        monkeypatch.setattr("hooks.scripts.hook_router._bootstrap_teatree_django", _bootstrap_boom)
+        monkeypatch.setattr("hooks.scripts.hook_router.bootstrap_teatree_django", _bootstrap_boom)
 
         rv, out = _run_hook({"session_id": "s1"}, monkeypatch)
 
@@ -216,7 +216,7 @@ class TestCrashProof:
 
     def test_bootstrap_unavailable_is_quiet_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When Django can't be bootstrapped the gate fails open (quiet)."""
-        monkeypatch.setattr("hooks.scripts.hook_router._bootstrap_teatree_django", lambda: False)
+        monkeypatch.setattr("hooks.scripts.hook_router.bootstrap_teatree_django", lambda: False)
 
         rv, out = _run_hook({"session_id": "s1"}, monkeypatch)
 
