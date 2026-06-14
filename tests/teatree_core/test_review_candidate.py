@@ -298,6 +298,70 @@ class TestReasonsAccumulate:
         assert should_review_candidate_reasons(mr, current_user="alice") == []
 
 
+class TestClassificationIsAuthorNotNamespace:
+    """Own-vs-colleague keys on AUTHOR identity, never on the repo namespace.
+
+    A solo-owned overlay repo (the user's own ``acme-eng/widget-overlay`` /
+    ``acme-eng/widget-overlay-e2e``) is mergeable exactly like ``souliane/*``:
+    a PR authored by the user there is their OWN work, not a colleague's,
+    so the review-sweep skips it with ``author_is_self`` — the same verdict
+    it returns for a ``souliane/teatree`` self-authored PR. The only
+    namespace axis is VISIBILITY (leak-prevention), which lives in a
+    different module and never reaches this predicate.
+
+    These cases pin the distinction so a future change cannot reintroduce
+    namespace/org-based colleague classification: the verdict is identical
+    whether the carried repo slug is public or a private overlay, and flips
+    only when the AUTHOR changes.
+    """
+
+    def test_self_authored_overlay_pr_is_own_not_colleague(self) -> None:
+        pr = {
+            "user": {"login": "souliane"},
+            "state": "open",
+            "base": {"repo": {"full_name": "acme-eng/widget-overlay", "private": True}},
+        }
+        reasons = should_review_candidate_reasons(pr, current_user="souliane")
+        assert "author_is_self" in reasons
+        assert should_review_candidate(pr, current_user="souliane") is False
+
+    def test_self_authored_overlay_e2e_pr_is_own_not_colleague(self) -> None:
+        pr = {
+            "author": {"username": "souliane"},
+            "state": "opened",
+            "notes": [],
+            "web_url": "https://gitlab.com/acme-eng/widget-overlay-e2e/-/merge_requests/7",
+        }
+        assert should_review_candidate(pr, current_user="souliane") is False
+
+    def test_verdict_identical_for_public_and_private_namespace_when_self_authored(self) -> None:
+        public = {"user": {"login": "souliane"}, "state": "open", "base": {"repo": {"full_name": "souliane/teatree"}}}
+        private = {
+            "user": {"login": "souliane"},
+            "state": "open",
+            "base": {"repo": {"full_name": "acme-eng/widget-overlay", "private": True}},
+        }
+        assert should_review_candidate(public, current_user="souliane") == should_review_candidate(
+            private, current_user="souliane"
+        )
+
+    def test_colleague_authored_overlay_pr_stays_a_candidate(self) -> None:
+        pr = {
+            "user": {"login": "a-teammate"},
+            "state": "open",
+            "base": {"repo": {"full_name": "acme-eng/widget-overlay", "private": True}},
+        }
+        assert should_review_candidate(pr, current_user="souliane") is True
+
+    def test_private_namespace_does_not_force_a_skip_for_a_colleague_pr(self) -> None:
+        pr = {
+            "user": {"login": "a-teammate"},
+            "state": "open",
+            "base": {"repo": {"full_name": "acme-product", "private": True}},
+        }
+        assert should_review_candidate_reasons(pr, current_user="souliane") == []
+
+
 class TestEyesReactedByOther:
     def test_eyes_from_colleague_is_a_claim(self) -> None:
         message = {"reactions": [{"name": "eyes", "users": ["UC0LLEAGUE"], "count": 1}]}

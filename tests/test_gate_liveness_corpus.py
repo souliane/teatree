@@ -548,6 +548,25 @@ def _oob_merge_allow(ctx: GateContext) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
 
 
+# block-unknown-repo-push (PreToolUse Bash): a ``git push`` to a repo NO
+# registered overlay owns HOLDS for approval; a push to an OWNED repo allows.
+# The always-registered t3-teatree dogfood overlay declares
+# ``owned_repos=["souliane", ...]``, so the gate is opted-in regardless of the
+# tmp ``~/.teatree.toml`` and ``souliane/teatree`` is owned.
+
+
+def _unknown_push_deny(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "unknown-target"
+    _init_repo(repo, "main", "randomuser/randomrepo")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
+def _unknown_push_allow(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "owned-target"
+    _init_repo(repo, "main", "souliane/teatree")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
 # block-raw-review-post (PreToolUse Bash): a raw forge REST WRITE to a review
 # endpoint denies; a bare GET read allows.
 
@@ -767,6 +786,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_oob_merge_deny,
         allow_input=_oob_merge_allow,
+    ),
+    GateRow(
+        gate_id="block-unknown-repo-push",
+        handler=router.handle_block_unknown_repo_push,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_unknown_push_deny,
+        allow_input=_unknown_push_allow,
     ),
     GateRow(
         gate_id="block-raw-review-post",

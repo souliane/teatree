@@ -161,6 +161,36 @@ class OverlayConfig:
     privacy_redact_terms: list[str]
     privacy_block_patterns: list[str]
     public_repos: list[str]
+    # ``owned_repos`` is the SCOPE axis: the (forge-host, namespace) repos this
+    # overlay legitimately works on. ORTHOGONAL to VISIBILITY (``private_repos``,
+    # public-vs-private leak-prevention read by the publish hooks) and to
+    # COLLABORATION (solo-vs-shared, the author/review gate in
+    # ``teatree.core.review_candidate``). Owned means the agent may work and push
+    # freely; it does NOT imply auto-merge — a shared repo is still in scope yet
+    # still needs colleague review, so ``owned_repos`` gates ONLY the
+    # unknown-repo approval decision, never merge-without-review.
+    #
+    # Shape: ``{normalized-host: [host-relative-namespace-pattern, ...]}``. The
+    # key is the canonical host (``"github.com"``, ``"gitlab.com"``, self-hosted
+    # ``"gitlab.acme.internal"``); making it forge-host-keyed means a host-blind
+    # entry is structurally impossible — ``gitlab.com/souliane/x`` can never
+    # reach a ``github.com`` pattern list. Each value pattern is matched by
+    # ``slug_namespace_matches`` (segment-bounded) AFTER host equality, so
+    # ``"souliane"`` covers every ``souliane/<repo>`` and ``"acme-eng/widget-overlay"``
+    # covers that one repo. A sole-element ``["*"]`` is the whole-host wildcard,
+    # reserved for dedicated self-hosted forges — NEVER on github.com/gitlab.com.
+    # A ``[overlays.<name>.owned_repos]`` TOML table REPLACES the settings dict
+    # (authoritative-and-complete, no deep-merge). When empty (default) the
+    # overlay has not opted into scope gating. Consumed by
+    # ``teatree.core.repo_scope`` / ``teatree.core.gates.owned_repo_guard``.
+    owned_repos: dict[str, list[str]]
+    # Opt-in for the unknown-repo approval gate (``owned_repo_guard``). Default
+    # False keeps every unmodified overlay inert. When True AND ``owned_repos``
+    # is non-empty, a push/merge to a repo no host/namespace pattern owns is held
+    # for the operator (fail-CLOSED on a clean "unknown" verdict — the OPPOSITE
+    # polarity to the visibility gate, which fails open). An empty ``owned_repos``
+    # under this flag still passes (misconfig guard — never block-everything).
+    require_owned_repo_approval: bool = False
     # ``companion_skills`` is a per-overlay list of skill names that must be
     # loaded alongside the active lifecycle skill — the standing equivalent of
     # "always load /ac-django and /ac-python when working in this overlay".
@@ -178,19 +208,15 @@ class OverlayConfig:
     pr_review_companion: str = "code-review"
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
-        # Initialize mutable defaults per-instance
-        self.known_variants = []
-        self.pr_auto_labels = []
-        self.frontend_repos = []
-        self.workspace_repos = []
-        self.protected_branches = []
-        self.ready_labels = []
-        self.exclude_labels = []
-        self.identity_aliases = []
-        self.companion_skills = []
-        self.privacy_redact_terms = []
-        self.privacy_block_patterns = []
-        self.public_repos = []
+        # List-typed config fields reset to a fresh empty list per instance
+        # (mutable-default avoidance); ``owned_repos`` (a dict) is separate.
+        list_fields = (
+            "known_variants pr_auto_labels frontend_repos workspace_repos protected_branches ready_labels "
+            "exclude_labels identity_aliases companion_skills privacy_redact_terms privacy_block_patterns public_repos"
+        )
+        for field in list_fields.split():
+            setattr(self, field, [])
+        self.owned_repos = {}
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:

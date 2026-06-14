@@ -9,6 +9,7 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, group
 
+from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._plan_gate_commands import (
@@ -46,17 +47,6 @@ class CreateSubResult(TypedDict, total=False):
     child_iid: int
     child_url: str
     error: str
-
-
-class MergeKeystoneResult(TypedDict, total=False):
-    merged: bool
-    pr_id: int
-    slug: str
-    merged_sha: str
-    ticket_id: int
-    ticket_state: str
-    error: str
-    escalated: bool
 
 
 class ClearIssueResult(TypedDict, total=False):
@@ -658,6 +648,9 @@ class Command(RubricCommands, TyperCommand):
         except MergeClear.DoesNotExist:
             return {"error": f"MergeClear {clear_id} not found", "merged": False}
 
+        if (scope_refusal := merge_clear_refusal(clear, approved=bool(human_authorized))) is not None:
+            return scope_refusal
+
         try:
             outcome = merge_ticket_pr(
                 clear=clear,
@@ -666,13 +659,7 @@ class Command(RubricCommands, TyperCommand):
             )
         except MergePreconditionError as exc:
             self.stdout.write(f"  merge refused (re-escalating): {exc}")
-            return {
-                "merged": False,
-                "escalated": True,
-                "pr_id": int(clear.pr_id),
-                "slug": clear.slug,
-                "error": str(exc),
-            }
+            return escalated_merge_result(clear, str(exc))
 
         result: MergeKeystoneResult = {
             "merged": True,

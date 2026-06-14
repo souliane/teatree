@@ -22,6 +22,26 @@ IDENTITY_ALIASES: list[list[str]] = [
     ["souliane"],
 ]
 
+# ── Scope (which repos this overlay legitimately works on) ──────────
+
+# The SCOPE axis (distinct from VISIBILITY / ``private_repos`` and from
+# COLLABORATION / the author-review gate). Forge-host-keyed: only github.com
+# repos are in this overlay's scope, so any gitlab.com repo is UNKNOWN here.
+# ``"souliane"`` is a namespace-prefix wildcard covering souliane/teatree AND
+# every other souliane repo (no enumeration). A downstream overlay declares its
+# own private/customer namespaces in ITS OWN repo's ``OWNED_REPOS`` — they never
+# belong in this public overlay's scope. A ``[overlays.t3-teatree.owned_repos]``
+# TOML table REPLACES this dict (authoritative-and-complete), so the operator
+# adds any extra owned host/namespace there, out of the public repo.
+OWNED_REPOS: dict[str, list[str]] = {
+    "github.com": ["souliane"],
+}
+
+# Activate the unknown-repo approval gate for the dogfood overlay: a push to a
+# repo outside OWNED_REPOS is held for the operator (the gate is opt-in, so it
+# stays inert for every overlay that does not set this).
+REQUIRE_OWNED_REPO_APPROVAL: bool = True
+
 # ── Workflow ────────────────────────────────────────────────────────
 
 REQUIRE_TICKET: bool = True
