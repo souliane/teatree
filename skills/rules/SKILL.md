@@ -623,6 +623,26 @@ Some actions remain confirm-gated regardless of mode because they are irreversib
 
 This list applies to all repos, all branches, both modes.
 
+## Three Orthogonal Repo Axes — Visibility, Ownership, Collaboration (Non-Negotiable)
+
+A repo's treatment is decided on three INDEPENDENT axes. Conflating them is the recurrence this rule prevents — most often treating a private overlay repo as if it were colleague-facing and holding back from merging the user's own work.
+
+| Axis | Question | Where it lives | Polarity |
+|---|---|---|---|
+| **Visibility** | public vs private? | `[teatree] private_repos` + `internal_publish_namespaces` → `teatree.hooks.publish_destination` | leak-prevention; fails **OPEN** (unknown → scan-as-public) |
+| **Ownership / scope** | owned vs unknown? | `[overlays.<name>.owned_repos]` (forge-host-keyed) → `teatree.core.repo_scope` + `teatree.core.gates.owned_repo_guard` | unknown-repo gate; fails **CLOSED** (unknown → ask) |
+| **Collaboration** | self vs colleague? | the MR AUTHOR → `teatree.core.review_candidate.author_is_self` | never auto-merge a colleague's MR |
+
+- **Solo-owned repos merge freely.** `souliane/*` and the user's own overlay repos (e.g. `acme-eng/widget-overlay`, `acme-eng/widget-overlay-e2e`) merge exactly like `souliane/teatree`. The only colleague-facing repos are the shared **product** repos of the org (e.g. `acme-product`, `acme-client-workspace`, `acme-shared-config-*`).
+- **Private ≠ colleague-facing.** A repo being private is the _visibility_ axis (leak-prevention still applies). It says nothing about ownership — `widget-overlay` is private AND solo-owned, so the agent merges it without colleague gating.
+- **Owned ≠ auto-merge.** Ownership gates the _unknown-repo_ decision only. A shared product repo is still in scope (owned by its overlay) yet still needs colleague review — that is the collaboration axis, decided by `author_is_self`, never collapsed into ownership.
+- **`owned_repos` is forge-host-keyed** (`{"github.com": ["souliane", …]}`): a `gitlab.com` repo never matches a `github.com` scope.
+- **The unknown-repo gate ships INERT — opt-in, default off.** `require_owned_repo_approval` defaults `false`, so no overlay is gated out of the box. Enabling it requires **first declaring the FULL owned host/namespace list** — including every private/customer forge the operator merges on — because the gate fails **CLOSED** on any repo no listed pattern owns: flipping it on with a partial list would hold the operator's own private-forge keystone merges as "unknown". Opt in from private `~/.teatree.toml` (`[overlays.<name>.owned_repos]` with the full host list + `require_owned_repo_approval = true`), where brand/customer strings are allowed and never reach the public repo.
+- **A path-only TOML overlay cannot carry its own scope.** An overlay registered with a `path` but no Python `class` is skipped by overlay discovery (`get_all_overlays` returns only instantiable overlays), so it can never opt itself into the gate. Its repos must be declared under an INSTANTIABLE overlay's `owned_repos` (e.g. the always-registered `t3-teatree`).
+- **Never-lockout** regardless: a per-call `[scope-push-ok: <reason>]` token, the `unknown_repo_push_gate_enabled` kill-switch, and fail-open on a resolver exception (incl. a failed Django bootstrap in the hook subprocess) all keep the gate from wedging a push.
+
+Pinned by `tests/teatree_core/test_repo_scope.py` (host-symmetric gate), `tests/teatree_core/gates/test_owned_repo_guard.py` (polarity + orthogonality), `tests/teatree_core/test_review_candidate.py` § `TestClassificationIsAuthorNotNamespace` (author-not-namespace), and the A/B eval `tests/eval_lanes/scenarios/owned_repo_not_colleague.yaml`.
+
 ## Run Retro Before Ending Non-Trivial Sessions
 
 Before ending any session that involved multi-file edits, debugging, or implementation work, run `/t3:next` (which includes `/t3:retro`). Do NOT wait for the user to ask — self-trigger this. A session without retro loses compound learning.

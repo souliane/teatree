@@ -345,7 +345,7 @@ class TestActiveDmThreadResolver:
         assert router._active_dm_thread_for_channel("D-cached") == "1700000000.0009"
 
     def test_empty_when_django_unavailable(self) -> None:
-        with patch.object(router, "_bootstrap_teatree_django", return_value=False):
+        with patch.object(router, "bootstrap_teatree_django", return_value=False):
             assert router._active_dm_thread_for_channel("D-cached") == ""
 
 

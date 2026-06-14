@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives every PreToolUse gate in hook_router.py (hooks/); no src/teatree/ mirror.
 """Gate-liveness / enforcement-conformance corpus.
 
 The symmetric companion to ``test_lockout_regression_corpus.py``. That corpus
@@ -44,6 +45,7 @@ from typing import Final
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.core.overlay import OverlayBase, OverlayConfig
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -548,6 +550,49 @@ def _oob_merge_allow(ctx: GateContext) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
 
 
+# block-unknown-repo-push (PreToolUse Bash): a ``git push`` to a repo NO
+# registered overlay owns HOLDS for approval; a push to an OWNED repo allows.
+# The gate ships INERT (``require_owned_repo_approval`` defaults False), so the
+# corpus injects an opted-in overlay set (``owned_repos={"github.com":
+# ["souliane"]}``, flag True) to exercise the gate LOGIC. ``souliane/teatree``
+# is then owned; ``randomuser/randomrepo`` is unknown.
+
+
+class _OptedInScopeOverlay(OverlayBase):
+    def __init__(self) -> None:
+        self.config = OverlayConfig()
+        self.config.owned_repos = {"github.com": ["souliane"]}
+        self.config.require_owned_repo_approval = True
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+        _ = worktree
+        return []
+
+
+def _opt_in_scope_gate(ctx: GateContext) -> None:
+    ctx.monkeypatch.setattr(
+        "teatree.core.overlay_loader.get_all_overlays",
+        lambda: {"t3-teatree": _OptedInScopeOverlay()},
+    )
+
+
+def _unknown_push_deny(ctx: GateContext) -> dict:
+    _opt_in_scope_gate(ctx)
+    repo = ctx.tmp_path / "unknown-target"
+    _init_repo(repo, "main", "randomuser/randomrepo")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
+def _unknown_push_allow(ctx: GateContext) -> dict:
+    _opt_in_scope_gate(ctx)
+    repo = ctx.tmp_path / "owned-target"
+    _init_repo(repo, "main", "souliane/teatree")
+    return {"tool_name": "Bash", "tool_input": {"command": "git push origin HEAD"}, "cwd": str(repo)}
+
+
 # block-raw-review-post (PreToolUse Bash): a raw forge REST WRITE to a review
 # endpoint denies; a bare GET read allows.
 
@@ -767,6 +812,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_oob_merge_deny,
         allow_input=_oob_merge_allow,
+    ),
+    GateRow(
+        gate_id="block-unknown-repo-push",
+        handler=router.handle_block_unknown_repo_push,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_unknown_push_deny,
+        allow_input=_unknown_push_allow,
     ),
     GateRow(
         gate_id="block-raw-review-post",
