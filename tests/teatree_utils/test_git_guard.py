@@ -49,3 +49,23 @@ class TestGuardRepoRemoteSlug:
         )
         with pytest.raises(ValueError, match="souliane/teatree"):
             git_guard.guard_repo_remote_slug(repo="/tmp/r", expected_slug="souliane/teatree")
+
+
+class TestIsGithubSlug:
+    def test_owner_repo_is_a_slug(self) -> None:
+        assert git_guard.is_github_slug("souliane/teatree") is True
+
+    def test_bare_basename_is_not_a_slug(self) -> None:
+        assert git_guard.is_github_slug("teatree") is False
+
+    def test_nested_namespace_is_not_a_two_part_slug(self) -> None:
+        assert git_guard.is_github_slug("acme/team/backend") is False
+
+    def test_empty_is_not_a_slug(self) -> None:
+        assert git_guard.is_github_slug("") is False
+
+    def test_missing_owner_is_not_a_slug(self) -> None:
+        assert git_guard.is_github_slug("/teatree") is False
+
+    def test_missing_name_is_not_a_slug(self) -> None:
+        assert git_guard.is_github_slug("souliane/") is False
