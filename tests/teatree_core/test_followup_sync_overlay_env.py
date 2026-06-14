@@ -25,7 +25,8 @@ from unittest.mock import patch
 import typer
 from typer.testing import CliRunner
 
-from teatree.cli.overlay import OverlayAppBuilder
+from teatree.cli.overlay import OverlayAppBuilder, _overlay_project_env
+from teatree.config import OverlayEntry
 
 
 def _secondary_overlay_clone(tmp_path: Path) -> Path:
@@ -99,3 +100,55 @@ def test_followup_sync_falls_back_to_sys_executable_without_project_env(tmp_path
     cmd = run_streamed.call_args.args[0]
     assert cmd[0] == sys.executable, f"no project env -> run under sys.executable, got {cmd!r}"
     assert cmd[1:3] == ["-m", "teatree"], f"still `python -m teatree`, got {cmd!r}"
+
+
+class TestRealResolverKeystoneSafety:
+    """The REAL ``_overlay_project_env`` keeps the same-env (default) overlay on ``sys.executable``.
+
+    This guards the keystone ``ticket clear`` / ``ticket merge`` dispatch path
+    directly: the default/active overlay is importable under the running
+    interpreter, so the resolver must return ``None`` (no nested-``uv run``
+    redirect) — in BOTH config shapes (with and without an editable-install
+    project dir). The redirect must still fire for a genuinely-secondary
+    overlay whose package is not importable here, so #2221 stays fixed.
+    """
+
+    def test_default_overlay_no_project_dir_stays_sys_executable(self) -> None:
+        """The bundled ``t3-teatree`` entry-point overlay (no project dir) resolves to ``None``."""
+        entry = OverlayEntry(name="t3-teatree", overlay_class="teatree.contrib.t3_teatree.overlay:TeatreeOverlay")
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
+            assert _overlay_project_env("teatree") is None
+
+    def test_default_overlay_with_editable_project_dir_stays_sys_executable(self, tmp_path: Path) -> None:
+        """A fresh editable install (project dir resolved, no TOML table) must NOT reroute the keystone.
+
+        ``t3-teatree`` is registered in this interpreter's entry-point group, so
+        it is importable under ``sys.executable`` even when discovery resolves a
+        ``project_path`` for it — the same-env guard returns ``None`` and the
+        keystone dispatch keeps running under ``sys.executable``.
+        """
+        entry = OverlayEntry(
+            name="t3-teatree",
+            overlay_class="teatree.contrib.t3_teatree.overlay:TeatreeOverlay",
+            project_path=tmp_path,
+        )
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
+            assert _overlay_project_env("teatree") is None
+
+    def test_secondary_overlay_not_importable_here_redirects(self, tmp_path: Path) -> None:
+        """A secondary overlay whose package is NOT importable here returns its project dir.
+
+        Its ``overlay_class`` is a settings module (not a locatable
+        ``module:Class`` here) and it is absent from this interpreter's
+        entry-point group, so the resolver redirects to the overlay's own env —
+        the #2221 fix.
+        """
+        entry = OverlayEntry(name="secondary", overlay_class="absent_pkg.settings", project_path=tmp_path)
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
+            assert _overlay_project_env("secondary") == tmp_path
+
+    def test_secondary_overlay_without_project_dir_stays_sys_executable(self) -> None:
+        """A secondary overlay with no project dir has nothing to redirect to → ``None``."""
+        entry = OverlayEntry(name="secondary", overlay_class="absent_pkg.settings", project_path=None)
+        with patch("teatree.config.discover_overlays", return_value=[entry]):
+            assert _overlay_project_env("secondary") is None

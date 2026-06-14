@@ -1,10 +1,12 @@
 """Overlay CLI — builds Typer sub-apps that delegate to manage.py commands."""
 
+import importlib.util
 import json as _json
 import logging
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -15,6 +17,9 @@ from teatree.cli.teatree_gate import register_gate_commands
 from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import run_streamed, spawn
 from teatree.utils.singleton import AlreadyRunningError, singleton
+
+if TYPE_CHECKING:
+    from teatree.config import OverlayEntry
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +115,34 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
+def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
+    """True iff the overlay's package is already importable under ``sys.executable``.
+
+    The same-env signal that keeps :func:`_overlay_project_env` from redirecting
+    an overlay the running interpreter can already serve. Two sources confirm
+    same-env: the overlay is registered in *this* interpreter's
+    ``teatree.overlays`` entry-point group, or its ``module:Class`` overlay class
+    locates via :func:`importlib.util.find_spec` here. A settings-module-only
+    ``overlay_class`` (no ``:``) or a blank one is not a locatable package, so it
+    does not assert same-env on its own — the entry-point check decides.
+    """
+    from importlib.metadata import entry_points  # noqa: PLC0415
+
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+
+    canonical = OverlayEntry.canonical_overlay_name(entry.name)
+    ep_canon = {OverlayEntry.canonical_overlay_name(ep.name) for ep in entry_points(group="teatree.overlays")}
+    if canonical in ep_canon:
+        return True
+    module_path = entry.overlay_class.split(":", 1)[0] if ":" in entry.overlay_class else ""
+    if not module_path:
+        return False
+    try:
+        return importlib.util.find_spec(module_path) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _overlay_project_env(overlay_name: str) -> Path | None:
     """The named overlay's own project directory, or ``None`` for a same-env overlay.
 
@@ -121,9 +154,14 @@ def _overlay_project_env(overlay_name: str) -> Path | None:
     the overlay's project dir lets :func:`managepy_core` run the subprocess from
     that env via :func:`runner_prefix`, where the overlay package is importable.
 
-    Returns ``None`` when *overlay_name* is blank, unknown, or registered as a
-    plain entry point with no project dir — the overlay is then installed in the
-    same env that runs ``t3``, so ``sys.executable`` already imports it.
+    Returns ``None`` when *overlay_name* is blank, unknown, has no project dir,
+    or is **already importable under ``sys.executable``** — the last case is the
+    same-env guard: a default/active overlay an editable install resolves a
+    project dir for (e.g. a fresh checkout with no ``[overlays.<name>]`` TOML
+    table) stays on ``sys.executable`` so the keystone ``ticket clear`` /
+    ``ticket merge`` dispatch never takes an unnecessary nested-``uv run`` route.
+    The redirect fires ONLY for a secondary overlay whose package is genuinely
+    not importable in the current interpreter.
     """
     if not overlay_name:
         return None
@@ -131,8 +169,11 @@ def _overlay_project_env(overlay_name: str) -> Path | None:
 
     canonical = OverlayEntry.canonical_overlay_name(overlay_name)
     for entry in discover_overlays():
-        if OverlayEntry.canonical_overlay_name(entry.name) == canonical:
-            return entry.project_path
+        if OverlayEntry.canonical_overlay_name(entry.name) != canonical:
+            continue
+        if _overlay_importable_in_current_env(entry):
+            return None
+        return entry.project_path
     return None
 
 
