@@ -48,7 +48,7 @@ def _git(repo: Path, *args: str) -> str:
 def _init_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "commit.gpgsign", "false")
