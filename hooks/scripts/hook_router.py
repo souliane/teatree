@@ -1069,21 +1069,13 @@ def _loop_cadence_seconds() -> int:
     cadence. Best-effort: if ``teatree`` is not importable in this hook
     process, fall back to the env-only read.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.config import cadence_seconds  # noqa: PLC0415
+        with _teatree_src_on_path():
+            from teatree.config import cadence_seconds  # noqa: PLC0415
 
-        return cadence_seconds()
+            return cadence_seconds()
     except Exception:  # noqa: BLE001
         return int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 def _tick_meta_stale() -> bool:
@@ -2169,21 +2161,13 @@ def _repo_root_is_teatree_managed(repo_root: str) -> bool:
         with contextlib.suppress(OSError, RuntimeError):
             root_resolved.relative_to(base)
             return True
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.hooks import publish_surface  # noqa: PLC0415
+        with _teatree_src_on_path():
+            from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface.slug_for_cwd(root_resolved).lower()
+            slug = publish_surface.slug_for_cwd(root_resolved).lower()
     except Exception:  # noqa: BLE001
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
     return any(entry in slug for entry in slugs) if slug else False
 
 
@@ -2627,14 +2611,21 @@ def _is_api_create_endpoint_write(command: str) -> bool:
     # Exclude the merge endpoint (already handled by out-of-band-merge gate).
     if _MERGE_ENDPOINT_RE.search(command):
         return False
+    return _effective_method_is_write(command)
+
+
+def _effective_method_is_write(command: str) -> bool:
+    """Whether a gh/glab REST command's EFFECTIVE HTTP method is a write (not GET).
+
+    The LAST ``-X``/``--method`` value wins; with no method flag the forge
+    defaults to POST when a body/field flag is present, else GET. A GET is the
+    only read. Shared by the create-endpoint and merge-endpoint gates so the
+    classifier cannot drift between them.
+    """
     methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
-        is_read = methods[-1] == "GET"
-    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
-        is_read = False
-    else:
-        is_read = True
-    return not is_read
+        return methods[-1] != "GET"
+    return bool(_REVIEW_POST_BODY_FLAG_RE.search(command))
 
 
 def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str | None:
@@ -6939,21 +6930,13 @@ def handle_block_raw_pid_kill(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.hooks import safe_kill_detect  # noqa: PLC0415
+        with _teatree_src_on_path():
+            from teatree.hooks import safe_kill_detect  # noqa: PLC0415
 
-        detection = safe_kill_detect.detect_raw_pid_kill(command)
+            detection = safe_kill_detect.detect_raw_pid_kill(command)
     except Exception:  # noqa: BLE001
         return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
     if not detection.is_raw_pid_kill:
         return False
     return _fail_open_or_deny(data, detection.message)
@@ -7149,14 +7132,7 @@ def _is_raw_merge_api_write(command: str) -> bool:
         return False
     if not _MERGE_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
-    if methods:
-        is_read = methods[-1] == "GET"
-    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
-        is_read = False
-    else:
-        is_read = True
-    return not is_read
+    return _effective_method_is_write(command)
 
 
 def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
@@ -7195,6 +7171,26 @@ def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
     return slugs, paths
 
 
+@contextlib.contextmanager
+def _teatree_src_on_path() -> "Iterator[None]":
+    """Put the sibling ``src/`` on ``sys.path`` for the block, then restore it.
+
+    The hook runs in the user's session shell with no guarantee ``teatree`` is
+    importable (#1314); this is the shared bootstrap the lazy ``teatree.hooks``
+    imports in the merge gate rely on.
+    """
+    src_dir = str(Path(__file__).resolve().parents[2] / "src")
+    added = src_dir not in sys.path
+    if added:
+        sys.path.insert(0, src_dir)
+    try:
+        yield
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(src_dir)
+
+
 def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
     """Whether *cwd* belongs to a teatree-managed repo.
 
@@ -7209,36 +7205,49 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
         with contextlib.suppress(OSError, RuntimeError):
             cwd.resolve().relative_to(base)
             return True
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        from teatree.hooks import publish_surface  # noqa: PLC0415
+        with _teatree_src_on_path():
+            from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface.slug_for_cwd(cwd).lower()
+            slug = publish_surface.slug_for_cwd(cwd).lower()
     except Exception:  # noqa: BLE001
         return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
     if not slug:
         return None
     return any(entry in slug for entry in slugs)
+
+
+def _invokes_raw_merge_subcommand(command: str) -> bool:
+    """Whether ``command`` INVOKES ``gh pr merge`` / ``glab mr merge`` as an executed program.
+
+    Delegates to the action-aware :mod:`teatree.hooks.raw_merge_detect`, which
+    fires only when the merge subcommand sits at a command position — never when
+    the phrase appears inside a heredoc body, a quoted argument, an
+    ``echo``/``printf`` string, or a ``#`` comment (#2387). Fails CLOSED (treats
+    the command as a possible merge) on any import error so a broken environment
+    cannot weaken the gate; the cwd-managed check then blocks on uncertainty.
+    """
+    try:
+        with _teatree_src_on_path():
+            from teatree.hooks import raw_merge_detect  # noqa: PLC0415
+
+            return raw_merge_detect.invokes_raw_merge_subcommand(command)
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
     """Block a raw merge command or REST-API merge write on a managed repo.
 
     Covers two bypass vectors. The literal subcommand form (``gh pr merge`` /
-    ``glab mr merge``) is matched by :data:`_OUT_OF_BAND_MERGE_RE`. The REST-API
-    form (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
+    ``glab mr merge``) is matched action-aware by
+    :func:`_invokes_raw_merge_subcommand` — only an actual invocation, not a
+    heredoc/echo/comment that documents the phrase (#2387). The REST-API form
+    (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
     .../merge_requests/<n>/merge --method POST``) is matched by
-    :func:`_is_raw_merge_api_write`, which reuses gate-3's effective-method
-    classifier (last ``-X``/``--method`` wins; default POST with a body flag, else
-    GET). A GET to the merge endpoint reads merge status and is NOT denied.
+    :func:`_is_raw_merge_api_write` (last ``-X``/``--method`` wins; default POST
+    with a body flag, else GET). A GET to the merge endpoint reads merge status
+    and is NOT denied.
 
     Carve-out for the permanent-lockout case (#126): a merge is allowed only
     when the cwd repo is confidently NOT teatree-managed. Managed repos and
@@ -7249,7 +7258,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
-    if not _OUT_OF_BAND_MERGE_RE.search(command) and not _is_raw_merge_api_write(command):
+    if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
     cwd = _resolve_cwd_repo(data)
     if cwd is None:
