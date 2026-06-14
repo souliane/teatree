@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.unknown_repo_push_gate as scope_gate
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
@@ -140,7 +141,7 @@ class TestNeverLockout:
 
     def test_kill_switch_disables_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo_with_remote(tmp_path / "killed", "git@github.com:randomuser/randomrepo.git")
-        monkeypatch.setattr(router, "_unknown_repo_push_gate_enabled", lambda: False)
+        monkeypatch.setattr(scope_gate, "_unknown_repo_push_gate_enabled", lambda: False)
         assert router.handle_block_unknown_repo_push(_push_event("git push origin HEAD", repo)) is False
 
     def test_unresolvable_cwd_fails_open(self, capsys: pytest.CaptureFixture[str]) -> None:

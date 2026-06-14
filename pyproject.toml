@@ -243,7 +243,7 @@ timeout = 60
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]
-pythonpath = [ ".", "src", "scripts", "scripts/hooks", "tests" ]
+pythonpath = [ ".", "src", "scripts", "scripts/hooks", "hooks/scripts", "tests" ]
 filterwarnings = [
   "error",
   "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -450,7 +450,7 @@ terminal = { error-on-warning = true }
 exclude = [ ".claude/worktrees/" ]
 
 [tool.ty.environment]
-extra-paths = [ ".", "src", "scripts", "scripts/hooks", "tests" ]
+extra-paths = [ ".", "src", "scripts", "scripts/hooks", "hooks/scripts", "tests" ]
 python-version = "3.13"
 
 [tool.ty.analysis]
