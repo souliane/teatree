@@ -17,6 +17,7 @@ are documented on :func:`assert_merge_preconditions` / :func:`execute_bound_merg
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from django.apps import apps
 from django.db import transaction
@@ -38,11 +39,16 @@ from teatree.core.merge.ci_rollup import (
     fetch_required_checks_status,
 )
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
+from teatree.core.merge.head_guard import restore_caller_branch
 from teatree.core.merge.pr_slug_resolution import (
     _reconcile_slug_against_reviewed_sha,
     _resolve_host_kind,
     resolve_pr_repo_slug,
 )
+from teatree.project import find_project_root
+
+if TYPE_CHECKING:
+    from teatree.core.models import MergeClear
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +530,36 @@ def merge_ticket_pr(
         msg = "merge_ticket_pr requires a MergeClear instance"
         raise MergePreconditionError(msg)
 
+    # #2383: the keystone runs from inside the primary clone; the cross-repo
+    # SHA-recovery probe (or any future local tree read) must never leave that
+    # clone on a detached HEAD at the merged PR branch — restore the caller's
+    # checked-out ref around the whole transition, even on a refused merge.
+    with restore_caller_branch(_caller_repo_root()):
+        return _merge_ticket_pr_inner(
+            clear=clear,
+            executing_loop_identity=executing_loop_identity,
+            human_authorized=human_authorized,
+        )
+
+
+def _caller_repo_root() -> str | None:
+    """The primary-clone path the keystone is invoked from, or ``None``.
+
+    The same project root :func:`pr_slug_resolution._project_repo_slug` resolves
+    ``origin`` against — the cwd repo whose HEAD a local probe checkout could
+    move (#2383). ``None`` (non-source install / no resolvable root) makes the
+    head guard a no-op.
+    """
+    root = find_project_root()
+    return str(root) if root is not None else None
+
+
+def _merge_ticket_pr_inner(
+    *,
+    clear: "MergeClear",
+    executing_loop_identity: str,
+    human_authorized: str,
+) -> MergeOutcome:
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
     host_kind = _resolve_host_kind(clear)
