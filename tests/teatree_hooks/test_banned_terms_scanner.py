@@ -25,7 +25,12 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
+from teatree.hooks._command_parser import (
+    FAIL_CLOSED_SENTINEL,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    is_unavailable_body_source_sentinel,
+)
+from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_message
 
 
 @pytest.fixture
@@ -672,11 +677,16 @@ class TestEnvVarBodyResolution:
         assert "acmecorp" in payload
 
     def test_absent_env_var_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An absent $VAR is a FUNDAMENTALLY-unavailable body source (the value
+        # does not exist before the command runs), so it carries the distinct
+        # unavailable sentinel (#2369) — still fails closed, with the actionable
+        # "write the body to an absolute file" advice rather than "missing file".
         monkeypatch.delenv("PUBLISH_BODY_ABSENT", raising=False)
         cmd = 'glab mr create -R o/r --title t --description "$PUBLISH_BODY_ABSENT"'
         payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
-        assert FAIL_CLOSED_SENTINEL in payload
+        assert UNAVAILABLE_BODY_SOURCE_SENTINEL in payload
+        assert banned_terms_scanner.scan_text(payload) == banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER
 
 
 class TestMarkdownBacktickBodyResolves:
@@ -1887,3 +1897,144 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+class TestAbsoluteBodyFileResolvesRegardlessOfCwd:
+    """An absolute ``--body-file`` written by a prior step is read at scan time (#2369 case 1).
+
+    The cold PreToolUse hook subprocess's cwd has often reset away from the
+    worktree, but an ABSOLUTE path is cwd-independent, so the gate reads and
+    scans the real body. A clean absolute body file PASSES; the same flag with a
+    banned term in the file still BLOCKS (the read does not weaken the scan).
+    """
+
+    def _run_from_cwd(self, cwd: Path, command: str) -> bool:
+        return handle_banned_terms_pretool({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
+
+    def test_clean_absolute_body_file_passes_from_reset_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("A perfectly clean issue body.\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path.parent)
+        blocked = self._run_from_cwd(
+            tmp_path.parent, f"gh issue create --repo someone/public --title t --body-file {body_file}"
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_banned_absolute_body_file_still_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
+        blocked = self._run_from_cwd(
+            tmp_path, f"gh issue create --repo someone/public --title t --body-file {body_file}"
+        )
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert "acmecorp" in decision["permissionDecisionReason"]
+
+
+class TestUnavailableBodySourceMessage:
+    """``$VAR`` / stdin bodies fail closed with an ACTIONABLE message (#2369 cases 2/3).
+
+    The body comes from an unexpanded variable or a stdin stream, neither of
+    which the gate can read before the command runs. The block direction is
+    preserved (an unscanned body must not publish), but the message is the
+    actionable "write the body to an absolute file and use --body-file" rather
+    than the misleading "the body file is missing" one.
+    """
+
+    def _reason(self, capsys: pytest.CaptureFixture[str]) -> str:
+        return json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+
+    def test_unexpanded_var_body_yields_unavailable_marker(self) -> None:
+        cmd = 'gh pr create --repo o/r --title t --body "$PR_BODY_ABSENT"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert banned_terms_scanner.scan_text(payload) == banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER
+
+    def test_stdin_input_body_yields_unavailable_marker(self) -> None:
+        cmd = "gh api repos/o/r/issues -X POST --input -"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert banned_terms_scanner.scan_text(payload) == banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER
+
+    def test_unexpanded_var_body_blocks_with_actionable_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr create --repo someone/public --title t --body "$PR_BODY_ABSENT"')
+        )
+        assert blocked is True
+        reason = self._reason(capsys)
+        assert "unexpanded variable or stdin" in reason
+        assert "--body-file <abspath>" in reason
+        # The block is preserved but the misleading missing-file advice is gone.
+        assert "the body file is missing" not in reason
+
+    def test_stdin_body_blocks_with_actionable_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash("gh api repos/someone/public/issues -X POST --input -"))
+        assert blocked is True
+        reason = self._reason(capsys)
+        assert "unexpanded variable or stdin" in reason
+        assert "--body-file <abspath>" in reason
+
+    def test_message_differs_from_missing_file_message(self) -> None:
+        # The two body-unavailable classes render DISTINCT, non-empty messages so
+        # the agent is told the right next step for each.
+        unavailable = format_unavailable_body_source_message()
+        missing_file = banned_terms_scanner.format_unresolvable_body_message()
+        assert unavailable != missing_file
+        assert "unexpanded variable or stdin" in unavailable
+        assert "the body file is missing" not in unavailable
+
+    def test_unavailable_marker_still_fails_closed_on_public_surface(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # CONTROL: the gate must NOT weaken — an unavailable body source on a
+        # public surface STILL denies (never silently allows the unscanned post).
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create --repo someone/public --title t --body "$BODY_NOT_SET"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unavailable_marker_downgrades_on_private_destination(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Destination-aware parity with the missing-file marker: a $VAR body
+        # posted to a provably-private target is not a public leak, so it
+        # downgrades to a warn rather than hard-blocking.
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R internalcorp/svc --title t --body "$BODY_NOT_SET"')
+        )
+        assert blocked is False
+
+
+class TestSentinelRecognition:
+    """``is_fail_closed_sentinel`` recognises BOTH sentinel spellings (#2369).
+
+    Every downstream gate (quote-scanner, AI-signature, banned-terms) keeps
+    failing closed regardless of which body-source class injected the sentinel,
+    while ``is_unavailable_body_source_sentinel`` distinguishes the $VAR/stdin
+    class so the gate can render the right operator advice.
+    """
+
+    def test_generic_sentinel_line_is_fail_closed(self) -> None:
+        assert _command_parser.is_fail_closed_sentinel(FAIL_CLOSED_SENTINEL)
+        assert not is_unavailable_body_source_sentinel(FAIL_CLOSED_SENTINEL)
+
+    def test_unavailable_sentinel_line_is_both(self) -> None:
+        assert _command_parser.is_fail_closed_sentinel(UNAVAILABLE_BODY_SOURCE_SENTINEL)
+        assert is_unavailable_body_source_sentinel(UNAVAILABLE_BODY_SOURCE_SENTINEL)
+
+    def test_unavailable_sentinel_as_one_joined_line_is_recognised(self) -> None:
+        payload = f"t\n{UNAVAILABLE_BODY_SOURCE_SENTINEL}"
+        assert _command_parser.is_fail_closed_sentinel(payload)
+        assert is_unavailable_body_source_sentinel(payload)
+
+    def test_inert_prose_naming_either_sentinel_mid_line_is_not_a_match(self) -> None:
+        prose = f"the gate emits the {UNAVAILABLE_BODY_SOURCE_SENTINEL} marker when unavailable"
+        assert not _command_parser.is_fail_closed_sentinel(prose)
+        assert not is_unavailable_body_source_sentinel(prose)
+
+    def test_clean_text_is_neither_sentinel(self) -> None:
+        assert not _command_parser.is_fail_closed_sentinel("a normal clean body")
+        assert not is_unavailable_body_source_sentinel("a normal clean body")

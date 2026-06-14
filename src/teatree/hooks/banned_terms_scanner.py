@@ -42,6 +42,7 @@ from teatree.hooks._command_parser import extract_secret_scan_text as _extract_s
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._command_parser import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
 from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
@@ -55,6 +56,16 @@ _OVERRIDE_ENV = "ALLOW_BANNED_TERM"
 # to emit a message MUST check for this marker explicitly and use
 # ``format_unresolvable_body_message`` — it is NOT a configured banned term.
 UNRESOLVABLE_BODY_MARKER: str = "<unresolvable-publish-body>"
+
+# Marker returned by ``scan_text`` when the body source is FUNDAMENTALLY
+# unavailable before the command runs — an unexpanded ``$VAR`` or a stdin body
+# (``--input -``, ``git commit -F -``). Distinct from
+# ``UNRESOLVABLE_BODY_MARKER`` (a missing FILE) so the gate renders the
+# actionable "write the body to an absolute file and use ``--body-file
+# <abspath>``" message instead of the misleading "body file is missing" one
+# (#2369). The gate BLOCKS on it the same way — an unscannable body never
+# publishes unscanned — only the operator-facing reason differs.
+UNAVAILABLE_BODY_SOURCE_MARKER: str = "<unavailable-publish-body-source>"
 
 # Marker returned by ``scan_text`` when the shell scanner could NOT run — a
 # crashing interpreter (an old system ``python3`` below the repo's >= 3.13
@@ -218,13 +229,16 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     exit means a banned term was found; the matched term is parsed back
     out of the script's ``BANNED TERM in <file>:`` report.
 
-    A body the parser could not resolve carries the fail-closed sentinel
-    (``FAIL_CLOSED_SENTINEL``). It is recognised EXPLICITLY as a match and
-    BLOCKS -- the sentinel is not a configured banned term, so delegating it
-    to ``check-banned-terms.sh`` would return clean and a PUBLIC file-body post
-    whose body the gate cannot read would slip through unread. The sibling
-    ``quote_scanner`` already blocks on this same sentinel; this closes the
-    banned-terms parity gap.
+    A body the parser could not resolve carries a fail-closed sentinel. It is
+    recognised EXPLICITLY as a match and BLOCKS -- the sentinel is not a
+    configured banned term, so delegating it to ``check-banned-terms.sh`` would
+    return clean and a PUBLIC body the gate cannot read would slip through
+    unread. Two sentinel classes map to two markers so the caller can render the
+    right operator advice (#2369): a FUNDAMENTALLY-unavailable body source (an
+    unexpanded ``$VAR`` / a stdin body) yields
+    :data:`UNAVAILABLE_BODY_SOURCE_MARKER`, and a missing/unreadable FILE yields
+    :data:`UNRESOLVABLE_BODY_MARKER`. Both BLOCK; only the message differs. The
+    sibling ``quote_scanner`` blocks on both sentinels too.
 
     Returns ``None`` only on a genuine no-op (no config, no script — there is
     nothing to scan, matching the shell hook's own no-op contract). A scanner
@@ -235,6 +249,8 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     """
     if not text:
         return None
+    if _is_unavailable_body_source_sentinel(text):
+        return UNAVAILABLE_BODY_SOURCE_MARKER
     if _is_fail_closed_sentinel(text):
         return UNRESOLVABLE_BODY_MARKER
     return _run_shell_scanner(text, config_path)
@@ -337,6 +353,26 @@ def format_unresolvable_body_message() -> str:
     )
 
 
+def format_unavailable_body_source_message() -> str:
+    """Render the PreToolUse deny reason when the publish body source is unavailable.
+
+    The body comes from an unexpanded shell variable (``--body "$VAR"``) or a
+    stdin stream (``gh api --input -``, ``git commit -F -``), neither of which
+    exists for the gate to scan BEFORE the command runs. The fail-closed
+    direction is correct — an unscanned body must not publish — but the operator
+    advice is the OPPOSITE of the missing-file message: write the body to an
+    absolute on-disk file and pass ``--body-file <abspath>`` so the gate can read
+    and scan it (#2369).
+    """
+    return (
+        "BLOCKED: banned-terms posting gate (#1415/#2369). The publish body comes from an "
+        "unexpanded variable or stdin, which the gate cannot scan before the command runs. "
+        "Write the body to an absolute file and post it with --body-file <abspath> (the gate "
+        "reads an absolute body file regardless of cwd), or pass the body inline with "
+        "-m/--body/--message."
+    )
+
+
 def format_scanner_unavailable_message() -> str:
     """Render the PreToolUse deny reason when the banned-terms scanner could not run.
 
@@ -358,11 +394,14 @@ def marker_deny_message(term: str) -> str | None:
     """Return the deny reason for a fail-closed marker, or ``None`` for a real term.
 
     ``scan_text`` returns either a configured banned term or one of the
-    fail-closed markers (an unresolvable body, an unavailable scanner). The
-    markers are NOT configured terms, so the caller must render a dedicated
-    message instead of ``format_block_message``. A real term returns ``None``
-    here so the caller takes its destination-aware banned-term path.
+    fail-closed markers (an unavailable body source, an unresolvable body, an
+    unavailable scanner). The markers are NOT configured terms, so the caller
+    must render a dedicated message instead of ``format_block_message``. A real
+    term returns ``None`` here so the caller takes its destination-aware
+    banned-term path.
     """
+    if term == UNAVAILABLE_BODY_SOURCE_MARKER:
+        return format_unavailable_body_source_message()
     if term == UNRESOLVABLE_BODY_MARKER:
         return format_unresolvable_body_message()
     if term == SCANNER_UNAVAILABLE_MARKER:

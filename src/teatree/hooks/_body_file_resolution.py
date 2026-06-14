@@ -27,7 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, attached_value, read_file_arg
+from teatree.hooks._command_parser import (
+    FAIL_CLOSED_SENTINEL,
+    UNAVAILABLE_BODY_SOURCE_SENTINEL,
+    attached_value,
+    read_file_arg,
+)
 from teatree.hooks._shell_lexer import Token, TokenKind, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
@@ -64,7 +69,10 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
         ``base``-relative fallback for the cold-hook reset cwd). An unreadable
         path yields the fail-closed sentinel.
     - ``$VAR`` / ``${VAR}`` -- the environment variable's value when present in
-        the hook subprocess env; absent yields the fail-closed sentinel.
+        the hook subprocess env; absent yields the UNAVAILABLE-body-source
+        sentinel (the value does not exist before the command runs, so the gate
+        renders the actionable "write the body to an absolute file" message,
+        #2369).
     - anything else -- returned verbatim (a normal inline body).
 
     A value the resolver returns verbatim that STILL carries an unexpanded
@@ -89,7 +97,7 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
     var_match = _VAR_REF_RE.match(value)
     if var_match is not None:
         resolved = os.environ.get(var_match.group("name"))
-        return resolved if resolved is not None else FAIL_CLOSED_SENTINEL
+        return resolved if resolved is not None else UNAVAILABLE_BODY_SOURCE_SENTINEL
     if "$(" in value:
         return FAIL_CLOSED_SENTINEL
     return value
