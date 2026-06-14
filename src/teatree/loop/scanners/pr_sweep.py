@@ -54,6 +54,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     classify_checks,
     find_actionable_clear,
     has_independent_cold_review,
+    pr_authored_by_self,
     pr_ticket_under_external_delivery,
     red_checks_are_all_repo_state,
 )
@@ -213,6 +214,11 @@ class PrSweepScanner:
     #: ``_evaluate_solo_overlay`` so it is never armed here in practice.
     auto_review_dispatch: bool = False
     review_dispatcher: "ReviewDispatcher | None" = None
+    #: #2210: the operator's own forge identities. The review-arm is scoped to
+    #: PRs authored by one of these — ``list_open_prs`` returns colleagues' PRs
+    #: too, and a colleague's PR must never be auto-scheduled for review. Empty
+    #: means no PR is confirmable as ours, so nothing is armed (fail closed).
+    self_identities: tuple[str, ...] = ()
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -416,17 +422,22 @@ class PrSweepScanner:
     def _enqueue_review(self, pr: PrSummary) -> bool:
         """Enqueue the claimable review task for *pr*; return whether one was armed.
 
-        Best-effort: a missing dispatcher, the flag being off, or any enqueue
-        error all degrade to ``False`` (the flag-level signal still fires) so a
-        DB hiccup never aborts the sweep.
+        Best-effort: a missing dispatcher, the flag being off, any enqueue error,
+        or a PR not authored by us all degrade to ``False`` (the flag-level signal
+        still fires) so a DB hiccup never aborts the sweep.
 
-        #2104: skips the review-arm when the PR's ticket is under active
-        EXTERNAL delivery — a hand-dispatched reviewer is already on it, so a
-        loop-armed review would collide. The same unit-level delivery-ownership
-        predicate ``schedule_planning`` consults; the loop's own FSM never
-        stamps the lease, so a genuinely unowned green PR still gets armed.
+        #2210: scoped to PRs the operator authored. ``list_open_prs`` returns
+        every open PR in a watched repo, colleagues' included; auto-scheduling a
+        colleague's PR for review wastes a dispatch and risks an unattended
+        review note on their work. A non-self / unconfirmable author is not armed.
+
+        #2104: skips the review-arm when the PR's ticket is under active EXTERNAL
+        delivery — a hand-dispatched reviewer is already on it. The loop's own FSM
+        never stamps that lease, so a genuinely unowned own green PR still arms.
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
+            return False
+        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities):
             return False
         if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
