@@ -272,6 +272,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
         todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
+        provision_step_timeout_seconds=int(teatree.get("provision_step_timeout_seconds", 1800)),
         idle_stack_reaper_disabled=bool(teatree.get("idle_stack_reaper_disabled", False)),
         idle_stack_idle_minutes=int(teatree.get("idle_stack_idle_minutes", 30)),
         idle_stack_reaper_cadence_minutes=int(teatree.get("idle_stack_reaper_cadence_minutes", 5)),
