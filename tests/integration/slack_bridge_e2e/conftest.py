@@ -135,7 +135,7 @@ def _isolate_bundled_overlay_module() -> Iterator[None]:
     """Drop the ``teatree.contrib.t3_teatree.overlay`` module + cache after each test.
 
     The fortress tests reach :func:`teatree.core.notify.notify_user`
-    (directly or via the management-command tick), whose ``_maybe_linkify``
+    (directly or via the management-command tick), whose ``maybe_linkify``
     path calls ``overlay_loader.get_overlay`` → ``_discover_overlays``.
     The first call imports ``teatree.contrib.t3_teatree.overlay``, whose
     ``TeatreeOverlay`` class evaluates

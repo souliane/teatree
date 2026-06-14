@@ -201,7 +201,7 @@ class TestLivePostApprovalAuthorizationMatrix:
         cfg = self.tmp_path / ".teatree.toml"
         cfg.write_text(f'[teatree]\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n', encoding="utf-8")
         self.monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-        self.monkeypatch.setattr("teatree.core.notify._resolve_user_id", lambda: "")
+        self.monkeypatch.setattr("teatree.core.notify.resolve_user_id", lambda: "")
 
         result = _runner.invoke(
             app,

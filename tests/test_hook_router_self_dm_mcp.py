@@ -69,7 +69,7 @@ messaging_backend = "slack"
 """
 
 # No overlay table at all — only the global [teatree] slack_user_id. The U-form
-# must still deny via the global fallback (mirrors notify._resolve_user_id).
+# must still deny via the global fallback (mirrors notify.resolve_user_id).
 _CONFIG_GLOBAL_USER_ONLY = """
 [teatree]
 mode = "auto"
@@ -140,7 +140,7 @@ class TestDeniesSelfDmWrites:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # No overlay table — only the global [teatree] slack_user_id. The U-form
-        # must still deny (mirrors notify._resolve_user_id overlay→global order).
+        # must still deny (mirrors notify.resolve_user_id overlay→global order).
         _patch_home(tmp_path / "home2", _CONFIG_GLOBAL_USER_ONLY, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "U0GLOBALUSER", "text": "report"}, session_id="s1g")

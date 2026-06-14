@@ -30,7 +30,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing
-from teatree.core.notify import NotifyKind, _format, _maybe_linkify, _resolve_user_id
+from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, resolve_user_id
 from teatree.notify import notify_user
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ def _deliver_via_fallback(
     primary_failure = "primary notify_user did not deliver"
 
     backend = messaging_from_overlay()
-    resolved_user_id = user_id if user_id is not None else _resolve_user_id()
+    resolved_user_id = user_id if user_id is not None else resolve_user_id()
     if backend is None or not resolved_user_id:
         _record_fallback_failure(
             idempotency_key=idempotency_key,
@@ -158,7 +158,7 @@ def _deliver_via_fallback(
         )
         return NotifyResult(delivered=False, transport=NotifyTransport.NONE)
 
-    payload_text = _format(_maybe_linkify(text) if linkify else text, kind)
+    payload_text = format_notification(maybe_linkify(text) if linkify else text, kind)
     channel, posted_ts, send_failure = _direct_send(backend, user_id=resolved_user_id, text=payload_text)
     if send_failure:
         _record_fallback_failure(

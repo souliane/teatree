@@ -2,7 +2,7 @@
 
 Before this resolver existed, the live-post-approval CLI carried its own
 private ``_user_channel`` copy of the overlay→global→empty config walk
-that :func:`teatree.core.notify._resolve_user_id` already implemented for
+that :func:`teatree.core.notify.resolve_user_id` already implemented for
 ``slack_user_id``. Two copies of the same resolution order is a
 config-trap-via-drift: a fix to one (a new precedence rule, a typo'd key)
 silently diverges from the other.
@@ -11,7 +11,7 @@ These tests pin the contract of the canonical
 :func:`teatree.core.notify.resolve_user_channel`:
 
 * it reads ``slack_user_channel`` with the SAME overlay→global→empty order
-    :func:`_resolve_user_id` uses for ``slack_user_id``;
+    :func:`resolve_user_id` uses for ``slack_user_id``;
 * the live-post-approval CLI resolves the channel through it (no private
     duplicate), so both DM-channel call sites agree on one channel id.
 """
@@ -28,7 +28,7 @@ def _write_cfg(tmp_path, monkeypatch, body: str) -> None:
 
 
 class TestResolveUserChannel:
-    """``resolve_user_channel`` mirrors ``_resolve_user_id`` resolution order."""
+    """``resolve_user_channel`` mirrors ``resolve_user_id`` resolution order."""
 
     def test_global_channel_is_read(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
@@ -77,7 +77,7 @@ class TestResolveUserChannel:
             'slack_user_channel = "D-OVERLAY"\n',
         )
 
-        assert notify._resolve_user_id() == "U-OVERLAY"
+        assert notify.resolve_user_id() == "U-OVERLAY"
         assert notify.resolve_user_channel() == "D-OVERLAY"
 
 

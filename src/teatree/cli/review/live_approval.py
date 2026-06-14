@@ -326,9 +326,9 @@ def register(review_app: typer.Typer) -> None:
             LivePostApprovalError,
             canonical_mr_scope,
         )
-        from teatree.core.notify import _resolve_user_id  # noqa: PLC0415
+        from teatree.core.notify import resolve_user_id  # noqa: PLC0415
 
-        user_id = _resolve_user_id()
+        user_id = resolve_user_id()
         if not user_id:
             typer.echo("Refused: no Slack user_id configured — set `teatree.slack_user_id` first")
             raise typer.Exit(code=1)

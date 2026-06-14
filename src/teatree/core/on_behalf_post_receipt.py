@@ -42,7 +42,7 @@ def notify_user_on_behalf_post(
     across retries (mirrors the ``on_behalf_autodraft:`` convention).
     ``destination`` is the human-readable place the post landed (a review
     channel, an ``org/repo!7`` ref). ``artifact_url`` is the clickable
-    permalink/URL of the post; ``notify_user``'s ``_maybe_linkify``
+    permalink/URL of the post; ``notify_user``'s ``maybe_linkify``
     converts the ``[label](url)`` form to Slack ``<url|label>``.
     ``summary`` is the one-line description of what was posted.
 

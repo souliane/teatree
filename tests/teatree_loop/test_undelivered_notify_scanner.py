@@ -63,7 +63,7 @@ class TestUndeliveredNotifyScanner(TestCase):
 
         with (
             patch("teatree.core.notify.messaging_from_overlay", return_value=_FakeBackend()),
-            patch("teatree.core.notify._resolve_user_id", return_value="U_ME"),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
         ):
             signals = UndeliveredNotifyScanner().scan()
 

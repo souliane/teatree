@@ -223,7 +223,7 @@ def _is_noise_line(line: str) -> bool:
 
     *   **Notify kind marker** — once its emphasis sigils are gone the line is
         only ``info``/``answer``/``question`` (the three ``NotifyKind`` values),
-        the DM preamble :func:`teatree.core.notify._format` prepends.
+        the DM preamble :func:`teatree.core.notify.format_notification` prepends.
     *   **Log level line** — it leads with a level token (``INFO:``, ``[DEBUG]``,
         ``WARNING -``) as a distinct leading token. The same words mid-sentence
         ("the info you asked for") are prose and survive — the level must LEAD.
