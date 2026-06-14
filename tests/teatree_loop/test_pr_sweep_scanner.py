@@ -56,6 +56,10 @@ def _red_lint() -> CheckResult:
     return CheckResult(name="lint", conclusion="FAILURE", status="COMPLETED")
 
 
+def _red_blueprint_cross_pr() -> CheckResult:
+    return CheckResult(name="blueprint-cross-pr", conclusion="FAILURE", status="COMPLETED")
+
+
 def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
     return MergeClear.issue(
         ClearRequest(
@@ -69,13 +73,14 @@ def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
     )
 
 
-def _open_pr(
+def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSummary field the cases vary.
     *,
     pr_id: int = 6230,
     head: str = HEAD,
     is_draft: bool = False,
     changes_requested: bool = False,
     checks: tuple[CheckResult, ...] = (),
+    behind_main: bool = False,
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -86,6 +91,7 @@ def _open_pr(
         checks=checks or (_green_required(),),
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
+        behind_main=behind_main,
     )
 
 
@@ -341,6 +347,91 @@ class TestUvAuditFallback:
         assert notifier.calls == []
         assert signals[0].kind == "pr_sweep.blocked"
         assert "head moved" in signals[0].payload["reason"]
+
+
+class TestNeedsBranchUpdate:
+    """Repo-state-check red on a behind-main branch → needs_branch_update (#2045).
+
+    ``gh run rerun --failed`` re-tests against the run's pinned merge commit
+    (the OLD base), so a repo-state check (uv-audit, blueprint-cross-pr, …)
+    whose fix already merged to ``main`` can never go green by a rerun. The
+    only remedy is a fresh merge-update minting a new merge ref. The sweep
+    surfaces that remedy as ``needs_branch_update`` instead of a bare
+    ``skip/ci_red`` so it is actionable — and ONLY when the branch is behind
+    main (a repo-state red on an up-to-date branch is a genuine failure).
+    """
+
+    def test_repo_state_red_on_behind_branch_classifies_needs_branch_update(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_blueprint_cross_pr()), behind_main=True)]},
+        )
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].kind == "pr_sweep.needs_branch_update"
+        assert signals[0].payload["decision"] == "needs_branch_update"
+        assert signals[0].payload["reason"] == "needs_branch_update"
+        assert notifier.flag_calls == [(SLUG, 6230, "needs_branch_update", _open_pr().url)]
+
+    def test_uv_audit_red_on_behind_branch_also_classifies_needs_branch_update(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()), behind_main=True)]},
+            main_uv_audit_red=False,
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["decision"] == "needs_branch_update"
+
+    def test_genuine_test_failure_still_classifies_ci_red_not_branch_update(self) -> None:
+        _issue_clear()
+        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(red_required, _red_blueprint_cross_pr()), behind_main=True)]},
+        )
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
+        assert notifier.flag_calls == []
+
+    def test_repo_state_red_but_up_to_date_branch_stays_ci_red(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_blueprint_cross_pr()), behind_main=False)]},
+        )
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
+        assert notifier.flag_calls == []
+
+    def test_non_repo_state_red_on_behind_branch_stays_ci_red(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()), behind_main=True)]},
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
 
 
 class TestMultiRepo:
@@ -838,6 +929,13 @@ class TestGhConflictDecode:
 
         assert behind.is_conflicted is False
         assert unknown.is_conflicted is False
+
+    def test_decode_marks_behind_merge_state_as_behind_main(self) -> None:
+        behind = _decode_pr(slug=SLUG, raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})
+        clean = _decode_pr(slug=SLUG, raw={"number": 2, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
+
+        assert behind.behind_main is True
+        assert clean.behind_main is False
 
 
 class TestSlackMergeNotifier:

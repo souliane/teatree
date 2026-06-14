@@ -21,7 +21,10 @@ Decision ladder per open PR:
     head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
     #68)
 5. CI ``test(3.13)`` not green AND red checks include something
-    other than ``uv-audit`` → skip
+    other than ``uv-audit`` → skip, EXCEPT when every red check is a
+    repo-state check (``REPO_STATE_CHECK_NAMES``) AND the branch is BEHIND
+    main → ``needs_branch_update`` flag (#2045): a ``gh run rerun`` re-tests
+    the run's pinned OLD base, so only a fresh merge-update can clear it.
 6. only red check is ``uv-audit`` AND ``main`` is also red on
     ``uv-audit`` → ``--fallback-uv-audit``
 7. all required checks green → merge through the keystone
@@ -31,6 +34,10 @@ authorisation to escalate to the SHA-bound ``merge_pr_squash_bound`` when the
 keystone transition refuses on the same fallback path (a pre-existing-on-``main``
 failing audit job is a deterministic gate, not an ad-hoc judgement —
 exactly the case §17.4.3 step 7 reserves for the scanner).
+
+Step 5's ``needs_branch_update`` is a surface-only remedy: the sweep operates
+over ``gh`` reads + the keystone merge with no local checkout, so it flags the
+``git merge origin/main`` remedy rather than auto-pushing it.
 
 The scanner posts a Slack DM only on actual merges (acceptance gate) and
 on a flag-level signal; ordinary skips log to the periodic-task log but
@@ -43,69 +50,39 @@ from typing import Protocol, runtime_checkable
 
 from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners.base import ScannerError, ScanSignal
+from teatree.loop.scanners.pr_sweep_decision import (
+    classify_checks,
+    find_actionable_clear,
+    has_independent_cold_review,
+    pr_ticket_under_external_delivery,
+    red_checks_are_all_repo_state,
+)
+from teatree.loop.scanners.pr_sweep_types import (
+    GH_CONFLICT_MERGE_STATE,
+    GH_CONFLICT_MERGEABLE,
+    GREEN_TERMINAL_CONCLUSIONS,
+    REPO_STATE_CHECK_NAMES,
+    REQUIRED_CHECK_NAME,
+    UV_AUDIT_CHECK_NAME,
+    CheckResult,
+    MergeAttempt,
+    PrSummary,
+)
+
+__all__ = [
+    "GH_CONFLICT_MERGEABLE",
+    "GH_CONFLICT_MERGE_STATE",
+    "GREEN_TERMINAL_CONCLUSIONS",
+    "REPO_STATE_CHECK_NAMES",
+    "REQUIRED_CHECK_NAME",
+    "UV_AUDIT_CHECK_NAME",
+    "CheckResult",
+    "MergeAttempt",
+    "PrSummary",
+    "PrSweepScanner",
+]
 
 logger = logging.getLogger(__name__)
-
-
-GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
-REQUIRED_CHECK_NAME = "test (3.13)"
-UV_AUDIT_CHECK_NAME = "uv-audit"
-
-# GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
-# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
-# but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
-# empty is GitHub still computing mergeability — never flagged, to avoid a
-# false conflict alarm on a freshly-pushed head.
-GH_CONFLICT_MERGEABLE = "CONFLICTING"
-GH_CONFLICT_MERGE_STATE = "DIRTY"
-
-
-@dataclass(frozen=True, slots=True)
-class CheckResult:
-    """One required-status check on a PR head."""
-
-    name: str
-    conclusion: str
-    status: str
-
-    @property
-    def verdict(self) -> str:
-        upper_status = self.status.upper()
-        if upper_status and upper_status != "COMPLETED":
-            return "pending"
-        upper_conclusion = self.conclusion.upper()
-        if upper_conclusion in GREEN_TERMINAL_CONCLUSIONS:
-            return "green"
-        return "failed"
-
-
-@dataclass(frozen=True, slots=True)
-class PrSummary:
-    """Decoded subset of a PR's ``gh`` payload the sweep needs."""
-
-    slug: str
-    number: int
-    head_sha: str
-    is_draft: bool
-    has_changes_requested: bool
-    checks: tuple[CheckResult, ...]
-    url: str = ""
-    title: str = ""
-    is_conflicted: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class MergeAttempt:
-    """The scanner's per-PR decision plus any merge outcome."""
-
-    slug: str
-    pr_id: int
-    decision: str
-    merged: bool = False
-    merged_sha: str = ""
-    reason: str = ""
-    url: str = ""
-    review_dispatched: bool = False
 
 
 @runtime_checkable
@@ -301,7 +278,7 @@ class PrSweepScanner:
         skip_reason = _precondition_skip_reason(pr)
         if skip_reason is not None:
             return _skip(pr, reason=skip_reason)
-        clear = _find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        clear = find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
         if clear is None:
             return self._evaluate_solo_overlay(pr) if self.solo_overlay else _skip(pr, reason="no_clear_for_head")
         return self._evaluate_with_clear(pr, clear)
@@ -309,8 +286,42 @@ class PrSweepScanner:
     def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
         ci_skip, fallback = self._ci_gate(pr)
         if ci_skip is not None:
-            return _skip(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
+
+    #: Skip reasons whose only failing checks are repo-state checks a rerun
+    #: against the pinned OLD base can never clear — a merge-update is the
+    #: remedy (#2045). ``ci_red`` covers a repo-state ``failed`` rollup (e.g.
+    #: blueprint-cross-pr); ``uv_audit_red_but_clean_on_main`` is the
+    #: uv-audit-only red whose fix already landed on main.
+    _REPO_STATE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
+
+    def _ci_block(self, pr: PrSummary, *, reason: str) -> MergeAttempt:
+        """Convert a CI-red block into ``needs_branch_update`` when a rerun can't fix it (#2045).
+
+        A block whose only failing checks are repo-state checks (uv-audit,
+        blueprint-cross-pr, …) on a branch that is BEHIND main is the
+        rerun-can't-fix case: those checks diff the head against the base, the
+        fix already merged to main, and ``gh run rerun --failed`` re-tests
+        against the run's pinned OLD base. The only remedy is a fresh
+        merge-update minting a new merge ref — surfaced here as a flag-level
+        ``needs_branch_update`` signal so it is actionable rather than a silent
+        skip. Every other red (a genuine test failure, or a repo-state red on
+        an already-up-to-date branch a rerun CAN clear) stays a plain skip.
+        """
+        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_checks_are_all_repo_state(pr.checks):
+            return self._flag_needs_branch_update(pr)
+        return _skip(pr, reason=reason)
+
+    def _flag_needs_branch_update(self, pr: PrSummary) -> MergeAttempt:
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="needs_branch_update", url=pr.url)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="needs_branch_update",
+            reason="needs_branch_update",
+            url=pr.url,
+        )
 
     def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool]:
         """Run the shared CI verdict gate; return ``(skip_reason, is_uv_audit_fallback)``.
@@ -321,7 +332,7 @@ class PrSweepScanner:
         the documented uv-audit fallback path. Shared by the CLEAR path and
         the solo-overlay bypass so the two gates cannot drift apart.
         """
-        check_verdict = _classify_checks(pr.checks)
+        check_verdict = classify_checks(pr.checks)
         if check_verdict in {"failed", "pending"}:
             return ("ci_red" if check_verdict == "failed" else "ci_pending"), False
         fallback = check_verdict == "green_with_uv_audit_red"
@@ -350,8 +361,8 @@ class PrSweepScanner:
         """
         ci_skip, fallback = self._ci_gate(pr)
         if ci_skip is not None:
-            return _skip(pr, reason=ci_skip)
-        if not _has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
+            return self._ci_block(pr, reason=ci_skip)
+        if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,
@@ -417,7 +428,7 @@ class PrSweepScanner:
         """
         if not self.auto_review_dispatch or self.review_dispatcher is None:
             return False
-        if _pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
+        if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
             return False
         try:
             return self.review_dispatcher.enqueue(
@@ -496,87 +507,6 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
     if pr.has_changes_requested:
         return "changes_requested"
     return None
-
-
-def _classify_checks(checks: tuple[CheckResult, ...]) -> str:
-    """Return ``green`` / ``green_with_uv_audit_red`` / ``pending`` / ``failed``.
-
-    The required check is ``test(3.13)``: if it's not green the PR is not
-    mergeable. If it IS green and the ONLY red check is ``uv-audit``, the
-    PR falls into the documented fallback path that the scanner is
-    authorised to escalate (step 5).
-    """
-    required = next((c for c in checks if c.name == REQUIRED_CHECK_NAME), None)
-    if required is None or required.verdict != "green":
-        if any(c.verdict == "pending" for c in checks if c.name == REQUIRED_CHECK_NAME):
-            return "pending"
-        return "failed" if checks else "pending"
-    red = [c for c in checks if c.verdict == "failed"]
-    if not red:
-        if any(c.verdict == "pending" for c in checks):
-            return "pending"
-        return "green"
-    if all(c.name == UV_AUDIT_CHECK_NAME for c in red):
-        return "green_with_uv_audit_red"
-    return "failed"
-
-
-def _find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:
-    """Locate the actionable, SHA-matched CLEAR for *(slug, pr_id, head_sha)*.
-
-    A row whose ``reviewed_sha`` does not match the live PR head is treated
-    as absent (the CLEAR was issued against stale code — §17.4.2 binds the
-    authorisation to the exact reviewed tree). The keystone transition
-    re-validates SHA-match at merge time as well, so even a stale match
-    here would be refused — this lookup just keeps the scanner quiet.
-    """
-    candidates = MergeClear.objects.filter(
-        slug=slug,
-        pr_id=pr_id,
-        consumed_at__isnull=True,
-    ).order_by("-issued_at")
-    for clear in candidates:
-        if clear.reviewed_sha == head_sha and clear.is_actionable():
-            return clear
-    return None
-
-
-def _has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
-    """True iff a recorded INDEPENDENT cold-review vouches for this exact head (#68).
-
-    A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
-    durable record of a cold review; ``ReviewVerdict.record`` refuses a
-    self-attested verdict (``is_non_reviewer_role``), so any row that
-    exists was issued by an identity that is not the maker/coding-agent/
-    loop. The bypass requires a ``merge_safe`` verdict bound to the live
-    head SHA — a stale verdict reviewed a tree the PR no longer points at
-    and cannot authorise the merge. A maker who is the only identity on
-    the repo therefore cannot self-merge: no independent reviewer means no
-    matching row and the auto-merge is refused.
-    """
-    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
-
-    candidates = ReviewVerdict.objects.for_pr(slug, pr_id).filter(verdict=ReviewVerdict.Verdict.MERGE_SAFE)
-    return any(not verdict.is_stale_at(head_sha) for verdict in candidates)
-
-
-def _pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:
-    """True iff the PR's AUTHOR ticket carries a live external-delivery lease (#2104).
-
-    The lease is stamped by ``workspace ticket <ISSUE_URL>`` on the author /
-    delivery ticket keyed by the ISSUE-tracker URL — never on the PR URL. So the
-    review-arm must ask whether the AUTHOR ticket that OWNS this PR holds the
-    lease, resolved through the existing PR→author-ticket linkage
-    (:func:`resolve_author_ticket`: ``PullRequest`` FK then
-    ``Ticket.extra["prs"]``). A PR with no resolvable author ticket (the loop
-    has not seen this delivery) is treated as unowned, so the loop arms the
-    review as before.
-    """
-    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
-    from teatree.loop.pr_ticket_index import resolve_author_ticket  # noqa: PLC0415
-
-    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
-    return ticket is not None and under_external_delivery(ticket)
 
 
 def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
