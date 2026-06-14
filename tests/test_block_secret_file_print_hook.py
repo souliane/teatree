@@ -153,3 +153,101 @@ class TestAllowsBenignCommands:
 
     def test_empty_command_passes_through(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_block_secret_file_print(_bash_event("")) is not True
+
+
+class TestBlocksQuotedTokenLiterals:
+    """A token literal inside quotes still prints to the transcript and is blocked."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "glpat-synthetictoken123"',
+            "echo 'ghp_synthetictoken456'",
+            'printf "xoxb-synthetic-789"',
+            "echo 'sk-syntheticopenaikey'",
+        ],
+    )
+    def test_quoted_token_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "just some prose"',
+            "echo 'The config lives at ~/.teatree.toml'",
+            'printf "hello world\\n"',
+        ],
+    )
+    def test_quoted_prose_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestBlocksReEmitterPipes:
+    """A pipe whose sink re-displays the secret to the transcript is still blocked."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat .env | grep -v '^#'",
+            "cat ~/.teatree.toml | less",
+            "cat .env | tee /dev/tty",
+            "cat ~/.netrc | cat",
+            "cat ~/.teatree.toml | more",
+            "head ~/.netrc | tail -n 2",
+            "cat .env | tee leak.txt",
+        ],
+    )
+    def test_re_emitter_pipe_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat .env > /tmp/x",
+            "VAR=$(cat .env)",
+            "cat ~/.teatree.toml > /tmp/cfg_backup.toml",
+            "cat .env | gzip > /tmp/x.gz",
+        ],
+    )
+    def test_genuine_capture_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestAllowsCommittedEnvTemplates:
+    """Standard committed non-secret env templates pass; a real .env still blocks."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat .env.example",
+            "cat .env.sample",
+            "cat .env.template",
+            "cat .env.dist",
+            "head .env.example",
+        ],
+    )
+    def test_env_template_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat .env",
+            "cat .env.local",
+            "cat .env.production",
+        ],
+    )
+    def test_real_env_still_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_secret_file_print(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"

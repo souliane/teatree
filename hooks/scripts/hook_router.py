@@ -6890,7 +6890,14 @@ _SECRET_PATHS_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
         | (?:Library/Application\s+Support|\.config)/glab-cli/config\.yml
         | \.ssh/(?:id_[a-z0-9_]+|.*\.pem|.*\.key)
     )
-    | (?:^|[\s/])(?:\.env(?:\.[a-z]+)?|secrets?\.env|.*\.credentials?|.*\.pem|.*\.key|.*_account\.json)(?:\s|$|['")])
+    | (?:^|[\s/])(?:
+        \.env(?!\.(?:example|sample|template|dist)\b)(?:\.[a-z]+)?
+        | secrets?\.env
+        | .*\.credentials?
+        | .*\.pem
+        | .*\.key
+        | .*_account\.json
+    )(?:\s|$|['")])
     """,
     re.IGNORECASE,
 )
@@ -6903,14 +6910,15 @@ _PRINT_CMDS_RE = re.compile(r"^\s*(?:cat|head|tail)\b")
 
 _PASS_SHOW_RE = re.compile(r"^\s*pass\s+show\b")
 
-_CAPTURE_OR_REDIRECT_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
+_CAPTURE_RE = re.compile(  # [skill-load-ok: souliane/teatree repo]
     r"""
     \$\(            # subshell capture: $(…)
     | >\s*\S+       # stdout redirect to a file or /dev/null
-    | \|\s*\S       # pipe to another command (value leaves stdout)
     """,
     re.VERBOSE,
 )
+
+_RE_EMITTER_SINK_RE = re.compile(r"^\s*(?:cat|less|more|tee|grep|head|tail)\b")
 
 _ECHO_SAFE_QUOTE_RE = re.compile(r"""^(?:'[^']*'|"[^"]*")$""")
 
@@ -6929,27 +6937,34 @@ def _command_captures_or_redirects(command: str) -> bool:
     """Return True when the command's stdout is captured or redirected, not printed.
 
     A variable-assignment prefix (``VAR=$(…)`` or ``export VAR=$(…)``) or a
-    stdout redirect (``> file``) or pipe (``| cmd``) means the secret value
-    does NOT land on the transcript. A plain ``pass show x`` with no such
-    construct does.
+    stdout redirect (``> file``) keeps the secret off the transcript. A pipe
+    is a capture only when its sink consumes the value — a sink that re-emits
+    to the transcript (``cat`` / ``less`` / ``more`` / ``tee`` / ``grep`` /
+    ``head`` / ``tail``, incl. ``tee /dev/tty``) still displays the secret and
+    is NOT a capture. A plain ``pass show x`` with no such construct prints.
     """
-    return bool(_CAPTURE_OR_REDIRECT_RE.search(command))
+    if _CAPTURE_RE.search(command):
+        return True
+    segments = command.split("|")
+    if len(segments) < 2:  # noqa: PLR2004
+        return False
+    return not any(_RE_EMITTER_SINK_RE.match(segment) for segment in segments[1:])
 
 
 def _echo_arg_is_token(command: str) -> bool:
-    """Return True when the echo/printf command carries a bare token literal.
+    """Return True when the echo/printf command carries a token literal.
 
     Prose strings inside quotes that merely MENTION a secret path are not
-    treated as token prints — they contain no token literal.  Only an
-    unquoted or minimally-quoted arg that starts with a known token prefix
-    triggers a deny.
+    treated as token prints — they contain no token literal. A fully-quoted
+    arg whose CONTENT is itself a token literal still lands on the transcript,
+    so it is treated as a token. Only quoted prose (no token shape) passes.
     """
     parts = command.split(None, 1)
     if len(parts) < 2:  # noqa: PLR2004
         return False
     arg = parts[1].strip()
     if _ECHO_SAFE_QUOTE_RE.match(arg):
-        return False
+        return bool(_TOKEN_LITERAL_RE.search(arg[1:-1]))
     return bool(_TOKEN_LITERAL_RE.search(command))
 
 
