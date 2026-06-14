@@ -242,11 +242,15 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         msg = "--manifest 'workflows' must be a non-empty array."
         raise TestPlanValidationError(msg)
     mrs = tuple(str(m).strip() for m in data.get("mrs", []) if str(m).strip())
+    template = _parse_template(data.get("template"))
     sides = {env: _parse_side(data, raw_workflows, env=env, base_dir=base_dir) for env in _ENVS}
     if not sides["dev"].present and not sides["local"].present:
         msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
         raise TestPlanValidationError(msg)
-    if all(not sides[env].workflows for env in _ENVS if sides[env].present):
+    steps = _parse_workflow_steps(raw_workflows)
+    blocked_workflows = _parse_blocked_workflows(data.get("blocked_workflows"))
+    has_media = any(sides[env].workflows for env in _ENVS if sides[env].present)
+    if not has_media and not steps and not blocked_workflows:
         msg = "--manifest carries no media (no screenshots or video); nothing to post."
         raise TestPlanValidationError(msg)
     return TestPlanManifest(
@@ -254,9 +258,9 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         mrs=mrs,
         dev=sides["dev"],
         local=sides["local"],
-        steps=_parse_workflow_steps(raw_workflows),
-        template=_parse_template(data.get("template")),
-        blocked_workflows=_parse_blocked_workflows(data.get("blocked_workflows")),
+        steps=steps,
+        template=template,
+        blocked_workflows=blocked_workflows,
     )
 
 

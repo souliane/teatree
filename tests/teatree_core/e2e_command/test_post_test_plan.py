@@ -1324,7 +1324,9 @@ class TestTemplateThroughManifest(TestCase):
         assert self._browser_manifest().template == "browser-click-first"
 
     def test_parse_manifest_defaults_template_to_capture_matrix(self) -> None:
-        manifest = _render.parse_manifest(json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "X"}]}))
+        manifest = _render.parse_manifest(
+            json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "X", "steps": ["s"]}]})
+        )
         assert manifest.template == "capture-matrix"
 
     def test_parse_manifest_rejects_unknown_template(self) -> None:
@@ -1420,7 +1422,7 @@ class TestTemplateFlag(TestCase):
     def test_template_flag_overrides_manifest_default(self) -> None:
         flags = _test_plan.TestPlanFlags(
             ticket="8521",
-            manifest=json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "Login"}]}),
+            manifest=json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "Login", "steps": ["s"]}]}),
             template="browser-click-first",
         )
         with patch("teatree.core.management.commands._test_plan._resolve_worktree_or_none", return_value=None):
