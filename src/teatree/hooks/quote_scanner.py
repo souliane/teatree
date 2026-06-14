@@ -261,19 +261,23 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     matching so a single regex catches all typographic forms.
 
     A body the parser could not resolve carries the fail-closed sentinel
-    (``FAIL_CLOSED_SENTINEL``). That sentinel is recognised EXPLICITLY as
-    a HIGH finding rather than relying on it tripping a content pattern —
-    the old wording self-matched ``the-user-said-colon`` and produced a
-    bogus user-quote finding on a body the scanner never saw (#126). The
-    sentinel is excised before content matching so the fail-closed marker
-    text itself can never produce a second, content-shaped finding.
+    (``FAIL_CLOSED_SENTINEL``) as its own discrete payload line. That line
+    is recognised EXPLICITLY as a HIGH finding rather than relying on it
+    tripping a content pattern — the old wording self-matched
+    ``the-user-said-colon`` and produced a bogus user-quote finding on a
+    body the scanner never saw (#126). Only the standalone sentinel LINES
+    are excised before content matching, so a prose body fragment that
+    merely names the sentinel on a different line is still scanned, while
+    the marker text itself can never produce a second content-shaped
+    finding. Inert prose that names the sentinel mid-line never trips the
+    fail-closed branch at all (#1213).
     """
     result = ScanResult()
     if not text:
         return result
     if _is_fail_closed_sentinel(text):
         result.findings.append(Finding(name="fail-closed-sentinel", severity=HIGH, excerpt="unresolved body source"))
-        text = text.replace(_FAIL_CLOSED_SENTINEL, "")
+        text = "\n".join(line for line in text.split("\n") if line.strip() != _FAIL_CLOSED_SENTINEL)
         if not text.strip():
             return result
     normalized = _normalize_quotes(text)

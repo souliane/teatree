@@ -966,6 +966,70 @@ class TestFailClosedSentinelNoSelfMatch:
         assert {f.name for f in scan.findings} == {"fail-closed-sentinel"}
 
 
+class TestSentinelProseIsNotAFailClosedMatch:
+    """Inert prose that NAMES the sentinel is not the fail-closed condition (#1213).
+
+    The gate exists to block an unresolvable/ambiguous body source — the
+    parser injects the sentinel as its own discrete payload fragment for
+    that. A commit message or PR body that merely DISCUSSES the gate (and so
+    contains the sentinel phrase inside a properly-quoted argument value) is
+    not a quoting hazard: the argument is correctly quoted, the phrase is
+    documentation. It must pass.
+    """
+
+    def test_commit_message_naming_the_sentinel_phrase_is_allowed(self) -> None:
+        # A commit whose -m message quotes the full sentinel string as prose.
+        body = f"fix(hooks): stop the quote-scanner flagging inert prose that names the {FAIL_CLOSED_SENTINEL} marker"
+        cmd = f"git commit -m {body!r}"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert not is_fail_closed_sentinel(payload)
+        scan = scan_text(payload)
+        assert not scan.has_high
+
+    def test_pr_body_naming_the_sentinel_phrase_is_allowed(self) -> None:
+        # A gh pr create whose --body documents the gate, quoting the sentinel.
+        body = (
+            "This PR explains why the scanner fails closed. The injected marker is "
+            f"{FAIL_CLOSED_SENTINEL} and the gate refuses the post when it appears."
+        )
+        cmd = f"gh pr create --title fix --body {body!r}"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert not is_fail_closed_sentinel(payload)
+        scan = scan_text(payload)
+        assert not scan.has_high
+
+    def test_scan_text_on_mid_line_sentinel_prose_has_no_finding(self) -> None:
+        prose = (
+            "We document the behaviour: when the scanner cannot resolve a body it "
+            f"emits {FAIL_CLOSED_SENTINEL} and blocks. End of explanation."
+        )
+        assert not is_fail_closed_sentinel(prose)
+        scan = scan_text(prose)
+        assert {f.name for f in scan.findings} == set()
+
+    def test_genuine_injected_sentinel_still_blocks(self) -> None:
+        # The parser injects the sentinel as its own line — that must still fire.
+        cmd = "gh api repos/o/r/issues --input -"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+        scan = scan_text(payload)
+        assert scan.has_high
+        assert {f.name for f in scan.findings} == {"fail-closed-sentinel"}
+
+    def test_genuine_sentinel_blocks_even_alongside_a_clean_body_fragment(self) -> None:
+        # A clean body on one segment + an unresolvable body on another: the
+        # sentinel rides its own line and the gate still fails closed.
+        cmd = 'gh issue create --body "a clean note" && gh api repos/o/r/issues --input -'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+        scan = scan_text(payload)
+        assert scan.has_high
+
+
 class TestHeredocToFileDashF:
     """``cat > path <<EOF … EOF; git commit -F path`` resolves the body (#126)."""
 
