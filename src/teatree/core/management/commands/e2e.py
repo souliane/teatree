@@ -31,17 +31,14 @@ _build_e2e_env = _runners.build_e2e_env
 
 
 # Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
-_MRS_OPTION = typer.Option(
-    None,
-    "--mrs",
-    help="MR/PR URL(s) the test plan covers (repeat or comma-separate). Supplements the manifest's 'mrs'.",
-)
-_SKIP_VALIDATION_OPTION = typer.Option(
-    default=False,
-    help="User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use.",
-)
+_MRS_HELP = "MR/PR URL(s) the test plan covers (repeat or comma-separate). Supplements the manifest's 'mrs'."
+_MRS_OPTION = typer.Option(None, "--mrs", help=_MRS_HELP)
+_SKIP_HELP = "User-authorised bypass of the image preflight (red-box / duplicate gates). Not for routine use."
+_SKIP_VALIDATION_OPTION = typer.Option(default=False, help=_SKIP_HELP)
 _TEMPLATE_HELP = "Body template: capture-matrix (default), browser-click-first, or link-api. Overrides the manifest's."
 _TEMPLATE_OPTION = typer.Option("", "--template", help=_TEMPLATE_HELP)
+_NO_VIDEO_HELP = "Post a stills-only manifest (screenshots, no video). Refused by default — capture video:'on' instead."
+_ALLOW_NO_VIDEO_OPTION = typer.Option(default=False, help=_NO_VIDEO_HELP)
 
 
 @dataclass
@@ -511,6 +508,7 @@ class Command(TyperCommand):
         skip_validation: bool = _SKIP_VALIDATION_OPTION,
         body_file: str = "",
         template: str = _TEMPLATE_OPTION,
+        allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
     ) -> _test_plan.PostTestPlanResult:
         """Post (or update) the ticket's single test-plan note from a manifest.
 
@@ -520,8 +518,9 @@ class Command(TyperCommand):
         issue; ``--title`` overrides the heading; ``--template``
         (``capture-matrix`` / ``browser-click-first`` / ``link-api``) selects
         the body shape, overriding the manifest's ``template``;
-        ``--skip-validation`` bypasses the image preflight; ``--body-file`` posts
-        a pre-authored body verbatim (no upload; mutually exclusive with
+        ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
+        permits a stills-only manifest (refused by default); ``--body-file``
+        posts a pre-authored body verbatim (no upload; mutually exclusive with
         ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
         deprecated alias.
         """
@@ -535,6 +534,7 @@ class Command(TyperCommand):
             write_err=self.stderr.write,
             body_file=body_file,
             template=template,
+            allow_no_video=allow_no_video,
         )
 
     @command(name="retract-evidence")
@@ -561,16 +561,16 @@ class Command(TyperCommand):
         skip_validation: bool = _SKIP_VALIDATION_OPTION,
         body_file: str = "",
         template: str = _TEMPLATE_OPTION,
+        allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
     ) -> _test_plan.PostTestPlanResult:
         """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
-        return _test_plan.run_post_test_plan(
+        return self.post_test_plan(
             manifest=manifest,
             ticket=ticket,
             title=title,
             mrs=mrs,
             skip_validation=skip_validation,
-            write_out=self.stdout.write,
-            write_err=self.stderr.write,
             body_file=body_file,
             template=template,
+            allow_no_video=allow_no_video,
         )
