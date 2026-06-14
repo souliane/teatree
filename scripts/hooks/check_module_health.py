@@ -9,6 +9,11 @@ Files already over the cap at HEAD are grandfathered but ratcheted: they may
 only SHRINK. A commit that grows an over-cap file (LOC or public-function
 count) is blocked, so a god-module can never re-accrete after a split (#1983).
 
+Scope is the first-party Python tree: ``src/`` plus the ``hooks/`` and
+``scripts/`` hook/tool code (``_FIRST_PARTY_PREFIXES``). Tests and
+third-party/vendored paths are excluded. One shared predicate (``_is_first_party``)
+gates both the staged-mode and diff-mode file scans so the two never diverge.
+
 Two entry paths share one ratchet predicate. The default (no args) path runs
 per-commit over staged files (``git diff --cached``) — the prek commit hook,
 where a merge commit is exempt because a merge brings both parents' growth into
@@ -33,6 +38,18 @@ MAX_MODULE_FUNCTIONS = 10
 _RENAME_FIELDS = 2
 _SINGLE_PATH_FIELD = 1
 
+# First-party Python the ratchet scans. ``src/`` is the package; ``hooks/`` and
+# ``scripts/`` are the first-party hook/tool code — where the 6388-LOC
+# ``hooks/scripts/hook_router.py`` lives, the single largest first-party file,
+# previously invisible to the gate while small ``src/`` modules were forced to
+# split. One shared predicate keeps staged-mode and diff-mode scope identical.
+_FIRST_PARTY_PREFIXES = ("src/", "hooks/", "scripts/")
+
+
+def _is_first_party(path: str) -> bool:
+    return path.startswith(_FIRST_PARTY_PREFIXES)
+
+
 _DICT_OBJECT_PATTERNS = [
     "dict[str, object]",
     "Dict[str, object]",
@@ -56,7 +73,7 @@ def _staged_python_files() -> list[str]:
         text=True,
         check=False,
     )
-    return [f for f in result.stdout.strip().splitlines() if f.startswith("src/")]
+    return [f for f in result.stdout.strip().splitlines() if _is_first_party(f)]
 
 
 def _head_paths() -> dict[str, str]:
@@ -241,7 +258,7 @@ def _range_python_files(merge_base: str) -> list[str]:
         text=True,
         check=False,
     )
-    return [f for f in result.stdout.strip().splitlines() if f.startswith("src/")]
+    return [f for f in result.stdout.strip().splitlines() if _is_first_party(f)]
 
 
 def _range_paths(merge_base: str) -> dict[str, str]:

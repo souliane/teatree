@@ -9,6 +9,7 @@ HEAD LOC is its ceiling — so the ratchet may hard-fail (it never fires on the
 existing state, only on a regression).
 """
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,17 @@ def _src(loc: int) -> str:
 
 def _fn_src(n_funcs: int) -> str:
     return "\n".join(f"def fn_{i}():\n    return {i}" for i in range(n_funcs)) + "\n"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 class TestLocShrinkRatchet:
@@ -183,3 +195,74 @@ class TestFunctionCountShrinkRatchet:
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 0
+
+
+class TestFirstPartyScopeBeyondSrc:
+    """The ratchet scans first-party hook/tool code outside ``src/`` too.
+
+    ``hooks/scripts/hook_router.py`` (the largest first-party file) lives
+    outside ``src/``; a ``src/``-only filter left it — and every other file
+    under ``hooks/`` and ``scripts/`` — invisible to the gate, so it could grow
+    without bound. Widening the scope grandfathers each at its HEAD ceiling
+    (shrink-only) yet now catches growth past it. These tests exercise the real
+    ``_staged_python_files`` filter against a git repo under ``tmp_path``.
+    """
+
+    def _init_repo(self, tmp_path: Path) -> None:
+        _git(tmp_path, "init", "-b", "main")
+        _git(tmp_path, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
+        _git(tmp_path, "config", "user.name", "Tester")
+
+    def _commit_over_cap(self, tmp_path: Path, relpath: str) -> None:
+        target = tmp_path / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_src(_OVER_CAP), encoding="utf-8")
+        _git(tmp_path, "add", relpath)
+        _git(tmp_path, "commit", "-m", "seed over-cap file")
+
+    def test_hooks_scripts_file_growing_past_peg_is_flagged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        relpath = "hooks/scripts/big_tool.py"
+        self._init_repo(tmp_path)
+        self._commit_over_cap(tmp_path, relpath)
+        # Grow the over-cap file and stage it: the ratchet must catch growth.
+        (tmp_path / relpath).write_text(_src(_OVER_CAP_GREW), encoding="utf-8")
+        _git(tmp_path, "add", relpath)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 1
+
+    def test_hooks_scripts_file_held_steady_is_allowed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        relpath = "hooks/scripts/big_tool.py"
+        self._init_repo(tmp_path)
+        self._commit_over_cap(tmp_path, relpath)
+        # Restage the same content (no growth) — grandfathered ceiling holds.
+        (tmp_path / relpath).write_text(f"{_src(_OVER_CAP)}# touch\n", encoding="utf-8")
+        _git(tmp_path, "add", relpath)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 0
+
+    def test_scripts_file_growing_past_peg_is_flagged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        relpath = "scripts/big_tool.py"
+        self._init_repo(tmp_path)
+        self._commit_over_cap(tmp_path, relpath)
+        (tmp_path / relpath).write_text(_src(_OVER_CAP_GREW), encoding="utf-8")
+        _git(tmp_path, "add", relpath)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 1
+
+    def test_first_party_predicate_scopes_src_hooks_scripts_only(self) -> None:
+        assert mod._is_first_party("src/teatree/cli/update.py")
+        assert mod._is_first_party("hooks/scripts/hook_router.py")
+        assert mod._is_first_party("scripts/privacy_scan.py")
+        assert not mod._is_first_party("tests/test_module_health_ratchet.py")
+        assert not mod._is_first_party("docs/blueprint/overview.md")
