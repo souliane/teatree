@@ -27,6 +27,10 @@ from teatree.utils.url_slug import pr_ref_from_url
 _ENVS = ("dev", "local")
 _EMPTY_CELL = "—"
 
+# The known body templates; the default is the side-by-side capture matrix.
+DEFAULT_TEMPLATE = "capture-matrix"
+KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api")
+
 # The hidden idempotency marker — keyed on the TICKET (its number, e.g. 8521),
 # so a ticket carries exactly ONE test-plan note across all environments.
 #
@@ -45,7 +49,7 @@ class TestPlanValidationError(ValueError):
 
 
 def _as_dict(value: object) -> Mapping[str, object]:
-    """Return *value* as ``Mapping[str, object]`` when it is a mapping, else ``{}``."""
+    """``value`` as a read-only mapping when it is a dict, else ``{}``."""
     return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
 
 
@@ -62,6 +66,8 @@ class WorkflowEmbed(TypedDict):
 
     video_md: str
     image_md: list[str]
+    link_md: NotRequired[str]
+    code_md: NotRequired[str]
 
 
 class SideState(TypedDict):
@@ -75,10 +81,9 @@ class SideState(TypedDict):
 class TestPlanState(TypedDict):
     """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
 
-    ``steps`` maps a workflow name → its written test-plan steps. It is
-    workflow-level (shared across dev/local) so the steps survive any single-side
-    re-render, and a steps-less re-run preserves the prior steps (see
-    :func:`merge_state`).
+    ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``, or
+    ``"link-api"``. ``steps``: workflow → ordered step list (shared across sides,
+    persisted across re-runs). ``blocked_workflows``: workflow → reason string.
     """
 
     ticket: str
@@ -87,6 +92,8 @@ class TestPlanState(TypedDict):
     dev: SideState
     local: SideState
     steps: dict[str, list[str]]
+    template: NotRequired[str]
+    blocked_workflows: NotRequired[dict[str, str]]
 
 
 def empty_state(*, ticket: str, title: str) -> TestPlanState:
@@ -103,10 +110,15 @@ def empty_state(*, ticket: str, title: str) -> TestPlanState:
 
 def _coerce_workflow(raw: object) -> WorkflowEmbed:
     raw_dict = _as_dict(raw)
-    return {
+    embed: WorkflowEmbed = {
         "video_md": str(raw_dict.get("video_md") or ""),
         "image_md": [str(i) for i in _as_list(raw_dict.get("image_md"))],
     }
+    if raw_dict.get("link_md"):
+        embed["link_md"] = str(raw_dict["link_md"])
+    if raw_dict.get("code_md"):
+        embed["code_md"] = str(raw_dict["code_md"])
+    return embed
 
 
 def _coerce_side(raw: object, *, env: str) -> SideState:
@@ -120,14 +132,9 @@ def _coerce_side(raw: object, *, env: str) -> SideState:
 
 
 def coerce_state(raw: object) -> TestPlanState:
-    """Build a well-typed :class:`TestPlanState` from a parsed (untyped) blob.
-
-    The persisted blob is JSON, so it arrives as loose ``object``; this rebuilds
-    it into the typed shape, dropping anything malformed (a corrupt blob yields
-    an empty state rather than crashing the next run).
-    """
+    """Build a well-typed :class:`TestPlanState` from a JSON blob; drops malformed fields."""
     raw_dict = _as_dict(raw)
-    return {
+    state: TestPlanState = {
         "ticket": str(raw_dict.get("ticket") or ""),
         "title": str(raw_dict.get("title") or ""),
         "mrs": [str(m) for m in _as_list(raw_dict.get("mrs"))],
@@ -135,6 +142,18 @@ def coerce_state(raw: object) -> TestPlanState:
         "local": _coerce_side(raw_dict.get("local"), env="local"),
         "steps": _coerce_steps(raw_dict.get("steps")),
     }
+    template = str(raw_dict.get("template") or "").strip()
+    if template in KNOWN_TEMPLATES:
+        state["template"] = template
+    blocked = _coerce_blocked_workflows(raw_dict.get("blocked_workflows"))
+    if blocked:
+        state["blocked_workflows"] = blocked
+    return state
+
+
+def _coerce_blocked_workflows(raw: object) -> dict[str, str]:
+    """Rebuild the workflow → blocked-reason mapping, dropping malformed entries."""
+    return {str(name): str(reason) for name, reason in _as_dict(raw).items() if str(name) and str(reason)}
 
 
 def _coerce_steps(raw: object) -> dict[str, list[str]]:
@@ -147,13 +166,7 @@ def _coerce_steps(raw: object) -> dict[str, list[str]]:
 
 @dataclass(frozen=True, slots=True)
 class WorkflowArtifacts:
-    """One workflow's captured artifacts for ONE side: name, images, optional video.
-
-    ``images`` and ``video`` are validated on-disk file paths (the video is
-    ``None`` when the workflow has no clip on this side). Built from the parsed
-    manifest by :func:`_parse_side_workflow`, which validates every referenced
-    file exists and is the right media kind.
-    """
+    """Validated on-disk artifact paths for one workflow on one side."""
 
     workflow: str
     images: tuple[Path, ...]
@@ -162,14 +175,9 @@ class WorkflowArtifacts:
 
 @dataclass(frozen=True, slots=True)
 class SideManifest:
-    """One side's (dev or local) manifest: per-repo commits, gap, per-workflow artifacts.
+    """One side (dev/local): commits, gap, per-workflow artifacts.
 
-    ``commits`` maps repo → SHA (the branch SHA tested for ``local``, the
-    deployed SHA for ``dev``). ``missing_on_dev`` lists MR refs whose commits
-    have not yet deployed (the dev reconciliation line; empty for ``local``).
-    ``workflows`` maps workflow name → its artifacts for this side. ``present``
-    is False when the run did not carry this side at all (so the merge leaves
-    the prior side frozen).
+    ``present`` is False when the run did not carry this side (merge freezes it).
     """
 
     present: bool
@@ -180,40 +188,24 @@ class SideManifest:
 
 @dataclass(frozen=True, slots=True)
 class TestPlanManifest:
-    """The whole parsed + validated ``--manifest``: ticket, MRs, and per-side input.
-
-    ``steps`` maps a workflow name → its ordered written test-plan steps (the
-    "how to test / where to click" list a human follows to reproduce). Steps are
-    workflow-level (shared across dev/local), not per-side; a workflow with no
-    steps is simply absent from the mapping.
-    """
+    """Parsed + validated ``--manifest``: ticket, MRs, per-side input, template, optional steps."""
 
     ticket: str
     mrs: tuple[str, ...]
     dev: SideManifest
     local: SideManifest
     steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    template: str = DEFAULT_TEMPLATE
+    blocked_workflows: dict[str, str] = field(default_factory=dict)
 
 
 def test_plan_marker(*, ticket_id: str) -> str:
-    """The hidden HTML-comment idempotency marker keyed on the ticket.
-
-    Renders invisibly in GitLab/GitHub markdown; matched by
-    :data:`_TICKET_MARKER_RE` to find the ticket's single test-plan note to
-    update. Keyed on the ticket number so one note per ticket is maintained
-    across every environment.
-    """
+    """Hidden HTML-comment idempotency marker; matched by :data:`_TICKET_MARKER_RE`."""
     return f"<!-- t3-e2e-evidence ticket={ticket_id} -->"
 
 
 def _mr_label(ref: str) -> str:
-    """A terse ``repo!num`` / ``repo#num`` label for an MR ref, falling back to the ref.
-
-    Parses the MR/PR web URL into its repo slug + number; the repo is the last
-    slug segment (``group/.../repo`` → ``repo``). GitLab MRs render as
-    ``repo!num``, GitHub PRs as ``repo#num``. A ref that does not parse as a
-    URL (a bare ``repo!123`` the user typed) is shown verbatim.
-    """
+    """``repo!num`` (GitLab) / ``repo#num`` (GitHub) label for *ref*, or *ref* verbatim."""
     parsed = pr_ref_from_url(ref)
     if parsed is None:
         return ref
@@ -223,13 +215,7 @@ def _mr_label(ref: str) -> str:
 
 
 def render_mrs_line(mrs: tuple[str, ...]) -> str:
-    """Render the terse ``Repos & MRs:`` line with one markdown link per MR.
-
-    A single commit SHA "doesn't mean anything for a multi-repos", so the note
-    names each repo's MR at the top. A URL ref renders as ``[repo!num](url)``;
-    a non-URL ref renders as its bare label. Returns ``""`` when no MRs were
-    given so the caller omits the line entirely.
-    """
+    """``Repos & MRs: [repo!n](url), …`` line, or ``""`` when *mrs* is empty."""
     if not mrs:
         return ""
     parts = [f"[{_mr_label(ref)}]({ref})" if pr_ref_from_url(ref) is not None else _mr_label(ref) for ref in mrs]
@@ -239,21 +225,9 @@ def render_mrs_line(mrs: tuple[str, ...]) -> str:
 def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifest:
     """Parse the ``--manifest`` JSON into a validated :class:`TestPlanManifest`.
 
-    The manifest is a JSON object carrying ``ticket``, ``mrs``, the per-side
-    ``dev``/``local`` commit metadata, and a ``workflows`` array whose entries
-    carry each side's captures (each workflow object: ``workflow`` name, optional
-    ``steps``, and a per-env ``{"video": ..., "images": [...]}`` block). The
-    shape of each field is documented on :class:`TestPlanManifest`,
-    :class:`SideManifest`, and :class:`WorkflowArtifacts`.
-
-    A side is "present" when the manifest carries it (its ``commits`` block or
-    any workflow captures for it), so a single-env manifest updates only that
-    column. A workflow's optional workflow-level ``steps`` array is the written
-    test plan, rendered above that workflow's comparison table. Validates every
-    referenced file exists and is the right media kind, raising
-    :class:`TestPlanValidationError` so no upload runs on bad input. ``base_dir``
-    is the manifest file's directory: a RELATIVE image/video path resolves
-    against it (an absolute path is unchanged; ``None`` keeps cwd-relative).
+    Validates every artifact path exists and is the right media kind; raises
+    :class:`TestPlanValidationError` on bad input so no upload runs. ``base_dir``
+    is the manifest file's directory (relative paths resolve against it).
     """
     try:
         data = json.loads(raw)
@@ -281,16 +255,36 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         dev=sides["dev"],
         local=sides["local"],
         steps=_parse_workflow_steps(raw_workflows),
+        template=_parse_template(data.get("template")),
+        blocked_workflows=_parse_blocked_workflows(data.get("blocked_workflows")),
     )
 
 
-def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, ...]]:
-    """Extract each workflow's optional ``steps`` test plan (workflow-level, shared).
+def validate_template(template: str) -> str:
+    """Return *template* if it names a known body template, else raise."""
+    if template not in KNOWN_TEMPLATES:
+        msg = f"--manifest 'template' must be one of {', '.join(KNOWN_TEMPLATES)}; got {template!r}."
+        raise TestPlanValidationError(msg)
+    return template
 
-    Returns ``{workflow_name: (step, ...)}`` for every workflow that carries a
-    non-empty ``steps`` array; a workflow with no steps is simply absent from the
-    mapping (back-compat — its render omits the test-plan block).
-    """
+
+def _parse_template(raw: object) -> str:
+    """The validated body template from the manifest, defaulting to the capture matrix."""
+    template = str(raw).strip() if raw else ""
+    return validate_template(template) if template else DEFAULT_TEMPLATE
+
+
+def _parse_blocked_workflows(raw: object) -> dict[str, str]:
+    """``{workflow: reason}`` for every blocked entry carrying a non-empty reason."""
+    out: dict[str, str] = {}
+    for name, reason in _as_dict(raw).items():
+        if str(name).strip() and str(reason).strip():
+            out[str(name).strip()] = str(reason).strip()
+    return out
+
+
+def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, ...]]:
+    """``{workflow: (step, …)}`` for every workflow carrying a non-empty ``steps`` array."""
     out: dict[str, tuple[str, ...]] = {}
     for entry in raw_workflows:
         entry_dict = _as_dict(entry)
@@ -325,12 +319,7 @@ def _parse_side(
 
 
 def _parse_side_workflow(entry: object, *, env: str, index: int, base_dir: Path | None) -> WorkflowArtifacts | None:
-    """Validate one workflow's captures for *env*, or ``None`` when this side is empty.
-
-    Returns ``None`` (no captures this side) when the workflow object omits the
-    side or the side carries neither a video nor any images — so an undeployed
-    dev side renders as an empty column rather than a validation error.
-    """
+    """Validated artifacts for *env*, or ``None`` when this side has no captures."""
     if not isinstance(entry, dict):
         msg = f"--manifest workflow {index} must be an object, got {type(entry).__name__}."
         raise TestPlanValidationError(msg)
@@ -380,18 +369,9 @@ def merge_state(
     title: str,
     embeds: dict[str, dict[str, WorkflowEmbed]],
 ) -> TestPlanState:
-    """Merge THIS run's side(s) over the prior persisted state, returning new state.
+    """Overlay this run's sides over *prior*, freezing sides not present in *manifest*.
 
-    The prior state is the source of truth; this run overwrites only the sides
-    it carries (``manifest.dev.present`` / ``manifest.local.present``), so a
-    dev-only run freezes ``local`` and vice versa. ``embeds`` holds the freshly
-    uploaded embed markdown for this run's workflows, keyed
-    ``embeds[env][workflow]``. The title and MRs are refreshed from this run's
-    inputs. When the dev commits now include the deployed MR commits, supplying
-    an empty ``missing_on_dev`` naturally clears the gap line. The per-workflow
-    test-plan ``steps`` are workflow-level and persist across re-runs: this run's
-    steps overwrite a workflow's steps, but a steps-less re-run preserves the
-    prior steps (a workflow whose steps this run omits keeps what was recorded).
+    Steps persist across re-runs: a steps-less re-run preserves the prior steps.
     """
     state: TestPlanState = {
         "ticket": manifest.ticket or prior.get("ticket", ""),
@@ -400,6 +380,8 @@ def merge_state(
         "dev": prior.get("dev", {"commits": {}, "missing_on_dev": [], "workflows": {}}),
         "local": prior.get("local", {"commits": {}, "workflows": {}}),
         "steps": {name: list(steps) for name, steps in prior.get("steps", {}).items()},
+        "template": manifest.template,
+        "blocked_workflows": dict(prior.get("blocked_workflows", {})),
     }
     if manifest.dev.present:
         state["dev"] = {
@@ -411,6 +393,8 @@ def merge_state(
         state["local"] = {"commits": dict(manifest.local.commits), "workflows": embeds.get("local", {})}
     for name, steps in manifest.steps.items():
         state["steps"][name] = list(steps)
+    for name, reason in manifest.blocked_workflows.items():
+        state["blocked_workflows"][name] = reason
     return state
 
 
@@ -418,16 +402,7 @@ def merge_state(
 
 
 def _commit_base_index(mrs: tuple[str, ...]) -> dict[str, str]:
-    """Map each repo short-name → its project web base URL, derived from the MRs.
-
-    A commit SHA in ``state["commits"]`` is keyed by repo short-name only, so the
-    full project path needed for a commit link is recovered by matching that
-    short-name against the MR/PR URLs already in the note (``…/<full>/-/merge_requests/<n>``
-    → base ``https://<host>/<full>``). Only URL-parseable MRs contribute; a repo
-    with no matching MR is absent, so its SHA renders as a bare code-span (never a
-    broken link). The web base is forge-shaped: GitLab ``…/-/commit/<sha>`` and
-    GitHub ``…/commit/<sha>`` are appended by :func:`_commit_md`.
-    """
+    """``{repo_short_name: "<base_url>|<host_kind>"}`` derived from the MR/PR URLs."""
     index: dict[str, str] = {}
     for ref in mrs:
         parsed = pr_ref_from_url(ref)
@@ -441,12 +416,7 @@ def _commit_base_index(mrs: tuple[str, ...]) -> dict[str, str]:
 
 
 def _commit_md(repo: str, sha: str, base_index: dict[str, str]) -> str:
-    """Render one ``repo `sha``` cell, as a clickable commit link when resolvable.
-
-    Returns ``[repo `sha`](<base>/-/commit/<sha>)`` (GitLab) /
-    ``…/commit/<sha>`` (GitHub) when *repo* has a project base in *base_index*,
-    else the bare ``repo `sha``` code-span (never a broken link).
-    """
+    """``[repo `sha`](url)`` when resolvable, else bare ``repo `sha```."""
     entry = base_index.get(repo)
     if not entry:
         return f"{repo} `{sha}`"
@@ -456,12 +426,7 @@ def _commit_md(repo: str, sha: str, base_index: dict[str, str]) -> str:
 
 
 def _commits_line(label: str, side: SideState, base_index: dict[str, str]) -> str:
-    """The per-repo commit-provenance line for one side, or ``""`` when none.
-
-    Each ``repo `sha``` is a clickable commit link when the repo's project base
-    resolves from the note's MRs (see :func:`_commit_base_index`), else a bare
-    code-span.
-    """
+    """``"<label>: repo `sha`, …"`` for one side, or ``""`` when no commits."""
     commits = side.get("commits") or {}
     if not commits:
         return ""
@@ -470,12 +435,7 @@ def _commits_line(label: str, side: SideState, base_index: dict[str, str]) -> st
 
 
 def _reconcile_line(dev: SideState, local: SideState) -> str:
-    """The per-repo Dev↔Local ``±`` reconciliation line, or ``""`` when no repo overlaps.
-
-    For each repo present on BOTH sides: ``repo: = same commit`` when the dev and
-    local SHAs match, else ``repo: ≠ dev `<sha>` vs local `<sha>``` — so "are dev
-    and local on the same commit?" is explicit and obvious per repo.
-    """
+    """``"Dev ± Local: repo: = …"`` per shared repo, or ``""`` when no overlap."""
     dev_commits = dev.get("commits") or {}
     local_commits = local.get("commits") or {}
     shared = sorted(set(dev_commits) & set(local_commits))
@@ -510,11 +470,7 @@ def _workflow_names(state: TestPlanState) -> list[str]:
 
 
 def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
-    """Return ``(video_cell, image_cells)`` for one side of a workflow.
-
-    A missing workflow or a missing video yields the ``—`` placeholder so the
-    column stays aligned (e.g. dev not yet deployed).
-    """
+    """``(video_cell, image_cells)`` for one side; ``—`` placeholder when absent."""
     wf = side.get("workflows", {}).get(workflow)
     if wf is None:
         return _EMPTY_CELL, []
@@ -522,12 +478,7 @@ def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
 
 
 def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
-    """Render the ``**How to test:**`` numbered step list for one workflow, or ``[]``.
-
-    The written test plan a human follows to reproduce the workflow manually,
-    rendered ABOVE the workflow's comparison table. Omitted entirely (back-compat)
-    when the workflow has no recorded steps.
-    """
+    """Numbered ``**How to test:**`` step list for *workflow*, or ``[]`` when none."""
     steps = state.get("steps", {}).get(workflow, [])
     if not steps:
         return []
@@ -535,16 +486,7 @@ def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
 
 
 def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
-    """Render one workflow's block: heading, test-plan steps, then the ``| Dev | Local |`` table.
-
-    The optional ``**How to test:**`` numbered step list (the written test plan)
-    renders above the table. The video row (each side's clip, ``—`` when absent)
-    renders only when at least one side carries a video — an all-em-dash video
-    row carries no information, so a screenshot-only workflow omits it entirely
-    (#272 standard). One screenshot-pair row follows per capture (dev capture
-    left, local capture right; ``—`` where a side has fewer captures — e.g. dev
-    not deployed yet).
-    """
+    """Heading + optional steps + ``| Dev | Local |`` table for one workflow."""
     dev_video, dev_images = _cells(state["dev"], workflow)
     local_video, local_images = _cells(state["local"], workflow)
 
@@ -561,25 +503,13 @@ def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
     return lines
 
 
-def render_body(state: TestPlanState) -> str:
-    """Render the full test-plan note body from the merged state.
-
-    Layout: the hidden ticket marker, the hidden ``t3-e2e-data`` JSON blob (the
-    source of truth for the next run's merge), the ``## Test Plan — <title>``
-    heading, the ``Repos & MRs:`` line, the per-side ``Dev deployed`` / ``Local
-    tested`` commit-provenance lines (each ``repo `sha``` a clickable commit link
-    when resolvable; the dev line carrying the ``⚠️ Not yet on dev`` gap clause
-    when MRs are unmerged), the ``Dev ± Local`` reconciliation line (same / differ
-    per shared repo), then per workflow: its heading, the optional
-    ``**How to test:**`` numbered test-plan steps, and the side-by-side ``Dev |
-    Local`` comparison table.
-    """
+def _render_header(state: TestPlanState) -> list[str]:
+    """Shared preamble for every template: markers, heading, MRs, commits, reconcile."""
     ticket_id = state.get("ticket", "")
     title = state.get("title", "") or ticket_id
     dev, local = state["dev"], state["local"]
     base_index = _commit_base_index(tuple(state.get("mrs", [])))
-
-    lines = [
+    lines: list[str] = [
         test_plan_marker(ticket_id=ticket_id),
         f"<!-- t3-e2e-data {json.dumps(state, separators=(',', ':'), sort_keys=True)} -->",
         f"## Test Plan — {title}",
@@ -599,8 +529,81 @@ def render_body(state: TestPlanState) -> str:
     if reconcile:
         lines.append(reconcile)
     lines.append("")
+    return lines
+
+
+def _blocked_lines(state: TestPlanState) -> list[str]:
+    """Blocked-workflow placeholders: one heading + reason per entry."""
+    lines: list[str] = []
+    for workflow, reason in (state.get("blocked_workflows") or {}).items():
+        lines.extend((f"### {workflow}", "", f"**Blocked:** {reason}", ""))
+    return lines
+
+
+def _render_browser_click_first(state: TestPlanState) -> list[str]:
+    """``browser-click-first`` template: numbered steps then inline screenshots."""
+    lines: list[str] = []
     for workflow in _workflow_names(state):
-        lines.extend(_workflow_table(state, workflow))
+        lines.extend((f"### {workflow}", ""))
+        steps = state.get("steps", {}).get(workflow, [])
+        if steps:
+            lines.extend(("**How to test:**", ""))
+            lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
+            lines.append("")
+        for side in (state["dev"], state["local"]):
+            lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
+        lines.append("")
+    return lines
+
+
+def _render_link_api(state: TestPlanState) -> list[str]:
+    """``link-api`` template: link_md + code_md per workflow, no table, no images."""
+    lines: list[str] = []
+    for workflow in _workflow_names(state):
+        lines.extend((f"### {workflow}", ""))
+        for side in (state["dev"], state["local"]):
+            embed = side.get("workflows", {}).get(workflow, {})
+            link_md = embed.get("link_md", "") if embed else ""
+            code_md = embed.get("code_md", "") if embed else ""
+            if link_md:
+                lines.append(link_md)
+            if code_md:
+                lines.append(code_md)
+        lines.append("")
+    return lines
+
+
+def render_body(state: TestPlanState) -> str:
+    """Render the full note body from the merged state.
+
+    Dispatches on ``state["template"]``: ``"browser-click-first"`` →
+    numbered steps + inline screenshots; ``"link-api"`` → links + code
+    blocks; default ``"capture-matrix"`` → side-by-side Dev | Local table.
+    The blocked-workflow placeholders render on every template (shared tail).
+    Raises :class:`TestPlanValidationError` when nothing to post.
+    """
+    template = state.get("template") or DEFAULT_TEMPLATE
+    if template == "browser-click-first":
+        workflow_lines = _render_browser_click_first(state)
+    elif template == "link-api":
+        workflow_lines = _render_link_api(state)
+    else:
+        workflow_lines = []
+        for workflow in _workflow_names(state):
+            workflow_lines.extend(_workflow_table(state, workflow))
+
+    blocked = state.get("blocked_workflows") or {}
+    dev_commits = bool(state["dev"].get("commits"))
+    local_commits = bool(state["local"].get("commits"))
+    mrs = bool(state.get("mrs"))
+    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs
+    if not has_content:
+        msg = "empty: the test-plan state has no workflows and no blocked workflows — nothing to post."
+        raise TestPlanValidationError(msg)
+
+    lines = _render_header(state)
+    lines.extend(workflow_lines)
+    lines.extend(_blocked_lines(state))
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

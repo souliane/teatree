@@ -247,8 +247,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "DB-backed config override tier — env -> DB -> TOML precedence (#1775).",
         [
             ("set", "Upsert a DB override row for an overridable setting (JSON value)."),
+            ("get", "Print a setting's resolved value and its source (db vs file/env)."),
             ("clear", "Remove a DB override row, falling back to the file/env source."),
             ("list", "List every DB config override row (read-only)."),
+            ("import", "Seed the DB store from operational [teatree] toml keys (one-time)."),
         ],
         core_dispatch=True,
     ),

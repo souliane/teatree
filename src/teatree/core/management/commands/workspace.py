@@ -21,13 +21,11 @@ from teatree.core.management.commands._workspace_cleanup import (
     WorktreeReaper,
     _die,
     _fix_drift,
-    _is_interactive,
     _raise_on_cleanup_failures,
     drop_orphan_databases,
     drop_orphaned_stashes,
     is_clean_ignored,
     prune_branches,
-    resolve_unsynced_worktree,
 )
 from teatree.core.management.commands._workspace_docker import (
     reap_orphan_worktree_docker,
@@ -35,6 +33,7 @@ from teatree.core.management.commands._workspace_docker import (
     reap_stale_report,
 )
 from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
+from teatree.core.management.commands._workspace_reap import _is_interactive, reap_one_worktree
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
@@ -573,10 +572,7 @@ class Command(TyperCommand):
             if is_clean_ignored(wt.branch, overlay=wt.overlay):
                 cleaned.append(f"SKIPPED '{wt.branch}': matches clean_ignore — keeping")
                 continue
-            try:
-                cleaned.append(str(cleanup_worktree(wt)))
-            except RuntimeError as exc:
-                cleaned.append(resolve_unsynced_worktree(wt, exc, interactive=interactive))
+            cleaned.append(reap_one_worktree(wt, interactive=interactive))
 
         cleaned.extend(reaper.remove_empty_ticket_dirs())
 

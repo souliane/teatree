@@ -9,6 +9,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
+from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -99,6 +100,16 @@ class WorktreeProvisioner(RunnerBase):
                 workspace / repo_name,
             )
             return None
+
+        # #2276: ``find_clone_path`` resolves by basename, so a SIBLING clone
+        # of the same name (a different ``origin``) would be cut silently. When
+        # ``repo_name`` is an ``owner/repo`` slug it carries a canonical remote
+        # identity to enforce — refuse loudly if the resolved clone's ``origin``
+        # is a different repo, before ``git worktree add``. A bare basename has
+        # no slug to compare against, so the guard is skipped (it must never
+        # crash the legitimate ``--repos <basename>`` flow).
+        if is_github_slug(repo_name):
+            guard_repo_remote_slug(str(repo_path), repo_name)
 
         wt_path = ticket_dir / Path(repo_name).name
         if wt_path.exists():

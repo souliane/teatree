@@ -29,17 +29,31 @@ os.environ.setdefault("HOME", str(_IMPORT_HOME))
 os.environ.setdefault("T3_WORKSPACE_DIR", str(_IMPORT_WORKSPACE))
 
 
+# Config-source controls. Stripping these would defeat reproducing the CI
+# default-branch condition locally: the CI image's git defaults to ``master``,
+# so a fixture that assumes ``main`` exits 128. ``GIT_CONFIG_NOSYSTEM=1`` forces
+# git's compiled-in ``master`` default on a dev box whose system/global config
+# bakes in ``main`` (souliane/teatree#2359). These do not carry the parent
+# repo's index/worktree the way the hook vars below do, so they are safe to keep.
+_GIT_CONFIG_SOURCE_VARS = frozenset(
+    {"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"},
+)
+
+
 def _strip_git_hook_env() -> None:
     """Strip GIT_* env vars inherited from pre-commit hooks.
 
     When pytest runs as a prek/pre-commit hook via ``git commit -a``, git sets
     ``GIT_INDEX_FILE`` to ``.git/index.lock``. Hook subprocesses inherit this,
     so any git operation in a test (e.g. ``git init`` in a temp dir) corrupts
-    the parent repo's index. Stripping all ``GIT_*`` vars at session start
+    the parent repo's index. Stripping the hook ``GIT_*`` vars at session start
     prevents this. See https://github.com/j178/prek/issues/1786.
+
+    Config-source controls (``GIT_CONFIG_NOSYSTEM`` and friends) are preserved
+    so the CI default-branch condition is reproducible locally.
     """
     for var in list(os.environ):
-        if var.startswith("GIT_"):
+        if var.startswith("GIT_") and var not in _GIT_CONFIG_SOURCE_VARS:
             del os.environ[var]
 
 

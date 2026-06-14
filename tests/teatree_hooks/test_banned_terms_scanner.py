@@ -313,6 +313,100 @@ class TestExtractPublishPayload:
         assert "acmecorp" in payload
 
 
+class TestT3ReviewPostBodyIsPositionalNote:
+    """``t3 review post-comment`` / ``post-draft-note`` body is the positional NOTE.
+
+    Both verbs carry the body as the positional ``NOTE`` argument (``review
+    <verb> REPO MR NOTE``), not a ``--body``/``--message`` flag. The body
+    extractor's flag walkers found no body flag, so a clean general note's body
+    was never extracted (a banned term in it slipped through unscanned, #2278
+    Bug 1 / #2270) and the inline ``--file`` anchor was treated as a body-file
+    (the anchored SOURCE was scanned instead of the note, #2278 Bug 2).
+    """
+
+    def _payload(self, command: str) -> str | None:
+        return banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+
+    def test_general_note_positional_body_is_extracted(self) -> None:
+        payload = self._payload('t3 teatree review post-comment my-org/repo 7 "clean general note" --general')
+        assert payload is not None
+        assert "clean general note" in payload
+
+    def test_general_note_banned_positional_body_is_surfaced(self) -> None:
+        # Bug 1 / #2270 RED guard: a banned term in the POSITIONAL body must be
+        # in the extracted payload so the scanner can block it. Pre-fix the
+        # payload was empty and the term slipped through.
+        payload = self._payload(
+            't3 teatree review post-comment my-org/repo 7 "this names acmecorp internally" --general'
+        )
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_post_draft_note_general_banned_positional_body_is_surfaced(self) -> None:
+        payload = self._payload('t3 teatree review post-draft-note my-org/repo 7 "acmecorp wants this" --general')
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_inline_note_body_is_the_note_not_the_anchor_source(self, tmp_path: Path) -> None:
+        # Bug 2 RED guard: the inline ``--file`` anchor points at a SOURCE that
+        # happens to contain a banned substring. The published body is the NOTE,
+        # so the source content must NOT be in the extracted payload. Pre-fix
+        # ``--file`` was treated as a body-file and the source was scanned.
+        source = tmp_path / "module.py"
+        source.write_text("# internal wiring for acmecorp\nx = 1\n", encoding="utf-8")
+        payload = self._payload(
+            f't3 teatree review post-comment my-org/repo 7 "clean review note" --file {source} --line 1'
+        )
+        assert payload is not None
+        assert "clean review note" in payload
+        assert "acmecorp" not in payload
+
+    def test_inline_note_with_missing_anchor_source_does_not_fail_closed(self) -> None:
+        # Bug 2 fail-close RED guard: a non-existent ``--file`` anchor must not
+        # make the gate fail closed — the body is the NOTE, which is readable.
+        payload = self._payload(
+            't3 teatree review post-comment my-org/repo 7 "clean review note" --file src/absent_module.py --line 3'
+        )
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "clean review note" in payload
+
+    def test_inline_note_banned_positional_body_is_surfaced(self, tmp_path: Path) -> None:
+        # The fix must not weaken detection: a banned term in the NOTE of an
+        # inline post (with a clean anchor) must still be surfaced.
+        source = tmp_path / "module.py"
+        source.write_text("x = 1\n", encoding="utf-8")
+        payload = self._payload(
+            f't3 teatree review post-comment my-org/repo 7 "acmecorp asked for this" --file {source} --line 1'
+        )
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_dash_leading_note_after_end_of_options_is_surfaced(self) -> None:
+        # G1 RED guard: Typer requires ``--`` to pass a positional starting with
+        # ``-``. Pre-fix the ``--`` marker and the dash-leading NOTE were both
+        # treated as flags, only two positionals were collected, and the banned
+        # term in the note slipped through unscanned.
+        payload = self._payload('t3 teatree review post-comment my-org/repo 7 -- "--leading-dash acmecorp leak"')
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_env_prefixed_t3_leader_note_is_surfaced(self) -> None:
+        # G2 RED guard: an env-prefixed ``t3`` leader (``FOO=bar t3 ...``) was
+        # not recognised as a review post, so the positional NOTE was never
+        # extracted and a banned term in it escaped scanning.
+        payload = self._payload('FOO=bar t3 teatree review post-comment my-org/repo 7 "acmecorp note"')
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_path_form_t3_leader_note_is_surfaced(self) -> None:
+        # G2 RED guard: a path-form ``t3`` leader (``./t3``) was not recognised
+        # as a review post, so the positional NOTE escaped scanning.
+        payload = self._payload('./t3 teatree review post-comment my-org/repo 7 "acmecorp note"')
+        assert payload is not None
+        assert "acmecorp" in payload
+
+
 class TestRelativeBodyFileResolvesAgainstCommandDir:
     """A relative ``--body-file`` resolves against the command's own ``cd`` dir.
 
@@ -358,7 +452,7 @@ class TestRelativeBodyFileResolvesAgainstCommandDir:
         worktree = workspace / "worktree"
         worktree.mkdir(parents=True)
         ambient_cwd.mkdir()
-        _git(worktree, "init", "-q")
+        _git(worktree, "init", "-q", "-b", "main")
         (worktree / "msg.txt").write_text("internal note about acmecorp\n", encoding="utf-8")
         # Process cwd is OUTSIDE the workspace, so a process-cwd-relative parse
         # cannot find the body -- only the ambient-cwd anchor reaches it.
@@ -1106,6 +1200,100 @@ class TestBannedTermPublishFormsMustBlock:
         body_file = tmp_path / "mr_body.md"
         body_file.write_text("This MR updates the acmecorp adapter.\n", encoding="utf-8")
         blocked = handle_banned_terms_pretool(_bash(f"glab mr create --title t --description-file {body_file}"))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+@pytest.mark.integration
+class TestT3ReviewPostGateEndToEnd:
+    """The #2278/#2270 fix end-to-end through ``handle_banned_terms_pretool``.
+
+    Bug 1 (#2270): a clean general note posts; a banned term in the positional
+    body still blocks. Bug 2: an inline post whose ``--file`` anchor points at a
+    source containing a private substring posts fine — the anchored source is
+    NOT the published body.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_clean_general_note_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('t3 teatree review post-comment my-org/repo 7 "this looks good, ship it" --general')
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_banned_term_general_note_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('t3 teatree review post-comment my-org/repo 7 "ping acmecorp before merge" --general')
+        )
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert "acmecorp" in decision["permissionDecisionReason"]
+
+    def test_post_draft_note_banned_general_body_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('t3 teatree review post-draft-note my-org/repo 7 "acmecorp wants this" --general')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_inline_post_with_anchor_source_carrying_private_substring_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = tmp_path / "module.py"
+        source.write_text("# wiring for acmecorp tenant\nx = 1\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(
+            _bash(f't3 teatree review post-comment my-org/repo 7 "Nit: rename for clarity" --file {source} --line 1')
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_inline_post_with_missing_anchor_source_does_not_fail_closed(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash(
+                't3 teatree review post-comment my-org/repo 7 "Nit: rename for clarity" --file src/absent.py --line 3'
+            )
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_inline_post_banned_term_in_note_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        source = tmp_path / "module.py"
+        source.write_text("x = 1\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(
+            _bash(f't3 teatree review post-comment my-org/repo 7 "acmecorp asked for this" --file {source} --line 1')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_dash_leading_note_after_end_of_options_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # G1 RED guard: ``--`` end-of-options + a dash-leading NOTE carrying a
+        # banned term published the term UNSCANNED pre-fix.
+        blocked = handle_banned_terms_pretool(
+            _bash('t3 teatree review post-comment my-org/repo 7 -- "--leading-dash acmecorp leak"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_env_prefixed_t3_leader_banned_note_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # G2 RED guard: an env-prefixed ``t3`` leader escaped scanning pre-fix.
+        blocked = handle_banned_terms_pretool(
+            _bash('FOO=bar t3 teatree review post-comment my-org/repo 7 "acmecorp note"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_path_form_t3_leader_banned_note_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # G2 RED guard: a path-form ``t3`` leader (``./t3``) escaped scanning.
+        blocked = handle_banned_terms_pretool(_bash('./t3 teatree review post-comment my-org/repo 7 "acmecorp note"'))
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 

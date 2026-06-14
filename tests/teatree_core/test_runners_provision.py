@@ -15,6 +15,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeProvisioner
+from teatree.utils import git
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -311,3 +312,84 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
         stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc", visibility="PRIVATE")
 
         assert stamped == [], "private clone must NOT be identity-stamped — visibility scope error (#785)"
+
+
+class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
+    """#2276: provisioning a worktree against the WRONG repo must fail loud.
+
+    When ``ticket.repos`` carries an ``owner/repo`` slug, the source clone
+    the resolver lands on must actually be that repo. The clone resolver
+    matches by basename, so a SIBLING git repo of the same basename — a
+    different ``origin`` — would otherwise be cut silently. The guard
+    compares the resolved clone's ``origin`` slug against the expected
+    slug before ``git worktree add`` and refuses on a mismatch. Real git
+    under ``tmp_path`` (no mock of the slug read).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _init_clone(self, path: Path, remote_url: str) -> None:
+        path.mkdir(parents=True)
+        git.run_strict(repo=str(path), args=["init", "-q"])
+        git.run_strict(repo=str(path), args=["remote", "add", "origin", remote_url])
+
+    def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+
+    def _run(self, repos: list[str], branch: str) -> Any:
+        ticket = self._scoped_ticket(repos=repos, branch=branch)
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def test_matching_slug_proceeds(self) -> None:
+        clone = self.workspace / "souliane" / "teatree"
+        self._init_clone(clone, "git@github.com:souliane/teatree.git")
+
+        result = self._run(["souliane/teatree"], "ac-teatree-2276-ok")
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / "ac-teatree-2276-ok" / "teatree"
+        assert (wt_path / ".git").exists()
+        wt = Worktree.objects.get(ticket__repos=["souliane/teatree"], repo_path="souliane/teatree")
+        assert (wt.extra or {}).get("worktree_path") == str(wt_path)
+
+    def test_sibling_repo_with_wrong_origin_raises_loud(self) -> None:
+        # The wrong-repo footgun: a SIBLING clone of the same basename whose
+        # ``origin`` is a different repo. ``ticket.repos`` says the worktree
+        # is for ``souliane/teatree`` but the only ``teatree`` clone on disk
+        # points at ``someone-else/teatree``.
+        sibling = self.workspace / "someone-else" / "teatree"
+        self._init_clone(sibling, "git@github.com:someone-else/teatree.git")
+
+        with pytest.raises(ValueError, match="souliane/teatree") as exc:
+            self._run(["souliane/teatree"], "ac-teatree-2276-wrong")
+
+        message = str(exc.value)
+        assert "someone-else/teatree" in message
+        no_worktree = self.workspace / "ac-teatree-2276-wrong" / "teatree"
+        assert not no_worktree.exists()
+
+    def test_bare_repo_name_is_not_guarded(self) -> None:
+        # A bare basename carries no canonical slug to compare against, so
+        # the guard must not fire — the legitimate ``--repos teatree`` flow
+        # (resolver scans for the clone) keeps working regardless of origin.
+        clone = self.workspace / "souliane" / "teatree"
+        self._init_clone(clone, "git@github.com:anyone/teatree.git")
+
+        result = self._run(["teatree"], "ac-teatree-2276-bare")
+
+        assert result.ok is True, result.detail
+        assert (self.workspace / "ac-teatree-2276-bare" / "teatree" / ".git").exists()

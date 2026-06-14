@@ -285,6 +285,62 @@ class TestF2ApiCreateEndpointBypass:
         }
         assert _is_merge_class_mutation(data) is False, "bare GET to pulls must not be merge-class"
 
+    def test_f2b_glab_api_mr_sub_resource_get_is_not_merge_class(self):
+        """Glab api .../merge_requests/123/pipelines is a read-only GET — not merge-class."""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab api projects/org%2Fproject/merge_requests/123/pipelines -f page=1"},
+        }
+        assert _is_merge_class_mutation(data) is False, (
+            "GET to a sub-resource of merge_requests must not be treated as a create"
+        )
+
+    def test_f2b_gh_api_pr_sub_resource_get_is_not_merge_class(self):
+        """Gh api .../pulls/123/commits is a read-only GET — not merge-class."""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh api repos/org/repo/pulls/123/commits -f per_page=100"},
+        }
+        assert _is_merge_class_mutation(data) is False, "GET to a sub-resource of pulls must not be treated as a create"
+
+    def test_f2b_glab_api_mr_sub_resource_approvals_get_is_not_merge_class(self):
+        """Glab api .../merge_requests/42/approvals with a body flag is not merge-class.
+
+        The body flag (``-f page=1``) makes the effective method default to
+        POST, so the exemption is carried by the endpoint regex (the
+        sub-resource lookahead), not by the method classifier — the same path
+        the pipelines/commits siblings exercise. Without ``-f`` the classifier
+        defaults to GET on its own, making the test vacuous (green even under
+        an over-broad endpoint regex).
+        """
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab api projects/42/merge_requests/42/approvals -f page=1"},
+        }
+        assert _is_merge_class_mutation(data) is False, "GET to approvals sub-resource must not be merge-class"
+
+    def test_f2b_glab_api_mr_create_trailing_slash_is_merge_class(self):
+        """Glab api .../merge_requests/ (trailing slash) POST is a merge-class create.
+
+        The collection-create endpoint written WITH a trailing slash and a
+        body must still classify as a create — dropping ``/`` from the trailing
+        class lets this real MR-create POST escape Gate 12, the metadata gate,
+        and the merge-class check at once.
+        """
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "glab api projects/42/merge_requests/ -f title=x -f description=x"},
+        }
+        assert _is_merge_class_mutation(data) is True, "trailing-slash merge_requests/ create must be merge-class"
+
+    def test_f2b_gh_api_pulls_create_trailing_slash_is_merge_class(self):
+        """Gh api .../pulls/ (trailing slash) POST is a merge-class create."""
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh api repos/example-org/private-repo/pulls/ -f title=x -f body=x"},
+        }
+        assert _is_merge_class_mutation(data) is True, "trailing-slash pulls/ create must be merge-class"
+
 
 # ── F3: git -c core.hooksPath bypass ────────────────────────────────────
 

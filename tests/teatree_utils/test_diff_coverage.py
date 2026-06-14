@@ -80,7 +80,7 @@ def _coverage_db_without(repo: Path) -> Path:
 def git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
     (repo / "base.py").write_text("def kept():\n    return 1\n", encoding="utf-8")

@@ -17,7 +17,6 @@ These tests drive the real handler + real DB rows — no monkeypatching of
 """
 
 import json
-import subprocess
 import tempfile
 from io import StringIO
 from pathlib import Path
@@ -30,28 +29,13 @@ from typer.testing import CliRunner
 import hooks.scripts.hook_router as router
 from teatree.cli.teatree_gate import PLAN_GATE_KEY, _gate_key_is_enabled, register_gate_commands
 from teatree.core.models import Ticket, Worktree
-
-_GIT_ENV = {
-    "GIT_AUTHOR_NAME": "t",
-    "GIT_AUTHOR_EMAIL": "t@e",
-    "GIT_COMMITTER_NAME": "t",
-    "GIT_COMMITTER_EMAIL": "t@e",
-}
+from tests._git_repo import make_git_repo, run_git
 
 
 def _git_repo(path: Path) -> str:
     """Init a real git repo at *path* and return its resolved toplevel."""
-    import os  # noqa: PLC0415
-
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")} | _GIT_ENV
-    subprocess.run(["git", "init", "-q", str(path)], check=True, env=env)  # noqa: S607
-    return subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],  # noqa: S607
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    ).stdout.strip()
+    make_git_repo(path, initial_commit=False)
+    return run_git(path, "rev-parse", "--show-toplevel")
 
 
 def _capture_block(data: dict) -> tuple[bool, dict | None]:

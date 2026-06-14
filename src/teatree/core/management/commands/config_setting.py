@@ -21,7 +21,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
 
 
@@ -94,3 +94,56 @@ class Command(TyperCommand):
             return
         for row in rows:
             self.stdout.write(f"  {row.key} = {row.value!r}")
+
+    @command()
+    def get(
+        self,
+        key: Annotated[str, typer.Argument(help="UserSettings field name to read (must be overridable).")],
+    ) -> None:
+        """Print the resolved value for *key* and name its source (DB vs file/env).
+
+        The read side of the dual-read store: when a ``ConfigSetting`` row exists
+        it is reported as the ``db`` source; otherwise the value falls through to
+        the file/env layer and is reported as the ``file/env`` source. Refuses a
+        key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud, not a
+        silent ``file/env`` answer for a non-setting.
+        """
+        if key not in OVERLAY_OVERRIDABLE_SETTINGS:
+            self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
+            raise SystemExit(2)
+        stored = ConfigSetting.objects.get_effective(key)
+        if stored is not None:
+            self.stdout.write(f"  {key} = {stored!r}  [source: db]")
+            return
+        fallback = getattr(get_effective_settings(), key, None)
+        self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]")
+
+    @command(name="import")
+    def import_toml(self) -> None:
+        """Seed the DB store from the operational ``[teatree]`` toml keys (one-time migration).
+
+        The dual-read migration step (#938): every ``[teatree]`` key that is a
+        registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
+        registry's parser and upserted into the store, so existing installs move
+        their operational config into the DB. Bootstrap-file-only keys
+        (``private_repos`` / ``DATABASE_URL`` / …) and unknown keys are skipped —
+        only operational settings move. The upsert makes a re-run idempotent.
+        """
+        teatree_table = load_config().raw.get("teatree", {})
+        if not isinstance(teatree_table, dict):
+            self.stdout.write("  (no [teatree] table to import)")
+            return
+        imported = 0
+        for key, raw_value in teatree_table.items():
+            parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+            if parser is None:
+                continue
+            try:
+                canonical = parser(raw_value)
+            except (ValueError, TypeError, AttributeError) as exc:
+                self.stderr.write(f"  skipping {key!r}: invalid value {raw_value!r}: {exc}")
+                continue
+            ConfigSetting.objects.set_value(key, canonical)
+            imported += 1
+            self.stdout.write(f"  imported {key} = {ConfigSetting.objects.get_effective(key)!r}")
+        self.stdout.write(f"  imported {imported} operational setting(s) into the DB store")

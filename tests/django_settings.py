@@ -15,6 +15,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.messages",
     "django.contrib.sessions",
+    "django_linear_migrations",
     "django_rich",
     "django_tasks",
     "django_tasks_db",

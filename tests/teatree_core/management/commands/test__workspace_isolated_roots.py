@@ -8,7 +8,6 @@ never one that still holds a git checkout or any uncommitted/unpushed work
 """
 
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -18,12 +17,9 @@ from django.test import TestCase
 from teatree import paths
 from teatree.core.management.commands import _workspace_isolated_roots as reaper
 from teatree.core.models import Ticket, Worktree
+from tests._git_repo import make_git_repo
 
 _REAP = "teatree.core.management.commands._workspace_isolated_roots"
-
-
-def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)  # noqa: S607
 
 
 def _make_env_dir(root: Path, slug: str) -> Path:
@@ -73,9 +69,7 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
 
     def test_dir_holding_a_git_checkout_is_skipped(self) -> None:
         slug = paths.isolated_slug(Path("/gone/with/git"))
-        env_dir = self.root / slug
-        env_dir.mkdir()
-        _git(env_dir, "init")
+        env_dir = make_git_repo(self.root / slug, initial_commit=False)
 
         result = reaper.reap_orphan_isolated_worktree_roots()
 
