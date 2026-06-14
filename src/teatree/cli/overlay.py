@@ -110,6 +110,32 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
+def _overlay_project_env(overlay_name: str) -> Path | None:
+    """The named overlay's own project directory, or ``None`` for a same-env overlay.
+
+    The overlay named by *overlay_name* may be registered as an entry point in
+    its *own* clone's virtualenv — a different interpreter than the uv-tool
+    teatree install that runs ``t3``. In that case ``sys.executable -m teatree``
+    cannot import the overlay package, so ``get_overlay(overlay_name)`` raises
+    ``Overlay not found`` inside the core-dispatch subprocess (#2221). Returning
+    the overlay's project dir lets :func:`managepy_core` run the subprocess from
+    that env via :func:`runner_prefix`, where the overlay package is importable.
+
+    Returns ``None`` when *overlay_name* is blank, unknown, or registered as a
+    plain entry point with no project dir — the overlay is then installed in the
+    same env that runs ``t3``, so ``sys.executable`` already imports it.
+    """
+    if not overlay_name:
+        return None
+    from teatree.config import OverlayEntry, discover_overlays  # noqa: PLC0415
+
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+    for entry in discover_overlays():
+        if OverlayEntry.canonical_overlay_name(entry.name) == canonical:
+            return entry.project_path
+    return None
+
+
 def managepy_core(*args: str, overlay_name: str = "") -> None:
     """Run a teatree-CORE management command via ``python -m teatree``.
 
@@ -124,12 +150,23 @@ def managepy_core(*args: str, overlay_name: str = "") -> None:
     When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
     environment so that ``get_overlay()`` can resolve the correct overlay even
     when multiple overlays are installed.
+
+    The subprocess runs ``python -m teatree`` — never the overlay's ``manage.py``
+    — but in the *named overlay's* project environment when it has one
+    (:func:`_overlay_project_env`), so a non-default overlay registered in its
+    own clone's venv is importable and ``get_overlay`` resolves it (#2221).
+    An overlay with no project dir is installed in the same env that runs
+    ``t3``, so the subprocess uses ``sys.executable``.
     """
     env = _base_env()
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
     env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+    project_path = _overlay_project_env(overlay_name)
+    if project_path is not None:
+        run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
+    else:
+        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 class OverlayAppBuilder:
