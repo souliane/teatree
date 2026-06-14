@@ -147,11 +147,13 @@ def _check_no_edit_in_main_clone(events: list[SessionEvent]) -> InvariantResult:
 
 def _check_no_raw_out_of_band_merge(events: list[SessionEvent]) -> InvariantResult:
     """No ``Bash`` command runs a raw ``gh pr merge`` / ``glab mr merge`` / REST merge write."""
+    from teatree.hooks.raw_merge_detect import invokes_raw_merge_subcommand  # noqa: PLC0415
+
     for index, event in enumerate(events):
         command = _bash_command(event)
         if not command:
             continue
-        if _OUT_OF_BAND_MERGE_RE.search(command):
+        if invokes_raw_merge_subcommand(command):
             return _violation(index, "raw out-of-band merge (gh pr merge / glab mr merge)")
         if (
             _GLAB_GH_API_RE.search(command)
