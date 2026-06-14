@@ -195,6 +195,30 @@ but it is explicitly *ignored with `--system-prompt`* (the flag the runner uses
 to inject the SKILL.md). There is no honored prefix-cache knob for our path, so
 no cross-scenario cache saving is claimed — the win is the smaller prompt itself.
 
+### The `under_load` behavioural-drift lane (`lane` + `context_preamble`)
+
+`agent_sections` above isolates ONE rule; the `under_load` lane does the
+opposite, on purpose. A scenario sets `lane: under_load` to reproduce
+instruction-following drift caused by context pollution / skill overload — the
+failure mode a single-skill empty clean-room strips out. Under that lane the
+runner builds the system prompt from the **whole skill bundle** (every
+`skills/*/SKILL.md`, framed by `SKILL_BUNDLE_FRAMING` next to `LIVE_ENV_FRAMING`)
+and folds the scenario's `context_preamble` — an 8k–20k-token polluted prefix —
+into the **user prompt text**. The SDK `query(prompt, options)` is
+user-turns-only: it accepts no pre-seeded assistant/tool-result turns, so the
+pollution must live in the prompt text, never as a faked multi-turn history.
+`eval/under_load.py` owns both builds; `lane` defaults to `clean_room`, so every
+existing scenario is byte-identical.
+
+`discover_specs()` returns the whole catalog; `t3 eval run --lane <clean_room|
+under_load>` (`cli/eval/lane_filter.py`, also threaded through the `--docker`
+passthrough and the `eval.yml` workflow) slices it so the cheap PR-path
+anti-vacuity gate and the weekly metered lane read one catalog but run the right
+subset. The flagship `delegates_under_load_not_edits_in_main_agent` ships a
+`_fail` REPLAY fixture (an agent that `Edit`-ed in the main agent instead of
+dispatching a `Task`/`Agent`) that grades RED with the matchers and GREEN with
+them removed; the live A/B pass@k measurement is the gated/weekly metered step.
+
 ### Wall-clock — `--parallel N`
 
 Each Agent-SDK query is I/O-bound (network round-trips), so the suite runs scenarios

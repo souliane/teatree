@@ -24,6 +24,15 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: ``T3_EVAL_MAX_TURNS``).
 DEFAULT_MAX_TURNS = 30
 
+#: The default eval lane. A clean-room scenario loads ONE skill into an empty
+#: context; the catalog's existing specs all default to it, so their runs are
+#: byte-identical. ``UNDER_LOAD_LANE`` is the behavioural-drift lane that loads
+#: the FULL skill bundle plus an injected polluted ``context_preamble`` to
+#: reproduce the instruction-following drift a real session exhibits.
+CLEAN_ROOM_LANE = "clean_room"
+UNDER_LOAD_LANE = "under_load"
+PERMITTED_LANES: frozenset[str] = frozenset({CLEAN_ROOM_LANE, UNDER_LOAD_LANE})
+
 
 @dataclasses.dataclass(frozen=True)
 class Matcher:
@@ -117,6 +126,13 @@ class EvalSpec:
     prompt instead of the whole file. A scenario pinning one rule sends that one
     rule, not all fifty — cutting the dominant per-scenario input cost. Empty
     (the default) sends the whole file, so existing scenarios are unchanged.
+
+    ``lane`` selects the harness mode. ``"clean_room"`` (the default, every
+    existing spec) loads one skill into an empty context. ``"under_load"``
+    reproduces real-session drift: the FULL skill bundle is the system prompt and
+    ``context_preamble`` (an 8k-20k-token polluted prefix) is folded into the
+    user prompt text. The SDK ``query`` is user-turns-only, so the pollution
+    lives in the prompt text — never as pre-seeded assistant/tool-result turns.
     """
 
     name: str
@@ -130,6 +146,8 @@ class EvalSpec:
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
+    lane: str = CLEAN_ROOM_LANE
+    context_preamble: str = ""
 
 
 @dataclasses.dataclass(frozen=True)

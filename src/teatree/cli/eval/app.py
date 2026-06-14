@@ -3,20 +3,20 @@
 import json
 import sys
 from pathlib import Path
-from typing import cast
 
 import typer
-from claude_agent_sdk.types import EffortLevel
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
 from teatree.cli.eval.all_command import all_lanes
+from teatree.cli.eval.app_helpers import require_effort, require_spec
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.label import label_app
+from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
@@ -40,9 +40,8 @@ from teatree.eval.backends import (
     UnknownBackendError,
     make_runner,
 )
-from teatree.eval.discovery import discover_specs, find_spec
+from teatree.eval.discovery import discover_specs
 from teatree.eval.model_variant import EFFORT_LEVELS
-from teatree.eval.models import EvalSpec
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.report import evaluate, render_html, render_json, render_text
 from teatree.eval.sdk_runner import resolve_metered_budget_usd, resolve_metered_effort
@@ -91,6 +90,15 @@ def list_scenarios() -> None:
 @eval_app.command("run")
 def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval run`` flag. The arg list IS the CLI contract.
     name: str | None = typer.Argument(None, help="Scenario name to run (omit to run all)."),
+    lane: str | None = typer.Option(
+        None,
+        "--lane",
+        help=(
+            "Run only scenarios in this lane (clean_room | under_load). Omit to run every lane "
+            "(default, unchanged). The cheap PR-path gate and the weekly metered lane read the "
+            "same catalog but pass different --lane subsets."
+        ),
+    ),
     output_format: str = typer.Option(
         "text", "--format", help="Report format: text, json, or html (single-trial; html is a self-contained file)."
     ),
@@ -273,12 +281,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # backend; --local is the explicit host escape (a quick check, not the gate);
     # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
     # re-invocation in-process (no re-route loop).
-    effort_level = _require_effort(effort)
+    effort_level = require_effort(effort)
     metered = backend == SDK_BACKEND or trials > 1 or models is not None
     if docker or should_route_to_docker(metered=metered, local=local):
         run_in_docker_or_exit(
             RunDockerArgs(
                 name=name,
+                lane=lane,
                 output_format=output_format,
                 max_turns=max_turns,
                 max_budget_usd=max_budget_usd,
@@ -301,7 +310,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     if output_format == "html" and (trials > 1 or models is not None):
         typer.echo("--format html is only supported for a single-trial run (not --trials/--models)", err=True)
         raise typer.Exit(code=2)
-    specs = discover_specs() if name is None else [_require_spec(name)]
+    specs = filter_specs_by_lane(discover_specs(), lane) if name is None else [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the metered lane, of course we want it executed." The sdk backend
     # (and the always-metered --trials/--models lanes) arm the all-skipped gate
@@ -410,7 +419,7 @@ def prepare_subscription(
     """
     ensure_django()
     require_valid_format(output_format)
-    specs = discover_specs() if name is None else [_require_spec(name)]
+    specs = discover_specs() if name is None else [require_spec(name)]
     manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
     typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
 
@@ -525,21 +534,3 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         parallel=parallel,
         html_path=html,
     )
-
-
-def _require_spec(name: str) -> EvalSpec:
-    spec = find_spec(name)
-    if spec is None:
-        typer.echo(f"unknown scenario: {name!r}", err=True)
-        available = ", ".join(s.name for s in discover_specs()) or "(none)"
-        typer.echo(f"available scenarios: {available}", err=True)
-        raise typer.Exit(code=2)
-    return spec
-
-
-def _require_effort(effort: str) -> EffortLevel:
-    """Validate ``--effort`` against the known levels, or exit 2 listing them."""
-    if effort not in EFFORT_LEVELS:
-        typer.echo(f"unknown --effort {effort!r}; known levels: {', '.join(EFFORT_LEVELS)}", err=True)
-        raise typer.Exit(code=2)
-    return cast("EffortLevel", effort)

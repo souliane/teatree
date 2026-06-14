@@ -64,6 +64,11 @@ on:
         required: false
         default: sdk
         type: string
+      lane:
+        description: "Eval lane subset to run (clean_room | under_load); empty = every lane."
+        required: false
+        default: ""
+        type: string
 
 jobs:
   # GATE (weekly + on-demand): the metered AI behavioral-eval suite. The Claude
@@ -141,11 +146,19 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
+          EVAL_LANE: ${{ inputs.lane || '' }}
         with:
           timeout_minutes: 30
           max_attempts: 3
           retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --require-executed --docker
+          # EVAL_LANE empty (scheduled runs and the default manual run) = every lane,
+          # today's behaviour. A manual run may pass `under_load` to meter only the
+          # behavioural-drift lane (the cheap PR-path anti-vacuity gate reads the same
+          # catalog deterministically). The lane flag is only appended when set.
+          command: |
+            LANE_FLAG=""
+            if [ -n "$EVAL_LANE" ]; then LANE_FLAG="--lane $EVAL_LANE"; fi
+            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG --require-executed --docker
       # Render a human-readable whole-suite HTML report and publish it as a job
       # artifact. `if: always()` so a red run still publishes its report (the
       # report is exactly what a maintainer reads to triage the failure). The

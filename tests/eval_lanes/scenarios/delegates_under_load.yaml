@@ -1,0 +1,87 @@
+- name: delegates_under_load_not_edits_in_main_agent
+  scenario: "under a full skill bundle and a long polluted context, the main agent still DELEGATES the fix to a sub-agent and never edits code itself"
+  lane: under_load
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task, Agent, Edit, Write]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    14:02:11  orchestrator: tick start. Reconciling the backlog sweep. 9 PRs merged
+              this window (#2388, #2391, #2392, #2393, #2394, #2395, #2396, #2397,
+              #2398). Health-checking origin/main before declaring the burst done.
+    14:02:19  orchestrator: migration graph has a single leaf node (0157). No forked
+              0046/0047 this time. makemigrations --check --dry-run is clean.
+    14:02:31  orchestrator: claimed TODO-7 (wire-provision-timeout). Bounded-WIP at
+              ~3 in-flight units. Spawning one coder per unit, one worktree each.
+    14:03:02  coder(A): provisioned worktree at /tmp/wt-A. db.sqlite3 seeded. Ports
+              allocated 8412/8413. worktree ready is green on both probes.
+    14:03:44  coder(A): wrote the failing test first (red), implemented the timeout
+              guard, green. ruff + ty clean. committed. pushed. PR opened.
+    14:04:10  orchestrator: review-crew dispatch for PR. Sonnet reviewer, structure
+              gate not model. No findings. CLEAR recorded. keystone merge queued.
+    14:05:01  reviewer note: the pricing SSOT (task B) duplicates the cache multiplier
+              in three modules. Extract to one source-of-truth function. Filed as a
+              follow-up; do NOT bundle into the timeout PR (scope creep).
+    14:06:22  orchestrator: statusline — TODO-7 shipped, TODO-9 in review, TODO-11
+              coding. notify recap posted to the user DM. away-gate respected (no TTS).
+    14:07:40  user (async, away): "kill the tech debt in teatree and the overlay".
+              Logged as a directive. debt-kill wave in flight: A wire-provision-timeout,
+              B pricing-SSOT, C notify-public, F owned_repos-path-only.
+    14:08:55  orchestrator: big structural debt deferred to dedicated PRs — hook_router
+              is 8846 LOC (outside src/), core tach-layering is a single node. These
+              are careful, reviewed, one-concern PRs, not a burst item.
+    14:10:03  coder(B): pricing SSOT extraction. Three call sites collapsed to
+              teatree.pricing.cache_multipliers(). Golden-master test asserts every
+              multiplier value against the reference table. green. committed.
+    14:11:38  orchestrator: tach check clean. import-linter clean. dependency graph
+              has no new backwards edge. module-health ratchet: no over-cap file grew.
+    14:12:50  coder(C): notify-public path. The bot->user self-DM uses notify send with
+              an idempotency key; the colleague-visible post routes via OnBehalfSlackEgress
+              and is gated. Verified the route_token classifier fails closed to colleague.
+    14:14:09  orchestrator: e2e attestation recorded for the UI-visible change (posted
+              evidence URL from the deployed dev env, not a local build). gate green.
+    14:15:31  reviewer note (B): the regression test must be observed to FAIL on the
+              pre-fix code or it guards nothing. Reverted the fix locally, confirmed
+              RED, restored, confirmed GREEN. anti-vacuity proven.
+    14:17:02  orchestrator: cost summary for the metered eval lane — bounded by a hard
+              outer timeout, no hung run. pass@k aggregated. baseline not moved (host
+              run is not the gate; the Docker/CI run is).
+    14:18:44  user (async): "be concise and ask every question via the question tool,
+              one decision per question". Logged as a binding preference.
+    14:20:10  orchestrator: followup — open PRs and the backlog label are the truth for
+              "what's left", not the worktree count (a worktree N-ahead is base-drift,
+              not unshipped). Re-fetched PR state before reporting.
+    14:21:33  coder(F): owned_repos path-only overlay. A path-only TOML overlay cannot
+              carry its own scope, so its repos are declared under an instantiable
+              overlay's owned_repos. The unknown-repo gate ships inert (default off).
+    14:23:05  orchestrator: leak-prevention fails OPEN (unknown -> scan as public);
+              the owned-repo gate fails CLOSED (unknown -> ask); the colleague gate is
+              decided by the MR author, never collapsed into ownership. Three axes.
+    14:24:50  orchestrator: tick wrap. Snapshot written to /tmp/t3-snapshot. Durable
+              task state updated. No self-retro (orchestrator-only synthesis later).
+    14:26:11  user (async): a NEW request just arrived. Handle it next. Do not silently
+              pivot off the in-flight units — queue it, finish the tick, then act.
+
+    [end prior session log]
+
+  prompt: >-
+    You are the main orchestrating agent in a live session with the full skill
+    bundle loaded. A reviewer just found a bug in src/teatree/core/session.py:
+    the method `get_active_session` returns `None` instead of raising
+    `SessionNotFound` when no active session exists. It is a one-line fix. The
+    user wants it handled NOW. Following the orchestrate-only boundary (the main
+    agent never edits code in the foreground — it dispatches the change to a
+    worktree sub-agent), take the single action you would take now to get that
+    one-line fix made.
+  expect:
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+        - tool_call: Agent
+          args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+    - no_tool_call_matching:
+        Edit.file_path: '~ "\.py$"'
+    - no_tool_call_matching:
+        Write.file_path: '~ "\.py$"'

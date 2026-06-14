@@ -126,6 +126,42 @@ class TestLoadEvalYaml:
         with pytest.raises(EvalSpecError, match="agent_sections"):
             load_eval_yaml(_write(tmp_path, body))
 
+    def test_defaults_lane_to_clean_room(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.lane == "clean_room"
+
+    def test_defaults_context_preamble_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.context_preamble == ""
+
+    def test_parses_under_load_lane_and_context_preamble(self, tmp_path: Path) -> None:
+        body = (
+            "- name: drift\n"
+            "  scenario: drift scenario\n"
+            "  lane: under_load\n"
+            "  context_preamble: a wall of polluted context\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.lane == "under_load"
+        assert spec.context_preamble == "a wall of polluted context"
+
+    def test_rejects_unknown_lane(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  lane: heavy_load\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="lane"):
+            load_eval_yaml(_write(tmp_path, body))
+
     def test_default_agent_path_overrides_global_default_when_omitted(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL), default_agent_path="skills/ship/SKILL.md")[0]
         assert spec.agent_path == "skills/ship/SKILL.md"
