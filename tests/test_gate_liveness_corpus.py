@@ -560,6 +560,18 @@ def _raw_review_allow(_ctx: GateContext) -> dict:
     return _bash("glab api projects/1/merge_requests/1/discussions")
 
 
+# block-secret-file-print (PreToolUse Bash): printing a credential file to the
+# transcript denies; capturing the value into a variable allows.
+
+
+def _secret_print_deny(_ctx: GateContext) -> dict:
+    return _bash("cat ~/.teatree.toml")
+
+
+def _secret_print_allow(_ctx: GateContext) -> dict:
+    return _bash("TOKEN=$(pass show infra/api-key)")
+
+
 # classifier-deny stop gate (Stop): a pending classifier-deny marker emits the
 # STOP-and-explain systemMessage; no marker allows the Stop chain to proceed.
 
@@ -751,6 +763,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_review_deny,
         allow_input=_raw_review_allow,
+    ),
+    GateRow(
+        gate_id="block-secret-file-print",
+        handler=router.handle_block_secret_file_print,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_secret_print_deny,
+        allow_input=_secret_print_allow,
     ),
     GateRow(
         gate_id="classifier-deny-stop-gate",
