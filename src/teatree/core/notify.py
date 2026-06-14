@@ -86,7 +86,7 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         return already
 
     resolved_backend = backend if backend is not None else messaging_from_overlay()
-    resolved_user_id = user_id if user_id is not None else _resolve_user_id()
+    resolved_user_id = user_id if user_id is not None else resolve_user_id()
 
     if resolved_backend is None or not resolved_user_id:
         _record_noop(
@@ -101,12 +101,12 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     if gate is not None:
         return gate
 
-    payload_text = _maybe_linkify(text) if linkify else text
+    payload_text = maybe_linkify(text) if linkify else text
 
     channel, posted_ts, failure = _deliver_dm(
         resolved_backend,
         user_id=resolved_user_id,
-        text=_format(payload_text, kind_value),
+        text=format_notification(payload_text, kind_value),
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -218,7 +218,7 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
         if match is None:
             return
         ts = match.group(1)
-    # Deferred import (mirrors ``_resolve_user_id`` / ``_maybe_linkify``
+    # Deferred import (mirrors ``resolve_user_id`` / ``maybe_linkify``
     # in this module): the answer-stamp is an opt-in side path; keeping
     # the model import out of ``teatree.core.notify`` import time avoids
     # perturbing the module-import graph that the on-behalf gate and
@@ -353,7 +353,7 @@ def _feature_enabled() -> bool:
     return bool(getattr(settings_, "notify_user_via_bot", True))
 
 
-def _resolve_user_id() -> str:
+def resolve_user_id() -> str:
     """Resolve the Slack user id to DM (overlay override → global → empty).
 
     Mirrors ``backend_factory._messaging_from_toml`` (which reads the
@@ -376,7 +376,7 @@ def resolve_user_channel() -> str:
     """Resolve the Slack DM channel id the user reads (overlay override → global → empty).
 
     The canonical resolver for the ``slack_user_channel`` config key,
-    walking the SAME overlay→global→empty order :func:`_resolve_user_id`
+    walking the SAME overlay→global→empty order :func:`resolve_user_id`
     uses for ``slack_user_id``. Both DM-channel call sites (the bot→user
     DM path and the live-post-approval CLI verifier) consult this single
     helper, so a change to the resolution order can never drift between
@@ -397,7 +397,7 @@ def resolve_user_channel() -> str:
     return str(teatree_cfg.get("slack_user_channel", ""))
 
 
-def _maybe_linkify(text: str) -> str:
+def maybe_linkify(text: str) -> str:
     """Apply :func:`slack_linkify` using the active overlay's resolvers, if any.
 
     Failure to resolve the overlay or to query a resolver is non-fatal —
@@ -419,7 +419,7 @@ def _maybe_linkify(text: str) -> str:
     )
 
 
-def _format(text: str, kind: NotifyKind) -> str:
+def format_notification(text: str, kind: NotifyKind) -> str:
     """Prefix the DM with a kind marker for easy scan-reading on mobile."""
     prefix = {
         NotifyKind.ANSWER: ":speech_balloon: *answer*",

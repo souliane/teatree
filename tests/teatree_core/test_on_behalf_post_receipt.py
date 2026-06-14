@@ -81,7 +81,7 @@ class TestAfterReceiptDm:
         sent = _post_message_text(backend.post_message.call_args)
         assert "review channel C-eng" in sent
         assert "LGTM on org/repo!7" in sent
-        # _maybe_linkify converts [label](url) → <url|label>; the artifact
+        # maybe_linkify converts [label](url) → <url|label>; the artifact
         # URL must be present in the rendered Slack link.
         assert "https://gitlab.example/org/repo/-/merge_requests/7#note_42" in sent
 

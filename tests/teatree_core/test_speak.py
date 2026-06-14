@@ -169,7 +169,7 @@ class TestFiltersStatusLogNoise:
     The TTS chokepoint :func:`clean_for_speech` is the ONE place every spoken
     string flows through (the Stop-hook in-client read and the DM local leg).
     A bot->user INFO DM is prefixed with a ``:information_source: *info*`` kind
-    marker line (:func:`teatree.core.notify._format`), and assistant turns /
+    marker line (:func:`teatree.core.notify.format_notification`), and assistant turns /
     DM bodies routinely carry log-status lines (``INFO:`` / ``DEBUG`` levels,
     bare emoji-shortcode status markers). Read verbatim these voice as gibberish
     -- ``:information_source:`` reads as "information source", the kind marker as

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, IncomingEvent
 from teatree.notify import NotifyKind, notify_user
 
@@ -544,3 +545,27 @@ class TestNotifyUserLinkify(TestCase):
 
         assert sent is True
         backend.open_dm.assert_called_once_with("U0DEMOUSER1")
+
+
+class TestPublicHelperSurface:
+    """The three cross-package helpers are public names, not underscored privates.
+
+    ``teatree.messaging.notify_with_fallback`` and the live-approval CLI
+    reach for these helpers across the package boundary, so they are part
+    of the module's public surface and must not carry a leading underscore.
+    """
+
+    def test_public_helpers_are_importable(self) -> None:
+        assert callable(notify_module.format_notification)
+        assert callable(notify_module.maybe_linkify)
+        assert callable(notify_module.resolve_user_id)
+
+    def test_old_private_names_are_gone(self) -> None:
+        assert not hasattr(notify_module, "_format")
+        assert not hasattr(notify_module, "_maybe_linkify")
+        assert not hasattr(notify_module, "_resolve_user_id")
+
+    def test_format_notification_prefixes_kind_marker(self) -> None:
+        out = notify_module.format_notification("hello", NotifyKind.INFO)
+        assert "hello" in out
+        assert "info" in out.lower()

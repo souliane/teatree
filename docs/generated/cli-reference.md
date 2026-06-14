@@ -5370,12 +5370,16 @@ Usage: t3 teatree tasks claim [OPTIONS]
 ```
 Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
 
- Mark a claimed task COMPLETED for work finished out-of-band (#1031).
+ Mark a claimed or failed task COMPLETED for work finished out-of-band.
 
  Drives the Task FSM ``claimed → completed`` (releasing the lease and
  auto-advancing the ticket). Idempotent: completing an already-completed
- task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
- (``pending``, ``failed``) with a clear error.
+ task is a no-op with exit 0.
+
+ A ``failed`` task whose work later landed out-of-band is resolved the same
+ way (``failed → completed``), but ONLY with a mandatory evidence ``--note``
+ — the pointer to where that work landed (#1949). Without it there is no
+ record of why a failed task was marked done. A ``pending`` task is rejected.
 
  Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
  outcome (merged / posted / shipped / deployed) it must also carry a
