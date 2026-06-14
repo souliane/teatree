@@ -43,6 +43,10 @@ def _run(
     env = os.environ.copy()
     env["T3_LOOPS_AUTO_LOAD"] = "1"
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+    # Isolate the harness config dir onto the test's state dir so the developer's
+    # real ~/.claude/settings.json effortLevel never bleeds into these tests; the
+    # effort tests plant a settings.json here to drive the fallback (#2214).
+    env["CLAUDE_CONFIG_DIR"] = str(state_dir)
     if statusline_file is not None:
         env["TEATREE_STATUSLINE_FILE"] = str(statusline_file)
     if registry_dir is not None:
@@ -292,6 +296,98 @@ class TestStatuslineHook:
         plain = _strip_ansi(result.stdout)
         assert "skills:" not in plain
         assert "rogue" not in plain
+
+
+class TestEffortSegment:
+    """The session's effort level (`/effort`) renders next to the model (#2214).
+
+    The harness statusline stdin JSON carries the model but not the effort
+    level; the saved ``/effort`` default lives in the harness settings file
+    (``$CLAUDE_CONFIG_DIR/settings.json`` → ``effortLevel``). The hook reads it
+    there as a fallback and renders ``model=<m> · <effort>``. The segment is
+    omitted entirely when no effort can be resolved, so it never fabricates a
+    value or leaves a dangling separator.
+    """
+
+    def _write_settings(self, state_dir: Path, effort: str | None) -> None:
+        body: dict = {} if effort is None else {"effortLevel": effort}
+        (state_dir / "settings.json").write_text(json.dumps(body), encoding="utf-8")
+
+    def test_renders_effort_next_to_model_from_settings(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_settings(state_dir, "medium")
+
+        result = _run(
+            {"session_id": "s-eff", "model": {"display_name": "fable-5"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=fable-5 · medium" in plain, plain
+
+    def test_omits_effort_when_settings_has_no_effort_level(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_settings(state_dir, None)
+
+        result = _run(
+            {"session_id": "s-no-eff", "model": {"display_name": "fable-5"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=fable-5" in plain, plain
+        # No effort resolved → no suffix, no dangling separator after the model.
+        assert "fable-5 ·" not in plain, plain
+
+    def test_omits_effort_when_settings_file_absent(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        # No settings.json planted in state_dir → effortLevel unreadable.
+
+        result = _run(
+            {"session_id": "s-missing-cfg", "model": {"display_name": "fable-5"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=fable-5" in plain, plain
+        assert "fable-5 ·" not in plain, plain
+
+    def test_stdin_effort_field_takes_precedence_over_settings(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_settings(state_dir, "low")
+
+        result = _run(
+            {"session_id": "s-stdin-eff", "model": {"display_name": "fable-5"}, "effort": "max"},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=fable-5 · max" in plain, plain
+        assert "· low" not in plain, plain
+
+    def test_effort_segment_omitted_when_model_absent(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_settings(state_dir, "high")
+
+        result = _run(
+            {"session_id": "s-no-model"},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # No model → no model segment → no orphan effort token.
+        assert "model=" not in plain, plain
+        assert "high" not in plain, plain
 
 
 class TestSkillsNamespaceGrouping:

@@ -9,7 +9,9 @@
 #     line lives at the top of that file (live_loops_anchor) — the header
 #     this hook builds carries NO loop/tick info (#130): loop state has
 #     exactly one home, the loop line.
-#  2. Live per-session info from Claude's stdin JSON: model, context-window %,
+#  2. Live per-session info from Claude's stdin JSON: model (with the session's
+#     `/effort` level rendered beside it — from the payload if present, else the
+#     saved settings default), context-window %,
 #     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
 #     summary of this session's harness TODO list, and a
 #     per-session loop-owner badge — the skills and TODO summaries are
@@ -31,6 +33,7 @@ state_dir="${TEATREE_CLAUDE_STATUSLINE_STATE_DIR:-/tmp/claude-statusline}"
 
 session_id=""
 model=""
+effort=""
 ctx_pct=""
 five_hour_pct=""
 five_hour_resets_at=""
@@ -41,6 +44,12 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
     if [ -n "$input" ]; then
         session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
         model=$(printf '%s' "$input" | jq -r '.model.display_name // empty')
+        # The session's reasoning-effort (the `/effort` setting). The harness
+        # statusline payload does not currently carry it, but read it here first
+        # so the segment upgrades for free if a future payload exposes `.effort`
+        # (or `.model.effort`); otherwise it falls back to the saved settings
+        # default below.
+        effort=$(printf '%s' "$input" | jq -r '.effort // .model.effort // empty')
         ctx_pct=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty' | cut -d. -f1)
         five_hour_pct=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
         five_hour_resets_at=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
@@ -155,6 +164,18 @@ osc8_link() {
     printf '%s' "${_OSC8};${1}${_ST}${2}${_OSC8};${_ST}"
 }
 
+# The saved `/effort` default from the harness settings file
+# (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json .effortLevel). This is the
+# fallback when the live statusline payload carries no effort field. Prints the
+# value or nothing; fails open (empty) on a missing file / absent key / no jq so
+# a broken settings file never blanks the statusline.
+effort_from_settings() {
+    command -v jq >/dev/null 2>&1 || return
+    local cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+    [ -r "$cfg" ] || return
+    jq -r '.effortLevel // empty' "$cfg" 2>/dev/null
+}
+
 # Visual grouping: within a group, segments are joined by a mid-dot; between
 # groups we use a vertical bar so the eye can pick out context vs usage vs
 # loops vs updates vs resource at a glance.
@@ -191,8 +212,18 @@ if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
     fi
 fi
 
+# Effort level (`/effort`): the live payload field above, else the saved
+# settings default. Rendered as a short `· <effort>` suffix on the model chunk
+# (e.g. `model=fable-5 · medium`); omitted entirely when unknown so the segment
+# stays honest and leaves no dangling separator.
+if [ -z "$effort" ]; then
+    effort=$(effort_from_settings)
+fi
 if [ -n "$model" ]; then
     g_context="${_LBL}model=${_RST}${_GRN}${model}${_RST}"
+    if [ -n "$effort" ]; then
+        g_context="${g_context}${_LBL} · ${_RST}${_GRN}${effort}${_RST}"
+    fi
 fi
 if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
     [ -n "$g_context" ] && g_context="${g_context}${isep}"
