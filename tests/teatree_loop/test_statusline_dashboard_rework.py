@@ -50,7 +50,7 @@ class TestScannerBookkeepingDropped:
     def test_leaking_kinds_absent_from_rendered_statusline(self, tmp_path: Path) -> None:
         signals = [ScanSignal(kind=kind, summary=f"{kind}: x", payload=p) for kind, p in _LEAKING_SIGNALS]
         actions = dispatch(signals)
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -102,7 +102,7 @@ class TestBareQuestionDispositionDropped:
             payload={"overlay": "acme", "reason": "label_removed"},
         )
         actions = dispatch([signal])
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -121,7 +121,7 @@ class TestBareQuestionDispositionDropped:
             },
         )
         actions = dispatch([signal])
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -148,7 +148,7 @@ class TestFsmStateGroupingLabels:
 
     def _render_anchor(self, signals: list[ScanSignal], tmp_path: Path) -> str:
         actions = dispatch(signals)
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -202,9 +202,9 @@ class TestLoopLineStateAndWaiting:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -215,9 +215,9 @@ class TestLoopLineStateAndWaiting:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._pending_questions", return_value=2),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=2),
         ):
             lines = live_loops_anchor()
         assert "waiting: 2 questions" in lines[0], lines[0]
@@ -226,9 +226,9 @@ class TestLoopLineStateAndWaiting:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor()
         assert "waiting" not in lines[0], lines[0]
@@ -237,9 +237,9 @@ class TestLoopLineStateAndWaiting:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._pending_questions", side_effect=RuntimeError("db down")),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._pending_questions", side_effect=RuntimeError("db down")),
         ):
             lines = live_loops_anchor()
         assert lines[0].startswith("tickets"), lines[0]

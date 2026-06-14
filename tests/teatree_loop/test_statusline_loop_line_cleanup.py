@@ -43,9 +43,9 @@ class TestPerLoopRelativeTicks:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-my-prs", acquired_at), ("loop-tickets", acquired_at), ("loop-tick", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -70,8 +70,8 @@ class TestPerLoopRelativeTicks:
             return 20 if name == "loop-slack-answer" else 1800
 
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", side_effect=_cadence),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", side_effect=_cadence),
         ):
             lines = live_loops_anchor()
         line = lines[0]
@@ -83,19 +83,19 @@ class TestPerLoopRelativeTicks:
     def test_names_only_when_no_tick_history(self) -> None:
         leases = [("loop-my-prs", None), ("loop-tickets", None)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["my-prs · tickets"], repr(lines)
 
     def test_empty_when_no_loops_live(self) -> None:
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             assert live_loops_anchor() == []
 
     def test_fails_open_on_db_error(self) -> None:
-        with patch("teatree.loop.statusline._live_loop_leases", side_effect=RuntimeError("db down")):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", side_effect=RuntimeError("db down")):
             assert live_loops_anchor() == []
 
 
@@ -106,8 +106,8 @@ class TestSingleLoopLine:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-my-prs", acquired_at), ("loop-tickets", acquired_at), ("loop-tick", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             zones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
@@ -139,7 +139,7 @@ class TestRecentMarkerNotRendered:
             },
         )
         actions = dispatch([signal])
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -185,7 +185,7 @@ class TestTerseMrTopic:
                 title="techdebt: refactor PLW0717 try-clause-too-long across modules",
             ),
         ]
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)

@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.core.loop_lease_manager import is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
-from teatree.loop.statusline import _cadence_for_loop as cadence_for_loop
+from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.loops.config import LoopsConfig
 from teatree.loops.registry import iter_loops
 from teatree.utils.singleton import pid_alive

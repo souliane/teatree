@@ -1,4 +1,4 @@
-"""``teatree.loop.statusline.cadence_for_loop`` — per-slot cadence resolver.
+"""``teatree.loop.statusline_loops.cadence_for_loop`` — per-slot cadence resolver.
 
 The single mapping from an infra-slot name to its cadence in seconds, shared
 by the statusline next-tick countdown and ``t3 loop list`` (#1744). The drain
@@ -8,7 +8,7 @@ delegates to are pinned so the resolved value is deterministic.
 
 import pytest
 
-from teatree.loop.statusline import _cadence_for_loop as cadence_for_loop
+from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 
 
 class TestCadenceForLoop:

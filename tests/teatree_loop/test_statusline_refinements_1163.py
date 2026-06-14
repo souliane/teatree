@@ -229,8 +229,8 @@ class TestLiveLoopsAnchor:
             ("loop-owner", None),
         ]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1
@@ -244,13 +244,13 @@ class TestLiveLoopsAnchor:
 
     def test_no_live_leases_returns_empty(self) -> None:
         # Empty list → no lines (no statusline noise when no loop is live).
-        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             assert live_loops_anchor() == []
 
     def test_fails_open_on_query_error(self) -> None:
         # When the underlying DB read raises, callers see [] — a broken
         # LoopLease query must never blank the statusline.
-        with patch("teatree.loop.statusline._live_loop_leases", side_effect=RuntimeError("db down")):
+        with patch("teatree.loop.statusline_loops._live_loop_leases", side_effect=RuntimeError("db down")):
             assert live_loops_anchor() == []
 
 
@@ -262,10 +262,10 @@ class TestZonesForIntegratesLoopsAnchor:
         # (per-session badge in statusline.sh replaces it).
         with (
             patch(
-                "teatree.loop.statusline._live_loop_leases",
+                "teatree.loop.statusline_loops._live_loop_leases",
                 return_value=[("loop-tick", None), ("loop-owner", None)],
             ),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
             zones: StatuslineZones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"

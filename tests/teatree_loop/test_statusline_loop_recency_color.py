@@ -15,7 +15,9 @@ side asserts the colored chunks ride the rendered loop line.
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-from teatree.loop.statusline import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW, _loop_recency_color, live_loops_anchor
+from teatree.loop.statusline import live_loops_anchor
+from teatree.loop.statusline_loops import _loop_recency_color
+from teatree.loop.statusline_palette import _ANSI_GREEN, _ANSI_RED, _ANSI_YELLOW
 
 
 class TestLoopRecencyColor:
@@ -64,10 +66,10 @@ class TestColoredChunksRideTheLoopLine:
         # Acquired 690s ago of a 720s cadence → 30s left → red.
         acquired_at = datetime.now(UTC) - timedelta(seconds=690)
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
         assert len(lines) == 1, lines
@@ -77,10 +79,10 @@ class TestColoredChunksRideTheLoopLine:
         # Acquired 30s ago of a 720s cadence → lots of headroom → green.
         acquired_at = datetime.now(UTC) - timedelta(seconds=30)
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
         assert _ANSI_GREEN in lines[0], repr(lines[0])
@@ -88,10 +90,10 @@ class TestColoredChunksRideTheLoopLine:
     def test_no_ansi_when_colorize_off(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=30)
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
-            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor(colorize=False)
         assert "\033[" not in lines[0], repr(lines[0])
@@ -106,10 +108,10 @@ class TestColoredChunksRideTheLoopLine:
             ("ship", now + timedelta(seconds=10), 600),
         ]
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[]),
-            patch("teatree.loop.statusline._mini_loop_schedules", return_value=schedules),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=schedules),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
         assert _ANSI_GREEN in lines[0], repr(lines[0])
@@ -117,10 +119,10 @@ class TestColoredChunksRideTheLoopLine:
 
     def test_never_fired_mini_loop_is_red(self) -> None:
         with (
-            patch("teatree.loop.statusline._live_loop_leases", return_value=[]),
-            patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("inbox", None, 300)]),
-            patch("teatree.loop.statusline._availability_segment", return_value=""),
-            patch("teatree.loop.statusline._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]),
+            patch("teatree.loop.statusline_loops._mini_loop_schedules", return_value=[("inbox", None, 300)]),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
         ):
             lines = live_loops_anchor(colorize=True)
         assert _ANSI_RED in lines[0], repr(lines[0])

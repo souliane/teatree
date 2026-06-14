@@ -10,7 +10,8 @@ duplicate-free :class:`_ClassifiedActions` produced by
 from teatree.loop.rendering_classification import _ClassifiedActions, _is_url
 from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
 from teatree.loop.rendering_items import _format_mr_ref, _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
-from teatree.loop.statusline import StatuslineZones, _hyperlink, plain_link
+from teatree.loop.statusline import StatuslineZones, plain_link
+from teatree.loop.statusline_render import _hyperlink
 from teatree.url_classify import Forge, forge_of
 
 _DISPOSITION_LABELS: dict[str, str] = {
