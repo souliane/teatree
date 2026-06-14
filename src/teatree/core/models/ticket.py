@@ -10,6 +10,8 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 
 from teatree.config import Mode, get_effective_settings, load_config
 from teatree.core.managers import TicketManager
+from teatree.core.modelkit.gate_registry import get_gate, get_resolver
+from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.types import validated_ticket_extra
 from teatree.utils import git, redis_container
@@ -19,9 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _check_plan_artifact(ticket: object) -> bool:
-    from teatree.core.gates.plan_gate import check_plan_artifact  # noqa: PLC0415
-
-    return check_plan_artifact(ticket)  # type: ignore[arg-type]
+    return bool(get_gate("plan_artifact")(ticket))
 
 
 def _auto_ship_enabled() -> bool:
@@ -152,9 +152,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     def _infer_overlay(self) -> str:
         """Derive overlay name from ``issue_url`` (see ``infer_overlay_for_url``)."""
-        from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
-
-        return infer_overlay_for_url(self.issue_url)
+        return str(get_resolver("infer_overlay_for_url")(self.issue_url))
 
     def apply_inferred_overlay(self, inferred: str) -> bool:
         """Persist ``inferred`` overlay on a conclusive change (True when changed).
@@ -173,9 +171,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     def has_dispatchable_overlay(self) -> bool:
         """False only for a non-empty overlay that no longer resolves (#1959 poison-pill)."""
-        from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
-
-        return not (self.overlay and resolve_overlay_name(self.overlay) is None)
+        return not (self.overlay and get_resolver("resolve_overlay_name")(self.overlay) is None)
 
     def mark_remote_missing(self) -> None:
         """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
@@ -223,11 +219,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         provisioning worker failed, the operator can re-call ``start()``
         without rolling back through ``rework``. The worker's own state guard
         prevents duplicate work when provisioning already succeeded.
-        """
-        from teatree.core.tasks import execute_provision  # noqa: PLC0415
 
-        ticket_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_provision.enqueue(ticket_pk))
+        The ``execute_provision`` enqueue is the ``post_transition`` receiver's
+        job (``teatree.core.signals``), keyed on the transition name — the body
+        stays free of the task up-edge (#2385).
+        """
 
     @transition(
         field=state,
@@ -559,8 +555,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         won't re-spawn the reviewer agent for the same PR until either the
         SHA moves or the forge dismisses the approval.
         """
-        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
-
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
             # #800 N3: canonical locked RMW — a concurrent pr_urls /
@@ -610,8 +604,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ``last_review_state`` (the existing #959 reset) so a new revision is
         still reviewed — no lost obligation.
         """
-        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
-
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
@@ -640,14 +632,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         raise a :class:`InvalidTransitionError` subclass so the loop's outer
         atomic rolls the advance back and the FSM stays put.
         """
-        from teatree.core.gates.dod_gate import check_local_e2e_dod  # noqa: PLC0415
-        from teatree.core.tasks import execute_ship  # noqa: PLC0415
-
         self._refuse_if_worktree_dirty("shipping")
-        check_local_e2e_dod(self)
+        get_gate("local_e2e_dod")(self)
         self._consume_pending_phase_tasks("shipping")
-        ticket_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
 
     @transition(field=state, source=State.SHIPPED, target=State.IN_REVIEW)
     def request_review(self) -> None:
@@ -667,11 +654,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         previous teardown reported errors, the operator can re-call
         ``mark_merged()`` to retry. The worker is best-effort and does not
         advance the FSM, so retries are safe.
-        """
-        from teatree.core.tasks import execute_teardown  # noqa: PLC0415
 
-        ticket_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_teardown.enqueue(ticket_pk))
+        The ``execute_teardown`` enqueue is the ``post_transition`` receiver's
+        job (``teatree.core.signals``), keyed on the transition name (#2385).
+        """
 
     @transition(
         field=state,
@@ -694,12 +680,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         Schedules the same teardown work as ``mark_merged`` so a
         keystone-driven reconcile cleans up worktrees identically to the
-        normal IN_REVIEW → MERGED path.
+        normal IN_REVIEW → MERGED path — the ``post_transition`` receiver
+        enqueues ``execute_teardown`` for this transition too (#2385).
         """
-        from teatree.core.tasks import execute_teardown  # noqa: PLC0415
-
-        ticket_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_teardown.enqueue(ticket_pk))
 
     @transition(field=state, source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
     def retrospect(self) -> None:
@@ -714,11 +697,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         previous retro worker failed, the operator can re-call ``retrospect()``
         to retry. The worker's own state guard skips when retrospection
         already produced its artifacts.
-        """
-        from teatree.core.tasks import execute_retrospect  # noqa: PLC0415
 
-        ticket_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_retrospect.enqueue(ticket_pk))
+        The ``execute_retrospect`` enqueue is the ``post_transition`` receiver's
+        job (``teatree.core.signals``), keyed on the transition name (#2385).
+        """
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
@@ -729,11 +711,8 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         have a backing test when ``require_spec_coverage`` is on — done is not a
         partial subset of the spec (#2232). A refusal keeps the FSM at RETROSPECTED.
         """
-        from teatree.core.gates.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
-        from teatree.core.gates.spec_coverage_gate import check_spec_coverage  # noqa: PLC0415
-
-        check_fix_record_dod(self)
-        check_spec_coverage(self)
+        get_gate("fix_record_dod")(self)
+        get_gate("spec_coverage")(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:
@@ -1038,15 +1017,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         the FSM regardless of entry path. NO-OP (returns ``True``) when the knob
         is off (opt-in default preserved).
         """
-        from teatree.core.gates.review_context_gate import (  # noqa: PLC0415
-            is_complete,
-            recorded_review_context,
-            review_context_required,
-        )
-
-        if not review_context_required():
-            return True
-        return is_complete(recorded_review_context(self))
+        return bool(get_gate("review_context_satisfied")(self))
 
     def append_context(self, entry: str) -> str:
         r"""Append a timestamped block to the durable per-ticket knowledge store (#627).

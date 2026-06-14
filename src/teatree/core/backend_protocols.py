@@ -12,7 +12,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, TypedDict, runtime_checkable
 
+from teatree.core.modelkit.review_state import ReviewState
 from teatree.types import RawAPIDict
+
+__all__ = ["ReviewState"]
 
 
 class BackendResolutionError(Exception):
@@ -41,27 +44,6 @@ class ApprovalState(TypedDict):
     approvals_left: int
     approved_by: list[str]
     unresolved_resolvable: int
-
-
-class ReviewState(StrEnum):
-    """A reviewer's current state on a single pull/merge request.
-
-    Used by ``CodeHostBackend.get_review_state`` and by
-    ``ReviewerPrsScanner`` to detect approval dismissals — e.g. when a
-    forge invalidates a prior approval on force-push, or when a reviewer
-    is re-requested after being dismissed.
-    """
-
-    NONE = "none"
-    PENDING = "pending"
-    APPROVED = "approved"
-    CHANGES_REQUESTED = "changes_requested"
-    DISMISSED = "dismissed"
-    # The reviewer concluded an external review with no postable/approvable
-    # action (e.g. a bot MR there is nothing to comment on or approve).
-    # Distinct from APPROVED so the dedup never hides a future genuine
-    # review, yet terminal so the reviewing task stops re-queueing (#1077).
-    REVIEWED_NO_ACTION = "reviewed_no_action"
 
 
 class PrOpenState(StrEnum):

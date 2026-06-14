@@ -30,6 +30,7 @@ from teatree.core.gates.dod_gate import (
     is_ui_visible,
     override_reason,
 )
+from teatree.core.modelkit import gate_registry
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
 
@@ -297,9 +298,13 @@ class TestShipTransitionDodGate(TestCase):
         """
         wt = self._reviewed_ui_ticket()
         ticket = wt.ticket
+        # ship() fetches the gate from the registry (#2385); neutralise the
+        # registered callable in the shared registry dict so the model's
+        # module-bound ``get_gate`` reads the no-op.
+        neutralised = {**gate_registry._REGISTRY, ("gate", "local_e2e_dod"): lambda _ticket: None}
         with (
             _patch_overlay(["frontend"]),
-            patch.object(dod_gate, "check_local_e2e_dod", return_value=None),
+            patch.object(gate_registry, "_REGISTRY", neutralised),
             self.captureOnCommitCallbacks(execute=False),
         ):
             ticket.ship()

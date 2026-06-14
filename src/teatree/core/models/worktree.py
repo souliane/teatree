@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import ClassVar, cast
 
-from django.db import models, transaction
+from django.db import models
 from django_fsm import FSMField, transition
 
 from teatree.config import load_config as _load_config
@@ -47,6 +47,12 @@ class Worktree(models.Model):
     # re-capture. Null = no E2E run has touched it.
     last_e2e_run = models.DateTimeField(null=True, blank=True)
 
+    # Transient (non-DB) carrier for the pre-blank ``(db_name, extra)`` snapshot
+    # the ``teardown`` body captures, read by the post_transition receiver that
+    # enqueues ``execute_worktree_teardown`` (#2385). Default empty so a row
+    # that never tore down still reads safely.
+    teardown_snapshot: "tuple[str, WorktreeExtra]" = ("", WorktreeExtra())
+
     objects = WorktreeManager()
 
     class Meta:
@@ -77,12 +83,12 @@ class Worktree(models.Model):
         checks all run in a worker. Source ``[CREATED, PROVISIONED]`` makes
         re-firing idempotent — a previous worker that crashed mid-import
         can be retried without going back to CREATED.
-        """
-        from teatree.core.worktree_tasks import execute_worktree_provision  # noqa: PLC0415
 
+        The ``execute_worktree_provision`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition
+        name — the body stays free of the worktree-tasks up-edge (#2385).
+        """
         self.db_name = self._build_db_name()
-        worktree_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_worktree_provision.enqueue(worktree_pk))
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
@@ -92,18 +98,18 @@ class Worktree(models.Model):
         then ``execute_worktree_start`` enqueued after commit drives the
         actual ``docker compose up``. Source allows re-firing from
         SERVICES_UP / READY so a partially-failed boot can be retried.
+
+        The ``execute_worktree_start`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition
+        name (#2385).
         """
         from django.utils import timezone  # noqa: PLC0415
-
-        from teatree.core.worktree_tasks import execute_worktree_start  # noqa: PLC0415
 
         if services is not None:
             extra = self._extra()
             extra["services"] = services
             self.extra = extra
         self.last_used_at = timezone.now()
-        worktree_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_worktree_start.enqueue(worktree_pk))
 
     @transition(field=state, source=[State.SERVICES_UP, State.READY], target=State.READY)
     def verify(self, *, urls: dict[str, str] | None = None) -> None:
@@ -113,18 +119,18 @@ class Worktree(models.Model):
         URLs, then ``execute_worktree_verify`` enqueued after commit runs
         the overlay's health checks. Source allows re-firing from READY so
         verify can be re-run without bouncing through SERVICES_UP.
+
+        The ``execute_worktree_verify`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition
+        name (#2385).
         """
         from django.utils import timezone  # noqa: PLC0415
-
-        from teatree.core.worktree_tasks import execute_worktree_verify  # noqa: PLC0415
 
         extra = self._extra()
         if urls:
             extra["urls"] = urls
         self.extra = extra
         self.last_used_at = timezone.now()
-        worktree_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_worktree_verify.enqueue(worktree_pk))
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.PROVISIONED)
     def db_refresh(self) -> None:
@@ -151,11 +157,11 @@ class Worktree(models.Model):
         here, then ``execute_worktree_stop`` enqueued after commit drives the
         actual ``docker compose down``. Source ``[SERVICES_UP, READY]`` — a
         worktree must be running to be stopped.
-        """
-        from teatree.core.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
 
-        worktree_pk = int(self.pk)
-        transaction.on_commit(lambda: execute_worktree_stop.enqueue(worktree_pk))
+        The ``execute_worktree_stop`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition
+        name (#2385).
+        """
 
     @transition(field=state, source="*", target=State.CREATED)
     def teardown(self) -> None:
@@ -168,15 +174,18 @@ class Worktree(models.Model):
         remove``, branch delete) using the captured snapshot, then
         deletes the Worktree row, so the FSM ``CREATED`` state lasts
         only until the worker fires.
-        """
-        from teatree.core.worktree_tasks import execute_worktree_teardown  # noqa: PLC0415
 
-        worktree_pk = int(self.pk)
-        snapshot_db_name = self.db_name
-        snapshot_extra = dict(self.extra or {})
+        The body BLANKS ``db_name`` / ``extra`` here, so the
+        ``post_transition`` receiver (``teatree.core.signals``) cannot read
+        them off the live row — it would enqueue a teardown with an empty
+        DB name and never drop the database. The PRE-BLANK values are
+        stashed on the transient :attr:`teardown_snapshot` attribute, which
+        the receiver reads to enqueue ``execute_worktree_teardown`` with the
+        correct snapshot (#2385).
+        """
+        self.teardown_snapshot = (self.db_name, self._extra())
         self.db_name = ""
         self.extra = {}
-        transaction.on_commit(lambda: execute_worktree_teardown.enqueue(worktree_pk, snapshot_db_name, snapshot_extra))
 
     def _build_db_name(self) -> str:
         ticket = cast("Ticket", self.ticket)

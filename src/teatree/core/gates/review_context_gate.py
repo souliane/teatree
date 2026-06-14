@@ -35,6 +35,7 @@ non-zero exit.
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.types import ReviewContext
 
 if TYPE_CHECKING:
@@ -92,3 +93,18 @@ def check_review_context(ticket: "Ticket") -> None:
         f"checked>` once the retrieval is done, then retry."
     )
     raise ReviewContextError(msg)
+
+
+def review_context_satisfied(ticket: "Ticket") -> bool:
+    """Whether the ``-> reviewing`` deep-retrieval precondition is met (#2385).
+
+    The boolean ``review()`` FSM condition. NO-OP (``True``) when the
+    ``require_review_context`` knob is off, else true only when a complete
+    ``review_context`` artifact is recorded.
+    """
+    if not review_context_required():
+        return True
+    return is_complete(recorded_review_context(ticket))
+
+
+register_gate("review_context_satisfied", review_context_satisfied)

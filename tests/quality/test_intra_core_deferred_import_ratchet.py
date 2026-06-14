@@ -34,11 +34,16 @@ _CORE_ROOT = _REPO_ROOT / "src" / "teatree" / "core"
 _MODELS_ROOT = _CORE_ROOT / "models"
 _TACH = _REPO_ROOT / "tach.toml"
 
-# Measured in-worktree after the PR-1 modelkit carve (the three moved files stay
-# under teatree.core.*, so the count is unchanged from the #2385 plan's HEAD
-# measurement). SHRINK-ONLY: lower this as PR-2/PR-3 convert deferred edges into
-# declared tach edges; never raise it.
-_FROZEN_INTRA_CORE_DEFERRED = 217
+# Measured in-worktree after PR-2a severed the 21 deferred up-edges from
+# core/models/ into the parent-core packages (gates/tasks/worktree_tasks/
+# overlay_loader/cost/backend_protocols). The net drop from PR-1's 217 is 11,
+# not 21: the signal receivers + the registry-population functions (incl. the
+# resolver wrappers that re-read the overlay_loader module attribute at call
+# time so a test patch is still seen) hold a handful of call-time
+# `from teatree.core import ...` (deferred so the model modules never import
+# them at boot — no AppRegistryNotReady). SHRINK-ONLY: lower this as PR-2b/PR-3
+# convert remaining deferred edges into declared tach sub-node edges; never raise it.
+_FROZEN_INTRA_CORE_DEFERRED = 206
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

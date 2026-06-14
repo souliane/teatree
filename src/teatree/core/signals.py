@@ -1,16 +1,38 @@
 import logging
 
+from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.worktree import Worktree
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.reaction_dispatch import get_reaction_publisher
 
 logger = logging.getLogger(__name__)
+
+# Transition name -> the ``@task`` worker its enqueue used to live in the FSM
+# body (#2385: the body's intra-core up-edge into ``teatree.core.tasks`` is
+# severed; the enqueue is keyed here, looked up + enqueued after commit by the
+# post_transition receiver so the state change and the queued work still land
+# atomically). ``reconcile_merged`` mirrors ``mark_merged`` — both tear down.
+_TICKET_TRANSITION_TASKS: dict[str, str] = {
+    "start": "execute_provision",
+    "ship": "execute_ship",
+    "mark_merged": "execute_teardown",
+    "reconcile_merged": "execute_teardown",
+    "retrospect": "execute_retrospect",
+}
+
+_WORKTREE_TRANSITION_TASKS: dict[str, str] = {
+    "provision": "execute_worktree_provision",
+    "start_services": "execute_worktree_start",
+    "verify": "execute_worktree_verify",
+    "stop_services": "execute_worktree_stop",
+}
 
 
 def _log_ticket_transition(
@@ -193,8 +215,93 @@ def _auto_enqueue_headless_task(
         logger.exception("Failed to auto-enqueue headless task %s", instance.pk)
 
 
+def _enqueue_ticket_transition_task(
+    sender: type,  # noqa: ARG001
+    instance: Ticket,
+    name: str,
+    **_kwargs: object,
+) -> None:
+    """Enqueue the ``@task`` worker a ticket FSM transition body used to enqueue.
+
+    The deferred import of the executor is call-time (mirroring
+    ``_auto_enqueue_headless_task``), so a test patching ``tasks_mod.execute_*``
+    still sees its stub. ``transaction.on_commit`` preserves the body's
+    "state change + queued work land atomically" guarantee — the worker fires
+    only after the transition's save commits.
+    """
+    executor_name = _TICKET_TRANSITION_TASKS.get(name)
+    if executor_name is None:
+        return
+    from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+
+    executor = getattr(tasks_mod, executor_name)
+    ticket_pk = int(instance.pk)
+    transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+
+
+def _enqueue_worktree_transition_task(
+    sender: type,  # noqa: ARG001
+    instance: Worktree,
+    name: str,
+    **_kwargs: object,
+) -> None:
+    """Enqueue the per-worktree ``@task`` worker a worktree FSM body used to enqueue.
+
+    ``teardown`` is handled separately (``_enqueue_worktree_teardown_task``)
+    because its body BLANKS ``db_name`` / ``extra`` before this receiver fires,
+    so the worker needs the pre-blank snapshot, not the live (now-empty) row.
+    """
+    executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
+    if executor_name is None:
+        return
+    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+
+    executor = getattr(worktree_tasks_mod, executor_name)
+    worktree_pk = int(instance.pk)
+    transaction.on_commit(lambda: executor.enqueue(worktree_pk))
+
+
+def _enqueue_worktree_teardown_task(
+    sender: type,  # noqa: ARG001
+    instance: Worktree,
+    name: str,
+    **_kwargs: object,
+) -> None:
+    """Enqueue ``execute_worktree_teardown`` with the PRE-BLANK snapshot (#2385 trap).
+
+    ``Worktree.teardown()`` blanks ``db_name`` / ``extra`` on the row in its
+    body, so reading them here would enqueue a teardown that never drops the
+    database. The body stashes the pre-blank ``(db_name, extra)`` on the
+    transient ``teardown_snapshot`` attribute; this receiver reads it and passes
+    the non-blank values to the worker.
+    """
+    if name != "teardown":
+        return
+    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+
+    worktree_pk = int(instance.pk)
+    snapshot_db_name, snapshot_extra = instance.teardown_snapshot
+    executor = worktree_tasks_mod.execute_worktree_teardown
+    transaction.on_commit(lambda: executor.enqueue(worktree_pk, snapshot_db_name, snapshot_extra))
+
+
 def register_signals() -> None:
     post_transition.connect(_log_ticket_transition, sender=Ticket, dispatch_uid="ticket_transition_audit")
+    post_transition.connect(
+        _enqueue_ticket_transition_task,
+        sender=Ticket,
+        dispatch_uid="ticket_transition_task_enqueue",
+    )
+    post_transition.connect(
+        _enqueue_worktree_transition_task,
+        sender=Worktree,
+        dispatch_uid="worktree_transition_task_enqueue",
+    )
+    post_transition.connect(
+        _enqueue_worktree_teardown_task,
+        sender=Worktree,
+        dispatch_uid="worktree_teardown_task_enqueue",
+    )
     post_transition.connect(
         _add_slack_reactions_on_transition,
         sender=Ticket,

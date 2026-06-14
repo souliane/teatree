@@ -11,6 +11,7 @@ gate has one non-bypassable chokepoint and is independently testable.
 
 from typing import TYPE_CHECKING
 
+from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import NoPlanArtifactError
 
 if TYPE_CHECKING:
@@ -57,3 +58,6 @@ def check_plan_artifact(ticket: "Ticket") -> bool:
         f'mark it with `t3 <overlay> ticket skip-planning <id> --reason "<why>"`.'
     )
     raise NoPlanArtifactError(msg)
+
+
+register_gate("plan_artifact", check_plan_artifact)
