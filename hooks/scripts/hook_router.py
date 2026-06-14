@@ -6033,6 +6033,31 @@ def _all_loops_disabled() -> bool:
     return any(part.strip().lower() == "all" for part in raw.split(","))
 
 
+def _pause_suppresses_self_pump() -> bool:
+    """True when an explicit user pause must win over the standing loop directive.
+
+    The self-pump is teatree's own re-firing Stop directive (#2247/#2250): it
+    re-emits ``{"decision": "block", ...}`` to resume the loop every turn while
+    consolidated work remains. When the user has explicitly paused —
+    availability resolves to ``away`` via the same ``resolve_mode`` chain the
+    AskUserQuestion deferral honours (a manual ``t3 teatree availability away``
+    override, or an out-of-window schedule) — that nag must SUPPRESS, so an
+    explicit pause wins over the goal exactly as it does for the agent.
+
+    FAIL SAFE — suppress on indeterminate: ``_resolved_away_mode`` already
+    collapses a missing/unimportable ``teatree`` or an availability-read error
+    to ``False`` ("not away"), which here would mean "keep pumping". That is the
+    UNSAFE direction for a Stop hook: an indeterminate signal must allow the
+    stop (suppress the nag), never loop through a possible pause. So this
+    predicate treats away AND any availability-resolution error as suppress; it
+    pumps ONLY when availability resolves cleanly to ``present``.
+    """
+    try:
+        return _resolved_away_mode()
+    except Exception:  # noqa: BLE001 — indeterminate ⇒ suppress (allow stop, never nag through a pause)
+        return True
+
+
 def _self_pump_suppressed(session_id: str) -> bool:
     """Is the Stop self-pump gated off for this session (#959)?
 
@@ -6061,10 +6086,16 @@ def _self_pump_suppressed(session_id: str) -> bool:
     env or the bash env file) makes even the owner's Stop hook a clean
     no-op, so a session can stop driving the loop in-process without
     touching the registry or ending the session.
+
+    An explicit user pause (availability=away, #2247/#2250) likewise gates
+    the pump off via :func:`_pause_suppresses_self_pump`, so the standing
+    loop directive stops re-firing while the user has paused the work.
     """
     if _all_loops_disabled():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
+        return True
+    if _pause_suppresses_self_pump():
         return True
     return not _session_owns_loop(session_id)
 
