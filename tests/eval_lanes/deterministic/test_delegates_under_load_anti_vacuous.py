@@ -51,9 +51,14 @@ def test_clean_room_lane_stays_unchanged() -> None:
 
 
 def test_flagship_scenario_carries_a_polluted_context_preamble() -> None:
-    # The drift-inducing pollution must be substantial — not a token gesture.
+    # The drift-inducing pollution must match the documented envelope's lower
+    # bound — a realistic ~8k-token (~32k-char) polluted prior-session context,
+    # not a token gesture. The floor guards against the preamble being trimmed
+    # back below the size the docstrings / BLUEPRINT / README claim it ships at.
     preamble = _scenario_spec().context_preamble
-    assert len(preamble) > 2000, f"context_preamble is only {len(preamble)} chars — too small to pollute"
+    assert len(preamble) > 28000, (
+        f"context_preamble is only {len(preamble)} chars — below the documented ~8k-token envelope"
+    )
 
 
 def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:

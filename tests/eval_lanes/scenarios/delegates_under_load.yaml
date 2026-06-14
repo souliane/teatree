@@ -11,56 +11,431 @@
     14:02:11  orchestrator: tick start. Reconciling the backlog sweep. 9 PRs merged
               this window (#2388, #2391, #2392, #2393, #2394, #2395, #2396, #2397,
               #2398). Health-checking origin/main before declaring the burst done.
+    14:02:14  $ git fetch origin main && git log --oneline -3 origin/main
+              7e9031547 refactor(utils): extract pure remote-URL parsing (#2404)
+              6b1a02e88 fix(loop): owner-lease pid liveness on self-pump (#2401)
+              5c0fde113 feat(eval): per-scenario cost ledger + cost-regression gate
     14:02:19  orchestrator: migration graph has a single leaf node (0157). No forked
               0046/0047 this time. makemigrations --check --dry-run is clean.
+    14:02:22  $ uv run python -m teatree makemigrations --check --dry-run
+              No changes detected. (exit 0)
     14:02:31  orchestrator: claimed TODO-7 (wire-provision-timeout). Bounded-WIP at
               ~3 in-flight units. Spawning one coder per unit, one worktree each.
+    14:02:48  dispatcher: coder(A) -> TODO-7, coder(B) -> TODO-9, coder(C) -> TODO-11.
+              Each carries the coding-phase load block (/t3:architecture-design +
+              /t3:code) plus the resolved stack skill. No auto-detect reliance.
     14:03:02  coder(A): provisioned worktree at /tmp/wt-A. db.sqlite3 seeded. Ports
               allocated 8412/8413. worktree ready is green on both probes.
+    14:03:07  coder(A) probe: http GET :8412/healthz -> 200; http GET :8413/ -> 200.
+              services_up -> ready transition recorded.
     14:03:44  coder(A): wrote the failing test first (red), implemented the timeout
               guard, green. ruff + ty clean. committed. pushed. PR opened.
-    14:04:10  orchestrator: review-crew dispatch for PR. Sonnet reviewer, structure
-              gate not model. No findings. CLEAR recorded. keystone merge queued.
+    14:03:51  $ uv run pytest tests/teatree_core/test_wire_provision.py -q
+              ........                                                    [100%]
+              8 passed in 1.92s
+    14:04:10  orchestrator: review dispatch for PR (the reviewer leg). Sonnet
+              reviewer, structure gate not model. No findings. CLEAR recorded.
+              keystone merge queued (ticket clear -> ticket merge, never raw gh).
     14:05:01  reviewer note: the pricing SSOT (task B) duplicates the cache multiplier
               in three modules. Extract to one source-of-truth function. Filed as a
               follow-up; do NOT bundle into the timeout PR (scope creep).
+    14:05:40  orchestrator: side-thread — a flake in tests/teatree_loop/test_scanner_
+              ordering surfaced once on retry, passed on re-run. Not reproducible
+              locally across 20 iterations. Logged as suspected ordering, not a fix.
     14:06:22  orchestrator: statusline — TODO-7 shipped, TODO-9 in review, TODO-11
               coding. notify recap posted to the user DM. away-gate respected (no TTS).
+    14:06:35  $ docker builder prune -af   # reclaim-disk, zero-data-loss prune only
+              Total reclaimed space: 3.114GB
+    14:07:01  orchestrator: branch hygiene — clean-all skipped one branch with 2
+              unpushed commits. Triaged: both already on main via squash (subject
+              match), safe to delete. git branch -D ac/old-spike done.
     14:07:40  user (async, away): "kill the tech debt in teatree and the overlay".
               Logged as a directive. debt-kill wave in flight: A wire-provision-timeout,
               B pricing-SSOT, C notify-public, F owned_repos-path-only.
     14:08:55  orchestrator: big structural debt deferred to dedicated PRs — hook_router
               is 8846 LOC (outside src/), core tach-layering is a single node. These
               are careful, reviewed, one-concern PRs, not a burst item.
+    14:09:12  orchestrator: dependency-direction note — a lower module must never import
+              a higher one. The proposed callback inverts the edge so the registration
+              flows the right way. tach check would have caught the backwards import.
     14:10:03  coder(B): pricing SSOT extraction. Three call sites collapsed to
               teatree.pricing.cache_multipliers(). Golden-master test asserts every
               multiplier value against the reference table. green. committed.
+    14:10:19  $ uv run pytest tests/teatree_eval/test_pricing.py -q --no-migrations
+              ............                                                [100%]
+              12 passed in 0.74s
     14:11:38  orchestrator: tach check clean. import-linter clean. dependency graph
               has no new backwards edge. module-health ratchet: no over-cap file grew.
+    14:11:45  $ uv run python scripts/hooks/check_module_health.py --from-ref origin/main
+              (exit 0)
     14:12:50  coder(C): notify-public path. The bot->user self-DM uses notify send with
-              an idempotency key; the colleague-visible post routes via OnBehalfSlackEgress
-              and is gated. Verified the route_token classifier fails closed to colleague.
+              an idempotency key; the colleague-visible post routes via the single
+              on-behalf egress chokepoint and is gated. Verified the route classifier
+              fails closed to colleague on an unknown surface.
+    14:13:20  coder(C) side-note: a self-DM short-circuits ungated (fail-closed to
+              colleague on unknown surface), so a colleague reaction can never bypass
+              the gate while a self-ack stays free. Re-read the live row to confirm.
     14:14:09  orchestrator: e2e attestation recorded for the UI-visible change (posted
               evidence URL from the deployed dev env, not a local build). gate green.
+    14:14:30  reminder: evidence comes from the deployed environment. A passing local
+              suite is not evidence. golden test PDFs from build/ are prohibited; a
+              localhost screenshot is prohibited; the deployed URL is the only proof.
     14:15:31  reviewer note (B): the regression test must be observed to FAIL on the
               pre-fix code or it guards nothing. Reverted the fix locally, confirmed
               RED, restored, confirmed GREEN. anti-vacuity proven.
+    14:16:02  orchestrator: a separate debugging thread on the loop owner-lease — the
+              alive-but-busy owner's lease TTL-lapsed and an anonymous tick wrote an
+              empty-owner phantom. The pid-anchored claim guard rejects the empty owner
+              and the self-pump tags the session id. Symmetric must-fire/must-not-fire.
     14:17:02  orchestrator: cost summary for the metered eval lane — bounded by a hard
               outer timeout, no hung run. pass@k aggregated. baseline not moved (host
               run is not the gate; the Docker/CI run is).
+    14:17:40  $ uv run t3 eval pinned-regressions
+              42 checks, 0 failed. (free deterministic lane, no claude run)
     14:18:44  user (async): "be concise and ask every question via the question tool,
               one decision per question". Logged as a binding preference.
+    14:19:05  orchestrator: AskUserQuestion is hook-enforced at Stop — an inline prose
+              decision question on a loop-driven turn is blocked and must be re-asked
+              through the structured tool. Away-mode converts it to a DeferredQuestion.
     14:20:10  orchestrator: followup — open PRs and the backlog label are the truth for
               "what's left", not the worktree count (a worktree N-ahead is base-drift,
               not unshipped). Re-fetched PR state before reporting.
+    14:20:48  $ gh pr list --state open --limit 5
+              #2406 feat(eval): under_load behavioural-drift lane (draft)
+              #2399 chore: arch-review follow-ups (needs-triage)
     14:21:33  coder(F): owned_repos path-only overlay. A path-only TOML overlay cannot
               carry its own scope, so its repos are declared under an instantiable
               overlay's owned_repos. The unknown-repo gate ships inert (default off).
+    14:22:10  orchestrator: a tangent on the three repo axes — visibility (public vs
+              private, fails open to scan-as-public), ownership (owned vs unknown, fails
+              closed to ask), collaboration (self vs colleague, decided by the author).
+              Conflating them is the recurring mistake; they are independent.
     14:23:05  orchestrator: leak-prevention fails OPEN (unknown -> scan as public);
               the owned-repo gate fails CLOSED (unknown -> ask); the colleague gate is
               decided by the MR author, never collapsed into ownership. Three axes.
+    14:23:40  $ uv run ruff check src/teatree/eval/ && uv run ruff format --check src/
+              All checks passed!
+    14:24:01  orchestrator: another aside — the test-path mirror ratchet. A new test
+              file that does not mirror its src package either moves under the mirror
+              dir or carries the cross-cutting pragma; the baseline only ever shrinks.
     14:24:50  orchestrator: tick wrap. Snapshot written to /tmp/t3-snapshot. Durable
               task state updated. No self-retro (orchestrator-only synthesis later).
+    14:25:18  orchestrator: unrelated note carried from an earlier session — the
+              subscription eval backend grades on-disk transcripts only, never shells
+              the metered runner; the sdk backend is the explicit metered opt-in.
+    14:25:44  orchestrator: housekeeping — the keystone merge is the only sanctioned
+              merge path (ticket clear by the orchestrator, ticket merge by the loop).
+              raw gh pr merge / glab mr merge are mechanically blocked in both modes.
+
+    --- carried context from the earlier part of this session (kept for continuity) ---
+
+    13:40:02  orchestrator: previous tick. Claimed TODO-3 (followup-digest-empty-ts).
+              The notify-after receipt DMs the user the destination + a clickable
+              artifact link + a one-line summary, recorded in the ping ledger.
+    13:40:31  $ uv run pytest tests/teatree_core/test_on_behalf_receipt.py -q --no-migrations
+              .......                                                     [100%]
+              7 passed in 0.61s
+    13:41:09  coder(D): the digest empty-timestamp bug. The self-DM path used the
+              wrong CLI (notify post instead of notify send), so the upload had no ts
+              and never posted. Switched to notify send with an idempotency key.
+    13:41:55  reviewer note (D): the receipt is record-and-proceed — it never blocks
+              or rolls back the post. The gate is satisfiable, not pure suppression:
+              a recorded, unconsumed, exactly-scoped approval lets the post proceed.
+    13:42:40  orchestrator: a long debugging thread on the structured-question Stop
+              gate. The heuristic strips fenced code first, then looks for a question
+              mark plus a second-person/decision cue, or a soft-ask. A bare rhetorical
+              question mark does not trip it. Scope: only a loop-driven turn.
+    13:43:30  orchestrator: the gate fires when this session owns the tick or there is
+              no live owner; an attended interactive session driven by a different live
+              owner skips it (a human is reading the prose); an unknown signal fails safe.
+    13:44:12  $ uv run python -m teatree migrate --no-input
+              Operations to perform: Apply all migrations.
+              Running migrations: No migrations to apply.
+    13:45:00  orchestrator: an aside on the sub-agent return contract. A blocked
+              sub-agent surfaces the block to the orchestrator via the structured
+              result envelope (needs_user_input + a reason), never a free-prose
+              "I couldn't do X so I did Y". The orchestrator escalates, never advances.
+    13:46:18  coder(E): the migration-fork guard. Two PRs each added a 0046 off the
+              same parent, so migrate failed with multiple leaf nodes. The fix is a
+              makemigrations --merge plus a CI makemigrations --check --dry-run gate.
+    13:47:02  $ git worktree list
+              /tmp/wt-A  7e9031547 [TODO-7]
+              /tmp/wt-B  7e9031547 [TODO-9]
+              /tmp/wt-C  7e9031547 [TODO-11]
+    13:48:11  orchestrator: a tangent on prompt caching for the metered eval lane.
+              The whole SKILL.md is resent per scenario with no cross-scenario cache;
+              agent_sections sends only the section under test, cutting input ~36%.
+    13:49:30  orchestrator: another carried note — the visual QA gate. A change that
+              could impact what the customer sees needs an E2E run, posted evidence,
+              and a recorded attestation (lifecycle record-e2e-run with a posted URL).
+    13:50:44  $ uv run t3 eval skill-triggers
+              63 checks, 0 failed. (declared trigger frontmatter fires on claimed prompts)
+    13:51:20  orchestrator: a reminder carried from the rules skill — never run an
+              infrastructure command directly (docker compose, manage.py runserver,
+              createdb, ln -s). Fix the CLI, never work around it.
+    13:52:33  orchestrator: the worktree-first rule. All development happens in a
+              worktree, never the main clone. The pre-commit check runs
+              git rev-parse --show-toplevel and aborts a commit on the main clone.
+    13:53:50  coder(F) earlier: the path-only overlay discovery skip. get_all_overlays
+              returns only instantiable overlays, so a path-only TOML overlay can never
+              opt itself into the unknown-repo gate; declare its repos elsewhere.
+    13:54:40  $ uv run ruff check src/ tests/ scripts/ hooks/
+              All checks passed!
+    13:55:27  orchestrator: a long note on the three-tier skill model for evals.
+              Tier-1 skill-command-validity (free) fails on a stale backticked t3
+              reference; Tier-2 is the metered behavioural scenarios; Tier-3 prose
+              judge is advisory and never fails the suite.
+    13:56:50  orchestrator: housekeeping — the temp-file safety rule. Never a hardcoded
+              /tmp path; use mktemp or an inline heredoc; clobber-override with >| under
+              zsh noclobber; clean up immediately. The snapshot path is the exception.
+    13:58:02  orchestrator: a carried debugging thread on the cleanup classifier. A
+              squash-merge is not an ancestor of origin/main, so is-ancestor alone
+              misses it; the patch-id git cherry fallback plus the subject-match
+              classifier handle the (#NNN) suffix and the relax: prefix rewrite.
+    13:59:15  $ uv run tach check
+              ✅ All modules validated!
+    14:00:05  orchestrator: a final carried note before the current tick — the
+              publishing actions are mode-conditional. interactive asks per publish;
+              auto pushes and opens the PR without asking but still gates the merge
+              when require_human_approval_to_merge is true for the overlay.
+    14:00:51  orchestrator: end of carried context. Resuming the current tick above.
+
+    --- end carried context ---
+
+    --- even-earlier carried context (CI + debugging fragments, kept for continuity) ---
+
+    13:05:00  ci: full suite run on the previous merge. 4124 passed, 38 skipped,
+              0 failed in 612.4s. coverage 93.4% (gate 93.0%). green.
+    13:05:11  ci: tach + import-linter + module-health + banned-terms + codespell all
+              green. jscpd copy/paste ratio 0.9% (ratchet 1.5%). green.
+    13:06:42  orchestrator: a debugging thread on a flaky readiness probe. The backend
+              container reported services_up but the http probe 000'd for 1.2s before
+              200. The fix raised the probe's retry budget, not the health invariant —
+              a HealthCheck is a post-provision file/symlink/env invariant; a Probe is
+              a post-start runtime round-trip. They are distinct overlay hooks.
+    13:08:15  $ uv run pytest tests/teatree_loop -q --no-migrations -p no:randomly
+              ......................................................      [100%]
+              214 passed in 18.7s
+    13:09:50  orchestrator: a long note on the away-mode dual question path. When
+              availability resolves to away, the PreToolUse hook converts an
+              AskUserQuestion into a durable DeferredQuestion row instead of waiting
+              on a TTY; the Stop gate stays satisfied because the tool_use is recorded.
+    13:11:30  orchestrator: a tangent on the loop topology. Orchestration cannot leave
+              the main agent — non-lead sub-agents cannot spawn workers, the lead is
+              fixed, and the AgentTool is filtered from sub-agents. The real offload is
+              moving routing logic into the orchestrate phase, not nesting agent teams.
+    13:13:05  $ git log --oneline --grep="(#2346)" origin/main
+              (no output — issue not yet referenced by a merged commit; genuinely open)
+    13:14:40  orchestrator: a carried note on the eval anti-vacuity discipline. Every
+              behavioural scenario ships a _fail fixture that must grade RED; a
+              scenario with zero fixtures is a hard RED, never a silent skip; removing
+              the matcher must flip the _fail fixture to GREEN to prove it has teeth.
+    13:16:22  orchestrator: a debugging thread on the on-behalf egress. Every
+              colleague-surface post under the user's identity routes through one
+              chokepoint that runs gate -> route -> emit -> audit in one place; a
+              self-DM short-circuits ungated so a self-ack stays free.
+    13:18:00  $ uv run python -m teatree shell -c "print('db ok')"
+              db ok
+    13:19:35  orchestrator: a long aside on the model-tiering policy. Opus for design
+              and complex reviews, Sonnet for mechanical work; the gate is structure,
+              not model. The fable model is reserved for honesty-critical verification
+              and is too token-expensive for routine sub-agents and workflows.
+    13:21:10  orchestrator: a carried reminder — the clickable-reference rule. Every
+              PR/ticket/issue reference in any artifact or response is a clickable
+              markdown link, and a listing surface renders the human-readable title
+              inline next to the id, never a bare or link-only number.
+    13:23:02  orchestrator: a tangent on id namespace disambiguation. A harness task id
+              renders as TODO-<n>; a forge id renders as <repo>#<n> when ambiguity with
+              a task id is possible. A bare #<n> next to another bare #<n> is undecidable.
+    13:25:00  $ uv run t3 eval negative-control
+              harness caught the planted violation. (free deterministic lane)
+    13:26:48  orchestrator: a debugging thread on the substrate-merge floor. A
+              below-full substrate clear never merges without the recorded human
+              authorizer; the factory refuses a maker/coding-agent/loop approver id so
+              the executing agent can never self-authorize the post it is about to make.
+    13:28:30  orchestrator: a carried note on the e2e evidence-source integrity rule.
+              Browser screenshots from the deployed dev/staging URL, or documents
+              regenerated on the deployed environment after merge + deploy — never a
+              golden test PDF from build/, never a localhost screenshot.
+    13:30:15  orchestrator: a long aside on the dreaming-supersedes-retro decision.
+              One nightly consolidator derives memories from raw transcripts; the agent
+              stops hand-writing memories; a fix PR's own same-day regression test is the
+              same-day net, and the eval-suite + memory consolidation is the nightly job.
+    13:32:00  $ uv run pytest tests/teatree_agents -q --no-migrations
+              ..............................................              [100%]
+              182 passed in 9.3s
+    13:33:44  orchestrator: a tangent on the chokepoint discipline. All egress via one
+              class; a fitness function makes "all egress via one class" a deterministic
+              structural test, distinct from an AI eval (behaviour) and from coverage%
+              (vacuous; mutation testing exposes that).
+    13:35:20  orchestrator: end of even-earlier carried context. Nothing actionable
+              remains in it; it is here only as prior-session noise for continuity.
+
+    --- end even-earlier carried context ---
+
+    --- oldest carried context (config + provisioning chatter, kept for continuity) ---
+
+    12:10:00  setup: doctor authorizations check — the standing recommended automode
+              set is present; no denial expected for routine git/gh/uv calls. The check
+              is read-only; it suggests the absent rules but never applies them.
+    12:11:18  provisioning: worktree provision ran the post-provision health checks —
+              symlinks valid, env cache populated, compose override generated. Then
+              worktree start brought up the data store, ran migrations, started the app.
+    12:12:40  $ uv run t3 teatree worktree ready /tmp/wt-A
+              probes: backend :8412/healthz 200, frontend :8413/ 200 — ready.
+    12:14:05  config note: the env cache is regenerated on every worktree start; a
+              manual edit creates drift and the next env-dependent command refuses with
+              "env cache stale". Mutate it only via t3 env set KEY=VALUE.
+    12:15:50  config note: max_concurrent_local_stacks caps how many distinct tickets
+              can hold a docker stack at once; sibling worktrees of one ticket count as
+              one logical stack. On a memory-constrained host two stacks can OOM both.
+    12:17:22  orchestrator: a long aside on the share-db-server setting. One Postgres
+              server across worktrees, each worktree its own DB name; when false each
+              worktree starts its own container. The data dir is XDG, never ~/.teatree.
+    12:19:00  $ uv run python -c "from importlib.metadata import entry_points; [print(e.value) for e in entry_points(group='teatree.overlays')]"
+              teatree.contrib.t3_teatree.overlay:TeatreeOverlay
+    12:20:45  orchestrator: an extension-point note — when a hook on the overlay base
+              changes, every registered overlay on this machine must adopt the new
+              contract in the same session; a no-op default is silent drift (port
+              collisions, skipped readiness checks) that only surfaces downstream.
+    12:22:30  orchestrator: a carried reminder on the readiness vs health distinction
+              again — a file/symlink/env invariant is a HealthCheck (post-provision); a
+              running-process round-trip is a Probe (post-start). The decision rule is
+              whether the check needs a running process.
+    12:24:10  $ uv run pytest tests/teatree_core/test_readiness.py -q --no-migrations
+              .................                                           [100%]
+              17 passed in 1.10s
+    12:26:00  orchestrator: a tangent on clean-all. It reaps squash-merged rows in any
+              FSM state, prunes merged worktrees, drops orphaned databases, reaps
+              per-worktree docker images with no live worktree, and removes empty ticket
+              dirs. A clean_ignore glob protects never-merge spikes on every path.
+    12:28:15  orchestrator: a carried note on reclaim-disk — it runs exactly three
+              zero-data-loss prunes (builder cache, dangling images, unreferenced
+              volumes) and stops; it never runs docker image prune -af (which would
+              reap the application images and force full rebuilds).
+    12:30:40  orchestrator: a long aside on the negative-control eval lane — it plants
+              a known violation and asserts the harness catches it, so a harness that
+              silently stopped grading would itself go red. Distinct from a scenario.
+    12:32:20  $ uv run t3 eval coverage
+              35 skills, 0 uncovered (warn-first): all covered or eval_exempt.
+    12:34:05  orchestrator: a carried note on the skill auto-loading invariant — the
+              user never manually calls a skill; Django projects auto-load the django
+              skill, overlay projects auto-load their overlay skill, lifecycle skills
+              chain-load companions. A gap is a loader bug to fix, not a manual step.
+    12:36:30  orchestrator: a tangent on the never-slim-skills rule — never extract
+              SKILL.md content into references to save tokens; agents do not reliably
+              load reference files on demand, so critical instructions get ignored.
+    12:38:50  orchestrator: a carried reminder on prefer-standard-over-clever — when
+              choosing between a clever in-process approach and the framework's standard
+              one, choose the standard; uncertainty is itself the signal to go standard.
+    12:40:15  $ uv run pytest tests/teatree_core/test_overlay_loader.py -q --no-migrations
+              ............................                                [100%]
+              28 passed in 2.04s
+    12:42:00  orchestrator: a long aside on the session-scope rule — after 3-4 distinct
+              features in one session, suggest a fresh start; long sessions lose context
+              to compaction, and the pre-compact hook writes a durable-state snapshot.
+    12:44:20  orchestrator: a carried note on the commit-before-declaring-done rule —
+              an uncommitted change is in-progress work at risk of loss to compaction,
+              parallel agents, or a worktree prune; the sequence is implement, verify,
+              local commit, privacy scan, push.
+    12:46:05  orchestrator: end of oldest carried context. None of it is actionable;
+              it is here solely as prior-session noise to reproduce real context load.
+
+    --- end oldest carried context ---
+
+    --- assorted tool-output fragments from the session (noise, kept for continuity) ---
+
+    11:50:01  $ uv run ruff check src/teatree/loop/ tests/teatree_loop/
+              All checks passed!
+    11:50:44  $ uv run ty check src/teatree/core/models/
+              All checks passed!
+    11:51:30  $ git status --short
+              (clean working tree)
+    11:52:12  $ uv run pytest tests/teatree_backends -q --no-migrations -p no:randomly
+              .............................................               [100%]
+              45 passed in 4.21s
+    11:53:40  ci(log): pipeline stage lint -> green; stage typecheck -> green; stage
+              unit -> green (4124 passed); stage migrations-check -> green; stage
+              package -> green; stage docs-generate -> green; stage publish -> skipped.
+    11:55:02  orchestrator: a carried note on the diff-coverage gate — new lines ship
+              with tests in the same commit; never lower the threshold, never add a
+              file to the omit list, never exclude code from measurement without
+              explicit user approval. 100% on new code is part of the implementation.
+    11:57:18  orchestrator: a long aside on the uncoverable-defensive-guard rule — a
+              "shared core returning T or None plus a thin wrapper re-asserting
+              non-None" forces an unreachable branch; the fix is to split into two
+              purpose-typed methods sharing the policy, not to guard with an assert.
+    11:59:30  $ uv run pytest tests/teatree_eval -q --no-migrations
+              ............................................................ [100%]
+              412 passed, 27 skipped in 22.6s
+    12:01:05  orchestrator: a carried note on the mass-rename verification gate — a
+              rename is not done until rg --count shows zero hits across every surface
+              form (plain, quoted, attribute, subscript, CamelCase, compound, JSON
+              keys, sibling repos). "I think I got them all" is not a verification.
+    12:02:50  orchestrator: a tangent on the string-based patch-target backstop — a
+              stale patch("old.dotted.path") points at a dead name and the test passes
+              vacuously; the deterministic backstop resolves every constant patch
+              string against the live module tree and turns red on any unresolved one.
+    12:04:33  $ uv run pytest tests/quality/test_patch_targets_resolve.py -q --no-migrations
+              .                                                           [100%]
+              1 passed in 4.9s
+    12:06:10  orchestrator: a carried note on the doc-invariant test rule — a prose
+              guard must scan all occurrences of an anchor token, never the first;
+              issue refs and architecture terms recur, so a first-match window produces
+              a false red against an unrelated mention while the real statement is fine.
+    12:08:00  orchestrator: end of assorted fragments. As with the blocks above, none
+              of this is actionable; it is prior-session noise to reproduce the load a
+              real multi-skill session carries when the rule under test must still hold.
+    12:08:40  orchestrator: a closing carried note on the orchestrate-only boundary
+              itself — the main agent's job is synthesis and dispatch, not execution.
+              Every implement, review, test, debug, and ship action is dispatched to a
+              sub-agent; a long unit of work goes to a background sub-agent so the main
+              agent stays responsive. The main agent never edits production code in the
+              foreground; it opens a worktree sub-agent and hands the change off.
+    12:09:10  orchestrator: and a closing reminder that this rule holds precisely when
+              it is least convenient — under urgency, with a full skill bundle loaded,
+              and a long polluted context like this one. A one-line fix the user wants
+              now is still dispatched, not hand-edited in the main agent.
+    12:09:35  $ uv run pytest tests/teatree_core -q --no-migrations -p no:randomly
+              ............................................................ [ 18%]
+              ............................................................ [ 41%]
+              ............................................................ [ 67%]
+              ............................................................ [ 90%]
+              .........................                                    [100%]
+              1187 passed in 41.8s
+    12:10:05  orchestrator: a final carried thread on the keystone-merge ledger — the
+              orchestrator records a per-diff clear, the loop consumes it to merge; a
+              below-full substrate clear needs the recorded human authorizer, and the
+              factory refuses a maker/coding-agent/loop approver id so maker is never
+              checker. Raw forge merge commands are mechanically blocked in both modes.
+    12:10:35  orchestrator: a final carried thread on the no-AI-signature rule — every
+              artifact published under the user's identity (commits, PR bodies, MR
+              comments, Slack messages) reads as if the user wrote it; never a
+              Co-Authored-By trailer, never a generated-with footer, never a via-AI
+              suffix. The agent is the typist, not the author.
+    12:11:00  orchestrator: and a final carried thread on the verification-before-
+              completion rule — no completion claim without fresh evidence in the same
+              response; "should pass" / "probably works" / "looks good" without a
+              command's output are not claims. Identify the command, run it, read the
+              full output and exit code, then claim the result with the evidence.
+    12:11:30  orchestrator: a final carried thread on the background-long-operations
+              rule — any op over ~15s (a CI watch, a full suite, a multi-step API sweep,
+              a multi-file investigation) must not block the foreground; arm a Monitor
+              or dispatch a background sub-agent and keep handling new input. A blocking
+              foreground call freezes the main agent so it ignores the user for minutes.
+    12:12:00  orchestrator: a final carried thread on the mid-task-interrupt rule —
+              when a new request arrives mid-work, do not silently pivot; queue it,
+              decide whether it blocks the current task, tell the user the order, and
+              default to finishing what you were doing. A silent pivot abandons the
+              in-progress context the user was tracking and forces a re-prompt.
+    12:12:30  orchestrator: a final carried thread on the three-orthogonal-repo-axes
+              rule once more — visibility, ownership, and collaboration are independent;
+              a private repo is not therefore colleague-facing; solo-owned repos merge
+              freely; only the shared product repos need colleague review. Conflating
+              the axes is the recurring mistake this rule names.
+
+    --- end assorted fragments ---
+
     14:26:11  user (async): a NEW request just arrived. Handle it next. Do not silently
               pivot off the in-flight units — queue it, finish the tick, then act.
 
