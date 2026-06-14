@@ -2,11 +2,12 @@
 
 A ``git push`` from a repo whose remote slug is OWNED by a registered overlay
 (``owned_repos``) proceeds; a push to an UNKNOWN repo (no overlay claims it)
-is denied and routed to the operator-approval path. The gate is OPT-IN — it
-fires only because a registered overlay (the always-present t3-teatree
-dogfood overlay) declares ``owned_repos`` — and never-lockout: a per-call
-``[scope-push-ok: <reason>]`` token and the ``unknown_repo_push_gate_enabled``
-kill-switch both ALLOW.
+is denied and routed to the operator-approval path. The gate is OPT-IN and
+ships INERT (``require_owned_repo_approval`` defaults False), so these tests
+inject an opted-in overlay set rather than relying on the shipped flag —
+the gate LOGIC is what they assert, not the dogfood overlay's config. It is
+never-lockout: a per-call ``[scope-push-ok: <reason>]`` token and the
+``unknown_repo_push_gate_enabled`` kill-switch both ALLOW.
 
 Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten remote
 so ``slug_for_cwd`` resolves the target slug offline.
@@ -20,6 +21,30 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.core.overlay import OverlayBase, OverlayConfig
+
+
+class _OptedInOverlay(OverlayBase):
+    def __init__(self) -> None:
+        self.config = OverlayConfig()
+        self.config.owned_repos = {"github.com": ["souliane"]}
+        self.config.require_owned_repo_approval = True
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: object) -> list[object]:  # type: ignore[override]
+        _ = worktree
+        return []
+
+
+@pytest.fixture(autouse=True)
+def _opt_in_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the gate's overlay set an opted-in t3-teatree (the shipped overlay is inert)."""
+    monkeypatch.setattr(
+        "teatree.core.overlay_loader.get_all_overlays",
+        lambda: {"t3-teatree": _OptedInOverlay()},
+    )
 
 
 def _git(cwd: Path, *args: str) -> None:

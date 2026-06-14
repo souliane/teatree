@@ -105,11 +105,14 @@ def identity_from_host_and_slug(host: str, slug: str) -> RepoIdentity:
 
     The merge keystone carries the namespace as a bare slug (no host) but the
     host is recoverable from the ticket's issue/PR URL. Both are normalized to
-    the canonical scope key. An empty host or slug yields an empty identity
-    (fail-safe → unknown).
+    the canonical scope key. An empty/dotless host (an unresolvable host or a
+    bare ssh alias) or an empty slug yields an empty identity (fail-safe →
+    unknown), applying the SAME dotted-host requirement as
+    :func:`repo_identity_for_cwd` so both paths classify a dotless host
+    identically.
     """
     h = normalize_host(host)
     ns = slug.strip().lower().strip("/")
-    if not h or not ns:
+    if not h or "." not in h or not ns:
         return RepoIdentity(host="", namespace="")
     return RepoIdentity(host=h, namespace=ns)

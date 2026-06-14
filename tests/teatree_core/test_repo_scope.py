@@ -11,7 +11,14 @@ import os
 import subprocess
 from pathlib import Path
 
-from teatree.core.repo_scope import RepoIdentity, host_aware_owns, normalize_host, repo_identity_for_cwd, repo_scope
+from teatree.core.repo_scope import (
+    RepoIdentity,
+    host_aware_owns,
+    identity_from_host_and_slug,
+    normalize_host,
+    repo_identity_for_cwd,
+    repo_scope,
+)
 
 _TEATREE_SCOPE = {"github.com": ["souliane", "acme-eng/widget-overlay"]}
 
@@ -137,3 +144,27 @@ class TestPolarityFailsClosed:
     def test_substring_owner_does_not_falsely_match(self) -> None:
         fork = RepoIdentity(host="github.com", namespace="souliane-fork/x")
         assert host_aware_owns({"github.com": ["souliane"]}, fork) is False
+
+
+class TestBothIdentityHelpersAgreeOnUnresolvableHost:
+    """Both identity helpers apply the SAME dotted-host requirement.
+
+    The push path (``repo_identity_for_cwd``) and the merge path
+    (``identity_from_host_and_slug``) classify a dotless / alias host
+    identically — an unresolvable host is the uncertainty axis (empty identity →
+    fails open downstream), never a known-but-unowned host (which would fail
+    closed).
+    """
+
+    def test_dotless_host_yields_empty_identity_on_the_merge_path(self) -> None:
+        assert identity_from_host_and_slug("gh-personal", "souliane/teatree") == RepoIdentity(host="", namespace="")
+
+    def test_dotted_host_yields_a_resolved_identity_on_the_merge_path(self) -> None:
+        identity = identity_from_host_and_slug("https://gitlab.com/x/-/issues/1", "x/overlay-repo")
+        assert identity == RepoIdentity(host="gitlab.com", namespace="x/overlay-repo")
+
+    def test_dotless_host_resolves_the_same_on_both_paths(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "alias", "git@gh-personal:souliane/teatree.git")
+        cwd_identity = repo_identity_for_cwd(repo)
+        merge_identity = identity_from_host_and_slug("gh-personal", "souliane/teatree")
+        assert cwd_identity.host == merge_identity.host == ""

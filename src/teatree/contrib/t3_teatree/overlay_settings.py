@@ -37,10 +37,18 @@ OWNED_REPOS: dict[str, list[str]] = {
     "github.com": ["souliane"],
 }
 
-# Activate the unknown-repo approval gate for the dogfood overlay: a push to a
-# repo outside OWNED_REPOS is held for the operator (the gate is opt-in, so it
-# stays inert for every overlay that does not set this).
-REQUIRE_OWNED_REPO_APPROVAL: bool = True
+# The unknown-repo approval gate ships INERT (opt-in, default off). Enabling it
+# requires FIRST declaring the FULL owned host/namespace list — including every
+# private/customer forge the operator merges on — because the gate fails CLOSED
+# on any repo no listed pattern owns. The public OWNED_REPOS above is scoped to
+# github.com/souliane only, so flipping this True here would hold the operator's
+# own private-forge keystone merges as "unknown". A path-only TOML overlay also
+# cannot carry its own scope (it has no class, so overlay discovery skips it), so
+# its repos must be declared under THIS overlay's owned_repos. The operator opts
+# in from private ~/.teatree.toml — [overlays.t3-teatree.owned_repos] with the
+# full host list + require_owned_repo_approval = true — where brand strings are
+# allowed and never reach this public repo.
+REQUIRE_OWNED_REPO_APPROVAL: bool = False
 
 # ── Workflow ────────────────────────────────────────────────────────
 

@@ -7303,28 +7303,28 @@ def _scope_push_ok_token(command: str) -> str | None:
 def _classify_push_for_cwd(cwd: Path) -> str:
     """Classify a push from *cwd* against the live overlays: ``allow``/``require_approval``.
 
+    Bootstraps Django first — ``classify_active_push`` resolves overlays via
+    ``get_all_overlays()`` which trips the app registry, and the hook subprocess
+    never calls ``django.setup()`` on its own. Without the bootstrap every push
+    classified ``allow`` (the registry error was swallowed below), so the gate
+    was production-dead. The caller (:func:`_unknown_repo_push_is_in_scope`)
+    already short-circuits on the cheap kill-switch BEFORE reaching here, so the
+    common case (gate disabled — the shipped default) never pays the bootstrap.
+
     Reuses the forge-host-keyed classifier
-    :func:`teatree.core.gates.owned_repo_guard.classify_active_push` via the
-    same ``src``-path injection the managed-repo classifier uses. Any
-    import/resolution EXCEPTION fails OPEN to ``allow`` (never-lockout on the
-    internal-exception axis) — distinct from a clean ``require_approval``
-    verdict, which holds the push.
+    :func:`teatree.core.gates.owned_repo_guard.classify_active_push`. Any
+    import/resolution EXCEPTION (incl. a failed bootstrap) fails OPEN to
+    ``allow`` (never-lockout on the internal-exception axis) — distinct from a
+    clean ``require_approval`` verdict, which holds the push.
     """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
+    if not _bootstrap_teatree_django():
+        return "allow"
     try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
         from teatree.core.gates.owned_repo_guard import classify_active_push  # noqa: PLC0415
 
         return str(classify_active_push(cwd))
     except Exception:  # noqa: BLE001 — fail OPEN; a broken resolver must not wedge a push.
         return "allow"
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
 
 
 _UNKNOWN_REPO_PUSH_REASON = (
