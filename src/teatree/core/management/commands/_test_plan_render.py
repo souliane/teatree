@@ -464,13 +464,14 @@ def _dev_gap_clause(side: SideState) -> str:
 
 
 def _workflow_names(state: TestPlanState) -> list[str]:
-    """The ordered union of workflow names across both sides (dev order, then new local)."""
-    names: list[str] = []
-    for side in (state["dev"], state["local"]):
-        for name in side.get("workflows", {}):
-            if name not in names:
-                names.append(name)
-    return names
+    """Ordered union of both sides' media-bearing workflows and the steps-only ones.
+
+    A steps-only manifest (steps recorded, no screenshots/video) keeps its
+    workflows in ``state["steps"]``, never in either side — so they must be
+    enumerated here too or their steps never render.
+    """
+    sources = (state["dev"].get("workflows", {}), state["local"].get("workflows", {}), state.get("steps", {}))
+    return list(dict.fromkeys(name for source in sources for name in source))
 
 
 def _cells(side: SideState, workflow: str) -> tuple[str, list[str]]:
