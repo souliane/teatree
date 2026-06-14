@@ -44,6 +44,7 @@ loop's outer atomic rolls the advance back and the FSM stays put.
 import logging
 from typing import TYPE_CHECKING, Final
 
+from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 
 if TYPE_CHECKING:
@@ -130,3 +131,6 @@ def check_fix_record_dod(ticket: "Ticket") -> None:
         f"`t3 <overlay> ticket fix-record-override <id> --reason '<why>'`."
     )
     raise FixRecordDodError(msg)
+
+
+register_gate("fix_record_dod", check_fix_record_dod)

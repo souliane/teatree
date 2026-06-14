@@ -1,11 +1,12 @@
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from django.db import models, transaction
 from django.utils import timezone
 from django_fsm import FSMField
 
 from teatree.core.managers import TaskManager
+from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
@@ -478,7 +479,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def usages(self) -> "list[AttemptUsage]":
         """Map each attempt to the :class:`AttemptUsage` the cost layer reads."""
-        from teatree.core.cost import AttemptUsage  # noqa: PLC0415
+        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806
 
         return [
             AttemptUsage(
@@ -501,7 +502,7 @@ class TaskAttemptQuerySet(models.QuerySet):
 
     def cost_breakdown(self) -> "CostBreakdown":
         """SDK-equivalent spend across the attempts in this queryset."""
-        from teatree.core.cost import CostBreakdown  # noqa: PLC0415
+        CostBreakdown = cast("type[CostBreakdown]", get("cost", "CostBreakdown"))  # noqa: N806
 
         return CostBreakdown.from_usages(self.usages())
 

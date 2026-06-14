@@ -300,3 +300,18 @@ class CostReport:
             for tier, amount in sorted(self.breakdown.per_tier_usd.items(), key=lambda kv: -kv[1]):
                 lines.append(f"    {tier}: ${amount:,.2f}")
         return lines
+
+
+def register_cost_factories() -> None:
+    """Register the cost dataclasses the ``TaskAttempt`` queryset reaches DOWN to (#2385).
+
+    ``cost.py`` depends ON the models indirectly and must NOT move into
+    ``modelkit`` (it would break PR-1's ``depends_on == []`` leaf test), so the
+    models can't import it without an intra-core up-edge. The registry inverts
+    the edge: the model fetches ``AttemptUsage`` / ``CostBreakdown`` by name at
+    call time.
+    """
+    from teatree.core.modelkit.gate_registry import register  # noqa: PLC0415
+
+    register("cost", "AttemptUsage", AttemptUsage)
+    register("cost", "CostBreakdown", CostBreakdown)

@@ -49,6 +49,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 
 if TYPE_CHECKING:
@@ -167,3 +168,6 @@ def check_spec_coverage(ticket: "Ticket") -> None:
         f"`extra['spec_coverage_override']`."
     )
     raise SpecCoverageDodError(msg)
+
+
+register_gate("spec_coverage", check_spec_coverage)

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.e2e_workitem import load_recipe
+from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.overlay_loader import frontend_repos_for_overlay
 
@@ -303,3 +304,6 @@ def _now_iso() -> str:
     from django.utils import timezone  # noqa: PLC0415
 
     return timezone.now().isoformat()
+
+
+register_gate("local_e2e_dod", check_local_e2e_dod)
