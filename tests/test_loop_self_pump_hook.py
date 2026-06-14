@@ -730,3 +730,17 @@ class TestPauseSuppressionPredicate:
     def test_present_resolves_to_pump(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(router, "_resolved_away_mode", lambda: False)
         assert router._pause_suppresses_self_pump() is False
+
+    def test_availability_read_raising_resolves_to_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Guards the predicate's OWN internal try/except: a raising
+        # availability read (not a return) must resolve to suppress —
+        # indeterminate ⇒ allow stop, never nag through a possible pause.
+        # Patching the inner `_resolved_away_mode` (not the whole predicate)
+        # is what exercises the internal except rather than the outer
+        # handle_loop_self_pump crash-guard.
+        def _boom() -> bool:
+            msg = "availability backend unreachable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(router, "_resolved_away_mode", _boom)
+        assert router._pause_suppresses_self_pump() is True
