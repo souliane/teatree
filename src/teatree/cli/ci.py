@@ -21,14 +21,39 @@ class CICommands:
 
     @staticmethod
     def get_ci_service() -> CIService | None:
-        """Get CI service — tries overlay first, falls back to env vars."""
+        """Resolve the CI service: active overlay, then the repo's owning overlay, then env vars.
+
+        ``ensure_django()`` runs first so the overlay registry and the backend
+        provider are loaded; without it the active and repo-resolution paths
+        both yield nothing and the command falls through to env-only.
+        """
+        ensure_django()
         try:
             from teatree.core.backend_factory import ci_service_from_overlay  # noqa: PLC0415
 
             result = ci_service_from_overlay()
             if result is not None:
                 return result
-        except Exception:  # noqa: BLE001, S110 — fallback to env-based config
+        except Exception:  # noqa: BLE001, S110 — fall through to repo/env resolution
+            pass
+
+        # No active overlay (no session / ``T3_OVERLAY_NAME``): resolve the
+        # overlay that owns the current repo by its origin remote, so ``t3 ci``
+        # works from any overlay repo. A multi-overlay install makes the active
+        # path raise "Multiple overlays" — exactly the bare-repo case.
+        try:
+            from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
+            from teatree.core.overlay_loader import get_overlay_for_repo  # noqa: PLC0415
+
+            overlay = get_overlay_for_repo(".")
+            if overlay is not None:
+                service = get_backend_provider().get_ci_service(
+                    gitlab_token=overlay.config.get_gitlab_token(),
+                    gitlab_url=overlay.config.gitlab_url,
+                )
+                if service is not None:
+                    return service
+        except Exception:  # noqa: BLE001, S110 — fall through to env resolution
             pass
 
         token = os.environ.get("GITLAB_TOKEN", "")

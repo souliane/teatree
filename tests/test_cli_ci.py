@@ -1,5 +1,7 @@
 """Tests for CI-related CLI commands extracted from test_cli.py."""
 
+import shutil
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,10 +12,46 @@ import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
+from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.cli import app
 from teatree.cli.ci import CICommands
+from teatree.core.overlay import OverlayBase, OverlayConfig
 
 runner = CliRunner()
+_GIT = shutil.which("git") or "git"
+
+
+class _RepoOwningConfig(OverlayConfig):
+    def get_gitlab_token(self) -> str:
+        return "gl-test-token"
+
+
+class _RepoOwningOverlay(OverlayBase):
+    """Owns ``group/repo`` and carries a GitLab token."""
+
+    config = _RepoOwningConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+    def get_workspace_repos(self) -> list[str]:
+        return ["group/repo"]
+
+
+class _UnrelatedOverlay(OverlayBase):
+    """A second registered overlay so active resolution is ambiguous."""
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+    def get_workspace_repos(self) -> list[str]:
+        return ["other/thing"]
 
 
 # ── CICommands.get_ci_service() ──────────────────────────────────────
@@ -21,16 +59,38 @@ runner = CliRunner()
 
 class TestGetCIService:
     def test_from_env(self, monkeypatch):
-        """Creates service from env when overlay fails."""
+        """Creates service from env when overlay + repo resolution find nothing."""
         monkeypatch.setenv("GITLAB_TOKEN", "token")
-        with patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")):
+        with (
+            patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")),
+            patch.object(overlay_loader_mod, "get_overlay_for_repo", return_value=None),
+        ):
             service = CICommands.get_ci_service()
             assert service is not None
 
     def test_no_token(self, monkeypatch):
         monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-        with patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")):
+        with (
+            patch.object(backend_factory_mod, "ci_service_from_overlay", side_effect=Exception("no django")),
+            patch.object(overlay_loader_mod, "get_overlay_for_repo", return_value=None),
+        ):
             assert CICommands.get_ci_service() is None
+
+    def test_resolves_service_from_repo_owning_overlay(self, tmp_path, monkeypatch):
+        """Resolve the CI service via the repo's owning overlay when no overlay is active."""
+        subprocess.run([_GIT, "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+        subprocess.run(
+            [_GIT, "-C", str(tmp_path), "remote", "add", "origin", "git@gitlab.com:group/repo.git"],
+            check=True,
+            capture_output=True,
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        overlays = {"a": _RepoOwningOverlay(), "b": _UnrelatedOverlay()}
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlays):
+            service = CICommands.get_ci_service()
+        assert isinstance(service, GitLabCIService)
 
 
 # ── CICommands.get_ci_project() ──────────────────────────────────────
