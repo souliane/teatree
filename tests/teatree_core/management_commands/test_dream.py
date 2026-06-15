@@ -65,14 +65,16 @@ class DreamDryRunTestCase(TestCase):
     def test_dry_run_writes_no_marker_and_no_rows(self) -> None:
         called: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: object, dry_run: bool) -> DreamRunResult:
+        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
             called["dry_run"] = dry_run
+            called["eval_proposals"] = eval_proposals
             return _ok_result(dry_run=dry_run)
 
         with patch("teatree.loops.dream.engine.run_consolidation", side_effect=_capture):
             call_command("dream", "run", "--dry-run", stdout=StringIO())
 
         assert called["dry_run"] is True
+        assert called["eval_proposals"] is None
         assert not DreamRunMarker.objects.exists()
         assert ConsolidatedMemory.objects.count() == 0
 
@@ -87,6 +89,37 @@ class DreamDryRunTestCase(TestCase):
             call_command("dream", "run", "--dry-run", stdout=stdout)
         assert "FAIL" in stdout.getvalue()
         assert not DreamRunMarker.objects.exists()
+
+
+class DreamProposeEvalsFlagTestCase(TestCase):
+    @staticmethod
+    def _capture(seen: dict[str, object]):
+        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+            seen["eval_proposals"] = eval_proposals
+            return _ok_result()
+
+        return _run
+
+    def test_propose_evals_off_by_default(self) -> None:
+        seen: dict[str, object] = {}
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)):
+            call_command("dream", "run", stdout=StringIO())
+        assert seen["eval_proposals"] is None
+
+    def test_propose_evals_flag_enables_the_phase(self) -> None:
+        seen: dict[str, object] = {}
+        with patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)):
+            call_command("dream", "run", "--propose-evals", stdout=StringIO())
+        assert seen["eval_proposals"] is not None
+
+    def test_env_enables_the_phase_for_the_cadence_tick(self) -> None:
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "1"}),
+        ):
+            call_command("dream", "run", stdout=StringIO())
+        assert seen["eval_proposals"] is not None
 
 
 class DreamLeaseTtlTestCase(TestCase):
@@ -213,7 +246,9 @@ class DreamSinceTestCase(TestCase):
     def test_run_passes_since_to_engine(self) -> None:
         captured: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: dt.datetime | None, dry_run: bool) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+        ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
 
@@ -229,7 +264,9 @@ class DreamSinceTestCase(TestCase):
         # naive datetime and TypeError on comparison with timezone.now().
         captured: dict[str, object] = {}
 
-        def _capture(*, overlay: str, since: dt.datetime | None, dry_run: bool) -> DreamRunResult:
+        def _capture(
+            *, overlay: str, since: dt.datetime | None, dry_run: bool, eval_proposals: object = None
+        ) -> DreamRunResult:
             captured["since"] = since
             return _ok_result()
 

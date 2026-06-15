@@ -3631,11 +3631,13 @@ Usage: t3 dream run [OPTIONS]
  Run one consolidation pass NOW (ignores cadence).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --since          TEXT  ISO-8601 lower bound for the replay window (default:  │
-│                        engine lookback).                                     │
-│ --dry-run              Do everything except writing ConsolidatedMemory rows  │
-│                        / the marker.                                         │
-│ --help                 Show this message and exit.                           │
+│ --since                TEXT  ISO-8601 lower bound for the replay window      │
+│                              (default: engine lookback).                     │
+│ --dry-run                    Do everything except writing ConsolidatedMemory │
+│                              rows / the marker.                              │
+│ --propose-evals              Also derive inert eval candidates from grounded │
+│                              drift clusters (default OFF).                   │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
