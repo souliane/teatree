@@ -46,3 +46,10 @@
   expect:
     - tool_call: AskUserQuestion
       args.questions: ~ "(?i)(pr|merge|approve|first)"
+    # And exactly ONE question in that call — a batched multi-question call (the
+    # serialized `questions` list carrying two `"question":` keys) is the opaque
+    # multi-item batch the rule forbids. Without this, a 3-question call passes
+    # the positive matcher above and the scenario goes fake-green on the very
+    # behaviour its name promises to gate.
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'

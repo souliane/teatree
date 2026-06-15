@@ -40,6 +40,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from django_bootstrap import bootstrap_teatree_django
+from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
 STATE_DIR = Path(
@@ -6207,22 +6208,10 @@ def handle_session_end_self_pump(data: dict) -> None:
 # `stop_hook_active` flag short-circuits so the gate cannot hot-loop on
 # its own re-fire.
 
-_USER_DIRECTED_CUE_RE = re.compile(
-    r"\b("
-    r"want me to|should i|shall i|do you want|do you|would you like|"
-    r"which (?:one|approach|option|of)|"
-    r"prefer|proceed\?|go ahead\?"
-    r")\b|\bor\b[^.?!\n]*\?",
-    re.IGNORECASE,
-)
-
-# A "soft ask" — a deferral phrasing that solicits a user decision WITHOUT
-# a literal '?'. "Let me know if/whether …" reads as a status footnote in
-# a loop run yet is exactly the lost-decision failure mode #807 targets,
-# so it trips the gate independently of the '?' requirement.
-_SOFT_ASK_CUE_RE = re.compile(r"\blet me know (?:if|whether|which|what)\b", re.IGNORECASE)
-
-_FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+# The detection heuristic itself — ``is_user_directed_question`` and its
+# ``?``/decision-cue/soft-ask regexes — lives in the ``question_gates`` sibling
+# (imported above) alongside the one-decision-per-call warn; this handler keeps
+# the routing decision (loop-ownership, transcript parsing, the block emit).
 
 
 def _read_transcript_entries(transcript_path: str) -> list[dict]:
@@ -6298,24 +6287,6 @@ def _last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
     return "\n".join(reversed(texts)), used_tool
 
 
-def _is_user_directed_question(text: str) -> bool:
-    """True when ``text`` poses a decision question directed at the user.
-
-    Fenced code blocks are stripped first so a ``?`` inside a regex or
-    shell glob is not mistaken for a prompt. A "soft ask" ("let me know
-    if/whether …") trips the gate on its own — it solicits a decision
-    without a ``?``. Otherwise a ``?`` is necessary but not sufficient: a
-    second-person/decision cue must also be present, which keeps
-    rhetorical asides and explanatory sentences out of the gate.
-    """
-    prose = _FENCED_CODE_RE.sub(" ", text)
-    if _SOFT_ASK_CUE_RE.search(prose):
-        return True
-    if "?" not in prose:
-        return False
-    return bool(_USER_DIRECTED_CUE_RE.search(prose))
-
-
 _STRUCTURED_QUESTION_BLOCK = (
     "TEATREE GATE — a user-directed question was asked inline in prose with no "
     "AskUserQuestion tool call in this turn. Inline questions are invisible in "
@@ -6372,7 +6343,7 @@ def _is_classifier_relax_explanation(text: str) -> bool:
     This exemption is INTENTIONALLY NARROW.  It must not subsume arbitrary
     prose — it only applies to the narrow vocabulary of the denial protocol.
     """
-    return bool(_CLASSIFIER_RELAX_MARKERS.search(_FENCED_CODE_RE.sub(" ", text)))
+    return bool(_CLASSIFIER_RELAX_MARKERS.search(FENCED_CODE_RE.sub(" ", text)))
 
 
 def handle_enforce_structured_question(data: dict) -> bool | None:
@@ -6410,7 +6381,7 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     if turn is None:
         return None
     text, used_question_tool = turn
-    if used_question_tool or not _is_user_directed_question(text):
+    if used_question_tool or not is_user_directed_question(text):
         return None
     if _is_classifier_relax_explanation(text):
         return None
@@ -8630,6 +8601,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_ai_signature,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
+        handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
     ],
