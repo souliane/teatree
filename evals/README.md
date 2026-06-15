@@ -651,8 +651,8 @@ code *does*: each `RegressionCheck` calls the **real** function for a recurring
 failure class on a constructed must-block input and a must-allow input, and
 reports a violation when either direction is wrong. Checks that need git build
 a throwaway repo under `tempfile`; checks that need the ORM run under the test
-DB (and skip cleanly when Django is not configured). `tests/eval_replay/
-deterministic/test_regression_corpus.py` proves each check is non-vacuous — a deliberately
+DB (and skip cleanly when Django is not configured). `tests/eval_replay/test_regression_corpus.py`
+proves each check is non-vacuous — a deliberately
 broken stand-in for the same code path turns the corpus RED — so a check that
 would silently pass on the pre-fix behavior is caught at test time. The corpus
 also runs in the normal pytest gate on every PR (via that test), so it is not
