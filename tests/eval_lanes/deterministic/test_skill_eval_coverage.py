@@ -76,20 +76,25 @@ class TestSkillEvalCoverage:
         assert [r.skill for r in report.gaps] == ["ship"]
 
 
-class TestShippedSkillCoverageWarnFirst:
-    """Phase A is warn-first: gaps are PRINTED, never asserted away.
+class TestShippedSkillCoverageEnforced:
+    """Phase B: every shipped skill is covered by an eval or carries ``eval_exempt``.
 
-    The shipped corpus is gap-free in this PR (the 4 seeds + the pure-doc
-    exemptions), so the print is empty today. The test stays warn-only so a
-    FUTURE skill landing without an eval/exemption surfaces in the report
-    without red-blocking an unrelated push. Phase B (a follow-up PR) flips this
-    to ``assert report.gaps == ()`` once the team is ready to enforce.
+    The shipped corpus is gap-free today (every skill is covered by >=1
+    discovered scenario or carries a non-empty ``eval_exempt`` reason), so this
+    flips the former warn-first Phase-A guard to the documented Phase-B
+    enforcement: a NEW ``skills/<name>/`` that lands with neither an eval nor an
+    ``eval_exempt`` frontmatter key is now a hard RED here, not a silent warning.
+    The gate is declarative — closing the gap is a one-line ``evals.yaml`` or a
+    one-line ``eval_exempt:`` key (see ``src/teatree/eval/README.md`` §
+    "Per-skill coverage gate"). ``t3 eval coverage --fail-on-gap`` is the CLI
+    counterpart of this gate.
     """
 
-    def test_reports_gaps_without_failing(self) -> None:
+    def test_no_shipped_skill_is_an_uncovered_gap(self) -> None:
         report = skill_eval_coverage()
-        rendered = render_text(report)
         gap_names = [r.skill for r in report.gaps]
-        warning = "WARN: skills with neither an eval nor eval_exempt: " + ", ".join(gap_names) if gap_names else ""
-        assert "summary:" in rendered
-        assert isinstance(warning, str)
+        assert gap_names == [], (
+            "skill(s) ship with neither an eval (skills/<name>/evals.yaml) nor an "
+            "`eval_exempt:` frontmatter reason — close each with a co-located eval or a "
+            "one-line exemption:\n  " + "\n  ".join(gap_names) + "\n\n" + render_text(report)
+        )

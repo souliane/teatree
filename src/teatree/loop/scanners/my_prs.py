@@ -5,6 +5,7 @@ from typing import cast
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 
 
@@ -172,7 +173,7 @@ class MyPrsScanner:
         never reach the per-overlay statusline zone.
 
         Prefix shapes are interpreted by
-        :func:`teatree.loop.tick_resolvers.url_match_specificity` — plain
+        :func:`teatree.loop.url_specificity.url_match_specificity` — plain
         prefixes match ``startswith``, wildcard ``host/*/repo/`` prefixes
         match across any owner segment (#1324).
 
@@ -181,8 +182,6 @@ class MyPrsScanner:
         is dropped so the sibling overlay's scanner emits the PR under its
         own ``[overlay]`` zone instead of this scanner stealing it (#1324).
         """
-        from teatree.loop.tick_resolvers import best_url_match_specificity  # noqa: PLC0415
-
         if not self.allowed_url_prefixes:
             return True
         if not url:

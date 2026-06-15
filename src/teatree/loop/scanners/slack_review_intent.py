@@ -15,7 +15,7 @@ references an MR/PR URL, the scanner:
 No claim reaction is posted at discovery time. A ``:eyes:`` reaction is a
 *claim* on a colleague's review and must appear only when a review is DONE,
 never the moment t3 first sees the request (#113/#86). The review-intent
-signals are also passed through :func:`teatree.loop.review_claim.filter_review_intent_signals`
+signals are also passed through :func:`teatree.loop.review_claim_signals.filter_review_intent_signals`
 so a *stopped* review loop queues none of them (#79).
 
 Mirrors :class:`teatree.loop.scanners.slack_dm_inbound.SlackDmInboundScanner`:
@@ -35,7 +35,7 @@ from typing import cast
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewAssignment, ReviewIntent
-from teatree.loop.review_claim import filter_review_intent_signals
+from teatree.loop.review_claim_signals import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 from teatree.url_classify import first_pr_url
