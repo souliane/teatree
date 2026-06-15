@@ -313,6 +313,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "review_skill": _parse_strict_str,
     "require_review_context": _parse_strict_bool,
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
+    "colleague_repo_url_pattern": _parse_strict_str,
+    "solo_repo_url_pattern": _parse_strict_str,
     "require_anti_vacuity_attestation": _parse_strict_bool,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -900,6 +902,8 @@ class UserSettings:
     # entirely. The bypass is satisfiable per-tree only by the human user; a
     # maker/coding-agent/loop approver id is refused (maker≠checker).
     e2e_mandatory_gate_enabled: bool = True
+    colleague_repo_url_pattern: str = ""
+    solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
     # gh/glab network call (#1540). A non-matching title is rejected with the
     # pattern printed verbatim; the description is independently required to
