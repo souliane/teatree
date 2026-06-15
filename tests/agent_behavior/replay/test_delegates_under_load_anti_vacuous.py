@@ -10,7 +10,7 @@ guards nothing.
 This is the deterministic PR-path proof; the live A/B pass@k measurement is the
 gated/weekly metered step, not run here.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
+# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
 # the established eval-suite convention.
 
 import dataclasses

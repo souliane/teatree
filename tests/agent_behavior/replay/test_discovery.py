@@ -1,4 +1,4 @@
-"""Scenario discovery walks ``tests/eval_lanes/scenarios/*.yaml`` and overlays."""
+"""Scenario discovery walks ``tests/agent_behavior/scenarios/*.yaml`` and overlays."""
 
 from pathlib import Path
 from types import SimpleNamespace

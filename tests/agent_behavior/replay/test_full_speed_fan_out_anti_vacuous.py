@@ -21,7 +21,7 @@ This is the deterministic PR-path proof; the live A/B pass@k measurement is the
 gated/weekly metered step (the user's "powder-in-the-eyes" full-bundle A/B run),
 not run here.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
+# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
 # the established eval-suite convention.
 
 import dataclasses

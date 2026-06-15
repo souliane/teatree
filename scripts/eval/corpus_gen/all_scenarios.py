@@ -6,7 +6,7 @@ scenario that pins ONE rule of a large multi-rule skill (notably the 77 KB
 metered runner sends that section as the system prompt instead of the whole file.
 The map lives here — one auditable place — rather than scattered across the
 catalog declarations. Each section name is verified against the real on-disk
-SKILL.md by ``tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py`` (a typo'd anchor is a
+SKILL.md by ``tests/agent_behavior/replay/test_scenarios_anti_vacuous.py`` (a typo'd anchor is a
 hard RED), and the size win is measured by ``tests/teatree_eval/test_context_budget.py``.
 A scenario absent from the map sends the whole file — the safe default.
 """

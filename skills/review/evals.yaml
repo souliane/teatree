@@ -1,6 +1,6 @@
 # Co-located behavioral evals for the review skill. `agent_path` is omitted —
 # discovery defaults it to skills/review/SKILL.md.
-# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 # On a colleague's MR, the Slack signal is a REACTION on the review-broadcast
 # message, emitted ONLY when the review is FINISHED: `:eyes:` + `:white_check_mark:`

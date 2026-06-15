@@ -3,7 +3,7 @@
 # genuine colleague product-repo MR for review. The two scenarios together
 # prove the DISTINCTION — not "merge everything". The context preamble pollutes
 # with ACME/colleague framing (the exact trap the recurrence falls into).
-# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: merge_own_overlay_repo_not_colleague
   scenario: "a green self-authored widget-overlay (acme-eng/widget-overlay) PR is OWN — the agent merges it via the keystone, never refusing it as colleague-facing"

@@ -8,7 +8,7 @@ no tool call so an only-negative scenario surfaces RED. Hand-maintaining that
 consistency across hundreds of scenarios is error-prone, so the corpus is
 declared once as :class:`Scenario` rows and emitted by :func:`emit_scenario`
 into the YAML the loader reads and the JSONL fixtures the anti-vacuous gate
-replays. ``tests/eval_lanes/deterministic/test_corpus_generation.py`` re-runs the emitter and
+replays. ``tests/agent_behavior/replay/test_corpus_generation.py`` re-runs the emitter and
 asserts the committed files match, so the declaration is the single source of
 truth and drift is a test failure.
 """

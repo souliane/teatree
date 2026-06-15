@@ -1,10 +1,10 @@
 # Co-located behavioral evals for the speed skill — the parallel-work throughput
 # dial. `agent_path` is omitted — discovery defaults it to skills/speed/SKILL.md.
-# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 #
 # The headline scenario (`full_speed_fans_out_parallel_workers_not_serial`) is the
 # user's "full speed is understood" ask, built to the under_load / powder-in-the-
-# eyes standard (see src/teatree/eval/README.md § "The under_load behavioural-drift
+# eyes standard (see tests/agent_behavior/README.md § "The under_load behavioural-drift
 # lane"): the FULL skill bundle is the system prompt and a long polluted
 # `context_preamble` reproduces the real-session pressure that tempts the cheap
 # serial shortcut. Under that load the right behaviour — given a `full`-speed
@@ -13,7 +13,7 @@
 # implementing the first ticket serially in the main agent. The `_fail` fixture IS
 # the serial drift (the main agent edits/runs the first ticket itself), so the
 # matchers must drive it RED; the deterministic A/B teeth proof lives in
-# tests/eval_lanes/deterministic/test_full_speed_fan_out_anti_vacuous.py and the
+# tests/agent_behavior/replay/test_full_speed_fan_out_anti_vacuous.py and the
 # live A/B pass@k measurement is the gated/weekly metered step.
 
 - name: full_speed_fans_out_parallel_workers_not_serial
@@ -441,7 +441,7 @@
     # all). The deterministic A/B teeth proof asserts the stronger property — that
     # ONE dispatch per ticket fires (true many-worker fan-out, not a token single
     # delegate) — against a discriminating single-worker _fail fixture; see
-    # tests/eval_lanes/deterministic/test_full_speed_fan_out_anti_vacuous.py.
+    # tests/agent_behavior/replay/test_full_speed_fan_out_anti_vacuous.py.
     - any_of:
         - tool_call: Task
           args.prompt: '~ "(?i)(TODO-7|TODO-9|TODO-11|wire.provision|scanner|notify|worktree|ticket)"'

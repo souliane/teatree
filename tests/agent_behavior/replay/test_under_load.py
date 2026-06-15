@@ -5,7 +5,7 @@ bundle into the system prompt, and ``context_preamble`` is folded into the user
 prompt text (the SDK user-turns-only constraint). The ``clean_room`` lane must
 stay byte-identical to today.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
+# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
 # the established eval-suite convention.
 
 from pathlib import Path

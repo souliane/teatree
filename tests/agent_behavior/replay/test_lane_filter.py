@@ -1,5 +1,5 @@
 """``--lane`` filtering — slice the discovered catalog by ``EvalSpec.lane``."""
-# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
+# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
 # the established eval-suite convention, spanning teatree.cli.eval + teatree.eval.
 
 from pathlib import Path

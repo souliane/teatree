@@ -1,6 +1,6 @@
 """The eval README is the durable single map — pin it to the live structure.
 
-A newcomer reads ``src/teatree/eval/README.md`` to learn the harness. Three
+A newcomer reads ``tests/agent_behavior/README.md`` to learn the harness. Three
 contracts keep that map honest as the code moves:
 
 -   every ``src/teatree/cli/eval/`` path the "Where the parts live" table
@@ -19,7 +19,7 @@ from pathlib import Path
 from teatree.cli.eval import eval_app
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_README = _REPO_ROOT / "src" / "teatree" / "eval" / "README.md"
+_README = _REPO_ROOT / "tests" / "agent_behavior" / "README.md"
 _PARTS_TABLE_ROW = "| CLI surface"
 
 _CLI_EVAL_FILE_RE = re.compile(r"`(?:src/teatree/cli/eval/)?([a-z_]+\.py)`")
@@ -67,8 +67,8 @@ class TestPartsTablePathsResolve:
         assert "cli/eval*.py" not in row
 
     def test_scenarios_glob_resolves_to_non_empty_dir(self) -> None:
-        scenarios = _REPO_ROOT / "tests" / "eval_lanes" / "scenarios"
-        assert "tests/eval_lanes/scenarios/*.yaml" in _readme_text()
+        scenarios = _REPO_ROOT / "tests" / "agent_behavior" / "scenarios"
+        assert "tests/agent_behavior/scenarios/*.yaml" in _readme_text()
         assert scenarios.is_dir()
         assert list(scenarios.glob("*.yaml")), "no scenario yaml on disk"
 

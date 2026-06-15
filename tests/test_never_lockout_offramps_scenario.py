@@ -12,7 +12,7 @@ exemption) and the matching row flips to a deny, turning this golden red.
 
 The golden is DETERMINISTIC (a hook-verdict assertion, not an LLM-judged
 behavioral scenario), so it lives under ``tests/fixtures/`` rather than the
-metered ``tests/eval_lanes/scenarios/`` catalog.
+metered ``tests/agent_behavior/scenarios/`` catalog.
 """
 
 from pathlib import Path

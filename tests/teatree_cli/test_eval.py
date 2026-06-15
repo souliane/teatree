@@ -699,7 +699,7 @@ class TestEvalBackend:
     def test_subscription_backend_grades_a_saved_transcript(self, tmp_path: Path) -> None:
         specs = [_spec("worktree_first")]
         transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
+            Path(__file__).parents[1] / "agent_behavior" / "fixtures" / "worktree_first_pass.stream.jsonl"
         ).read_text(encoding="utf-8")
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
 
@@ -717,7 +717,7 @@ class TestEvalBackend:
         # the scenario passes without `--backend` ever being given.
         specs = [_spec("worktree_first")]
         transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
+            Path(__file__).parents[1] / "agent_behavior" / "fixtures" / "worktree_first_pass.stream.jsonl"
         ).read_text(encoding="utf-8")
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
 
@@ -2060,7 +2060,7 @@ class TestEvalRunMeteredDockerByDefault:
     def test_grades_present_subscription_transcript(self, tmp_path: Path) -> None:
         specs = [_spec("worktree_first")]
         transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
+            Path(__file__).parents[1] / "agent_behavior" / "fixtures" / "worktree_first_pass.stream.jsonl"
         ).read_text(encoding="utf-8")
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
         with _patch_all_lanes(specs):

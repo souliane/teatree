@@ -45,7 +45,7 @@ _INTERNAL_NAME_PATHS = {
     "src/teatree/eval/trigger_qa_corpus.yaml",
     "src/teatree/eval/regression_corpus.py",
     "src/teatree/eval/discovery.py",
-    "tests/eval_lanes/deterministic/test_lane_names.py",
+    "tests/agent_behavior/replay/test_lane_names.py",
     # Asserts the OLD command name no longer resolves — the one legitimate
     # mention of the retired lane name.
     "tests/teatree_cli/test_eval.py",

@@ -25,14 +25,15 @@ The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t
 
 ## Cost split (never silently meter)
 
-| lane | command surface | cost |
-|------|-----------------|------|
-| skill-triggers eval | `t3 eval skill-triggers` | free |
-| pinned-regressions corpus | `t3 eval pinned-regressions` | free |
-| AI/trajectory eval (subscription) | `t3 eval prepare-subscription` → dispatch in-session sub-agent → `t3 eval capture-subagent` → `t3 eval run --backend subscription` | subscription |
-| AI/trajectory eval (metered CI) | `t3 eval run --backend sdk` | metered API (`ANTHROPIC_API_KEY`) |
+Two buckets under one umbrella. The free deterministic lanes are **tests** — they assert code/config behaviour with fixed I/O, no live model, every commit. The metered lanes are genuine **evals** — they judge a live model's behaviour on a cadence. The `t3 eval …` command surface is shared; the split is about what each lane *is*.
 
-The default backend is `subscription` (grade in-session transcripts, no API spend). The metered `claude -p`/SDK path is **never** a silent fallback — it runs only when `--backend sdk` is passed explicitly (CI's path).
+| kind | lane | command surface | cost |
+|------|------|-----------------|------|
+| **test** (deterministic, no model) | skill-triggers (trigger test) | `t3 eval skill-triggers` | free |
+| **test** (deterministic, no model) | pinned-regressions (regression corpus) | `t3 eval pinned-regressions` | free |
+| **eval** (live model, metered) | AI/trajectory (sdk, CI cadence) | `t3 eval run --backend sdk` | metered API (`CLAUDE_CODE_OAUTH_TOKEN`) |
+
+The default backend is `subscription` — it grades an in-session-produced transcript off disk (deterministic, no API spend); the live capture that produces it is the in-session step this skill drives (`prepare-subscription` → dispatch sub-agent → `capture-subagent` → `run --backend subscription`). The metered `--backend sdk` path is **never** a silent fallback — it runs only when passed explicitly (CI's cadence).
 
 ## What this skill auto-drives
 
@@ -44,7 +45,7 @@ In ONE invocation, without the human running `prepare-subscription` or `capture-
 4. `t3 eval run --backend subscription` to grade the captured transcripts.
 5. Print ONE unified results table.
 
-The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
+The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) — deterministic tests, no model — run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
 
 The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
 
@@ -90,11 +91,11 @@ t3 eval all
 
 ## Authoring co-located evals
 
-A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
+A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
 
 ## Related
 
 - BLUEPRINT.md — Behavioral eval harness (`src/teatree/eval/`), subscription-default backend, all-skipped guard.
-- `src/teatree/eval/README.md` — eval schema, failure-class index, CLI reference.
+- `tests/agent_behavior/README.md` — eval schema, failure-class index, CLI reference.
 - `/t3:test` — the deterministic `t3 teatree run tests` side of the test-vs-eval coin.
 - `/t3:rules` § "Verification Before Completion" — evals are the behavioural half of that proof.

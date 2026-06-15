@@ -1,6 +1,6 @@
 """Per-skill eval coverage: every skill is covered by >=1 eval or exempt.
 
-Mirrors ``tests/eval_lanes/deterministic/test_trigger_qa.py``'s detect-under / detect-over
+Mirrors ``tests/agent_behavior/replay/test_trigger_qa.py``'s detect-under / detect-over
 pattern: a synthetic skill dir with no eval and no exemption is flagged a
 gap; one carrying ``eval_exempt`` is NOT a gap; one targeted by a spec is
 NOT a gap.
@@ -85,7 +85,7 @@ class TestShippedSkillCoverageEnforced:
     enforcement: a NEW ``skills/<name>/`` that lands with neither an eval nor an
     ``eval_exempt`` frontmatter key is now a hard RED here, not a silent warning.
     The gate is declarative — closing the gap is a one-line ``evals.yaml`` or a
-    one-line ``eval_exempt:`` key (see ``src/teatree/eval/README.md`` §
+    one-line ``eval_exempt:`` key (see ``tests/agent_behavior/README.md`` §
     "Per-skill coverage gate"). ``t3 eval coverage --fail-on-gap`` is the CLI
     counterpart of this gate.
     """
