@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.hooks import publish_destination
+from teatree.hooks import _repo_visibility, publish_destination
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -439,4 +439,81 @@ class TestInternalDenylistScoping:
         # at all keeps scanning -- an unparsable target is never a silent bypass.
         cfg = _config(tmp_path, ["internal-eng"])
         cmd = "curl -d x https://example.com"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+
+class TestForgeAwareVisibility:
+    """The probe must use the PUBLISH TOOL's forge, not guess from the bare slug.
+
+    A ``glab`` post always targets GitLab and a ``gh`` post always targets
+    GitHub. Resolving a bare ``owner/repo`` slug's forge from its host segment
+    (which a bare slug lacks) defaulted every flagless GitLab target to the
+    GitHub probe, so an internal/private GitLab MR (``glab mr create -R
+    ns/repo``) was probed via ``gh``, never confirmed private, and the gate
+    over-fired. Threading the tool's forge to the probe is the fix: the gate
+    must SKIP a private GitLab/GitHub target resolved purely by the live probe
+    (no allowlist entry), while a genuinely-public GitHub repo still scans.
+    """
+
+    def test_destination_records_glab_forge(self) -> None:
+        dest = publish_destination.resolve_publish_destination("glab mr create -R internalcorp/svc --title x")
+        assert dest is not None
+        assert dest.forge == "gitlab"
+
+    def test_destination_records_gh_forge(self) -> None:
+        dest = publish_destination.resolve_publish_destination("gh pr create -R someowner/repo --title x")
+        assert dest is not None
+        assert dest.forge == "github"
+
+    def test_private_gitlab_target_uses_glab_probe_and_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-NOT-FIRE: a bare GitLab slug from ``glab mr create`` must be
+        # probed via ``glab`` (the tool's forge) and skipped when private, even
+        # with NO allowlist entry. The bug probed it via ``gh`` -> None -> PUBLIC.
+        cfg = _config(tmp_path, [])
+        calls: list[tuple[str, str]] = []
+
+        def fake_glab(repo_path: str) -> str:
+            calls.append(("glab", repo_path))
+            return "PRIVATE"
+
+        def fake_gh(repo_path: str) -> None:
+            calls.append(("gh", repo_path))
+
+        monkeypatch.setattr(_repo_visibility, "_probe_glab", fake_glab)
+        monkeypatch.setattr(_repo_visibility, "_probe_gh", fake_gh)
+        monkeypatch.setattr(_repo_visibility, "_read_visibility_cache", lambda *_a, **_k: None)
+        monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
+
+        cmd = "glab mr create -R internalcorp/private-svc --title x --description y"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+        assert ("glab", "internalcorp/private-svc") in calls
+        assert ("gh", "internalcorp/private-svc") not in calls
+
+    def test_private_github_target_uses_gh_probe_and_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-NOT-FIRE: a private GitHub repo, resolved purely by the ``gh``
+        # probe with no allowlist entry, must skip the public-leak scan.
+        cfg = _config(tmp_path, [])
+        monkeypatch.setattr(_repo_visibility, "_probe_gh", lambda repo_path: "PRIVATE")
+        monkeypatch.setattr(_repo_visibility, "_probe_glab", lambda repo_path: None)
+        monkeypatch.setattr(_repo_visibility, "_read_visibility_cache", lambda *_a, **_k: None)
+        monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
+
+        cmd = "gh pr create -R someowner/private-repo --title x --body y"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_public_github_target_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # MUST-FIRE: a genuinely-public GitHub repo (souliane/teatree itself) the
+        # ``gh`` probe confirms PUBLIC stays SCANNED -- the forge fix must not
+        # relax the public-surface default.
+        cfg = _config(tmp_path, [])
+        monkeypatch.setattr(_repo_visibility, "_probe_gh", lambda repo_path: "PUBLIC")
+        monkeypatch.setattr(_repo_visibility, "_probe_glab", lambda repo_path: None)
+        monkeypatch.setattr(_repo_visibility, "_read_visibility_cache", lambda *_a, **_k: None)
+        monkeypatch.setattr(_repo_visibility, "_write_visibility_cache", lambda *_a, **_k: None)
+
+        cmd = "gh pr create -R souliane/teatree --title x --body y"
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
