@@ -546,6 +546,50 @@ class TestRequireReviewContextSetting:
         assert load_config(config_path).user.require_review_context is True
 
 
+class TestE2EConfidenceThresholdSetting:
+    """The verify<->review loop's rubric pass bar loads from toml; default 90.
+
+    The single knob both the `/t3:e2e-review` rubric and the `/t3:e2e`
+    verify<->review loop read. Per-overlay overridable so a stricter client
+    overlay can raise the bar; resolved through the usual override chain.
+    """
+
+    def test_default_is_90(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.e2e_confidence_threshold == 90
+
+    def test_default_with_no_config_file(self, tmp_path: Path) -> None:
+        assert load_config(tmp_path / "absent.toml").user.e2e_confidence_threshold == 90
+
+    def test_reads_toml_int(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\ne2e_confidence_threshold = 95\n")
+        assert load_config(config_path).user.e2e_confidence_threshold == 95
+
+    def test_per_overlay_override_wins_over_global(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_OVERLAY_NAME", "client-x")
+        _write_toml(
+            config_file,
+            """
+[teatree]
+e2e_confidence_threshold = 90
+
+[overlays.client-x]
+class = "x.y:Z"
+e2e_confidence_threshold = 98
+""",
+        )
+        assert get_effective_settings().e2e_confidence_threshold == 98
+
+
 class TestAutoUpdateSettings:
     """#1760: CI-green gate + deferred-reinstall flags load from toml + env."""
 

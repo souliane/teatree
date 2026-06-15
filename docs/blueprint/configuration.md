@@ -15,6 +15,7 @@ mode = "interactive"                       # global default — confirm before p
 loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
 require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
+e2e_confidence_threshold = 90              # rubric score (0-100) a Playwright spec must reach to be VERIFIED by the /t3:e2e verify<->review loop; the single knob both /t3:e2e-review (rubric) and /t3:e2e (loop) read
 on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960) over colleague-VISIBLE posts; drafts (post-draft-note) are exempt under every mode: draft_or_ask (default) | ask (both BLOCK every colleague-visible action, EXEMPT drafts) | immediate (gate off)
 on_behalf_auto_actions = ["post_e2e_evidence"]  # on-behalf actions that PROCEED even under ask/draft_or_ask (own-ticket self-documentation, not a colleague voice); clear to [] to re-gate test plan
 notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
@@ -204,6 +205,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
+| `e2e_confidence_threshold` | Rubric score (0-100, default `90`) a Playwright spec must reach to be VERIFIED by the `/t3:e2e` verify↔review loop (`/t3:e2e` § "Verify–Review Loop to Threshold"). The single knob both the `/t3:e2e-review` E2E Confidence Rubric and the loop read, so "the threshold" is one resolved value. A stricter client overlay raises it (e.g. `95`); a fast dogfood overlay lowers it. Documentation-driven today (the loop is agent prose, not a deterministic gate) — the typed field is the shared source of truth for the doc value and any future programmatic consumer. |
 | `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — registered as overridable, but the live scanner reads the global `[teatree]` value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay overrides are accepted in the registry but not yet consumed by `_scanning_news_scanner` in `loop/global_scanner_factories.py`) |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |

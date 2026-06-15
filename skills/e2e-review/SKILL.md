@@ -88,6 +88,54 @@ Translate findings into the team's severity language, scaled to impact:
 
 Post findings through the normal review path in `/t3:review` (draft-by-default, one terse anchored note on a colleague's MR, the on-behalf/autonomy gates) — this skill does not introduce its own posting mechanics.
 
+## E2E Confidence Rubric
+
+The severity verdict above is the human-review language; the **rubric** is the machine-scoreable form of the same judgement, so the verify↔review loop in `/t3:e2e` § "Verify–Review Loop to Threshold" has a number to gate on. The reviewer scores a spec (or a spec + its run) 0–100 and returns a structured verdict. The score exists for one purpose: to decide whether the spec has earned **VERIFIED** or must loop back for another verify pass — never to dress up a brittle spec as "90% good enough".
+
+### Two hard gates (either failing caps the score to HOLD)
+
+A hard gate is not a weighted criterion — it is a precondition. If either fails, the spec **cannot** be VERIFIED no matter how high the weighted criteria score; the verdict is **HOLD** (loop back) or, when the gate is an external impossibility, **BLOCKED** (see below). Check both before scoring the weighted criteria.
+
+- **HARD GATE H1 — Non-vacuous green.** The spec actually **ran** — not `test.skip`/`test.fixme`/`test.only`-dropped, not flag-gated off, not an empty body. Every **precondition** assertion passed for the *right reason*: the role-gated/RBAC precheck (e.g. the resolved `/api/me` role and group memberships from § "Writing Tests" in `/t3:e2e`) asserted the test account's real identity before the behaviour assertion, so a green can't come from an unexpected identity. Real assertions fired (web-first `expect(...)`, not a swallowed `isVisible()` read). For a **regression** spec, the anti-vacuity proof holds: revert the production fix → the spec goes **red** (the full rule is `../review/SKILL.md`; apply it, don't restate it). A spec that goes green with the fix reverted, or whose precondition never fired, fails H1.
+- **HARD GATE H2 — Evidence integrity.** The green came from the **deployed environment** (dev/staging) **or** a teatree-managed local stack — never a stale local build, golden test PDFs (`build/test-results/`, `src/test/resources/`), `pdftotext` of a locally-rendered document, or a `localhost` screenshot. This is the `/t3:e2e` § "Evidence Source Integrity" rule in gate form: if the evidence backing the green violates that rule, H2 fails regardless of how clean the spec reads.
+
+### Weighted criteria (sum = 100)
+
+Scored only once both hard gates pass. Each is the rubric form of one of the six principles above:
+
+| Criterion | Weight | What full marks looks like |
+|---|---:|---|
+| **Behaviour over implementation** | 25 | Every assertion maps to a ticket acceptance criterion and checks a user-visible outcome (rendered text, URL, enabled/disabled control) — not a CSS class, store state, or DOM-structure detail. |
+| **AC coverage / completeness** | 20 | **Every** acceptance criterion in the ticket has at least one backing assertion. A green run exercises the whole requirement, not a convenient subset. A missing AC is the most common reason a VERIFIED score is wrong. |
+| **Locator resilience** | 15 | `getByRole`/`getByLabel`/`getByText`/`getByTestId`; no brittle CSS/XPath where a user-facing handle exists; strict single-match (no `.first()`/`.nth()` dodging a strict-mode violation). |
+| **Wait discipline** | 15 | Condition-based waits + web-first auto-retrying assertions only; **zero** fixed `waitForTimeout`/`sleep`; `expect.poll`/`toPass` for eventual conditions. |
+| **Isolation & deterministic data** | 15 | Per-test storage/data; own setup + teardown; unique (timestamp/uuid) names; parallel-safe — no cross-test ordering dependency, no race on a shared row. |
+| **Reproducibility** | 10 | Stable green across re-runs (not flaky); a green on one run reproduces on the next, in parallel, in random order. |
+
+### Threshold and verdict
+
+The reviewer returns a structured result:
+
+```
+{score: <0-100>, threshold: <configured, default 90>, verdict: VERIFIED | HOLD | BLOCKED, findings: [...]}
+```
+
+- **VERIFIED** — `score ≥ threshold` **AND both hard gates pass**. The spec has earned the clean test plan; the loop exits.
+- **HOLD** — below threshold, or a hard gate failed for a reason the maker can fix (a missing-AC assertion, a brittle locator, a fixed sleep, a vacuous precondition). The `findings` are the punch-list the next verify pass works through; the loop continues.
+- **BLOCKED** — a hard gate fails for a reason **no spec edit can fix** (see below).
+
+The threshold is configurable — `[teatree] e2e_confidence_threshold`, default **90**, per-overlay overridable (see `/t3:e2e` § "Verify–Review Loop to Threshold" → Configuration). A stricter overlay raises it; the rubric and the loop read the same knob.
+
+### BLOCKED — when 100% confidence is genuinely unreachable
+
+Some features cannot reach a high score by construction, and forcing one would loop forever:
+
+- A result observable **only via a browser dialog** (a native `alert`/`confirm`, an OS file picker, a print preview) with **no API, no DOM node, and no spec assertion** that can capture it.
+- A feature whose data exists **only on a DEV-only catalog** the local DSLR dump legitimately lacks (the `/t3:e2e` § "Documented limitation — some features are DEV-only on local" case) **and** which is not deployed where it could be asserted.
+- An **infra-gated** feature: no broker/test account exists and a local stack cannot substitute; a broken login with no available fix.
+
+For these, the terminal verdict is **`BLOCKED(<named-gate>)`** — name the specific gate (`BLOCKED(no-api-for-browser-dialog)`, `BLOCKED(dev-only-catalog-not-on-local)`, `BLOCKED(no-broker-account)`) and record the manual evidence that *was* gathered (the human-observed dialog, the DEV screenshot) as a noted limitation. A BLOCKED is **not** a forced low score that re-loops: it terminates the loop and surfaces the named gate to the user. Never convert a genuine BLOCKED into a caveated VERIFIED, and never let it spin the loop to MAX_ITERATIONS.
+
 ## Adopting an outside Playwright suite
 
 When the change isn't a single spec but an externally-authored suite being migrated into the team's tree, review it as a **conversion**, not just a pass/fail gate. The same six principles are the conformance target; the difference is the suite arrived with someone else's conventions baked in.
