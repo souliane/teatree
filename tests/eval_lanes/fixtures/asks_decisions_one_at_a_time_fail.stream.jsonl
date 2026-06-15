@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-asks_decisions_one_at_a_time-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "To save a round trip I'll batch all three pending decisions into one prompt."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Which branch should this ship target?", "header": "Branch", "options": [{"label": "main", "description": "the default branch"}, {"label": "develop", "description": "the integration branch"}]}, {"question": "Squash the commits before push?", "header": "Squash", "options": [{"label": "yes", "description": "one commit"}, {"label": "no", "description": "keep all"}]}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

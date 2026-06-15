@@ -1,4 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-structured_question_one_decision_per_question-fail", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Approve PR 1, PR 2, and PR 3 for merge?"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll batch all three PR merge decisions into one prompt to save round trips."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Merge the first PR now?", "header": "PR 1", "options": [{"label": "merge"}, {"label": "hold"}]}, {"question": "Merge the second PR now?", "header": "PR 2", "options": [{"label": "merge"}, {"label": "hold"}]}, {"question": "Merge the third PR now?", "header": "PR 3", "options": [{"label": "merge"}, {"label": "hold"}]}]}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

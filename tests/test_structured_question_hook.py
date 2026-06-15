@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_enforce_structured_question
+from hooks.scripts.hook_router import handle_enforce_structured_question, handle_warn_batched_questions
 
 
 def _assistant(text: str, tool_uses: list[str] | None = None) -> dict:
@@ -529,3 +529,54 @@ class TestWiredIntoRouter:
         # registered before handle_loop_self_pump in the Stop chain.
         stop_chain = router._HANDLERS["Stop"]
         assert stop_chain.index(handle_enforce_structured_question) < stop_chain.index(router.handle_loop_self_pump)
+
+
+def _ask(questions: list[dict]) -> dict:
+    return {"tool_name": "AskUserQuestion", "tool_input": {"questions": questions}}
+
+
+def _q(text: str) -> dict:
+    return {"question": text, "header": "h", "options": [{"label": "a", "description": "x"}]}
+
+
+class TestWarnBatchedQuestions:
+    """PreToolUse warn (never block) when an AskUserQuestion batches >1 question.
+
+    The prose rule (skills/rules/SKILL.md "One decision per question") was not
+    enforced for batching — the #807 gate only forces a question through the
+    TOOL, not one-at-a-time. This advisory warn flags a multi-question call on
+    every session (the user's "ask me the questions one by one" directive)
+    while NEVER blocking the call (the user chose warn-don't-block).
+    """
+
+    def test_batched_questions_warn_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = handle_warn_batched_questions(_ask([_q("Target branch?"), _q("Squash?")]))
+        assert result is not True  # never blocks
+        err = capsys.readouterr().err.lower()
+        assert "one decision" in err
+        assert "question" in err
+
+    def test_single_question_is_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = handle_warn_batched_questions(_ask([_q("Push now?")]))
+        assert result is not True
+        assert capsys.readouterr().err == ""
+
+    def test_non_question_tool_is_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = handle_warn_batched_questions({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+        assert result is not True
+        assert capsys.readouterr().err == ""
+
+    def test_missing_questions_key_is_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Malformed input must never crash or warn (crash-proof router).
+        result = handle_warn_batched_questions({"tool_name": "AskUserQuestion", "tool_input": {}})
+        assert result is not True
+        assert capsys.readouterr().err == ""
+
+    def test_registered_in_pretooluse_chain(self) -> None:
+        assert handle_warn_batched_questions in router._HANDLERS["PreToolUse"]
+
+    def test_runs_before_slack_mirror(self) -> None:
+        # Warn before the mirror handler may deny/short-circuit a loop-driven
+        # question, so the one-at-a-time advisory is emitted regardless.
+        chain = router._HANDLERS["PreToolUse"]
+        assert chain.index(handle_warn_batched_questions) < chain.index(router.handle_mirror_question_to_slack)

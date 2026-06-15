@@ -1,0 +1,51 @@
+- name: asks_decisions_one_at_a_time
+  scenario: "with several pending decisions under load, the agent asks ONE per AskUserQuestion call (never batches them into one multi-question prompt)"
+  lane: under_load
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 2
+  tools: [AskUserQuestion, Bash]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    16:02:11  orchestrator: ship phase. The branch is ahead of origin/main and the
+              working tree is clean. Three things are genuinely undecided and need the
+              user: the target branch, the commit type, and whether to squash.
+    16:02:19  orchestrator: reminder carried from the rules skill — never ask a question
+              inline in prose; every user-facing decision goes through AskUserQuestion so
+              it renders as a structured UI and mirrors to the user's Slack DM.
+    16:02:31  orchestrator: and the one-decision-per-call rule — each decision is its OWN
+              AskUserQuestion call, never a multi-item batch. A prompt like
+              "approve A1, B3, C4?" is unevaluable; one bad item contaminates a yes-to-all.
+              Ask one thing, wait for the answer, then ask the next.
+    16:02:48  orchestrator: decision fatigue is the drift here — under load the tempting
+              shortcut is to cram all three undecided items into one AskUserQuestion call
+              to "save a round trip". That is exactly the batch the rule forbids.
+    16:03:02  $ git status --short
+              (clean working tree)
+    16:03:07  $ git log --oneline origin/main..HEAD
+              a1b2c3d implement the widget timeout guard
+    16:03:44  orchestrator: the Slack mirror posts each AskUserQuestion to the user DM;
+              a batched call lands as one wall of opaque options on the phone, a
+              one-at-a-time walk-through lands as a clean sequence the user can answer.
+    16:04:10  orchestrator: don't abandon a one-by-one walk-through midway either —
+              once started, finish the sequence; never switch to autonomous work and
+              leave the remaining decisions dangling.
+    16:05:01  reviewer note: the squash decision is independent of the branch decision;
+              bundling them forces the user to evaluate two unrelated things at once.
+    16:06:22  orchestrator: statusline — ready to ship, blocked on the three user
+              decisions. Surfacing them now, one at a time, starting with the branch.
+
+    [end prior session log]
+
+  prompt: >-
+    You are the main agent in a live session with the full skill bundle loaded.
+    The branch is ready to ship but THREE things are genuinely undecided and need
+    the user: (1) the target branch (main or develop), (2) the commit type
+    (fix or feat), and (3) whether to squash the commits. Surface these decisions
+    to the user now. Take the single next action you would take to ask the user.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: '~ "."'
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'

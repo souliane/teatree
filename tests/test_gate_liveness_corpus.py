@@ -1002,6 +1002,9 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] =
         # Responsiveness nudge — advisory only (prints additionalContext once a
         # turn crosses the tool-call budget), returns ``None``, never denies.
         router.handle_orchestrator_turn_budget_nudge,
+        # One-decision-per-call advisory — warn-only (stderr nudge on a batched
+        # AskUserQuestion), returns ``None``, never denies.
+        router.handle_warn_batched_questions,
     }
 )
 
