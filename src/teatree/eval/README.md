@@ -787,12 +787,15 @@ is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
 
 The gate is general and declarative: a new `skills/<name>/` with no eval and no
 `eval_exempt` trips it by default, and a new skill is covered-or-exempt with a
-one-line frontmatter key. It is **warn-first** in Phase A — the coverage lane in
-`t3 eval all` and the `tests/eval_lanes/deterministic/test_skill_eval_coverage.py` gate report a gap
-but exit 0 (never red-blocking an unrelated push); `t3 eval coverage
---fail-on-gap` is the Phase-B enforcement (a follow-up flip once the team is
-ready). The shipped corpus is gap-free today (the 4 co-located seeds — ship,
-review, rules, code — plus the pure-doc exemptions).
+one-line frontmatter key. The dedicated pytest gate
+(`tests/eval_lanes/deterministic/test_skill_eval_coverage.py`) is now **Phase-B
+ENFORCING** — it asserts `report.gaps == ()`, so a skill landing with neither an
+eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-free
+today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
+all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
+unrelated `t3 eval all` run; `t3 eval coverage --fail-on-gap` is its explicit
+enforcing form. The shipped corpus is gap-free today (the co-located seeds — ship,
+review, rules, code, speed, e2e — plus the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
