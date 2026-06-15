@@ -389,6 +389,41 @@ class TestEffortSegment:
         assert "model=" not in plain, plain
         assert "high" not in plain, plain
 
+    def test_effort_object_payload_renders_bare_level(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {
+                "session_id": "s-obj-eff",
+                "model": {"display_name": "Opus 4.8"},
+                "effort": {"level": "xhigh"},
+            },
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=Opus 4.8 · xhigh" in plain, plain
+        assert "{" not in plain, plain
+
+    def test_model_effort_object_payload_renders_bare_level(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {
+                "session_id": "s-model-obj-eff",
+                "model": {"display_name": "Opus 4.8", "effort": {"level": "high"}},
+            },
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=Opus 4.8 · high" in plain, plain
+        assert "{" not in plain, plain
+
 
 class TestSkillsNamespaceGrouping:
     """Skills sharing a ``<ns>:`` prefix collapse into ``ns:{a,b,c}`` to save width."""
