@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
@@ -301,6 +301,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_human_approval_to_answer": _parse_strict_bool,
     "ask_before_post_on_behalf": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
+    "missing_issue_ref_policy": MissingIssuePolicy.parse,
     "on_behalf_auto_actions": _parse_str_list,
     "notify_user_via_bot": _parse_strict_bool,
     "notify_on_post_on_behalf": _parse_strict_bool,
@@ -376,6 +377,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_SPEED": ("speed", Speed.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
+    "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
@@ -629,6 +631,17 @@ class UserSettings:
     # ask-first-vs-fix-proactively decision lives in one place, not in
     # every skill.
     repo_mode: str = ""
+    # What to do when a commit/MR needs an issue reference and the agent has
+    # none. Default ``FIND_EXISTING_THEN_ASK``: always recover the ORIGINAL
+    # existing issue first; if none is found, ASK the user on a colleague-
+    # facing/external repo and CREATE on the user's own repo — never a dummy
+    # ref. ``CREATE`` / ``DUMMY`` are opt-in tiers that authorise auto-create /
+    # placeholder-ref on a colleague-facing repo too. Per-overlay overridable
+    # via ``[overlays.<name>].missing_issue_ref_policy``; ``T3_MISSING_ISSUE_POLICY``
+    # env wins over both. Resolved by
+    # ``teatree.missing_issue_policy.resolve_missing_issue_verdict``; the agent
+    # prose lives in ``skills/ship/SKILL.md`` § "Missing Issue Reference Policy".
+    missing_issue_ref_policy: MissingIssuePolicy = MissingIssuePolicy.FIND_EXISTING_THEN_ASK
     # #1136 / #1152 Periodic architectural-review scanner — CORE
     # always-on (not per-overlay opt-in). The cadence applies uniformly
     # to every overlay's worktrees because it is a teatree-platform

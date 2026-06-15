@@ -53,6 +53,7 @@ from teatree.hooks._publish_detection import segment_is_api_read as _segment_is_
 from teatree.hooks._publish_detection import segment_is_api_write as _segment_is_api_write
 from teatree.hooks._repo_visibility import (
     _config_path,
+    forge_qualified_slug,
     slug_for_cwd,
     slug_is_allowlisted_private,
     slug_is_private,
@@ -77,10 +78,23 @@ class Destination:
     a ``gh``/``glab api`` URL path, ``url`` for a forge URL positional, ``env``
     for ``GH_REPO``, ``cwd`` for the current-repo fallback) so a caller can log
     the provenance without re-parsing.
+
+    ``forge`` records which forge the PUBLISH TOOL targets (``github`` for a
+    ``gh`` command, ``gitlab`` for a ``glab`` command, ``""`` when unknown). A
+    bare ``owner/repo`` slug carries no host segment, so the visibility probe
+    cannot tell GitHub from GitLab from the slug alone and defaulted every
+    flagless target to the GitHub probe -- an internal/private GitLab MR was
+    then probed via ``gh``, never confirmed private, and the gate over-fired.
+    The tool word is known at resolution time, so ``forge`` carries it to
+    :func:`is_public_destination`, which forwards it to the probe (see
+    :func:`_repo_visibility.slug_is_private`). A host-qualified slug already
+    pins the forge from its host segment, so the hint only matters for the
+    bare-slug case.
     """
 
     slug: str
     via: str
+    forge: str = ""
 
 
 # ``gh api [/]repos/<owner>/<repo>/...`` -- the slug is the path segment after
@@ -154,6 +168,21 @@ _API_BOOLEAN_FLAGS: Final[frozenset[str]] = frozenset(
 _SKIP_INERT_LEADERS: Final[frozenset[str]] = frozenset({"cd", "pushd", "popd", "echo", "printf", "true", ":", "git"})
 
 
+def _forge_for_tool(tool: str) -> str:
+    """Map a publish tool word to its forge: ``gh`` -> github, ``glab`` -> gitlab.
+
+    The forge is what lets the visibility probe pick ``gh`` vs ``glab`` for a
+    BARE ``owner/repo`` slug that carries no host segment of its own. An
+    unrecognised leader yields ``""`` (no hint; the probe falls back to the
+    slug's own host or the GitHub default).
+    """
+    if tool == "gh":
+        return "github"
+    if tool == "glab":
+        return "gitlab"
+    return ""
+
+
 def _api_url_arg(words: list[str]) -> str | None:
     """Return the first non-flag positional after ``gh``/``glab`` ``api``, or ``None``.
 
@@ -192,24 +221,25 @@ def _destination_from_api(words: list[str], tool: str) -> Destination | None:
     url = _api_url_arg(words)
     if url is None:
         return None
+    forge = _forge_for_tool(tool)
     if tool == "gh":
         match = _GH_API_REPOS_RE.match(url)
-        return Destination(slug=match.group(1), via="api") if match else None
+        return Destination(slug=match.group(1), via="api", forge=forge) if match else None
     match = _GLAB_API_PROJECTS_RE.match(url)
     if match:
-        return Destination(slug=match.group(1).replace("%2F", "/").replace("%2f", "/"), via="api")
+        return Destination(slug=match.group(1).replace("%2F", "/").replace("%2f", "/"), via="api", forge=forge)
     return None
 
 
-def _destination_from_current_repo(cwd: Path | None) -> Destination | None:
+def _destination_from_current_repo(cwd: Path | None, forge: str) -> Destination | None:
     """Resolve a flagless create/comment command's target from the git remote."""
     if cwd is None:
         return None
     slug = slug_for_cwd(cwd)
-    return Destination(slug=slug, via="cwd") if slug else None
+    return Destination(slug=slug, via="cwd", forge=forge) if slug else None
 
 
-def _destination_from_forge_url(words: list[str]) -> Destination | None:
+def _destination_from_forge_url(words: list[str], forge: str) -> Destination | None:
     """Resolve the target from the FIRST forge URL positional in ``words``, or ``None``.
 
     ``gh issue comment https://github.com/owner/repo/issues/5`` names its target
@@ -220,7 +250,7 @@ def _destination_from_forge_url(words: list[str]) -> Destination | None:
     for word in words:
         match = _FORGE_URL_SLUG_RE.search(word)
         if match:
-            return Destination(slug=match.group("slug").removesuffix(".git"), via="url")
+            return Destination(slug=match.group("slug").removesuffix(".git"), via="url", forge=forge)
     return None
 
 
@@ -231,15 +261,16 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     default, then a forge URL positional in the args, then the current repo for a
     create/comment/note verb. ``None`` when none of these resolves a target.
     """
+    forge = _forge_for_tool(tool)
     if "api" in words:
         return _destination_from_api(words, tool)
     if tool == "gh" and os.environ.get("GH_REPO", "").strip():
-        return Destination(slug=os.environ["GH_REPO"].strip(), via="env")
-    url_dest = _destination_from_forge_url(words)
+        return Destination(slug=os.environ["GH_REPO"].strip(), via="env", forge=forge)
+    url_dest = _destination_from_forge_url(words, forge)
     if url_dest is not None:
         return url_dest
     if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004
-        return _destination_from_current_repo(cwd)
+        return _destination_from_current_repo(cwd, forge)
     return None
 
 
@@ -255,7 +286,7 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
         return None
     explicit = _extract_repo_flag(words)
     if explicit:
-        return Destination(slug=explicit, via="flag")
+        return Destination(slug=explicit, via="flag", forge=_forge_for_tool(words[0]))
     return _flagless_destination(words, words[0], cwd)
 
 
@@ -387,8 +418,11 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         ``--repo``/``-R`` flag, the ``api`` URL path, or the cwd remote) rather
         than the harness cwd is what lets a post FROM a public clone TO a
         provably-private repo skip the public-leak scan instead of over-blocking.
-        The probe returns ``None`` (unknown -- tool absent in-hook or auth
-        differs) for an unresolvable target, which stays PUBLIC.
+        The publish tool's forge (``dest.forge`` -- ``github`` for ``gh``,
+        ``gitlab`` for ``glab``) is forwarded to the probe so a BARE GitLab slug
+        is probed via ``glab`` rather than mis-routed to the GitHub default; the
+        probe returns ``None`` (unknown -- tool absent in-hook or auth differs)
+        for an unresolvable target, which stays PUBLIC.
 
     Every OTHER target stays PUBLIC and is SCANNED: a genuinely-public
     non-teatree repo (a user's other public repos), a third-party repo, an
@@ -409,7 +443,11 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         return False
     if slug_is_allowlisted_private(slug, config_path):
         return False
-    return not slug_is_private(slug)
+    # Qualify a BARE slug UP to its forge's canonical host so the host-keyed
+    # probe routes to the right tool: a ``glab`` post probes via ``glab``, not
+    # the GitHub default. A host-qualified slug is unchanged.
+    probe_slug = forge_qualified_slug(slug, dest.forge)
+    return not slug_is_private(probe_slug)
 
 
 def _api_write_targets_internal_repo(words: list[str], *, config_path: Path | None = None) -> bool:

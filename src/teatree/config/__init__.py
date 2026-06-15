@@ -21,7 +21,7 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config.loader import (
     CONFIG_PATH,
     _load_toml,
@@ -70,6 +70,7 @@ __all__ = [
     "OVERLAY_OVERRIDABLE_SETTINGS",
     "Autonomy",
     "E2ERepo",
+    "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",
     "OnBehalfPostMode",
