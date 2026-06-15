@@ -290,6 +290,54 @@ class TestMrTargetRepoIsThreadedToValidator:
         assert "--repo" not in argv
 
 
+class TestIssueCommandsAreNeverMrMutations:
+    """``gh issue`` / ``glab issue`` commands are not MR mutations — the gate must never fire.
+
+    Issue creation is a distinct forge operation with its own title conventions
+    (free-form). Applying the MR-metadata gate to an issue create/comment would
+    reject any issue title that does not match the MR conventional-commit format,
+    misfiring every time an agent files a bug or feature request.
+
+    The guard must be EXPLICIT and EARLY: matching on ``glab mr`` or ``gh api
+    .../pulls`` is insufficient because those patterns could grow — the gate must
+    positively exclude the entire ``gh issue`` / ``glab issue`` surface before
+    any MR-pattern check runs.
+    """
+
+    def test_gh_issue_create_is_never_an_mr_mutation(self):
+        cmd = "gh issue create --repo souliane/teatree --title 'chore: cleanup' --body 'context'"
+        result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert result is None
+
+    def test_glab_issue_create_is_never_an_mr_mutation(self):
+        cmd = "glab issue create --repo org/repo --title 'chore: cleanup' --description 'context'"
+        result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert result is None
+
+    def test_gh_issue_comment_is_never_an_mr_mutation(self):
+        cmd = "gh issue comment 42 --repo souliane/teatree --body 'follow-up note'"
+        result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert result is None
+
+    def test_glab_issue_note_is_never_an_mr_mutation(self):
+        cmd = "glab issue note 42 --message 'follow-up note'"
+        result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert result is None
+
+    def test_glab_mr_create_bad_title_still_blocks(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is invalid.")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "glab mr create --title 'bad title' --description 'bad'"},
+                }
+            )
+        assert blocked is True
+
+
 class TestEnvVarOverrideStillWorks:
     """An explicitly-set T3_MR_VALIDATE_SCRIPT remains the override path."""
 

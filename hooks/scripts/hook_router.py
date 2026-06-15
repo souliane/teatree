@@ -2313,7 +2313,6 @@ def _extract_api_mr_fields(command: str) -> tuple[str, str] | None:
         else:
             key = m.group("key2")
             value = (m.group("qval") if m.group("q") else m.group("bval")) or ""
-        # GitHub's PR description field is ``body``; map it onto ``description``.
         fields["description" if key == "body" else key] = value
     if not fields:
         return None

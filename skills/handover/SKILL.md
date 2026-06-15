@@ -48,6 +48,37 @@ t3 <overlay> handover whoami
 
 A fresh / non-owner session claims an unclaimed hand-off (targeted at it, or parked for "next session") on `SessionStart` and injects the payload as `additionalContext` — no command needed. The claim is marked once so it injects exactly once. `t3 <overlay> handover claim-on-start --session <id>` is the hook entry point; you do not normally run it by hand.
 
+## Session recovery — MCP connectors after a network change, account switch, or restart
+
+Handovers cluster around the moments that break MCP: a `/login` account switch, a session
+restart, or a transient network change (e.g. a VPN toggled off for a moment). The receiving
+session — or the same session after the switch — needs this recovery procedure, because dead
+MCP tools silently block any work that depends on them (connectors like Notion and Slack gate a
+lot of downstream work, and the failure is silent).
+
+**Symptom.** The claude.ai built-in connectors (Notion, Slack, Sentry, Drive, claude-in-chrome)
+show connected in `claude mcp list` / `t3 doctor`, but the in-session MCP tools are dead — calls
+fail, and a `/mcp` reconnect returns `HTTP 404 at https://mcp.notion.com/mcp` or
+"Authentication successful, but server reconnection failed." The OAuth tokens are stored fine;
+it is the in-process socket/handshake that went stale. A short VPN drop or an account switch is
+enough to wedge it.
+
+**Fix (in-session, NO restart needed).**
+
+1. Re-run **`/login`** — this re-registers the claude.ai built-ins and re-drives the OAuth
+   handshake that `/mcp` alone cannot. `/mcp` re-auth by itself does **not** recover a wedged
+   socket; `/login` does.
+2. If the first `/login` does not flip the connectors to usable, **run `/login` a second time** —
+   a second pass has recovered it when the first did not.
+3. Confirm with a read-only MCP probe (e.g. a Notion `get-teams` or a Slack channel search), not
+   just `claude mcp list` — the list can show ✔ while the socket is still dead.
+
+Do **not** restart to fix this — a restart kills in-flight background sub-agents (E2E runs,
+coders) for nothing. Durable state survives a restart anyway (open PRs live on the forge, harness
+tasks and the PreCompact snapshot persist), so if a restart is ever needed, let in-flight runs
+finish first. Upstream context: the Notion-side OAuth regression that caused the 404 was fixed in
+Claude Code ≥ 2.1.136; on a current build, `/login` is the reliable in-session recovery.
+
 ## Claude → another runtime
 
 Use this when the user wants to switch away from Claude without losing the thread.

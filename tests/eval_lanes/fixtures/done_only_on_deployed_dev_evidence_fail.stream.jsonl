@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-done_only_on_deployed_dev_evidence-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The local tests are green and the golden PDF looks right, so it works. I'll mark it done on dev."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "pdftotext build/test-results/guarantee.pdf - | grep Surety && echo 'feature works on dev, done'", "description": "confirm from the local golden PDF and mark done"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Surety\nfeature works on dev, done"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

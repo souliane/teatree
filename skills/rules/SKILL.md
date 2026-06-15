@@ -47,6 +47,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 14c. [Render the Title Inline, Never a Bare/Link-Only Id](#render-the-title-inline-never-a-barelink-only-id-non-negotiable)
 14b. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
+14d. [Keep Turn Output Terse and TTS-Ready](#keep-turn-output-terse-and-tts-ready)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 15a. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
 16. [Never Post PR Comments from Parallel Agents](#never-post-pr-comments-from-parallel-agents-non-negotiable)
@@ -201,6 +202,26 @@ In a multi-agent / multi-loop environment, another agent may have advanced a sha
 ## Lead a Completion Report With the Assigned-Work Status
 
 When reporting back on assigned work, the reader's first need is an unambiguous answer to **"is the assigned work done, and where is it?"** — deliverable status, branch/PR/HEAD, gate results. Out-of-scope observations, systemic findings, or follow-up recommendations surfaced along the way must be **clearly separated and subordinate**: a labelled trailing section, never positioned so they displace, precede, or read as a substitute for the deliverable status. A correct systemic analysis that buries the "done?" answer reads as "did the analysis instead of the work" — the coordinator concludes nothing shipped and spends a round-trip re-asking for what was already finished. Separate the two concerns physically; lead with the in-scope status every time.
+
+## Keep Turn Output Terse and TTS-Ready
+
+Every turn response must be short enough to speak aloud without losing the listener. The whole turn output — not just a summary — should fit TTS comfortably.
+
+**Required:**
+
+- Lead with the answer or the action taken. The first sentence is the payload; context and reasoning follow only if necessary.
+- One sentence per point. No long prose paragraphs.
+- No decorative markdown (headers, horizontal rules, nested bullet trees, bold-for-structure) when speaking. Plain sentences work for speech; heading hierarchies do not.
+- Suppress routine status noise. "N signals, N actions" and "still running" progress reports are not actionable → omit them unless something changed that the user must act on.
+- Background work: report on completion or decision only, not on each in-progress tick.
+
+**Anti-patterns:**
+
+- A multi-paragraph narrative of what was done, what was found, and what comes next — when the answer is "done, here is the PR link".
+- A section-headed summary where every item is restated twice (once as a heading, once as prose).
+- A tick report that says "everything is fine" in 8 lines when silence would be correct.
+
+**TTS cap:** If `t3 speak` is active (`[teatree.speak] local = "all"`), the per-turn text passed to `clean_for_speech` is capped at 600 characters. Write turns that fit without truncation by default — the cap is a hard backstop, not a target. A turn that requires aggressive truncation before it fits TTS was too verbose to start.
 
 ## Context Transparency
 
