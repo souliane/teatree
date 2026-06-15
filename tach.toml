@@ -379,8 +379,20 @@ depends_on = [
   "teatree.notify",
   "teatree.messaging",
   "teatree.loop_enabled",
-  "teatree.teams"
+  "teatree.teams",
+  "teatree.loop.statusline_palette",
+  "teatree.loop.statusline_render"
 ]
+
+[[modules]]
+path = "teatree.loop.statusline_palette"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.loop.statusline_render"
+layer = "domain"
+depends_on = ["teatree.loop.statusline_palette"]
 
 [[modules]]
 path = "teatree.loops"

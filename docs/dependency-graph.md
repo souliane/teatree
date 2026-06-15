@@ -170,6 +170,9 @@ graph TD
     teatree.loop --> teatree.messaging
     teatree.loop --> teatree.loop_enabled
     teatree.loop --> teatree.teams
+    teatree.loop --> teatree.loop.statusline_palette
+    teatree.loop --> teatree.loop.statusline_render
+    teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
@@ -207,6 +210,7 @@ graph TD
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts
+    teatree.loop.statusline_palette
     teatree.slack_mrkdwn
     teatree.memory_audit
     teatree.trigger_parser
