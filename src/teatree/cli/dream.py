@@ -44,6 +44,11 @@ def run_command(
         "--dry-run",
         help="Do everything except writing ConsolidatedMemory rows / the marker.",
     ),
+    propose_evals: bool = typer.Option(
+        False,
+        "--propose-evals",
+        help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
+    ),
 ) -> None:
     """Run one consolidation pass NOW (ignores cadence)."""
     ensure_django()
@@ -53,6 +58,8 @@ def run_command(
     args: list[str] = ["run"]
     if dry_run:
         args.append("--dry-run")
+    if propose_evals:
+        args.append("--propose-evals")
     if since:
         args.extend(["--since", since])
     call_command("dream", *args)

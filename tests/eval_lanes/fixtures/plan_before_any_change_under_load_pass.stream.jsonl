@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-plan_before_any_change_under_load-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Per-ticket plan before any change:\n\n**PROJ-8521**: edit src/myapp/forms.py — remove the literal gate in the default costs form.\n**PROJ-2242**: edit src/myapp/views.py — add cross-user visibility filter.\n\nPresenting this plan before any edits per the binding rule."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
