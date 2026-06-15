@@ -318,6 +318,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_anti_vacuity_attestation": _parse_strict_bool,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
+    "e2e_confidence_threshold": _parse_strict_int,
     "scanning_news_disabled": _parse_strict_bool,
     "scanning_news_skill": _parse_strict_str,
     "scanning_news_cadence_hours": _parse_strict_int,
@@ -679,6 +680,16 @@ class UserSettings:
     # test — done cannot be declared on a partial subset. Default false = NO-OP.
     # Per-overlay overridable.
     require_spec_coverage: bool = False
+    # E2E confidence threshold (0-100): the rubric score a Playwright spec must
+    # reach to be VERIFIED by the verify<->review loop. The single knob both the
+    # `e2e-review` rubric (`/t3:e2e-review` § "E2E Confidence Rubric") and the
+    # `e2e` loop (`/t3:e2e` § "Verify-Review Loop to Threshold") read, so "the
+    # threshold" is one resolved value. Default 90; a stricter client overlay
+    # raises it, a fast dogfood overlay lowers it. Documentation-only knob today
+    # (the loop is agent-driven prose, not a deterministic gate) — this field is
+    # the typed home so the doc value and any future programmatic consumer share
+    # one source of truth. Per-overlay overridable.
+    e2e_confidence_threshold: int = 90
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow

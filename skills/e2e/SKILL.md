@@ -302,6 +302,40 @@ Each test file can have a sibling `.md` with the same basename — a single sour
 |--------|-----|-------------|---------|
 | [PROJ-1234](url) | [#5678](url) | Initial: feature X | [Plan + images](url) |
 
+## Verify–Review Loop to Threshold
+
+A single E2E pass is not self-driving: it can go green vacuously, miss an acceptance criterion, or be brittle in a way a static read of the green line never shows. The fix is to **iterate** `/t3:e2e` and `/t3:e2e-review` until the spec earns a rubric-scored confidence threshold — with a hard stop so it can never spin forever. This is the in-skill, iterative expression of the orchestrator's lifecycle chain: `/t3:e2e` is the `test`/e2e phase, `/t3:e2e-review` is the `e2e_reviewing` phase, and `/next` is the edge between them.
+
+> `/next` = the orchestrator advancing the FSM to the next phase and spawning that phase's sub-agent. The e2e ↔ e2e-review chaining IS this `/next` edge fired repeatedly: `e2e --/next--> e2e_reviewing`, and on HOLD, `e2e_reviewing --/next--> e2e` again.
+
+### The loop as FSM edges (max 5 iterations per ticket)
+
+1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with Claude in Chrome where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
+2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): both hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
+3. **VERIFIED** — `score ≥ threshold` AND both hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
+4. **BLOCKED** — a **hard external gate** blocks (no broker account and local can't substitute; a broken login with no available fix; a result observable nowhere programmatically — the rubric's `BLOCKED(<named-gate>)`). Terminal: surface the **named gate** to the user, post **nothing caveated**, exit. Do not loop.
+5. **HOLD** — below threshold (and fixable). The FSM loops **back to the `test`/e2e phase** (`e2e_reviewing --/next--> e2e`): a fresh `/t3:e2e` that applies the top rubric `findings` — fix spec brittleness, add the missing-AC assertions, fix the bug, de-flake — then re-scores. Re-loop.
+
+### Terminal states (never loop forever)
+
+- **VERIFIED** (`score ≥ threshold`, both hard gates pass) — the clean test plan is posted, the rubric score recorded.
+- **BLOCKED(named gate)** — a genuinely-unreachable feature (manual-only/no-API, infra-gated). The named gate is surfaced to the user; no caveated note is posted.
+- **MAX_ITERATIONS** (5 verify↔review rounds without VERIFIED) — stop and report the **best score reached** and the **precise remaining gap** (the specific rubric criteria/findings still short of threshold). Do not silently keep looping.
+
+Never post a caveated note as a substitute for reaching the threshold: a note that says "verified, except…" is not a VERIFIED — it is a HOLD or a BLOCKED wearing a green coat. The whole point of the threshold is that 100% confidence is unreachable for some tickets, so the loop terminates honestly (BLOCKED or MAX_ITERATIONS) rather than pretending.
+
+### Configuration
+
+The pass bar is the **`[teatree] e2e_confidence_threshold`** setting in `~/.teatree.toml` — an integer 0–100, **default 90**, **per-overlay overridable** via `[overlays.<name>].e2e_confidence_threshold` (a stricter client overlay can raise it; a fast dogfood overlay can lower it). It is the single knob both the rubric (`/t3:e2e-review`) and this loop read, so "the threshold" means one value, resolved through the usual env → DB → per-overlay → global → default chain.
+
+```toml
+[teatree]
+e2e_confidence_threshold = 90   # rubric score a spec must reach to be VERIFIED (0-100)
+
+[overlays.client-x]
+e2e_confidence_threshold = 95   # stricter bar for a client overlay
+```
+
 ## Re-Read Before Debugging
 
 When an E2E test fails or the environment misbehaves, **re-read this skill** before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded early in a session gets compressed out of context.
