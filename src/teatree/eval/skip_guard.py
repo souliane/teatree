@@ -26,6 +26,10 @@ class UnmeteredSdkRunError(RuntimeError):
     """Raised when the sdk backend ran scenarios but metered $0 — it never executed."""
 
 
+class UnmeteredJudgeError(RuntimeError):
+    """Raised when ``--judge`` was asked for and judge-oracle scenarios ran, but every judge call skipped."""
+
+
 def assert_executed_when_required(*, collected: int, executed: int, required: bool) -> None:
     """Fail when ``required`` and the suite collected specs but ran none.
 
@@ -64,3 +68,29 @@ def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
         "rather than reporting a vacuous green."
     )
     raise UnmeteredSdkRunError(msg)
+
+
+def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judge_calls: int) -> None:
+    """Fail when ``--judge`` ran judge-oracle scenarios but every judge call skipped.
+
+    Judge spend flows through a separate ``claude_agent_sdk.query`` that is never
+    folded into ``run.cost_usd``, so :func:`assert_sdk_run_was_metered` cannot see
+    it: a ``--judge`` run whose judge-oracle scenarios all skipped (most often
+    ``claude`` absent) would report green having graded nothing with the judge.
+
+    ``judge_eligible`` is the number of executed (non-skipped) scenarios that
+    carry a judge oracle; ``judge_calls`` is how many of those the judge actually
+    graded (a non-skipped :class:`~teatree.eval.report.JudgeOutcome`). The guard
+    fires only when the judge was requested, there was at least one oracle to
+    grade, and not one was graded — never when ``--judge`` is off or no scenario
+    carries a judge block (zero calls is correct there).
+    """
+    if not judge_requested or judge_eligible == 0 or judge_calls > 0:
+        return
+    msg = (
+        f"--judge requested and {judge_eligible} judge-oracle scenario(s) ran, but the judge "
+        "graded 0 of them — every judge call skipped (most likely `claude` is not on PATH where "
+        "the judge runs). A judge oracle that never grades reports a vacuous green; this fails "
+        "loud instead. Provision `claude` / CLAUDE_CODE_OAUTH_TOKEN, or drop --judge."
+    )
+    raise UnmeteredJudgeError(msg)

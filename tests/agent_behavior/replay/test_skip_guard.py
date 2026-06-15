@@ -4,8 +4,10 @@ import pytest
 
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    UnmeteredJudgeError,
     UnmeteredSdkRunError,
     assert_executed_when_required,
+    assert_judge_was_metered,
     assert_sdk_run_was_metered,
 )
 
@@ -71,3 +73,40 @@ class TestAssertSdkRunWasMetered:
         # executed==0 is the all-skipped guard's job; this guard only fires when
         # scenarios ran (executed>0) yet metered nothing — a different signal.
         assert_sdk_run_was_metered(backend="sdk", executed=0, total_cost_usd=0.0)
+
+
+class TestAssertJudgeWasMetered:
+    """A judge oracle whose every judge call skipped never actually graded.
+
+    Judge spend flows through a separate ``claude_agent_sdk.query`` that is never
+    folded into ``run.cost_usd``, so the sdk-metered guard cannot see it. A
+    ``--judge`` run whose judge-oracle scenarios all skipped (claude absent)
+    exits GREEN having judged nothing — a fake-green this guard turns RED.
+    """
+
+    def test_judge_requested_but_no_judge_calls_raises(self) -> None:
+        # MUST-FIRE: the judge was asked for, an oracle scenario was graded, yet
+        # every judge call skipped — nothing was actually judged.
+        with pytest.raises(UnmeteredJudgeError) as exc:
+            assert_judge_was_metered(judge_requested=True, judge_eligible=3, judge_calls=0)
+        assert "judge" in str(exc.value).lower()
+
+    def test_judge_not_requested_never_raises(self) -> None:
+        # MUST-NOT-FIRE: no `--judge` — a matcher-only run has no judge to meter.
+        assert_judge_was_metered(judge_requested=False, judge_eligible=0, judge_calls=0)
+
+    def test_no_judge_oracle_scenarios_never_raises(self) -> None:
+        # MUST-NOT-FIRE: `--judge` set but no scenario carries a judge block, so
+        # zero judge calls is correct, not a fake-green.
+        assert_judge_was_metered(judge_requested=True, judge_eligible=0, judge_calls=0)
+
+    def test_at_least_one_judge_call_does_not_raise(self) -> None:
+        # MUST-NOT-FIRE: the judge actually graded an oracle scenario.
+        assert_judge_was_metered(judge_requested=True, judge_eligible=3, judge_calls=1)
+
+    def test_message_names_the_judge_skip_cause(self) -> None:
+        with pytest.raises(UnmeteredJudgeError) as exc:
+            assert_judge_was_metered(judge_requested=True, judge_eligible=1, judge_calls=0)
+        message = str(exc.value).lower()
+        assert "judge" in message
+        assert "claude" in message or "skipped" in message

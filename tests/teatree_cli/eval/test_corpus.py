@@ -183,7 +183,10 @@ class TestCorpusGrade:
         assert result.exit_code == 1, result.output
         assert "judge=fail" in result.output
 
-    def test_judge_grader_skip_outcome_passes_with_skipped_note(self, tmp_path: Path) -> None:
+    def test_judge_requested_but_every_judge_oracle_skipped_fails_loud(self, tmp_path: Path) -> None:
+        # `--judge` asked for a metered judge run, but the only judge-oracle entry
+        # skipped (claude absent) — the judge graded nothing. A green there is the
+        # fake-green the guard closes (§4a): it must exit non-zero, not pass.
         _write_entry(tmp_path, "j_entry", oracle="judge")
 
         def _fake_grader(spec: object, run: object) -> JudgeOutcome:
@@ -191,8 +194,23 @@ class TestCorpusGrade:
 
         with patch("teatree.cli.eval.corpus.make_grader", return_value=_fake_grader):
             result = CliRunner().invoke(app, ["eval", "corpus", "grade", "--judge", "--dir", str(tmp_path)])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "judge=skipped" in result.output
+        assert "judge graded 0" in result.output.lower() or "every judge call skipped" in result.output.lower()
+
+    def test_judge_skip_does_not_fail_when_another_oracle_was_actually_judged(self, tmp_path: Path) -> None:
+        # MUST-NOT-FIRE: a mix where at least one judge oracle actually graded is
+        # not a total fake-green — the guard fires only on an all-skip.
+        _write_entry(tmp_path, "graded_entry", oracle="judge")
+        _write_entry(tmp_path, "skipped_entry", oracle="judge", command="echo unrelated-no-match")
+
+        def _fake_grader(spec: object, run: object) -> JudgeOutcome:
+            # The first entry's run grades; rationale marks it a real judge call.
+            return JudgeOutcome(passed=True, skipped=False, rationale="graded")
+
+        with patch("teatree.cli.eval.corpus.make_grader", return_value=_fake_grader):
+            result = CliRunner().invoke(app, ["eval", "corpus", "grade", "--judge", "--dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
 
     def test_both_oracle_grades_matcher_part_under_no_judge(self, tmp_path: Path) -> None:
         _write_entry(tmp_path, "b_entry", oracle="both")

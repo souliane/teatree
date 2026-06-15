@@ -33,6 +33,17 @@ from teatree.eval.models import EvalSpec
 
 logger = logging.getLogger(__name__)
 
+
+class ScenarioCatalogError(RuntimeError):
+    """Raised when the core scenario catalog directory does not exist.
+
+    ``SCENARIOS_DIR.glob("*.yaml")`` returns ``[]`` (no raise) on a missing dir,
+    so a mis-pointed move would silently shrink the catalog to the handful of
+    co-located specs while a metered run still meters ``>$0`` and exits green.
+    A missing catalog dir is a hard configuration error, not an empty catalog.
+    """
+
+
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "tests" / "agent_behavior" / "scenarios"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so discovery stays a leaf of the eval package (the same
@@ -42,6 +53,12 @@ DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 
 def discover_specs() -> list[EvalSpec]:
+    if not SCENARIOS_DIR.is_dir():
+        msg = (
+            f"scenario catalog directory is missing: {SCENARIOS_DIR}. A missing dir would yield an "
+            "empty catalog (glob returns []), silently shrinking the suite. Check the path / the move."
+        )
+        raise ScenarioCatalogError(msg)
     specs: list[EvalSpec] = []
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         specs.extend(load_eval_yaml(path))
