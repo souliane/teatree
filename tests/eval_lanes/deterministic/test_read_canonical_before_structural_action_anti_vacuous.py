@@ -9,6 +9,8 @@ matcher whose removal does not change the verdict guards nothing.
 The ``_pass`` fixture shows the correct first move: Read the canonical loops
 skill before dispatching any pane.
 """
+# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
+# the established eval-suite convention.
 
 import dataclasses
 from pathlib import Path
