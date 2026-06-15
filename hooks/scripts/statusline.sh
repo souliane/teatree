@@ -13,7 +13,9 @@
 #     `/effort` level rendered beside it — from the payload if present, else the
 #     saved settings default), context-window %,
 #     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
-#     summary of this session's harness TODO list, and a
+#     summary of this session's harness TODO list, the live Agent-Teams roster
+#     (the ACTIVE mates of the team this session leads, read from the harness
+#     team config), and a
 #     per-session loop-owner badge — the skills and TODO summaries are
 #     populated by hook_router.py into ${state_dir}/<session_id>.skills and
 #     ${state_dir}/<session_id>.todos (the TODO file is materialised from the
@@ -469,11 +471,71 @@ fi
 
 g_updates="$_freshness_segment"
 
+# Agent-Teams roster: the live mates of the team THIS session leads, rendered
+# compactly so the lead sees who is on the bench without the harness's inline
+# ``@mate · shift+↑/↓`` switcher being the only surface. The team config lives
+# at ``<teams_dir>/<team>/config.json`` (teams_dir =
+# ``${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams`` unless overridden by
+# TEATREE_CLAUDE_TEAMS_DIR), keyed by team NAME not session — so we resolve the
+# team by matching ``leadSessionId`` to this session and list ACTIVE members
+# (``isActive == true``) other than the lead. Each mate is painted in its own
+# ``color`` (the harness teammate color) when known, else neutral. Fails open
+# (renders nothing, never errors) on no jq, no session id, no teams dir, no
+# matching team, or any read/parse failure — a colleague who never runs a team
+# sees exactly the statusline they always did.
+_team_segment=""
+if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
+    _teams_dir="${TEATREE_CLAUDE_TEAMS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/teams}"
+    if [ -d "$_teams_dir" ]; then
+        _mates_raw=""
+        for _team_cfg in "$_teams_dir"/*/config.json; do
+            [ -r "$_team_cfg" ] || continue
+            # Only the team THIS session leads — its leadSessionId is ours. The
+            # roster is rendered for the lead's terminal; a non-lead session
+            # leads no team and so renders no roster.
+            _is_my_team=$(jq -r --arg sid "$session_id" \
+                'if (.leadSessionId // "") == $sid then "1" else "" end' \
+                "$_team_cfg" 2>/dev/null)
+            [ "$_is_my_team" = "1" ] || continue
+            # One ``<color>\t<name>`` line per ACTIVE non-lead member. The lead
+            # is excluded by agentId (it equals leadAgentId) so it never lists
+            # itself even if a future config stamps it isActive.
+            _mates_raw=$(jq -r '
+                (.leadAgentId // "") as $lead
+                | [ .members[]?
+                    | select(((.isActive == true)) and ((.agentId // "") != $lead))
+                    | "\(.color // "")\t\(.name // "")" ]
+                | .[]' "$_team_cfg" 2>/dev/null)
+            break
+        done
+        if [ -n "$_mates_raw" ]; then
+            _mate_chips=""
+            while IFS=$'\t' read -r _mate_color _mate_name; do
+                [ -n "$_mate_name" ] || continue
+                case "$_mate_color" in
+                    red) _mc="$_RED" ;;
+                    green) _mc="$_GRN" ;;
+                    yellow) _mc="$_YLW" ;;
+                    blue) _mc="$_BLU" ;;
+                    magenta|purple|pink) _mc="$_MAG" ;;
+                    cyan) _mc="$_CYN" ;;
+                    *) _mc="$_GRN" ;;
+                esac
+                [ -n "$_mate_chips" ] && _mate_chips="${_mate_chips}${isep}"
+                _mate_chips="${_mate_chips}${_mc}${_mate_name}${_RST}"
+            done <<< "$_mates_raw"
+            [ -n "$_mate_chips" ] && _team_segment="${_LBL}mates:${_RST} ${_mate_chips}"
+        fi
+    fi
+fi
+g_team="$_team_segment"
+
 # Join all groups with the between-group separator. There is no loop group
 # (#130) — loop/tick info has exactly one home, the dedicated loop line in
-# the zones file cat'd below.
+# the zones file cat'd below. The mates roster (g_team) rides the header as its
+# own group, after resource, so it never crowds out model/ctx/usage.
 header=""
-for _g in g_context g_usage g_updates g_resource; do
+for _g in g_context g_usage g_updates g_resource g_team; do
     _val=$(eval "printf '%s' \"\${$_g}\"")
     [ -z "$_val" ] && continue
     if [ -z "$header" ]; then
