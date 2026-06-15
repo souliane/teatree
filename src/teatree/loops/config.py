@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.loops.base import MiniLoop
 
 logger = logging.getLogger(__name__)
@@ -130,15 +131,24 @@ class LoopsConfig:
         )
 
     def is_enabled(self, loop: MiniLoop) -> bool:
-        """Resolve enable/disable for *loop* across env, per-loop, global, always-on.
+        """Resolve enable/disable for *loop* across DB state, env, per-loop, global, always-on.
 
-        The env kill-switch is resolved against the shared
+        The DB-backed ``LoopState`` control tier (#1913) is consulted FIRST: an
+        explicit ``PAUSED`` / ``DISABLED`` row forces a skip, even for an
+        ``always_on`` loop (the 2026-06-03 'pause everything' incident — the
+        toml/env layer below cannot stop an always-on loop). No row / an
+        ``ENABLED`` row defers to the layers below, so an empty table is a
+        provable no-op.
+
+        Below that, the env kill-switch is resolved against the shared
         :func:`teatree.loop_enabled.loop_enabled_by_name`-style env parsing here
         (``_env_disabled_names`` keeps the case-insensitive ``all`` sentinel);
         the per-loop / global layers read from this already-parsed config so a
         ``LoopsConfig`` built from an explicit ``path`` (tests) stays
         authoritative.
         """
+        if loop_held_in_db(loop.name):
+            return False
         env_disabled = _env_disabled_names()
         if env_disabled == _ENV_DISABLE_ALL and not loop.always_on:
             return False

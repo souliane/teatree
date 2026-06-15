@@ -174,6 +174,7 @@ graph TD
     teatree.loop --> teatree.loop.statusline_render
     teatree.loop --> teatree.loop.url_specificity
     teatree.loop --> teatree.loop.review_claim_signals
+    teatree.loop --> teatree.loop.loop_state_db
     teatree.loop --> teatree.loop.review_request_tracker
     teatree.loop --> teatree.loop.dispatch_tables
     teatree.loop --> teatree.loop.pr_ticket_index
@@ -183,6 +184,8 @@ graph TD
     teatree.loop.pr_ticket_index --> teatree.loop.dispatch_tables
     teatree.loop.review_claim_signals --> teatree.types
     teatree.loop.review_claim_signals --> teatree.core.models
+    teatree.loop.review_claim_signals --> teatree.loop.loop_state_db
+    teatree.loop.loop_state_db --> teatree.core.models
     teatree.loop.scanners --> teatree.types
     teatree.loop.scanners --> teatree.paths
     teatree.loop.scanners --> teatree.utils
@@ -202,6 +205,7 @@ graph TD
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
+    teatree.loops --> teatree.loop.loop_state_db
     teatree.loops --> teatree.messaging
     teatree.loops --> teatree.notify
     teatree.loops --> teatree.utils

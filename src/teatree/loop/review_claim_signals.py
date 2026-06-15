@@ -32,18 +32,26 @@ _REVIEW_LOOP_NAME = "review"
 def review_loop_enabled() -> bool:
     """Read the current review-mini-loop enable state (#79 reads, never invents).
 
-    Resolves through :func:`teatree.loop_enabled.loop_enabled_by_name` — the same
-    env-kill-switch → per-loop → global doctrine the orchestrator and the
-    live-tick fan-out apply via :class:`LoopsConfig`, factored into the
-    config layer so this :mod:`teatree.loop` module reaches an identical
-    verdict without importing :mod:`teatree.loops` (a forbidden up-stack
-    dependency). Fail-safe: any read error resolves to enabled so an
-    unreadable config never silently suppresses every review — the
-    discovery-time claim removal is what cures the over-claim, not this gate.
+    Two tiers, both read here so this chokepoint reaches the identical verdict
+    the tick does. First the DB ``LoopState`` control tier (#1913) via
+    :func:`teatree.loop.loop_state_db.loop_held_in_db` — a ``PAUSED`` /
+    ``DISABLED`` row durably stops review claims across a restart. Then the
+    env/toml doctrine via :func:`teatree.loop_enabled.loop_enabled_by_name` — the
+    same env-kill-switch → per-loop → global layers the orchestrator and the
+    live-tick fan-out apply via :class:`LoopsConfig`, factored into the config
+    layer so this :mod:`teatree.loop` module reaches an identical verdict without
+    importing :mod:`teatree.loops` (a forbidden up-stack dependency).
+
+    Fail-safe: any read error resolves to enabled so an unreadable source never
+    silently suppresses every review — the discovery-time claim removal is what
+    cures the over-claim, not this gate.
     """
     try:
+        from teatree.loop.loop_state_db import loop_held_in_db  # noqa: PLC0415
         from teatree.loop_enabled import loop_enabled_by_name  # noqa: PLC0415
 
+        if loop_held_in_db(_REVIEW_LOOP_NAME):
+            return False
         return loop_enabled_by_name(_REVIEW_LOOP_NAME)
     except Exception:  # noqa: BLE001 — an unreadable loop config must never wedge the scan.
         logger.debug("review_loop_enabled: config read failed — failing safe to enabled")

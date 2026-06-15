@@ -187,6 +187,18 @@ Run one schedule cycle of the self-improving monitor.
 
 Run one reactive Slack-answer cycle (the third /loop slot).
 
+## `loop_state`
+
+Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
+
+| Subcommand | Description |
+| --- | --- |
+| `pause` | Move *name* into the reversible PAUSED hold |
+| `resume` | Return *name* to ENABLED, clearing a pause OR a disable |
+| `disable` | Move *name* into the durable DISABLED kill-switch |
+| `enable` | Return *name* to ENABLED (alias of resume) |
+| `status` | Report *name*'s durable state (ENABLED when no row exists) |
+
 ## `loop_tick`
 
 Run one tick: scan all overlays, dispatch, render statusline.
