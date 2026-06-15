@@ -746,6 +746,113 @@ class TestValidateMrTargetRepoKeyed:
         assert result.exit_code == 0, result.output
 
 
+class TestValidateMrTeatreeRepoNeverGetsExternalConvention:
+    """`t3 tool validate-mr --repo souliane/teatree` always uses teatree's convention.
+
+    When ``get_overlay_for_repo("souliane/teatree")`` returns ``None`` (the
+    registered overlay set doesn't own that repo), the command must NOT fall
+    through to the cwd-keyed ``get_overlay()`` path — that path could return an
+    unrelated overlay whose narrower title-type set rejects titles perfectly
+    valid under teatree's broader convention. The fix returns early (skip) when
+    ``--repo`` was provided but maps to no known overlay.
+    """
+
+    def _register(self, monkeypatch: pytest.MonkeyPatch, overlays: dict):
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        return patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays)
+
+    def test_chore_title_accepted_for_teatree_repo_even_when_strict_overlay_is_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        overlays = {
+            "t3-teatree": _AcceptingOverlay(["souliane/teatree"]),
+            "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "chore: fix typo in README",
+                    "--description",
+                    "chore: fix typo in README",
+                    "--repo",
+                    "souliane/teatree",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_chore_title_allowed_for_teatree_repo_when_only_strict_overlay_registered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        overlays = {
+            "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "chore: fix typo in README",
+                    "--description",
+                    "chore: fix typo in README",
+                    "--repo",
+                    "souliane/teatree",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+
+    def test_chore_title_rejected_for_strict_repo_when_strict_overlay_is_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        overlays = {
+            "t3-teatree": _AcceptingOverlay(["souliane/teatree"]),
+            "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                [
+                    "tool",
+                    "validate-mr",
+                    "--title",
+                    "chore: fix typo",
+                    "--description",
+                    "chore: fix typo",
+                    "--repo",
+                    "acme-org/acme-product",
+                ],
+            )
+        assert result.exit_code == 1, result.output
+        assert "chore" in result.output
+
+    def test_teatree_title_with_teatree_exclusive_type_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlays = {
+            "t3-teatree": _AcceptingOverlay(["souliane/teatree"]),
+            "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["not allowed"]),
+        }
+        with self._register(monkeypatch, overlays):
+            for title_type in ("docs", "test", "refactor"):
+                result = runner.invoke(
+                    app,
+                    [
+                        "tool",
+                        "validate-mr",
+                        "--title",
+                        f"{title_type}: something",
+                        "--description",
+                        f"{title_type}: something",
+                        "--repo",
+                        "souliane/teatree",
+                    ],
+                )
+                assert result.exit_code == 0, f"Expected {title_type}: to pass for souliane/teatree\n{result.output}"
+
+
 class TestToMarkdownCommand:
     """`t3 tool to-markdown` converts an attachment to Markdown via markitdown.
 

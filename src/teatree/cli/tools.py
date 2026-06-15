@@ -118,7 +118,7 @@ def validate_mr(
             errors = _validation_errors_fail_closed(target_overlay, title, description)
             if errors:
                 _deny_with_errors(errors)
-            return
+        return
 
     try:
         overlay = get_overlay()
