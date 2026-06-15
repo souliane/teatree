@@ -37,11 +37,11 @@
       "name": "config_setting",
       "subcommands": [
         {
-          "help": "Upsert the DB override row for *key* to the JSON-parsed *value*",
+          "help": "Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value*",
           "name": "set"
         },
         {
-          "help": "Delete the DB override row for *key*; falls back to the file/env source",
+          "help": "Delete the DB override row for *key* in *overlay*'s scope (or global)",
           "name": "clear"
         },
         {
@@ -49,7 +49,7 @@
           "name": "get"
         },
         {
-          "help": "List every DB config override row (read-only)",
+          "help": "List every DB config override row, naming each row's scope (read-only)",
           "name": "list"
         },
         {

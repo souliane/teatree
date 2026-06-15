@@ -126,6 +126,15 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     regresses during the migration window. The read fails safe to ``{}`` whenever
     Django is not configured or the table does not exist yet.
 
+    The DB tier itself has TWO scopes, mirroring the TOML two-tier shape: a
+    GLOBAL ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
+    OVERLAY-scoped row (``scope=<overlay name>``) applies to that overlay alone.
+    :func:`_db_setting_overrides` layers global rows first, then the active
+    overlay's rows on top — so an overlay-scoped DB row beats a global DB row,
+    exactly as a per-overlay ``[overlays.<name>]`` TOML value beats the global
+    ``[teatree]`` value. The active overlay is the explicit ``overlay_name`` on
+    the named path, else ``T3_OVERLAY_NAME`` / discovery on the active path.
+
     The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
     ``get_overlay()``), then cwd-based discovery, then the single
     installed overlay.
@@ -155,8 +164,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     else:
         active = _active_overlay_entry()
         overrides = dict(active.overrides) if active is not None else {}
-    # Precedence (later wins): per-overlay TOML -> DB tier -> env.
-    overrides.update(_db_setting_overrides())
+    # Precedence (later wins): per-overlay TOML -> DB tier -> env. The DB tier
+    # itself layers global rows then the active overlay's rows on top, so an
+    # overlay-scoped DB row beats a global DB row beats per-overlay TOML.
+    overrides.update(_db_setting_overrides(_resolved_overlay_name(overlay_name)))
     if overlay_name is None:
         overrides.update(_env_setting_overrides())
     settings = base if not overrides else replace(base, **overrides)
@@ -202,7 +213,7 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
-    overrides.update(_db_setting_overrides())
+    overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
     overrides.update(_env_setting_overrides())
     return overrides
 
@@ -217,14 +228,42 @@ def _env_setting_overrides() -> dict[str, Any]:
     return overrides
 
 
-def _db_setting_overrides() -> dict[str, Any]:
-    """The ``ConfigSetting`` DB override tier (#1775) — scoped to overridable keys.
+def _resolved_overlay_name(overlay_name: str | None) -> str:
+    """The overlay name whose per-overlay DB rows the resolver should layer.
+
+    For the named-overlay path this is the explicit ``overlay_name``; for the
+    active-overlay path it is ``T3_OVERLAY_NAME`` if set, then the cwd/single
+    discovered overlay — the same active-overlay resolution the per-overlay TOML
+    layer uses, so the DB and TOML overlay tiers always agree on which overlay
+    is active. ``""`` (no resolvable overlay) means only the global DB scope
+    applies.
+    """
+    if overlay_name is not None:
+        return overlay_name
+    env_name = os.environ.get("T3_OVERLAY_NAME")
+    if env_name:
+        return env_name
+    active = _active_overlay_entry()
+    return active.name if active is not None else ""
+
+
+def _db_setting_overrides(overlay_name: str = "") -> dict[str, Any]:
+    """The ``ConfigSetting`` DB override tier (#1775) — global then per-overlay.
 
     Returns ``{field_name: coerced_value}`` for every ``ConfigSetting`` row whose
     ``key`` is a registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field, coercing the
     stored JSON value with that registry's parser so the resolved field keeps its
     declared type. Rows for unknown / non-overridable keys are ignored, so a
     stray row can never silently mutate the resolved settings.
+
+    Two scopes are layered (later wins): the GLOBAL scope (``scope=""``, applies
+    to every overlay) first, then — when *overlay_name* is a resolvable overlay —
+    that overlay's scope on top. So an overlay-scoped DB row beats a global DB
+    row, mirroring the way a per-overlay ``[overlays.<name>]`` TOML value beats
+    the global ``[teatree]`` value. The overlay scope is matched
+    canonical-alias-tolerantly (a request for ``teatree`` also reads the
+    ``t3-teatree`` entry-point overlay's rows and vice versa) so a row written
+    under either spelling resolves.
 
     Fails safe to ``{}`` for INFRASTRUCTURE failures — an empty/absent table, an
     unconfigured Django, or a pre-migration database (the table does not exist
@@ -242,7 +281,7 @@ def _db_setting_overrides() -> dict[str, Any]:
     would resolve back to the file/env value with no signal, exactly the kind of
     quiet wrong answer the strict parsing change is meant to foreclose.
     """
-    rows = _load_config_setting_rows()
+    rows = _load_config_setting_rows(overlay_name)
     if not rows:
         return {}
     overrides: dict[str, Any] = {}
@@ -258,12 +297,18 @@ def _db_setting_overrides() -> dict[str, Any]:
     return overrides
 
 
-def _load_config_setting_rows() -> list[tuple[str, Any]]:
-    """Read every ``ConfigSetting`` ``(key, value)`` pair, or ``[]`` on any failure.
+def _load_config_setting_rows(overlay_name: str = "") -> list[tuple[str, Any]]:
+    """Read the layered ``(key, value)`` pairs (global then *overlay_name*), or ``[]``.
 
     Reaches the model via Django's app registry (no static ``teatree.core``
-    import — that would be a backwards ``platform -> domain`` tach edge). Every
-    failure mode of an early/unconfigured read — Django apps not ready, no
+    import — that would be a backwards ``platform -> domain`` tach edge). The
+    global scope (``scope=""``) is read first, then the active overlay's scope is
+    merged on top (overlay wins per key), so the returned ordering already
+    encodes the global<overlay precedence. The overlay match is
+    canonical-alias-tolerant: a row under either the short alias or the
+    ``t3-``-prefixed entry-point name resolves for the active overlay.
+
+    Every failure mode of an early/unconfigured read — Django apps not ready, no
     settings, the table missing pre-migration, the DB unreachable — degrades to
     an empty list so the DB tier is a strict no-op rather than an exception in the
     hot config path.
@@ -272,7 +317,17 @@ def _load_config_setting_rows() -> list[tuple[str, Any]]:
         from django.apps import apps  # noqa: PLC0415
 
         model = apps.get_model("core", "ConfigSetting")
-        return list(model.objects.values_list("key", "value"))
+        merged: dict[str, Any] = model.objects.overrides_for_scope("")
+        if overlay_name:
+            canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+            scope_values: dict[str, dict[str, Any]] = {}
+            for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
+                if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
+                    scope_values.setdefault(scope, {})[key] = value
+            # An exact-name match wins over an alias match when both rows exist.
+            overlay_rows = scope_values.get(overlay_name) or next(iter(scope_values.values()), {})
+            merged.update(overlay_rows)
+        return list(merged.items())
     except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
         return []
 
