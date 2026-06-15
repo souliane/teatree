@@ -208,7 +208,6 @@ graph TD
     teatree.loop.dispatch_reducer --> teatree.loop.scanners
     teatree.loop.dispatch_reducer --> teatree.loop.dispatch_tables
     teatree.loop.dispatch_gates --> teatree.config
-    teatree.loop.dispatch_gates --> teatree.core
     teatree.loop.dispatch_gates --> teatree.core.models
     teatree.loop.dispatch_gates --> teatree.core.modelkit
     teatree.loop.dispatch_gates --> teatree.backends
@@ -220,7 +219,6 @@ graph TD
     teatree.loop.dispatch --> teatree.loop.dispatch_tables
     teatree.loop.dispatch --> teatree.loop.dispatch_reducer
     teatree.loop.dispatch --> teatree.loop.dispatch_gates
-    teatree.loop.self_improve --> teatree.core
     teatree.loop.self_improve --> teatree.core.models
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners
