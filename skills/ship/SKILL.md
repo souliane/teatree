@@ -45,8 +45,30 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 
 - **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
 - **Every commit must include** an issue reference. Default to a ticket-URL parenthetical at the end of the subject line (`type(scope): description (TICKET_URL)`) — that is the linking mechanism the active overlay's `OverlayMetadata.validate_pr(title, description)` enforces (surfaced as the `t3 tool validate-mr` CLI command and the PreToolUse hook in § "PR / MR Creation"). When the active overlay sets `mr_close_ticket = True` (the teatree overlay does), the ship path keeps `Closes/Fixes #<number>` so a merged PR auto-closes its issue **by default** — `should_close_ticket` rewrites it to `Relates to #N` only when `Ticket.extra['more_prs_coming']` is set (a declared partial, or an umbrella with remaining tracked scope). Overlays that leave `mr_close_ticket = False` (the class default) never auto-close.
-- **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference.
+- **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference. The full procedure for resolving a missing reference — and when you may create one vs. when you must ask — is the **Missing Issue Reference Policy** in § 0a below.
 - **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
+
+### 0a. Missing Issue Reference Policy (Non-Negotiable)
+
+When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the `[teatree] missing_issue_ref_policy` setting (`T3_MISSING_ISSUE_POLICY` env var, per-overlay overridable) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
+
+1. **Find the ORIGINAL existing issue first (always, every policy tier).** Before anything else, look for the issue that already covers this work — the one that introduced the bug, or the one that left the scope unimplemented. Search the repo's issues (open **and** closed) and the introducing commit's linked issue:
+
+   ```bash
+   git log -S '<the buggy line/symbol>' --oneline       # find the introducing commit
+   git show <introducing-sha> --format='%s%n%b' | grep -iE '#[0-9]+'  # its linked issue
+   gh issue list --search '<keywords>' --state all       # GitHub
+   glab issue list --search '<keywords>'                 # GitLab
+   ```
+
+   If you find it, **use that reference** — it is the canonical one. Do not open a new issue that duplicates an existing one.
+
+2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
+
+   - **Colleague-facing / external repos** (a shared product repo of an org — one the user does **not** own): under the default policy you must **ASK the user** for the reference (via `AskUserQuestion`). NEVER auto-create an issue and NEVER use a dummy/placeholder reference on a tracker the user does not control.
+   - **The user's own repos** (teatree itself, the user's solo overlay repos): creating an issue is allowed without asking — the user owns the tracker, so a created issue is self-bookkeeping, not noise on a colleague's surface.
+
+**Default (`find_existing_then_ask`):** find-existing-first, then ask on colleague repos / create on own repos, never a dummy. `create` and `dummy` are **opt-in only** (`[teatree] missing_issue_ref_policy = "create"` / `"dummy"`, or per-overlay) — they authorise auto-create / a placeholder reference even on a colleague-facing repo, and are OFF by default. When the resolver returns `ASK_USER`, surface the blocker and wait — do not fill the gap yourself.
 
 ### 1. Commit
 
@@ -231,6 +253,8 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 3. You explicitly state the bypass and the reason in the response, so the user can stop you if the assumption is wrong.
 
 If `t3 <overlay> pr create` errors, **fix the error** (create the missing session, run the reviewer, set the missing env var) — do not work around it with raw `gh`/`glab`. Treating the CLI as optional is the same anti-pattern as "Fix the CLI, Never Work Around It" in [`../workspace/SKILL.md`](../workspace/SKILL.md), applied to the shipping flow.
+
+**If the PR/MR needs an issue reference and you have none, do NOT improvise a dummy ref or auto-file on a tracker you do not own** — follow § 0a "Missing Issue Reference Policy": recover the original existing issue first, then ask on a colleague-facing repo (or create on the user's own repo) per the resolved `missing_issue_ref_policy`.
 
 #### Scope-Match Gate Before `Closes/Fixes #N` (Non-Negotiable)
 

@@ -248,3 +248,72 @@ class OnBehalfPostMode(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid on_behalf_post_mode {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+class MissingIssuePolicy(StrEnum):
+    """What to do when a commit/MR needs an issue reference and none is in hand.
+
+    The recurring failure this setting encodes: the agent is about to make a
+    commit or open an MR/PR that links to an issue/ticket, but it has no
+    reference. The correct behaviour is NOT to improvise — it is to first
+    recover the ORIGINAL existing issue (the one that introduced the bug or
+    left the scope unimplemented, found by searching the repo's issues and the
+    introducing commit's linked issue) and use THAT. Only when no existing
+    issue is found does the policy decide the fallback, and the fallback differs
+    by repo class:
+
+    *   On a **colleague-facing / external** repo (a shared product repo of an
+        org, not one the user owns), the agent must NEVER auto-create an issue
+        and never use a placeholder/dummy reference — it must ASK the user. A
+        fabricated issue or a dummy ref on a colleague-facing repo pollutes a
+        shared tracker the user does not control.
+    *   On the **user's own** repo (teatree itself, the user's solo overlay
+        repos), creating an issue is allowed without asking — the user owns the
+        tracker, so a created issue is self-bookkeeping, not noise on a
+        colleague's surface.
+
+    Tiers (default :attr:`FIND_EXISTING_THEN_ASK`, the conservative choice):
+
+    *   :attr:`FIND_EXISTING_THEN_ASK` (default) — search for the original
+        existing issue first; if none is found, ASK on a colleague-facing repo
+        and CREATE on the user's own repo. Never a dummy ref. This is the
+        never-improvise default.
+    *   :attr:`CREATE` — opt-in. After the existing-issue search comes up empty,
+        the agent is authorised to auto-create an issue even on a
+        colleague-facing repo. The user has accepted the agent filing issues on
+        the shared tracker.
+    *   :attr:`DUMMY` — opt-in. After the existing-issue search comes up empty,
+        the agent is authorised to use a placeholder/dummy reference even on a
+        colleague-facing repo. The most permissive tier — the user accepts a
+        non-real ref rather than a stop-and-ask.
+
+    ``create`` and ``dummy`` are opt-in only; the default is OFF for
+    colleague-facing repos (it never auto-creates and never uses a dummy there).
+    Read from ``[teatree] missing_issue_ref_policy``; per-overlay overridable
+    via ``[overlays.<name>].missing_issue_ref_policy``; the
+    ``T3_MISSING_ISSUE_POLICY`` env var wins over both. Resolved by
+    :func:`teatree.missing_issue_policy.resolve_missing_issue_verdict`, and the
+    agent-facing prose lives in ``skills/ship/SKILL.md`` § "Missing Issue
+    Reference Policy".
+    """
+
+    FIND_EXISTING_THEN_ASK = "find_existing_then_ask"
+    CREATE = "create"
+    DUMMY = "dummy"
+
+    @classmethod
+    def parse(cls, value: str) -> "MissingIssuePolicy":
+        """Parse a missing-issue-policy string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`FIND_EXISTING_THEN_ASK`) is applied by the caller when the
+        setting is absent, so a typo never silently opts the agent into
+        auto-creating or dummy-referencing on a colleague-facing repo.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid missing_issue_ref_policy {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
