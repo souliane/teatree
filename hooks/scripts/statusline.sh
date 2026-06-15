@@ -49,7 +49,7 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
         # so the segment upgrades for free if a future payload exposes `.effort`
         # (or `.model.effort`); otherwise it falls back to the saved settings
         # default below.
-        effort=$(printf '%s' "$input" | jq -r '.effort // .model.effort // empty')
+        effort=$(printf '%s' "$input" | jq -r '(.effort // .model.effort) as $e | if ($e|type)=="object" then ($e.level // empty) elif ($e|type)=="string" then $e else empty end')
         ctx_pct=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty' | cut -d. -f1)
         five_hour_pct=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
         five_hour_resets_at=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
