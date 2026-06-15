@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 
 import teatree.config as _facade
-from teatree.config.enums import Autonomy, Mode, Speed, TeamsDisplay
+from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, Speed, TeamsDisplay
 from teatree.config.resolution import (
     _resolve_enum_setting,
     _resolve_on_behalf_post_mode,
@@ -230,6 +230,12 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
         user_identity_aliases=_file_str_list(teatree.get("user_identity_aliases", [])),
         repo_mode=str(teatree.get("repo_mode", "")),
+        missing_issue_ref_policy=_resolve_enum_setting(
+            teatree,
+            "missing_issue_ref_policy",
+            MissingIssuePolicy,
+            MissingIssuePolicy.FIND_EXISTING_THEN_ASK,
+        ),
         architectural_review_disabled=bool(teatree.get("architectural_review_disabled", False)),
         architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
         architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),

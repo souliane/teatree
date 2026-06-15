@@ -21,6 +21,7 @@ notify_on_post_on_behalf = true            # DM the user after every on-behalf p
 user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
 statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
 repo_mode = ""                             # solo/collaborative working mode (#550 item 4); "" = auto-detect from git shortlog history
+missing_issue_ref_policy = "find_existing_then_ask"  # when a commit/MR needs an issue ref and none is in hand: find_existing_then_ask (default — recover the original issue first, then ASK on colleague-facing repos / CREATE on the user's own repos, never a dummy) | create (opt-in: auto-create even on colleague repos) | dummy (opt-in: placeholder ref even on colleague repos)
 claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
 agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 max_concurrent_local_stacks = 0            # #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded, default)
@@ -108,7 +109,7 @@ The env var `T3_MODE` overrides the toml setting. Unknown values raise
 A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
-1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_REVIEW_SKILL`).
+1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`).
 2. **DB override tier** — a `ConfigSetting` row whose `key` is an overridable setting ([#1775](https://github.com/souliane/teatree/issues/1775), the first slice of "move config to the database").
 3. Active overlay's override from `[overlays.<name>]`.
 4. Global `[teatree]` value.
@@ -193,6 +194,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
 | `ask_before_post_on_behalf` | Legacy boolean pre-gate over on-behalf posts (kept for back-compat — prefer `on_behalf_post_mode`) |
 | `on_behalf_post_mode` | Tri-state pre-gate (#960) over colleague-VISIBLE posts: `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate`. Drafts (`post-draft-note`) are colleague-invisible and exempt under every mode — they never need approval |
+| `missing_issue_ref_policy` | What to do when a commit/MR needs an issue ref and none is in hand: `find_existing_then_ask` (default) / `create` / `dummy`. Scoped per overlay so a colleague-facing client overlay stays on the never-create default while a personal one can opt into `create`. The default always recovers the original existing issue first, then ASKs on a colleague-facing repo and CREATEs on the user's own repo — never a dummy. `create` / `dummy` are opt-in and authorise auto-create / a placeholder ref on colleague repos too. Resolved by `teatree.missing_issue_policy.resolve_missing_issue_verdict`; `T3_MISSING_ISSUE_POLICY` env wins; agent prose in `skills/ship/SKILL.md` § 0a |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under `ask`/`draft_or_ask` (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
 | `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see config.py for the boundary) |
 | `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |

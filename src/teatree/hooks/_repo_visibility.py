@@ -301,6 +301,13 @@ def probe_visibility(slug: str) -> str | None:
     tool is unavailable, the slug is unrecognised, or the probe errors.
     ``None`` is the fail-safe "unknown" -- the caller then treats the repo as
     NOT private and the gate stays hard-blocking.
+
+    The forge is resolved from the slug's host segment: a first ``/``-segment
+    containing a dot (``gitlab.com/...`` -> ``glab``, ``github.com/...`` ->
+    ``gh``). A BARE ``owner/repo`` slug carries no host, so callers that know
+    the forge from the publish tool qualify the slug UP to its canonical host
+    form first (:func:`forge_qualified_slug`) -- a ``glab`` post therefore
+    probes via ``glab`` instead of being mis-routed to the GitHub default.
     """
     parts = slug.split("/")
     if len(parts) < _MIN_SLUG_PARTS:
@@ -312,6 +319,33 @@ def probe_visibility(slug: str) -> str | None:
     if host.startswith("github") or not host:
         return _probe_gh(repo_path)
     return None
+
+
+# Canonical host for each forge, used to qualify a BARE ``owner/repo`` slug UP
+# to its host-prefixed form so the host-keyed probe routes to the right tool.
+_FORGE_CANONICAL_HOST: Final[dict[str, str]] = {"github": "github.com", "gitlab": "gitlab.com"}
+
+
+def forge_qualified_slug(slug: str, forge: str) -> str:
+    """Return ``slug`` host-qualified with ``forge``'s canonical host, if it is bare.
+
+    A bare ``owner/repo`` slug (no leading dotted host segment) carries no forge
+    of its own, so the host-keyed :func:`probe_visibility` defaults it to the
+    GitHub probe -- which can never confirm a GitLab repo private. When the
+    publish TOOL pins the forge (``glab`` -> ``gitlab``, ``gh`` -> ``github``),
+    qualifying the slug UP to ``<host>/owner/repo`` routes the probe to the right
+    tool. An already host-qualified slug, an unknown forge, or an empty slug is
+    returned unchanged -- the host segment then governs the route, and the
+    allowlist match is host-qualification-symmetric so qualifying never changes
+    an allowlist verdict.
+    """
+    canonical_host = _FORGE_CANONICAL_HOST.get(forge)
+    if not canonical_host or not slug:
+        return slug
+    head = slug.split("/", 1)[0]
+    if "." in head:
+        return slug
+    return f"{canonical_host}/{slug}"
 
 
 def slug_is_private(slug: str) -> bool:
