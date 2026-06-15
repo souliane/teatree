@@ -39,7 +39,13 @@ _TACH = _REPO / "tach.toml"
 # teatree.agents / teatree.backends; nothing in core/loop/loops/agents imports
 # teams back (the #2320 inertness scan + the no-core→agents/backends test still
 # hold).
-_CORE_FANIN_BASELINE = 18
+# Bumped 18 → 19 (#2413 PR-2): teatree.loop.scanners is split out of the
+# teatree.loop monolith into its own tach node so the scanner → review_claim
+# back-edges become declared (and severable) instead of hidden inside one node.
+# The new node already imported teatree.core inside the monolithic teatree.loop
+# node — the split makes that pre-existing coupling visible as one more fan-in
+# entry in the correct lower→higher direction; it adds no new coupling.
+_CORE_FANIN_BASELINE = 19
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

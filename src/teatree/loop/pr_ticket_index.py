@@ -21,7 +21,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from teatree.loop.dispatch import DispatchAction
+from teatree.loop.dispatch_tables import DispatchAction
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket

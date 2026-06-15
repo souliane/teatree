@@ -40,16 +40,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOOP_ROOT = _REPO_ROOT / "src" / "teatree" / "loop"
 _TACH = _REPO_ROOT / "tach.toml"
 
-# Measured in-worktree at the #2413 PR-1 base (origin/main @ ac627c31c): the
-# count of function-scoped imports under `src/teatree/loop/` whose target starts
-# with `teatree.loop`. The plan's "175" was the repo-wide PLC0415-noqa
-# total (deferred imports to *any* target); this ratchet — mirroring the core
-# one — counts only the *intra-loop* deferred edges that hide a loop-internal
-# cycle from tach, which is 42. PR-1 is leaf-carve only and moves no module, so
-# the count is unchanged by the carve.
-# SHRINK-ONLY: lower this as PR-2+ convert deferred edges into declared tach
+# Measured in-worktree: the count of function-scoped imports under
+# `src/teatree/loop/` whose target starts with `teatree.loop`. The plan's "175"
+# was the repo-wide PLC0415-noqa total (deferred imports to *any* target); this
+# ratchet — mirroring the core one — counts only the *intra-loop* deferred edges
+# that hide a loop-internal cycle from tach. PR-1 (leaf-carve only) measured 42.
+# PR-2 declares `teatree.loop.scanners` (+ the `review_claim_signals` /
+# `url_specificity` / `review_request_tracker` / `dispatch_tables` /
+# `pr_ticket_index` supporting leaves) and converts six deferred edges into
+# declared eager sub-node edges (2x `review_loop_enabled`, 2x
+# `best_url_match_specificity`, `record_review_request_post`,
+# `resolve_author_ticket`), dropping the count 42 -> 36.
+# SHRINK-ONLY: lower this as PR-3+ convert more deferred edges into declared tach
 # sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 42
+_FROZEN_INTRA_LOOP_DEFERRED = 36
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:
@@ -125,3 +129,84 @@ class TestLoopStatuslineLeaf:
         deps = parent.get("depends_on", [])
         assert "teatree.loop.statusline_palette" in deps
         assert "teatree.loop.statusline_render" in deps
+
+
+_SCANNERS_ROOT = _LOOP_ROOT / "scanners"
+
+
+def _eager_loop_imports(source: Path) -> set[str]:
+    """Module-level (non-function-scoped) ``teatree.loop...`` import targets."""
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def in_function_scope(node: ast.AST) -> bool:
+        cur = parents.get(node)
+        while cur is not None:
+            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef):
+                return True
+            cur = parents.get(cur)
+        return False
+
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if (node.module or "").startswith("teatree.loop") and not in_function_scope(node):
+            out.add(node.module or "")
+    return out
+
+
+class TestLoopScannersNode:
+    """``teatree.loop.scanners`` is a declared domain node (#2413 PR-2).
+
+    The ``review_claim`` back-edges are severed and the cycle is structurally
+    forbidden by tach, not merely deferred out of sight.
+    """
+
+    def test_scanners_is_a_domain_node(self) -> None:
+        entry = _module_entry("teatree.loop.scanners")
+        assert entry["layer"] == "domain"
+
+    def test_scanners_depends_on_the_review_claim_signals_leaf_not_review_claim(self) -> None:
+        deps = _module_entry("teatree.loop.scanners").get("depends_on", [])
+        assert "teatree.loop.review_claim_signals" in deps
+        # The orchestration-top `teatree.loop.review_claim` is NEVER a scanners dep —
+        # that edge is the cycle PR-2 severs.
+        assert "teatree.loop.review_claim" not in deps
+        assert "teatree.loop" not in deps
+
+    def test_review_claim_signals_is_a_clean_leaf(self) -> None:
+        entry = _module_entry("teatree.loop.review_claim_signals")
+        assert entry["layer"] == "domain"
+        assert set(entry.get("depends_on", [])) == {"teatree.types", "teatree.core.models"}
+
+    def test_url_specificity_is_a_pure_leaf(self) -> None:
+        entry = _module_entry("teatree.loop.url_specificity")
+        assert entry["layer"] == "domain"
+        assert entry.get("depends_on", []) == []
+
+    def test_parent_loop_declares_the_new_leaf_children(self) -> None:
+        deps = _module_entry("teatree.loop").get("depends_on", [])
+        for child in (
+            "teatree.loop.scanners",
+            "teatree.loop.review_claim_signals",
+            "teatree.loop.url_specificity",
+            "teatree.loop.review_request_tracker",
+            "teatree.loop.dispatch_tables",
+            "teatree.loop.pr_ticket_index",
+        ):
+            assert child in deps, child
+
+    def test_no_scanner_eagerly_imports_review_claim(self) -> None:
+        # The two severed back-edges (`slack_broadcasts` / `slack_review_intent`)
+        # must never re-import the orchestration-top `review_claim` module — they
+        # reach the discovery primitives via the `review_claim_signals` leaf.
+        offenders = sorted(
+            str(py.relative_to(_SCANNERS_ROOT))
+            for py in _SCANNERS_ROOT.rglob("*.py")
+            if "teatree.loop.review_claim" in _eager_loop_imports(py)
+        )
+        assert offenders == [], f"scanners eagerly importing orchestration-top review_claim: {offenders}"
