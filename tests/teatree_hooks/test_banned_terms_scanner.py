@@ -1600,17 +1600,19 @@ class TestPrivateRepoCarveOut:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_commit_bodyfile_genuinely_missing_on_private_repo_downgrades(
+    def test_commit_bodyfile_genuinely_missing_on_private_repo_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # A ``-F`` path that exists NOWHERE (not in cwd, not in the repo dir) is a
-        # genuinely unresolvable body. On a known-PRIVATE landing repo this must
-        # DOWNGRADE to warn, not hard-block (#1415): the commit lands in private
-        # history regardless of whether the gate could read the body, so an unread
-        # body cannot leak. The #1207 fail-closed sentinel contract is preserved
-        # only where it protects against a leak -- a PUBLIC destination (the paired
-        # public guards below + ``test_public_repo_commit_bodyfile_relative_path_
-        # still_blocks``); a private destination is not a public surface.
+        # genuinely unresolvable body. On a known-PRIVATE landing repo this MUST
+        # still hard-block (#1415): the gate cannot prove an unread body is leak-
+        # free, and the "private" classification is itself a guess (a stale
+        # allowlist, a probe under different auth), so an unverifiable body must
+        # never slip a leak through on the strength of that guess. The #1207 fail-
+        # closed sentinel contract now holds on EVERY surface; the never-lockout
+        # escape is the ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override
+        # or the kill-switch. (The carve-out for a private repo's own domain word
+        # on a READABLE body is unaffected -- see the readable-body tests above.)
         repo = _private_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         monkeypatch.chdir(tmp_path)
@@ -1620,16 +1622,16 @@ class TestPrivateRepoCarveOut:
             "cwd": str(tmp_path),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is False  # downgraded to warn, not denied
-        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_commit_bodyfile_genuinely_missing_on_public_repo_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard for the private downgrade above: the SAME genuinely-
-        # missing ``-F`` path landing in a PUBLIC repo must STILL fail closed --
-        # an unscannable body must never slip into public history. This preserves
-        # the #1207 fail-closed sentinel contract on the public surface.
+        # Pairs with the private-repo block above: the SAME genuinely-missing
+        # ``-F`` path landing in a PUBLIC repo also fails closed -- an unscannable
+        # body must never slip into public history. This preserves the #1207
+        # fail-closed sentinel contract, which now holds on every surface.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -1768,19 +1770,20 @@ class TestPrivateRepoCarveOut:
         assert capsys.readouterr().out == ""
 
 
-# #1415 (still-over-blocking residue): a ``git commit`` whose effective first
-# action is NOT the literal first word -- it sits behind a NON-``cd`` leading
-# segment (a ``cat > <bodyfile> <<EOF … EOF`` heredoc-writer, the agent's
-# standard body-file idiom; or any ``true &&`` / setup preamble) -- was
-# mis-classified. ``is_git_commit_command`` only skips a leading ``cd``/``pushd``
-# prefix, so a heredoc-writer or ``&&``-chained preamble made it return False and
-# BOTH carve-out dispatch sites (the real-banned-term ``carve_out_applies`` and
-# the unreadable-body ``command_targets_private_only``) fell through to
-# ``command_is_pure_private_gh_glab_post``, which returns False for a commit. The
-# allowlisted-private commit then HARD-BLOCKED even though it lands in private
+# #1415: a ``git commit`` whose effective first action is NOT the literal first
+# word -- it sits behind a NON-``cd`` leading segment (a ``cat > <bodyfile>
+# <<EOF … EOF`` heredoc-writer, the agent's standard body-file idiom; or any
+# ``true &&`` / setup preamble) -- was mis-classified. ``is_git_commit_command``
+# only skips a leading ``cd``/``pushd`` prefix, so a heredoc-writer or
+# ``&&``-chained preamble made it return False and the real-banned-term carve-out
+# (``carve_out_applies``) fell through to ``command_is_pure_private_gh_glab_post``,
+# which returns False for a commit -- so a private repo's own domain word on a
+# READABLE body behind such a prefix HARD-BLOCKED even though it lands in private
 # history. The per-segment proof in ``commit_branch_downgrades`` still preserves
 # the genuine block (a chained PUBLIC post defeats the downgrade), so the fix is
 # to recognise a ``git commit`` segment regardless of leading benign segments.
+# (An UNREADABLE body behind such a prefix is a separate case: it fails CLOSED on
+# every surface, a private repo included -- see the unreadable-body tests below.)
 class TestGitCommitSegmentBehindNonCdPrefix:
     def test_heredoc_bodyfile_private_commit_with_banned_term_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1817,22 +1820,24 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_prefix_segment_private_commit_unreadable_body_downgrades(
+    def test_prefix_segment_private_commit_unreadable_body_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # The reported production shape distilled: a ``git -C <worktree> commit
         # -F <bodyfile>`` whose body is UNREADABLE at scan time (the marker
-        # fires), sitting behind a non-``cd`` leading segment. The commit lands
-        # in the allowlisted-private worktree, so the unread body cannot leak and
-        # it must DOWNGRADE, not hard-block with "publish body could not be read".
+        # fires), sitting behind a non-``cd`` leading segment, landing in the
+        # allowlisted-private worktree. The body is unverifiable, so it MUST fail
+        # CLOSED (#1415) -- an unread body never slips a leak through on the
+        # destination guess. (The readable-body own-domain-word carve-out behind
+        # the same prefix still downgrades -- see the heredoc test above.)
         repo = _private_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         monkeypatch.chdir(tmp_path)
         cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is False  # downgraded to warn, not denied
-        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_prefix_segment_public_commit_unreadable_body_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

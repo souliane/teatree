@@ -682,28 +682,33 @@ def test_fm4_help_invocation_does_not_block(
         assert captured.out == "", command
 
 
-# ── #1415: unreadable commit body on a PRIVATE repo must downgrade ────────────
+# ── #1415: unreadable commit body fails CLOSED, private repo included ─────────
 #
 # An UNREADABLE ``git commit -F <file>`` body (the file does not exist at cold-
-# hook scan time -- the agent's standard "write the body file, commit it in the
-# next call" idiom, or a relative path the reset hook cwd cannot reach) produced
-# the fail-closed sentinel and HARD-BLOCKED with "The publish body could not be
-# read", even when the commit lands in a known-PRIVATE repo. A private-repo
-# commit is not a public surface -- the body lands in private history regardless
-# of whether the gate could read it -- so an unread body cannot leak and must
-# downgrade to warn. The payload-driven carve-out fails closed on the sentinel,
-# so the fix routes the unreadable-body marker through a body-INDEPENDENT
-# private-destination check. The PUBLIC-surface fail-closed protection is
-# preserved by the paired anti-vacuity guards above (FM3) and below.
+# hook scan time) yields the fail-closed sentinel. It MUST hard-block on EVERY
+# surface, a known-PRIVATE landing repo included: the gate cannot prove an unread
+# body is leak-free, and the "private" classification is itself a guess (a probe
+# resolved under different auth, a stale ``private_repos`` allowlist), so a body
+# the gate could not read must never slip a leak through on the strength of that
+# guess. This matches the scanner module's own contract -- both unreadable-body
+# markers BLOCK there -- and the long-standing SCANNER-unavailable behaviour, so
+# all three markers behave the same. The never-lockout escape for a genuine
+# private-repo commit is the explicit ``--allow-banned-term`` /
+# ``ALLOW_BANNED_TERM=1`` override or the ``banned_terms_gate_enabled = false``
+# kill-switch, or simply passing the body inline (``-m``) or as a readable
+# ``--body-file <abspath>``. The carve-out for a private repo's OWN domain words
+# on a READABLE body is unaffected (it lives on the real-banned-term path).
 
 
-def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
+def test_live_hook_blocks_unreadable_commit_body_file_in_private_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # RED→GREEN (#1415): a ``git commit -F <nonexistent file>`` whose harness cwd
-    # IS a known-private worktree must DOWNGRADE to warn, not hard-block on
-    # "publish body could not be read". The body is unreadable at scan time, but
-    # the commit lands in the repo's own private history -- not a public leak.
+    # MUST-BLOCK (#1415): a ``git commit -F <nonexistent file>`` whose harness cwd
+    # IS a known-private worktree must HARD-BLOCK -- the body is unreadable at scan
+    # time, so the gate cannot verify it is leak-free and fails CLOSED rather than
+    # waving an unverifiable body through on the destination guess. (This case
+    # previously downgraded to a warn; the downgrade was removed so an unreadable
+    # body fails closed uniformly, a private repo included.)
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -717,6 +722,34 @@ def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_allows_readable_clean_commit_body_file_in_private_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # MUST-NOT-BLOCK (#1415) — the normal/available case: a ``git commit -F
+    # <file>`` whose body file EXISTS and is leak-free must be allowed. The
+    # fail-closed tightening above fires only when the body is UNVERIFIABLE; a
+    # readable clean body is scanned normally and passes, so the common commit
+    # flow is never over-blocked.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = _private_worktree(tmp_path)
+    body = worktree / "COMMIT_MSG.txt"
+    body.write_text("feat(core): tidy the resolver\n\nA perfectly clean message.\n", encoding="utf-8")
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"git commit -F {body}"},
+        "cwd": str(worktree),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
     assert blocked is False
     assert captured.out == ""  # no deny JSON
 
@@ -724,10 +757,9 @@ def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
 def test_live_hook_blocks_unreadable_commit_body_file_in_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ANTI-VACUITY guard for the private-downgrade above: the SAME unreadable
-    # ``git commit -F <nonexistent file>`` landing in a PUBLIC repo (cwd == that
-    # public repo) must STILL hard-block. The downgrade is private-only; an
-    # unscanned body must never slip into public history.
+    # Pairs with the private-repo block above: the SAME unreadable ``git commit
+    # -F <nonexistent file>`` landing in a PUBLIC repo (cwd == that public repo)
+    # also hard-blocks. An unscanned body must never slip into public history.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -749,10 +781,10 @@ def test_live_hook_blocks_unreadable_commit_body_file_in_public_repo(
 def test_live_hook_blocks_unreadable_commit_body_file_in_unknown_visibility_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ANTI-VACUITY guard #2: an unreadable commit body whose landing repo is
+    # Unknown-visibility case: an unreadable commit body whose landing repo is
     # NEITHER allowlisted NOR probe-resolvable (the common cold-hook unknown
-    # state) must STILL hard-block. Default-deny on unknown visibility is
-    # preserved -- the downgrade fires only for a PROVABLY-private destination.
+    # state) must hard-block too -- the same fail-closed result as the private
+    # and public cases above, since an unread body is never verifiable.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)

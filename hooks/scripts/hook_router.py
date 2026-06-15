@@ -3278,10 +3278,12 @@ def _banned_terms_gate_enabled() -> bool:
 
     Fails OPEN to enabled on a missing/broken config so the gate keeps its
     protective default; an explicit ``[teatree] banned_terms_gate_enabled =
-    false`` is the one-line kill-switch (NEVER-LOCKOUT) the user flips to
-    disable the gate while its body-resolution over-block (an allowlisted
-    private-repo commit hard-blocked because the body could not be read) is
-    fixed properly. See :func:`_teatree_bool_setting` for the shared semantics.
+    false`` is the one-line kill-switch (NEVER-LOCKOUT) the user flips if the
+    gate's fail-closed behaviour (e.g. a private-repo commit blocked because the
+    gate could not read its body, #1415) ever proves too aggressive for a
+    session. The per-call ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1``
+    override is the narrower escape. See :func:`_teatree_bool_setting` for the
+    shared semantics.
     """
     return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
 
@@ -3366,39 +3368,31 @@ def _emit_banned_term_deny(
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
-def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
+def _banned_term_marker_blocks(term: str) -> bool | None:
     """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
 
-    ``scan_text`` returns either a configured banned term or a fail-closed
-    marker (an unresolvable body, an unavailable scanner). For a real term this
-    returns ``None`` so the caller takes the destination-aware banned-term path.
+    ``scan_text`` returns either a configured banned term or one of three
+    fail-closed markers (an unreadable body file, an unavailable ``$VAR``/stdin
+    body source #2369, an unavailable scanner #1954). A real term returns
+    ``None`` so the caller takes the destination-aware banned-term path.
 
-    For the two unreadable-body markers the decision is destination-aware: an
-    UNREADABLE body file (a ``git commit -F <path>`` whose file does not exist
-    at cold-hook scan time, a missing ``--body-file``) OR an UNAVAILABLE body
-    source (an unexpanded ``$VAR`` / a stdin body, #2369) hard-blocks on a PUBLIC
-    surface — an unscanned body must never slip into public history — but a
-    ``git commit`` landing in a PRIVATE repo (or a pure private gh/glab post) is
-    not a public surface, so the unread body cannot leak and the gate downgrades
-    to a warn (#1415). The payload-driven carve-out fails closed on the sentinel,
-    so a body-INDEPENDENT private-destination check decides it here. The
-    SCANNER-unavailable marker stays hard-blocking on every surface (#1954).
+    Every marker HARD-BLOCKS on EVERY surface, a private repo included (#1415):
+    the gate cannot prove an unread body is leak-free, and the "private"
+    classification is itself a guess (a probe under different auth, a stale
+    ``private_repos`` allowlist), so a body it could not read must never slip a
+    leak through on a destination guess (this matches the scanner module's own
+    contract and the SCANNER-unavailable marker). The never-lockout escape is the
+    ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override or the
+    ``banned_terms_gate_enabled = false`` kill-switch, not a silent allow; a
+    legitimate commit can also pass its body inline (``-m``) or as a readable
+    ``--body-file <abspath>``. The own-domain-word carve-out on a READABLE body
+    is unaffected (it lives on :func:`_emit_banned_term_deny`).
     """
-    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
 
     marker_message = banned_terms_scanner.marker_deny_message(term)
     if marker_message is None:
         return None
-    unreadable_body_markers = {
-        banned_terms_scanner.UNRESOLVABLE_BODY_MARKER,
-        banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER,
-    }
-    if term in unreadable_body_markers and publish_surface.command_targets_private_only(command, cwd_repo):
-        sys.stderr.write(
-            "WARNING: banned-terms gate (#1415) — could not read the commit/post body, but the "
-            "destination is a private repo; downgraded to warn. A private-repo body is not a public leak.\n"
-        )
-        return False
     return emit_pretooluse_deny(marker_message)
 
 
@@ -3436,7 +3430,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
-    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
+    marker_decision = _banned_term_marker_blocks(term)
     if marker_decision is not None:
         return marker_decision
     return _emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
