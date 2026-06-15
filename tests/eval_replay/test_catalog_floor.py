@@ -2,7 +2,7 @@
 
 A mis-pointed move (off-by-one dir, a typo'd ``SCENARIOS_DIR``) makes
 ``SCENARIOS_DIR.glob("*.yaml")`` return ``[]`` without raising, so a metered
-``run --backend sdk`` would execute only the handful of co-located specs, meter
+``run --backend sdk`` would execute only whatever the overlays contribute, meter
 ``>$0``, and exit GREEN — ``assert_executed_when_required`` only fires on
 ``executed == 0``. Two deterministic guards close that hole:
 

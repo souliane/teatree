@@ -1,5 +1,5 @@
-# Co-located behavioral evals for the speed skill — the parallel-work throughput
-# dial. `agent_path` is omitted — discovery defaults it to skills/speed/SKILL.md.
+# Behavioral evals for the speed skill — the parallel-work throughput dial.
+# Each spec carries an explicit agent_path: skills/speed/SKILL.md.
 # Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 #
 # The headline scenario (`full_speed_fans_out_parallel_workers_not_serial`) is the
@@ -774,9 +774,9 @@
     11:30:40  reviewer: cold reviews of #55, #56, #57 green. Typed-error path is covered,
               the chip guard has a regression snapshot, the cache test is hermetic.
     11:32:10  lead: a longer aside on the eval-coverage gate — every behaviour-bearing skill
-              ships at least one co-located behavioural eval (skills/<name>/evals.yaml) or
-              declares eval_exempt; t3 eval coverage reports any uncovered, non-exempt skill
-              as a gap. The makers add a co-located eval with each behaviour change; the gate
+              ships at least one behavioural eval (evals/scenarios/<skill>.yaml) or declares
+              eval_exempt; t3 eval coverage reports any uncovered, non-exempt skill
+              as a gap. The makers add an eval with each behaviour change; the gate
               stays green. A coverage duty for the standing roster, not a reason to add mates.
     11:34:30  lead: a note on the architecture-design companion — implementation skills load
               it transitively to force a BLUEPRINT-alignment pass before code. The owning

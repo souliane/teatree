@@ -35,7 +35,7 @@ def _grade(spec: EvalSpec, fixture_path: Path, tmp_path: Path) -> bool:
 
 def _scenario_spec() -> EvalSpec:
     spec = find_spec(_SCENARIO)
-    assert spec is not None, f"scenario {_SCENARIO!r} not discovered — check skills/rules/evals.yaml"
+    assert spec is not None, f"scenario {_SCENARIO!r} not discovered — check evals/scenarios/rules.yaml"
     return spec
 
 

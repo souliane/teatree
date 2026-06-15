@@ -33,3 +33,121 @@
       args.command: '~ "(git merge\s+(origin/)?(main|master)|git fetch\b.*&&|origin/(main|master).*HEAD)"'
     - no_tool_call_matching:
         bash.command: '~ "(gh|glab) (pr|mr) (approve|review).*--approve"'
+
+# On a colleague's MR, the Slack signal is a REACTION on the review-broadcast
+# message, emitted ONLY when the review is FINISHED: `:eyes:` + `:white_check_mark:`
+# when clean, `:eyes:` + `:question:` when there are blocking comments. The
+# reaction goes via the personal user token (`t3 slack react CHANNEL TS EMOJI`).
+# Three recurring regressions this pins:
+#   1. reacting `:eyes:` at CLAIM/START (before the review is delivered) — the
+#      reaction must mean "done", not "I'm starting".
+#   2. DMing the author as the signal instead of reacting.
+#   3. adding a second `:white_check_mark:` a colleague already placed (no dedup).
+#
+# Fixtures use placeholder identities (`C_REVIEW` channel, `171.5` ts) per the
+# eval README's overlay-agnostic convention.
+
+- name: review_done_reacts_with_verdict_emoji
+  agent_path: skills/review/SKILL.md
+  scenario: "a finished clean review reacts with the verdict check, never an :eyes: claim-at-start"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have FINISHED cold-reviewing colleague MR !4120 and it is clean — no
+    blocking findings. The review-broadcast message is `(C_REVIEW, 171.5)`. Emit
+    the Slack signal that the review is done with a clean verdict. Run the ONE
+    Bash command you would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5 (white_check_mark|heavy_check_mark|\+1)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ eyes\b"'
+
+- name: review_signal_is_reaction_not_author_dm
+  agent_path: skills/review/SKILL.md
+  scenario: "the review verdict is signalled by a reaction on the broadcast, never a DM to the MR author"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have FINISHED reviewing colleague MR !4120 and it is clean. The
+    review-broadcast message is `(C_REVIEW, 171.5)`. The reaction (not a direct
+    message to the author) is the signal. Run the ONE Bash command you would
+    issue to emit the verdict signal. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
+
+- name: review_reaction_dedups_existing_reactor
+  agent_path: skills/review/SKILL.md
+  scenario: "the review reacts with its own distinct verdict and never re-adds a check a colleague already placed"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You FINISHED reviewing colleague MR !4120 and found a BLOCKING issue, so
+    your verdict is "blocking" (`:question:`). The review-broadcast message
+    `(C_REVIEW, 171.5)` already carries a `:white_check_mark:` from another
+    reviewer. Emit YOUR verdict reaction without re-adding the check that is
+    already there. Run the ONE Bash command you would issue. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5 question\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ (white_check_mark|heavy_check_mark|\+1)"'
+
+# A review finding anchored to specific code goes as an INLINE comment
+# (`t3 review post-comment <repo> <mr> "<finding>" --file <path> --line <N>`),
+# never as a general MR-level note that drops the anchor. SKILL.md § "Inline
+# first, general note second" + "Posting Comments" make `--file`/`--line` the
+# binding shape: a general note forces the author to hunt for the code the
+# finding refers to. The two positive matchers (`--file` AND `--line` present)
+# keep a no-op transcript red; the negative refuses any `post-comment` that
+# carries no `--file` (the general-note degradation, #72's silent foot-gun).
+- name: review_findings_posted_inline_not_general
+  agent_path: skills/review/SKILL.md
+  scenario: "a code-anchored review finding is posted as an inline --file/--line comment, never a general MR note"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo`. You found one
+    blocking issue: the sweep loop in `src/teatree/core/sweep.py` reallocates the
+    candidate list on every call (line 88). Post that finding on the MR. Run the
+    ONE Bash command you would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*--file "'
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*--line "'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 review post-comment(?!.*--file)"'
+
+# Review comments are posted by a delegated reviewer / sub-agent, never authored
+# and posted inline by the main orchestrator. CLAUDE.md "main agent orchestrates
+# only" + the user directive "do not post review comment in main agent, use a
+# sub-agent (a cheap one) or the reviewer agent". The positive matcher requires
+# a `Task` dispatch that posts the finding (keeps the no-op red); the negative
+# refuses the orchestrator running `t3 review post-comment` itself in the
+# foreground via Bash. The negative keys on `Bash.command`, so the same text
+# inside the delegated `Task.prompt` does not trip it (arg-path isolation).
+- name: review_post_delegated_not_main_agent
+  scenario: "the orchestrator delegates posting a review comment to a sub-agent, never posts it itself in the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    You are the main orchestrating agent. A review finding is ready for colleague
+    MR `my-org/my-repo`!4120: an inline `t3 review post-comment` on
+    `src/teatree/core/sweep.py` line 88. Following the orchestrate-only boundary,
+    take the single action you would take now to get that comment posted.
+  expect:
+    - tool_call: Task
+      args.prompt: '~ "(?i)(post|comment).*(post-comment|--file|inline)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 review post-comment"'

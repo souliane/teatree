@@ -63,7 +63,7 @@ coverage gate (`t3 eval coverage`).
 | Concern | Location |
 |---|---|
 | CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring (incl. the bare-`t3 eval` default callback); `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `benchmark.py` per-variant cost/pass-rate comparison; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table + the `run_full_suite` chokepoint; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands; `corpus.py` + `audit.py` + `label.py` corpus/audit curation; `skill_command_lane.py` #550 Tier-1 command-validity lane; `skill_prose_lane.py` #550 Tier-3 advisory prose-judge lane) |
-| Scenario specs | `evals/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
+| Scenario specs | `evals/scenarios/*.yaml` (the single core catalog; a skill's evals live in `evals/scenarios/<skill>.yaml`, each spec carrying `agent_path: skills/<skill>/SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
 | Transcript readers | `src/teatree/eval/transcript.py` (stream-json), `session_transcript.py` + `subagent_transcript.py` (on-disk session schema) |
@@ -258,8 +258,8 @@ subset. The flagship `delegates_under_load_not_edits_in_main_agent` ships a
 dispatching a `Task`/`Agent`) that grades RED with the matchers and GREEN with
 them removed; the live A/B pass@k measurement is the gated/weekly metered step.
 
-The speed skill's co-located `full_speed_fans_out_parallel_workers_not_serial`
-(`skills/speed/evals.yaml`) is the second under_load scenario — the "full speed is
+The speed skill's `full_speed_fans_out_parallel_workers_not_serial`
+(`evals/scenarios/speed.yaml`) is the second under_load scenario — the "full speed is
 understood" check: under the same full-bundle + polluted-preamble load, a `full`-
 speed directive over a backlog of independent tickets must FAN OUT one worker
 sub-agent per ticket, not work the backlog serially in the main agent. Its `_fail`
@@ -773,11 +773,11 @@ class, where it is pinned, and the originating fix:
 | loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
 | account-switch detect-invalidate-reprobe (`/login`) | `regression_corpus` (full switch-and-verify cycle) | [#1916](https://github.com/souliane/teatree/issues/1916) |
 | orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
-| structured-question — AskUserQuestion, one decision | `skills/rules/evals.yaml` (co-located) | [#1622](https://github.com/souliane/teatree/pull/1622) |
+| structured-question — AskUserQuestion, one decision | `scenarios/rules.yaml` | [#1622](https://github.com/souliane/teatree/pull/1622) |
 | background long operations (>15s) | `scenarios/background_long_operations.yaml` | [#1701](https://github.com/souliane/teatree/pull/1701) |
 | merge-burst reconcile + main health-check | `scenarios/merge_burst_reconcile.yaml` | [#1721](https://github.com/souliane/teatree/pull/1721) |
 | never-edit-main-clone + ff-not-reset | `scenarios/main_clone_protected.yaml` | [#1662](https://github.com/souliane/teatree/pull/1662) |
-| do-work-now (run the command, don't hand back) | `skills/rules/evals.yaml` (co-located) | [#1623](https://github.com/souliane/teatree/pull/1623) |
+| do-work-now (run the command, don't hand back) | `scenarios/rules.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
 | overlay-defined skill set loaded — reviewing / coding / planning, regression + generalization (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review); [#1160](https://github.com/souliane/teatree/issues/1160), [#1640](https://github.com/souliane/teatree/issues/1640) |
 | root-cause not dirty-patch (trace origin, never silence the test) | `scenarios/root_cause_not_dirty_patch.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
@@ -792,41 +792,43 @@ class, where it is pinned, and the originating fix:
 | anti-vacuous self-review before review-request/merge (revert fix → RED proof; don't ship a green vacuous regression test) | `scenarios/anti_vacuous_self_review.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | record the SHA-bound anti-vacuity attestation before requesting review (the structural gate's recording seam, not posting un-attested) | `scenarios/anti_vacuous_self_review.yaml` | [#1829](https://github.com/souliane/teatree/issues/1829) |
 | blocked sub-agent surfaces a structured block, never silently works around; orchestrator escalates, never swallows | `scenarios/blocked_subagent_escalation.yaml` | [#1915](https://github.com/souliane/teatree/issues/1915) |
-| near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `skills/code/evals.yaml` (`comment_density_writes_sparse_code`, co-located) | [#2024](https://github.com/souliane/teatree/issues/2024) |
+| near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `scenarios/code.yaml` (`comment_density_writes_sparse_code`) | [#2024](https://github.com/souliane/teatree/issues/2024) |
 | skip the bot's OWN TTS audio attachment on Slack read (transcribe the user's voice note, never the bot's own speech.m4a) | `scenarios/skip_own_tts_audio.yaml` | [#2089](https://github.com/souliane/teatree/issues/2089) |
 | private-repo allowlist path-segment match (security — a public slug containing the org as a substring never downgrades) | `regression_corpus` (allowlist resolver) | [#2084](https://github.com/souliane/teatree/pull/2084) |
 | banned-terms scanner fail-closed on a crashing scanner (security — a dead/timed-out scanner blocks, never ALLOW) | `regression_corpus` (`scan_text` crash path) | [#2079](https://github.com/souliane/teatree/pull/2079) |
 | forge backend resolves by repo origin host, not token precedence | `regression_corpus` (`forge_from_remote`) | [#2085](https://github.com/souliane/teatree/pull/2085) |
 | pre-push gates reconcile a renamed/stale branch (read what exists, not the stale `<N>-ticket` ref) | `regression_corpus` (`resolve_and_reconcile_branch`) | [#2102](https://github.com/souliane/teatree/pull/2102) |
 | MR description first line validated client-side (the GitLab CI gate's own rule, no validator round-trip) | `regression_corpus` (`validate_mr_metadata`) | [#2098](https://github.com/souliane/teatree/pull/2098) |
-| review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `skills/review/evals.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`, co-located) | [#2173](https://github.com/souliane/teatree/issues/2173) |
+| review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `scenarios/review.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`) | [#2173](https://github.com/souliane/teatree/issues/2173) |
 | completion report LEADS with the deliverable status (final assistant message names the branch + PR), never buries it under systemic findings — the first `final_state` end-state matcher | `scenarios/completion_report_leads_with_status.yaml` | [#166](https://github.com/souliane/teatree/issues/166) |
-| full-speed FANS OUT a parallel worker per ticket under load — a `full`-speed backlog is dispatched to workers, never worked serially in the main agent (the second `under_load` scenario; a token single-delegate still grades RED) | `skills/speed/evals.yaml` (`full_speed_fans_out_parallel_workers_not_serial`, co-located) | [#2346](https://github.com/souliane/teatree/issues/2346) |
+| full-speed FANS OUT a parallel worker per ticket under load — a `full`-speed backlog is dispatched to workers, never worked serially in the main agent (the second `under_load` scenario; a token single-delegate still grades RED) | `scenarios/speed.yaml` (`full_speed_fans_out_parallel_workers_not_serial`) | [#2346](https://github.com/souliane/teatree/issues/2346) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
 ticket, …) cover the remaining classes already shipped on this branch.
 
-### Co-located evals (`skills/<name>/evals.yaml`)
+### Where evals live (`evals/scenarios/<skill>.yaml`)
 
-A skill ships its behavioral evals beside its `SKILL.md`, the way a unit's
-tests live next to the unit (the Anthropic skill-authoring convention). A
-co-located `evals.yaml` is the **same `EvalSpec` schema** as a flat-catalog
-scenario; the only convenience is that a spec which omits `agent_path` defaults
-to its owning `skills/<name>/SKILL.md`, so authors don't repeat the path.
-Discovery (`discover_specs()`) walks the flat catalog, then `skills/*/evals.yaml`,
-then overlays — and rejects a duplicate scenario name across all three sources
-with a hard `EvalSpecError`. Co-located specs flow through every lane (`t3 eval
-list/run/all`, the anti-vacuity gate, the weekly paid lane) with zero extra
-wiring. The flat catalog stays valid — co-location is additive, not a migration.
+Every shipped scenario lives in the single core catalog at `evals/scenarios/`.
+A skill's evals go in `evals/scenarios/<skill>.yaml` (one file per skill), and
+each spec carries an explicit `agent_path: skills/<skill>/SKILL.md` that
+attributes it back to the skill it grades — coverage keys on that path, not on
+where the YAML sits. Scenario bodies never live inside the `skills/` tree: that
+tree carries skill prose only, enforced by
+`tests/eval_replay/test_no_inline_skill_evals.py` (a re-introduced
+`skills/*/evals.yaml` turns it RED). Discovery (`discover_specs()`) walks the
+core catalog, then each overlay's `eval/scenarios/` — and rejects a duplicate
+scenario name across both sources with a hard `EvalSpecError`. Every scenario
+flows through every lane (`t3 eval list/run/all`, the anti-vacuity gate, the
+weekly paid lane) with zero extra wiring.
 
 ### Per-skill coverage gate (`t3 eval coverage`)
 
 The per-skill coverage map is **generated, not hand-maintained** — run
 `t3 eval coverage` (add `--format json` for a machine read). A skill is
-**covered** when ≥1 discovered scenario targets its `SKILL.md` (flat catalog OR
-co-located), or **exempt** when its frontmatter carries a non-empty
-`eval_exempt: <reason>` (pure-doc / methodology skills). A skill that is neither
+**covered** when ≥1 discovered scenario targets its `SKILL.md` via `agent_path`
+(from the core catalog or an overlay dir), or **exempt** when its frontmatter
+carries a non-empty `eval_exempt: <reason>` (pure-doc / methodology skills). A skill that is neither
 is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
 `discover_specs()` + frontmatter — deterministic, free, no model.
 
@@ -839,8 +841,8 @@ eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-fr
 today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
 all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
 unrelated `t3 eval all` run; `t3 eval coverage --fail-on-gap` is its explicit
-enforcing form. The shipped corpus is gap-free today (the co-located seeds — ship,
-review, rules, code, speed, e2e — plus the pure-doc exemptions).
+enforcing form. The shipped corpus is gap-free today (the per-skill scenario
+files under `evals/scenarios/` plus the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
@@ -1272,7 +1274,7 @@ backwards tach edge; the `retro` command (layer `interface`) calls into `eval` o
 a forward edge.
 
 The **worked example** (the ticket's whole point) is the
-`comment_density_writes_sparse_code` scenario co-located in `skills/code/evals.yaml`:
+`comment_density_writes_sparse_code` scenario in `evals/scenarios/code.yaml`:
 the agent tends to write code-restating comments, the comment-density gate blocks
 them post-hoc, and this eval asserts the agent's first-try output passes the gate
 so the trial-and-error cycle stops. Its `_fail` fixture (a transcript that writes

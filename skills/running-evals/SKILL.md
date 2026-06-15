@@ -89,9 +89,9 @@ t3 eval run --backend subscription --transcript-dir ./transcripts
 t3 eval all
 ```
 
-## Authoring co-located evals
+## Authoring evals
 
-A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
+A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap.
 
 ## Related
 

@@ -1505,8 +1505,9 @@ Usage: t3 eval coverage [OPTIONS]
  eval_exempt.
 
  A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
- (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
- frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
+ via ``agent_path`` (from the ``evals/scenarios/`` catalog or an overlay's
+ own dir), or EXEMPT when its frontmatter carries a non-empty ``eval_exempt``
+ reason. A skill that is
  neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
  Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
  Phase-B enforcement that exits non-zero on any gap.

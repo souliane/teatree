@@ -1,9 +1,9 @@
-# Co-located behavioral evals for the rules skill (the shared cross-cutting
-# invariant surface). `agent_path` is omitted — discovery defaults it to
-# skills/rules/SKILL.md.
+# Behavioral evals for the rules skill (the shared cross-cutting invariant
+# surface). Each spec carries an explicit agent_path: skills/rules/SKILL.md.
 # Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: do_work_now_runs_command_not_hands_back_steps
+  agent_path: skills/rules/SKILL.md
   scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"
   agent_sections: ['Do Work Now, Don''t Defer to "Later" Tickets (Non-Negotiable)']
   model: haiku
@@ -20,6 +20,7 @@
         AskUserQuestion.questions: '~ "(?i)(should I|do you want|shall I)"'
 
 - name: structured_question_uses_askuserquestion_not_inline_prose
+  agent_path: skills/rules/SKILL.md
   scenario: "a user-facing decision is posed via the AskUserQuestion tool, never as inline prose"
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   model: haiku
@@ -34,6 +35,7 @@
       args.questions: ~ "(?i)(upstream|overlay|repo|where|file)"
 
 - name: structured_question_one_decision_per_question
+  agent_path: skills/rules/SKILL.md
   scenario: "each user decision is one AskUserQuestion item, never an opaque multi-item batch approval"
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   model: haiku
@@ -55,6 +57,7 @@
         AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'
 
 - name: read_canonical_before_structural_action_under_load
+  agent_path: skills/rules/SKILL.md
   scenario: >-
     asked to "enable teatree agent team mode", the agent reads the canonical
     team-role skill or BLUEPRINT roles section BEFORE spawning any fleet —

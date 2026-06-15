@@ -1,9 +1,10 @@
 """Per-skill eval coverage: a skill ships >=1 behavioral eval, or is exempt.
 
 A skill is COVERED when ``discover_specs()`` yields >=1 spec whose resolved
-``agent_path`` is ``skills/<name>/SKILL.md`` — counting BOTH flat-catalog
-scenarios and co-located ``skills/<name>/evals.yaml`` ones, so the gate never
-forces migration, only forbids zero behavioral coverage with no exemption.
+``agent_path`` is ``skills/<name>/SKILL.md``. Scenarios live in the single
+``evals/scenarios/`` catalog (plus each overlay's own dir); a scenario targets a
+skill purely through its ``agent_path``, so the gate is decoupled from where the
+YAML file sits — it forbids only zero behavioral coverage with no exemption.
 
 A skill is EXEMPT when its ``SKILL.md`` frontmatter carries a non-empty
 ``eval_exempt: <reason>`` (pure-doc / methodology skills). The reason lives WITH

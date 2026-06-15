@@ -84,7 +84,8 @@ class TestShippedSkillCoverageEnforced:
     flips the former warn-first Phase-A guard to the documented Phase-B
     enforcement: a NEW ``skills/<name>/`` that lands with neither an eval nor an
     ``eval_exempt`` frontmatter key is now a hard RED here, not a silent warning.
-    The gate is declarative — closing the gap is a one-line ``evals.yaml`` or a
+    The gate is declarative — closing the gap is a scenario in
+    ``evals/scenarios/<name>.yaml`` (``agent_path: skills/<name>/SKILL.md``) or a
     one-line ``eval_exempt:`` key (see ``evals/README.md`` §
     "Per-skill coverage gate"). ``t3 eval coverage --fail-on-gap`` is the CLI
     counterpart of this gate.
@@ -94,7 +95,10 @@ class TestShippedSkillCoverageEnforced:
         report = skill_eval_coverage()
         gap_names = [r.skill for r in report.gaps]
         assert gap_names == [], (
-            "skill(s) ship with neither an eval (skills/<name>/evals.yaml) nor an "
-            "`eval_exempt:` frontmatter reason — close each with a co-located eval or a "
-            "one-line exemption:\n  " + "\n  ".join(gap_names) + "\n\n" + render_text(report)
+            "skill(s) ship with neither an eval (a scenario in evals/scenarios/<name>.yaml "
+            "targeting skills/<name>/SKILL.md) nor an `eval_exempt:` frontmatter reason — "
+            "close each with a scenario or a one-line exemption:\n  "
+            + "\n  ".join(gap_names)
+            + "\n\n"
+            + render_text(report)
         )
