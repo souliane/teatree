@@ -98,13 +98,49 @@ The resolved value is exported as **`T3_E2E_TARGET`**. The spec branches on it �
 
 **Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
+**Tighten value assertions to a VISIBLE field, not a value a default can satisfy (Non-Negotiable).** A value assertion must bind to a field that is actually **rendered and visible** in the UI. The trap: asserting a computed value through a getter/accessor that returns a *default* (`0`, `''`, `null`) when the field is **absent** — the assertion then passes whether the feature worked or the field never rendered at all (a false-pass that survives the very regression the test exists to catch). Assert that the labelled field is **visible first**, then assert its text — so an absent field fails the visibility check instead of silently satisfying the value check via a default.
+
+```ts
+const total = page.getByLabel('Default purchase costs');
+await expect(total).toBeVisible();            // an absent field fails HERE, not silently
+await expect(total).toHaveText('€ 1,250');    // and the value is read from the rendered field
+```
+
+Prefer `getByLabel`/`getByRole` (which resolve only a present element) over reading a number off a store/model getter that coerces a missing field to `0`. If the only available probe is a getter that defaults, add the visibility assertion alongside it so the "absent field" and "field shows the default value" cases can never be confused.
+
 **Access-control / role-gated E2E (Non-Negotiable):** Before asserting behaviour on any access-controlled or role-gated page, resolve the test account's REAL identity — role and group memberships — from the app's own API (e.g. `/api/me/`) and assert the expected outcome FROM that identity. The exempt/restrict contract is derived from the guard source code (what the guard actually checks), not from a ticket description or relayed narrative about which role a user supposedly has. Precondition assertion before behaviour assertion makes the test non-vacuous: if the role check fails, the test fails at the precondition rather than silently passing on an unexpected identity.
 
 **Resolve E2E credentials from the project's documented credential map by role (Non-Negotiable).** The project's overlay skill carries a credential table keyed by ROLE (not email). Before declaring a missing-credential blocker, look up the account in that table by role — the username is often a code constant, and the password is resolved from the secret store using the documented key. Do NOT grep the secret store by account email and conclude "no credentials found" — the store entry is keyed by the documented role path, not the login email.
 
+**Credentials enter the spec via env with a throw-if-unset guard — never an inline literal (Non-Negotiable).** Once resolved, a credential is injected into the run as an environment variable and read by the spec through a guard that **throws if the variable is unset**, so a missing secret fails loud at startup instead of the spec silently running with `undefined` (which logs in as nobody, then mis-attributes the resulting failure to the feature). Never paste a literal login email or password into a spec — a literal credential in spec source is a leak and a maintenance trap, and an email literal often trips brand/secret scanners.
+
+```ts
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is required for this E2E run but was unset`);
+  return v;
+}
+const password = requireEnv('E2E_BROKERAGE_PASSWORD');   // throws if the secret wasn't injected
+```
+
+The username may be a published code constant; the password (and any tenant/host that is a secret) always comes from env via this guard. `t3 <overlay> e2e` injects the documented secret into the run env; a spec that hard-codes the value bypasses that path and the secret store entirely.
+
 **Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in templates to find its host, then check the routing module for the URL path.
 
 **Mocking — stub with the error status the failure-path expects, not `200`.** When stubbing an API call in an Angular/NgRx app to exercise the empty/failure path (e.g. a "no results" alert, a retry gate, a fall-through navigation), return the status the failure effect listens for — typically `404`, sometimes `500` — rather than `200 []`. A `200` dispatches the success Action and short-circuits the path under test (the success effect navigates away or stores the empty list as a successful result). Match the status to the effect: inspect the relevant `createEffect(...)` block, find which HTTP error the `catchError` branch maps to the failure Action, and stub that status.
+
+**Race a condition promise, never a fixed `waitForTimeout` (Non-Negotiable).** When an action triggers an async write the assertion depends on — a `PATCH`, a `POST /calculate`, a recompute — do **not** insert a fixed `page.waitForTimeout(...)` and hope it settled. Set up the response promise on the *real* request **before** the action that triggers it, then await it after, so the wait is keyed on the actual round-trip completing with a `200`, not on a guessed duration:
+
+```ts
+const saved = page.waitForResponse(
+  (r) => /\/api\/.*\/calculate/.test(r.url()) && r.request().method() === 'POST' && r.ok(),
+);
+await page.getByRole('button', { name: 'Recalculate' }).click();
+await saved;                                  // resolves exactly when the real call returns 200
+await expect(page.getByLabel('Total cost')).toHaveText('€ 12,300');
+```
+
+Set the promise up first (the await-after-click order), match the **real** endpoint + method + `r.ok()`, and prefer it over a `waitForLoadState('networkidle')` when one specific call is what the assertion depends on — `networkidle` waits on *all* traffic and still races a late XHR. A fixed sleep is slow on a fast machine and flaky on a slow one; the response promise is correct on both.
 
 **`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
 
@@ -281,6 +317,18 @@ await expect(page.locator('[data-test=expected-element]')).toBeVisible();
 await page.waitForLoadState('networkidle');
 await page.screenshot({ path: 'artifacts/...' });
 ```
+
+**Red-box the asserted element in DEV captures (evidence, not decoration).** A screenshot posted as evidence must make the asserted element obvious, not leave a reviewer hunting a full page for it. Before the capture, draw a saturated-red box around the element under assertion (a bright `outline`/`border` injected via `element.evaluate(...)`, or a Playwright highlight) so the captured PNG carries an unmissable marker on exactly the field/control the test verifies. This is the same red-box marker the post-test-plan evidence gate looks for in DEV captures — a deployed-env screenshot whose asserted element isn't visibly boxed reads as a generic page shot, not proof the specific behaviour rendered.
+
+```ts
+const el = page.getByLabel('Default purchase costs');
+await expect(el).toBeVisible();
+await el.evaluate((n) => { n.style.outline = '4px solid #ff0000'; n.style.outlineOffset = '2px'; });
+await el.scrollIntoViewIfNeeded();
+await page.screenshot({ path: 'artifacts/<TICKET>/dev/step1.png' });
+```
+
+Capture the red-boxed shot only after the settle (visible + network idle) above — a red box around a not-yet-rendered element is no more evidence than a blank page.
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
