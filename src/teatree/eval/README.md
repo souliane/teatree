@@ -219,6 +219,17 @@ subset. The flagship `delegates_under_load_not_edits_in_main_agent` ships a
 dispatching a `Task`/`Agent`) that grades RED with the matchers and GREEN with
 them removed; the live A/B pass@k measurement is the gated/weekly metered step.
 
+The speed skill's co-located `full_speed_fans_out_parallel_workers_not_serial`
+(`skills/speed/evals.yaml`) is the second under_load scenario — the "full speed is
+understood" check: under the same full-bundle + polluted-preamble load, a `full`-
+speed directive over a backlog of independent tickets must FAN OUT one worker
+sub-agent per ticket, not work the backlog serially in the main agent. Its `_fail`
+fixture is the serial drift (the main agent `Edit`s a ticket's `.py` and runs its
+tests in the foreground); a discriminating `_single_worker_fail` fixture (one
+`Task` dispatch, then the other tickets hand-done serially) ALSO grades RED, so the
+scenario rejects a token single delegate, not only the total-serial case
+(`tests/eval_lanes/deterministic/test_full_speed_fan_out_anti_vacuous.py`).
+
 ### Wall-clock — `--parallel N`
 
 Each Agent-SDK query is I/O-bound (network round-trips), so the suite runs scenarios
@@ -745,6 +756,7 @@ class, where it is pinned, and the originating fix:
 | MR description first line validated client-side (the GitLab CI gate's own rule, no validator round-trip) | `regression_corpus` (`validate_mr_metadata`) | [#2098](https://github.com/souliane/teatree/pull/2098) |
 | review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `skills/review/evals.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`, co-located) | [#2173](https://github.com/souliane/teatree/issues/2173) |
 | completion report LEADS with the deliverable status (final assistant message names the branch + PR), never buries it under systemic findings — the first `final_state` end-state matcher | `scenarios/completion_report_leads_with_status.yaml` | [#166](https://github.com/souliane/teatree/issues/166) |
+| full-speed FANS OUT a parallel worker per ticket under load — a `full`-speed backlog is dispatched to workers, never worked serially in the main agent (the second `under_load` scenario; a token single-delegate still grades RED) | `skills/speed/evals.yaml` (`full_speed_fans_out_parallel_workers_not_serial`, co-located) | [#2346](https://github.com/souliane/teatree/issues/2346) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
@@ -775,12 +787,15 @@ is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
 
 The gate is general and declarative: a new `skills/<name>/` with no eval and no
 `eval_exempt` trips it by default, and a new skill is covered-or-exempt with a
-one-line frontmatter key. It is **warn-first** in Phase A — the coverage lane in
-`t3 eval all` and the `tests/eval_lanes/deterministic/test_skill_eval_coverage.py` gate report a gap
-but exit 0 (never red-blocking an unrelated push); `t3 eval coverage
---fail-on-gap` is the Phase-B enforcement (a follow-up flip once the team is
-ready). The shipped corpus is gap-free today (the 4 co-located seeds — ship,
-review, rules, code — plus the pure-doc exemptions).
+one-line frontmatter key. The dedicated pytest gate
+(`tests/eval_lanes/deterministic/test_skill_eval_coverage.py`) is now **Phase-B
+ENFORCING** — it asserts `report.gaps == ()`, so a skill landing with neither an
+eval nor an `eval_exempt` reason is a hard RED on every PR (the corpus is gap-free
+today, so the flip is safe). The softer `t3 eval coverage` lane inside `t3 eval
+all` stays **warn-first** (reports a gap, exit 0) so it never red-blocks an
+unrelated `t3 eval all` run; `t3 eval coverage --fail-on-gap` is its explicit
+enforcing form. The shipped corpus is gap-free today (the co-located seeds — ship,
+review, rules, code, speed, e2e — plus the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 

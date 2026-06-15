@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-full_speed_fans_out_parallel_workers_not_serial-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Full speed — let me just knock these out one at a time, starting with TODO-7. It's a small guard, I'll edit it directly here and move to the next."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "src/teatree/core/provision.py", "old_string": "wire_provision(spec)", "new_string": "wire_provision(spec, timeout=PROVISION_TIMEOUT)"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "uv run pytest tests/teatree_core/test_provision.py -q --no-migrations"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "TODO-7 done. Now on to TODO-9, then TODO-11."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
