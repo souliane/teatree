@@ -23,6 +23,7 @@ from teatree.loops.dream.engine import (
     run_consolidation,
     write_clusters,
 )
+from teatree.loops.dream.eval_proposer import EvalProposalRequest, ProposedEval
 
 
 class DreamRunResultTestCase(TestCase):
@@ -570,3 +571,30 @@ class SdkDistillerParseTestCase(TestCase):
             clusters = engine._sdk_distiller(empty)
         turn.assert_not_called()
         assert clusters == []
+
+
+class RunConsolidationEvalProposalTestCase(TestCase):
+    """``run_consolidation`` wires the default-off eval-candidate phase (#2346)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_off_by_default_proposes_nothing_and_writes_no_queue(self) -> None:
+        out = self.tmp / "queue.jsonl"
+        result = run_consolidation(overlay="", since=None, dry_run=False, distiller=_no_clusters)
+        assert result.evals_proposed == 0
+        assert not out.exists()
+
+    def test_request_writes_candidates_to_path(self) -> None:
+        out = self.tmp / "queue.jsonl"
+        sentinel = ProposedEval("x_under_load", "rule", _CITATION, ["f"], "")
+        result = run_consolidation(
+            overlay="",
+            since=None,
+            dry_run=False,
+            distiller=_no_clusters,
+            eval_proposals=EvalProposalRequest(proposer=lambda _c, _e: [sentinel], out_path=out),
+        )
+        assert result.evals_proposed == 1
+        assert out.exists()
+        assert len(out.read_text(encoding="utf-8").splitlines()) == 1
