@@ -1,11 +1,11 @@
-"""skill-triggers: deterministic skill-activation eval (``t3 eval skill-triggers``).
+"""skill-triggers: deterministic skill-activation test (``t3 eval skill-triggers``).
 
 A behavioral eval (``scenarios/*.yaml``) checks what an agent *does* once a
 skill is loaded. The skill-triggers lane checks the step before that: does the
 skill's declared ``triggers.keywords`` frontmatter actually *fire* on the prompts
 the skill claims to handle, and stay *quiet* on unrelated control prompts?
 
-This is a Layer-1 (code-enforceable) eval per ``README.md`` — it runs for free
+This is a Layer-1 (code-enforceable) test per ``README.md`` — it runs for free
 in CI, no ``claude -p`` invocation. Each skill's frontmatter is the source of
 truth; the corpus of must-fire / must-not-fire prompts lives in
 ``trigger_qa_corpus.yaml`` beside this module so a skill author edits one file

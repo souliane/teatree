@@ -1,4 +1,4 @@
-"""skill-command-validity: Tier-1 deterministic command-validity eval (#550).
+"""skill-command-validity: Tier-1 deterministic command-validity test (#550).
 
 A behavioral scenario grades what an agent *does*; the skill-coverage lane grades
 *whether* a skill ships an eval. This lane grades the skill *docs* themselves:
@@ -15,7 +15,7 @@ SSOT shape, ``{"t3 loop tick", …}``) rather than importing ``teatree.cli`` —
 (``teatree.cli.eval.skill_command_lane``) builds the registry from the live
 typer app and injects it.
 
-This is a Layer-1 (deterministic, free, no model) eval — no metering, no spend.
+This is a Layer-1 (deterministic, free, no model) test — no metering, no spend.
 The parse + token-walk logic is the single chokepoint the skill-prose
 static-invocation pytest gate (``tests/test_skill_t3_invocations.py``) also
 consumes, so the regex and placeholder rules live in exactly one place.

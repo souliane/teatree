@@ -1,4 +1,4 @@
-"""Deterministic regression evals — real code-path assertions per failure class.
+"""Deterministic regression tests — real code-path assertions per failure class.
 
 A behavioral scenario (``scenarios/*.yaml``) grades what an agent *says* it
 would do. This corpus grades what the gate/checker code *does*: each check
@@ -7,7 +7,7 @@ conflict predictor, the loop-lease pid-anchored
 claim, the migration-graph leaf checker) on a constructed must-block input and
 on a must-allow input, and reports a violation when either direction is wrong.
 
-This is a Layer-1 eval per ``README.md`` — deterministic, free, no ``claude``
+This is a Layer-1 test per ``README.md`` — deterministic, free, no ``claude``
 run — sibling of :mod:`teatree.eval.trigger_qa`. It exists so the recurring
 safety-gate failure classes of the last development cycle each have one check
 that would go RED on the pre-fix behavior and stays GREEN on the fix, surfaced

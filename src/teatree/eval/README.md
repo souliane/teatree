@@ -121,7 +121,7 @@ t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend subscription            # explicit subscription (the default; host-default, no API spend)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
-t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
+t3 eval skill-triggers                        # deterministic skill-activation test (no claude run)
 t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
 t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
 t3 eval pinned-regressions                    # deterministic real-code-path regression corpus (no claude run)
@@ -594,7 +594,9 @@ no `expect:` (judge-only) or alongside matchers (both must pass).
 
 ### Skill-triggers (skill activation)
 
-`t3 eval skill-triggers` is a Layer-1 (deterministic, free, no `claude` run) eval.
+`t3 eval skill-triggers` is a Layer-1 (deterministic, free, no `claude` run)
+**test** — a trigger test, not a behavioral eval: it asserts code/config
+behaviour with fixed I/O, no live model.
 It loads each skill's `triggers.keywords` frontmatter and checks the
 must-fire / must-not-fire prompt corpus in `trigger_qa_corpus.yaml`: an
 under-trigger (in-scope prompt that does not fire) or over-trigger (control
@@ -604,7 +606,7 @@ editing the corpus.
 ### Pinned-regressions corpus (real gate/checker code paths)
 
 `t3 eval pinned-regressions` is a Layer-1 (deterministic, free, no `claude` run)
-eval — sibling of skill-triggers. Where a scenario grades what an agent *says* it
+**test** — sibling of skill-triggers. Where a scenario grades what an agent *says* it
 would do, the pinned-regressions corpus (`regression_corpus.py`) grades what the gate/checker
 code *does*: each `RegressionCheck` calls the **real** function for a recurring
 failure class on a constructed must-block input and a must-allow input, and
@@ -625,7 +627,7 @@ code path still honors the invariant — then add the matching anti-vacuous test
 ### Skill-command-validity (#550 Tier-1 — stale `t3 …` references)
 
 `t3 eval skill-command-validity` is a Layer-1 (deterministic, free, no `claude`
-run) eval — the third sibling of skill-triggers and pinned-regressions. It
+run) **test** — the third sibling of skill-triggers and pinned-regressions. It
 grades the skill *docs* themselves: every backticked `t3 …` command a
 `skills/<name>/SKILL.md` (and its nested `*.md` references) documents must
 resolve against the LIVE CLI registry. A SKILL.md that cites a `t3` command

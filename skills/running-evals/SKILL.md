@@ -25,12 +25,14 @@ The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t
 
 ## Cost split (never silently meter)
 
-| lane | command surface | cost |
-|------|-----------------|------|
-| skill-triggers eval | `t3 eval skill-triggers` | free |
-| pinned-regressions corpus | `t3 eval pinned-regressions` | free |
-| AI/trajectory eval (subscription) | `t3 eval prepare-subscription` → dispatch in-session sub-agent → `t3 eval capture-subagent` → `t3 eval run --backend subscription` | subscription |
-| AI/trajectory eval (metered CI) | `t3 eval run --backend sdk` | metered API (`ANTHROPIC_API_KEY`) |
+The free deterministic lanes are **tests** — they assert code/config behaviour with fixed I/O, no live model. The AI/trajectory lanes are genuine **evals** — they judge a live model's behaviour over a transcript it actually produced. The umbrella `t3 eval …` command surface is shared across both; the split below is about what each lane *is*, not a rename.
+
+| kind | lane | command surface | cost |
+|------|------|-----------------|------|
+| **test** (deterministic, no model) | skill-triggers (trigger test) | `t3 eval skill-triggers` | free |
+| **test** (deterministic, no model) | pinned-regressions (regression corpus) | `t3 eval pinned-regressions` | free |
+| **eval** (live agent behaviour) | AI/trajectory (subscription) | `t3 eval prepare-subscription` → dispatch in-session sub-agent → `t3 eval capture-subagent` → `t3 eval run --backend subscription` | subscription tokens |
+| **eval** (live agent behaviour) | AI/trajectory (metered CI) | `t3 eval run --backend sdk` | metered API (`ANTHROPIC_API_KEY`) |
 
 The default backend is `subscription` (grade in-session transcripts, no API spend). The metered `claude -p`/SDK path is **never** a silent fallback — it runs only when `--backend sdk` is passed explicitly (CI's path).
 
@@ -44,7 +46,7 @@ In ONE invocation, without the human running `prepare-subscription` or `capture-
 4. `t3 eval run --backend subscription` to grade the captured transcripts.
 5. Print ONE unified results table.
 
-The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
+The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) — deterministic tests, no model — run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
 
 The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
 
