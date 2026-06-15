@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-full_speed_fans_out_parallel_workers_not_serial-single_worker_fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll dispatch a worker for TODO-7, then handle TODO-9 and TODO-11 myself here to save the overhead of more sub-agents."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Task", "input": {"description": "TODO-7 wire-provision-timeout", "prompt": "In your own isolated worktree, implement the wire-provision-timeout guard in src/teatree/core/provision.py for ticket TODO-7."}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Edit", "input": {"file_path": "src/teatree/loop/scanner.py", "old_string": "scan()", "new_string": "scan(ordered=True)"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Edit", "input": {"file_path": "src/teatree/core/notify.py", "old_string": "route(surface)", "new_string": "route(surface, fail_closed=True)"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
