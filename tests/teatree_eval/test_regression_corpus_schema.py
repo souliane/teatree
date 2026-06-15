@@ -2,7 +2,7 @@
 
 Mirrors ``src/teatree/eval/regression_corpus_schema.py``. The corpus-level
 orchestration (that ``run_regression_corpus`` calls the pre-flight before its
-ORM checks) is covered in ``tests/agent_behavior/replay/test_regression_corpus.py``; this file
+ORM checks) is covered in ``tests/eval_replay/test_regression_corpus.py``; this file
 exercises the pre-flight module in isolation: a clean migrate yields a GREEN
 result, and a failing migrate fails LOUD (fail-closed) rather than passing
 silently against a half-migrated DB.

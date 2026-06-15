@@ -1,6 +1,6 @@
 # Co-located behavioral evals for the e2e skill. `agent_path` is omitted —
 # discovery defaults it to skills/e2e/SKILL.md.
-# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail}.stream.jsonl.
+# Fixtures live in evals/fixtures/<name>_{pass,fail}.stream.jsonl.
 
 - name: e2e_test_plan_uses_canonical_command
   scenario: >-

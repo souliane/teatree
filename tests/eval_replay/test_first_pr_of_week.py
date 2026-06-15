@@ -8,7 +8,7 @@ from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
     "first_pr_of_week",
-    Path(__file__).parents[3] / "scripts" / "eval" / "first_pr_of_week.py",
+    Path(__file__).parents[2] / "scripts" / "eval" / "first_pr_of_week.py",
 )
 assert _SPEC is not None
 assert _SPEC.loader is not None

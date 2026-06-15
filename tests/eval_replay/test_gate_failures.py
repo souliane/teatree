@@ -29,7 +29,7 @@ from teatree.eval.gate_failures import (
 )
 from teatree.eval.session_transcript import SessionEvent, parse_session_jsonl
 
-_FIXTURE = Path(__file__).parents[1] / "fixtures" / "gate_failures_session.jsonl"
+_FIXTURE = Path(__file__).parents[2] / "evals" / "fixtures" / "gate_failures_session.jsonl"
 
 _STRUCTURED_QUESTION_MARKER = (
     "TEATREE GATE — a user-directed question was asked inline in prose with no AskUserQuestion tool call in this turn."

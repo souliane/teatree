@@ -2,7 +2,7 @@
 
 Three surfaces are walked, in order:
 
-1.  The core catalog at ``tests/agent_behavior/scenarios/*.yaml`` — cross-
+1.  The core catalog at ``evals/scenarios/*.yaml`` — cross-
     overlay invariants whose fixtures use placeholder identities.
 2.  Co-located ``skills/<name>/evals.yaml`` siblings — a skill ships its
     own behavioral evals beside its ``SKILL.md`` (the Anthropic skill-
@@ -44,7 +44,7 @@ class ScenarioCatalogError(RuntimeError):
     """
 
 
-SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "tests" / "agent_behavior" / "scenarios"
+SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so discovery stays a leaf of the eval package (the same
 # backwards-edge convention ``trigger_qa`` follows — it must not reach up into

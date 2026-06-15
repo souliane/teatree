@@ -15,7 +15,7 @@ SendMessage handoff), never by minting a fresh teammate per task. The teeth:
 This is the deterministic PR-path proof; the live A/B pass@k measurement is the
 gated/weekly metered step, not run here.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
+# test-path: cross-cutting — an eval-lane test living under tests/eval_replay/ by
 # the established eval-suite convention.
 
 import dataclasses
@@ -27,7 +27,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.report import evaluate
 
 _SCENARIO = "team_mode_delegates_to_fixed_roster_not_spawn_per_task"
-_FIXTURES = Path(__file__).parents[1] / "fixtures"
+_FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
 

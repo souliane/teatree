@@ -23,14 +23,16 @@ any top-level import excuse a mis-pathed package test placed anywhere under
 
 A tiny reviewed exemption set keeps legitimate cross-cutting tests out of the
 count: shared dir prefixes (``tests/integration/``, ``tests/conformance/``,
-``tests/e2e*``, ``tests/fixtures/``, ``tests/agent_behavior/``), the non-test
-scaffolding files (``conftest.py``, ``factories.py``, ``__init__.py``), and a
-per-file ``# test-path: cross-cutting`` line pragma for genuine multi-package
-contract/architecture tests. ``tests/agent_behavior/`` is the behavioral-eval
-suite — scenarios, fixtures, and their replay/harness tests are co-located by
-purpose (the eval lane they belong to), not mirrored to the ``teatree.eval``
-package, exactly as ``tests/integration/`` and ``tests/conformance/`` organize
-by purpose rather than by src package.
+``tests/e2e*``, ``tests/fixtures/``, ``tests/eval_replay/``,
+``tests/eval_harness/``), the non-test scaffolding files (``conftest.py``,
+``factories.py``, ``__init__.py``), and a per-file ``# test-path: cross-cutting``
+line pragma for genuine multi-package contract/architecture tests.
+``tests/eval_replay/`` and ``tests/eval_harness/`` are the behavioral-eval test
+suites — deterministic replay of and model-patched exercises over the eval
+definitions under the top-level ``evals/`` tree (``evals/scenarios``,
+``evals/fixtures``). They are organized by the eval lane they belong to, not
+mirrored to the ``teatree.eval`` package, exactly as ``tests/integration/`` and
+``tests/conformance/`` organize by purpose rather than by src package.
 
 Verdict (mirrors :class:`teatree.quality.mutation_run.BaselineRatchet`): the
 live violation count may only ever shrink. ``live_violations > baseline`` ⇒
@@ -62,7 +64,8 @@ EXEMPT_DIR_PREFIXES: frozenset[str] = frozenset(
         "tests/conformance/",
         "tests/e2e",
         "tests/fixtures/",
-        "tests/agent_behavior/",
+        "tests/eval_replay/",
+        "tests/eval_harness/",
     }
 )
 EXEMPT_FILENAMES: frozenset[str] = frozenset({"conftest.py", "factories.py", "__init__.py"})

@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.eval import eval_app
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRE_COMMIT_CONFIG = _REPO_ROOT / ".pre-commit-config.yaml"
 
 # Old lane names in their user-facing surface forms. The internal module file
@@ -45,7 +45,7 @@ _INTERNAL_NAME_PATHS = {
     "src/teatree/eval/trigger_qa_corpus.yaml",
     "src/teatree/eval/regression_corpus.py",
     "src/teatree/eval/discovery.py",
-    "tests/agent_behavior/replay/test_lane_names.py",
+    "tests/eval_replay/test_lane_names.py",
     # Asserts the OLD command name no longer resolves — the one legitimate
     # mention of the retired lane name.
     "tests/teatree_cli/test_eval.py",

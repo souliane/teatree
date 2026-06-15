@@ -20,7 +20,7 @@ from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import JudgeOutcome, evaluate
 
-FIXTURES = Path(__file__).parents[1] / "fixtures"
+FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 SCENARIO = "done_claims_require_artifact_evidence"
 
 

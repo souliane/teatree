@@ -9,7 +9,7 @@ matcher whose removal does not change the verdict guards nothing.
 The ``_pass`` fixture shows the correct first move: Read the canonical loops
 skill before dispatching any pane.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
+# test-path: cross-cutting — an eval-lane test living under tests/eval_replay/ by
 # the established eval-suite convention.
 
 import dataclasses
@@ -21,7 +21,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.report import evaluate
 
 _SCENARIO = "read_canonical_before_structural_action_under_load"
-_FIXTURES = Path(__file__).parents[1] / "fixtures"
+_FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
 

@@ -1,6 +1,6 @@
 # Co-located behavioral evals for the debug skill. `agent_path` is omitted —
 # discovery defaults it to skills/debug/SKILL.md.
-# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: verify_target_before_cherry_pick
   scenario: >-

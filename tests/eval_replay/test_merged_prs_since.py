@@ -19,7 +19,7 @@ from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
     "merged_prs_since",
-    Path(__file__).parents[3] / "scripts" / "eval" / "merged_prs_since.py",
+    Path(__file__).parents[2] / "scripts" / "eval" / "merged_prs_since.py",
 )
 assert _SPEC is not None
 assert _SPEC.loader is not None

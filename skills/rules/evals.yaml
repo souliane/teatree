@@ -1,7 +1,7 @@
 # Co-located behavioral evals for the rules skill (the shared cross-cutting
 # invariant surface). `agent_path` is omitted — discovery defaults it to
 # skills/rules/SKILL.md.
-# Fixtures live in tests/agent_behavior/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+# Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 
 - name: do_work_now_runs_command_not_hands_back_steps
   scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"
@@ -234,7 +234,7 @@
               phases use sonnet, never reversed. The _fail fixture shows an agent
               spawning a coding worker with model: opus — wasteful and disallowed.
               The _pass fixture shows correct tiering: planner = opus, coder = sonnet.
-    09:47:20  $ uv run pytest tests/agent_behavior/replay/test_per_phase_model_tier_anti_vacuous.py -q --no-cov
+    09:47:20  $ uv run pytest tests/eval_replay/test_per_phase_model_tier_anti_vacuous.py -q --no-cov
               ......                                                       [100%]
               6 passed in 0.44s
     09:47:52  coder(I): committed. Push queued.
@@ -243,7 +243,7 @@
               subprocess to watch CI for 20 minutes, blocking the main loop entirely.
               The _fail fixture drives the matcher RED (blocking foreground sleep);
               the _pass fixture drives GREEN (Monitor dispatch instead).
-    09:50:05  $ uv run pytest tests/agent_behavior/replay/test_background_blocking_op_anti_vacuous.py -q --no-cov
+    09:50:05  $ uv run pytest tests/eval_replay/test_background_blocking_op_anti_vacuous.py -q --no-cov
               ......                                                       [100%]
               6 passed in 0.39s
     09:50:32  coder(J): committed. Push queued.

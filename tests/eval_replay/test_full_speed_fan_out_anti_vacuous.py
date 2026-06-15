@@ -21,7 +21,7 @@ This is the deterministic PR-path proof; the live A/B pass@k measurement is the
 gated/weekly metered step (the user's "powder-in-the-eyes" full-bundle A/B run),
 not run here.
 """
-# test-path: cross-cutting — an eval-lane test living under tests/agent_behavior/ by
+# test-path: cross-cutting — an eval-lane test living under tests/eval_replay/ by
 # the established eval-suite convention.
 
 import dataclasses
@@ -33,7 +33,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.report import evaluate
 
 _SCENARIO = "full_speed_fans_out_parallel_workers_not_serial"
-_FIXTURES = Path(__file__).parents[1] / "fixtures"
+_FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
 _SINGLE_WORKER_FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_single_worker_fail.stream.jsonl"

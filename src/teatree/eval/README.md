@@ -7,7 +7,7 @@ The architecture guide — the lane/tier table, the test-vs-eval split, the
 scenario schema, the failure-class index, and the CLI reference — lives next to
 the scenarios and fixtures it documents:
 
-➡ [`tests/agent_behavior/README.md`](../../../tests/agent_behavior/README.md)
+➡ [`evals/README.md`](../../../evals/README.md)
 
 The short version of the split documented there:
 
