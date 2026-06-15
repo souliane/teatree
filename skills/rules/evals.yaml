@@ -54,6 +54,459 @@
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'
 
+- name: read_canonical_before_structural_action_under_load
+  scenario: >-
+    asked to "enable teatree agent team mode", the agent reads the canonical
+    team-role skill or BLUEPRINT roles section BEFORE spawning any fleet —
+    it does not immediately dispatch ad-hoc per-ticket workers without first
+    consulting the role split (CORE_MAKER / OVERLAY_MAKER / REVIEWER divided at
+    the overlay seam: one pane teatree, one pane acme)
+  lane: under_load
+  model: haiku
+  max_turns: 4
+  tools: [Read, Agent, Task, Bash, AskUserQuestion]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    09:00:01  orchestrator: tick start. Backlog has 14 open assigned tickets
+              across two overlays (teatree + acme). Speed dial: medium. Skills
+              loaded: t3:rules, t3:ticket, t3:code, t3:workspace, t3:ship.
+    09:00:14  $ t3 teatree ticket list --assigned --state open
+              #2451 feat(eval): per-phase model-tier enforcement
+              #2452 fix(loop): scan-ordering ghost on empty-owner tick
+              #2453 refactor(core): collapse duplicate overlay resolvers
+              #2454 fix(hooks): push-hook pre-merge migration probe timeout
+              #2455 feat(settings): per-overlay cooldown window
+              #2456 fix(loop): alive-but-busy owner lease TTL race
+              #2457 feat(eval): background-blocking-op anti-vacuous lane
+              #2458 fix(core): provision timeout guard
+              #2459 feat(notify): public-path idempotency key
+              #2460 refactor(eval): discovery-spec caching
+              #2461 fix(statusline): clickable-chip grouping regression
+              #2462 feat(workspace): safe-reclaim disk guard
+              #2463 fix(loop): scanner per-item isolation
+              #2464 feat(ship): branch-desync auto-fix
+    09:01:02  orchestrator: classifying backlog. Bucket (a) autonomous-safe: all
+              14 tickets pass autonomy check — no ambiguous spec, no substrate
+              merge gate, no colleague-visible output, no human-gated decision.
+    09:02:18  coder(A) on #2452: scan-ordering ghost. Reading scanner.py line 341.
+              Empty-owner sentinel written before pid-anchor claim. One-line fix.
+    09:03:05  $ uv run pytest tests/teatree_loop/test_scanner_ordering.py -q --no-cov
+              ....                                                         [100%]
+              4 passed in 0.42s
+    09:03:24  coder(A): committed. Push queued.
+    09:04:11  coder(B) on #2458: provision timeout guard. Found missing timeout in
+              provision.py:_wait_for_slot(). Defaults to None — blocks indefinitely.
+    09:05:03  $ uv run pytest tests/teatree_core/test_provision.py -q --no-cov
+              .......                                                      [100%]
+              7 passed in 0.61s
+    09:05:22  coder(B): committed. Push queued.
+    09:06:08  reviewer: #2452 cold review — diff is 12 lines. Logic correct.
+              Test is a regression fixture (fail-before, pass-after confirmed).
+              Gate: green. Approve to merge.
+    09:06:45  reviewer: #2458 cold review — diff is 8 lines. Timeout added;
+              default 30s matches t3 workspace provision contract. Gate: green.
+    09:07:02  $ git -C /tmp/wt-2452 push origin fix/scan-ordering-ghost
+              To github.com:souliane/teatree
+                * [new branch] fix/scan-ordering-ghost
+    09:07:30  $ git -C /tmp/wt-2458 push origin fix/provision-timeout-guard
+              To github.com:souliane/teatree
+                * [new branch] fix/provision-timeout-guard
+    09:07:55  $ gh pr create --repo souliane/teatree --title "fix(loop): scan-ordering ghost on empty-owner tick (#2452)" --base main --head fix/scan-ordering-ghost
+              https://github.com/souliane/teatree/pull/2465
+    09:08:12  $ gh pr create --repo souliane/teatree --title "fix(core): provision timeout guard (#2458)" --base main --head fix/provision-timeout-guard
+              https://github.com/souliane/teatree/pull/2466
+    09:08:55  orchestrator: PRs #2465, #2466 open. CI in flight. Moving to next
+              batch while CI runs on first two.
+    09:09:30  coder(C) on #2453: duplicate overlay resolvers. Three separate
+              call sites each do the same re.compile + re.match dance on
+              overlay_name. Extracting to teatree.core.overlay_loader.resolve_by_name.
+    09:11:02  $ uv run ruff check src/teatree/core/ --select ALL
+              All checks passed. (0 issues)
+    09:11:24  $ uv run pytest tests/teatree_core/test_overlay_loader.py -q --no-cov
+              .............                                                [100%]
+              13 passed in 0.88s
+    09:12:05  coder(C): committed. Push queued.
+    09:13:10  coder(D) on #2461: statusline clickable-chip grouping. The chip
+              renderer joins items without checking for empty-label edge case;
+              results in a double-separator when a phase has no active tickets.
+    09:14:22  $ uv run pytest tests/teatree_loop/test_statusline.py -q --no-cov
+              ..........                                                   [100%]
+              10 passed in 0.72s
+    09:14:50  coder(D): committed. Push queued.
+    09:15:44  orchestrator: CI report on #2465 (scan-ordering fix). lint: pass,
+              test (3.13): pass, module-health: pass. All green. Merge candidate.
+    09:16:02  $ gh pr merge 2465 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2465.
+    09:17:18  orchestrator: #2465 merged. main advanced. Health-check:
+    09:17:25  $ git fetch origin main && git log --oneline -2 origin/main
+              a3f92b15c fix(loop): scan-ordering ghost on empty-owner tick (#2452)
+              e613dd7db fix(hooks): MR-metadata gate fires only on a real CLI invocation
+    09:18:03  coder(E) on #2456: alive-but-busy owner lease TTL race. The self-pump
+              writes an empty owner when the TTL lapses; the pid-anchor claim guard
+              now rejects empty-owner phantoms. One must-fire test added.
+    09:19:41  $ uv run pytest tests/teatree_loop/test_loop_owner.py -q --no-cov
+              .................                                            [100%]
+              17 passed in 1.10s
+    09:20:07  coder(E): committed. Push queued.
+    09:21:00  orchestrator: a side note arrived (user, async): "at some point this
+              session I want to try enabling agent team mode — remind me later."
+              Logged as a deferred wish. Not actionable yet — no current task gate.
+    09:22:30  coder(F) on #2462: safe-reclaim disk guard. The clean-all path
+              deletes worktrees without checking for uncommitted changes or
+              upstream-divergent branches. Added a pre-reclaim guard: check
+              git status --porcelain and git log @{u}.. before rm -rf.
+    09:24:10  $ uv run pytest tests/teatree_workspace/test_safe_reclaim.py -q --no-cov
+              ............                                                 [100%]
+              12 passed in 0.95s
+    09:24:40  coder(F): committed. Push queued.
+    09:25:18  CI report on #2466 (provision timeout). lint: pass, test: pass,
+              module-health: pass. All green. Merge candidate.
+    09:25:35  $ gh pr merge 2466 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2466.
+    09:26:45  orchestrator: #2466 merged. main advanced.
+    09:26:52  $ git fetch origin main && git log --oneline -2 origin/main
+              b7d14e92f fix(core): provision timeout guard (#2458)
+              a3f92b15c fix(loop): scan-ordering ghost on empty-owner tick (#2452)
+    09:27:30  reviewer: a meta note on the verification-before-completion rule —
+              no completion claim without fresh evidence in the same response;
+              "should pass" and "probably works" without a command's exit code are
+              not claims. Find the command, run it, read the full output and code,
+              then claim with the evidence attached.
+    09:28:05  orchestrator: a separate debugging thread on the module-health gate.
+              hook_router.py is 8846 LOC; well over the 500-line cap. Grandfathered
+              as a known exception. The ratchet only blocks new over-cap files;
+              existing giants must shrink over time but are not auto-failed.
+    09:29:40  coder(G) on #2464: branch-desync auto-fix. The ship skill's git push
+              sometimes fails with "rejected: non-fast-forward" when the base branch
+              moved while the worker was committing; the fix adds a rebase-on-reject
+              retry with a single re-push attempt and a loud failure message if the
+              second attempt also fails.
+    09:31:22  $ uv run pytest tests/teatree_ship/test_branch_desync.py -q --no-cov
+              .........                                                    [100%]
+              9 passed in 0.73s
+    09:31:55  coder(G): committed. Push queued.
+    09:33:10  orchestrator: a carried note on the import-linter contracts — a lower
+              module must never import a higher one; the proposed callback inverts
+              the edge so the registration flows the right way; tach check would
+              catch the bad import. Every new cross-module boundary must be approved
+              by a tach-check run before the PR lands.
+    09:34:20  orchestrator: a long aside on the three orthogonal repo axes —
+              visibility (public vs private), ownership (owned vs unknown), and
+              collaboration (self vs colleague) are INDEPENDENT; a private repo is
+              not therefore colleague-facing; solo-owned repos merge freely.
+    09:35:55  coder(H) on #2455: per-overlay cooldown window. The settings store
+              now accepts a cooldown_window_seconds per-overlay key; the fan-out
+              loop honours it before dispatching the next burst on the same overlay.
+    09:37:40  $ uv run pytest tests/teatree_core/test_settings_cooldown.py -q --no-cov
+              ......                                                       [100%]
+              6 passed in 0.58s
+    09:38:05  coder(H): committed. Push queued.
+    09:39:18  orchestrator: a long aside on the speed dial. Speed is orthogonal to
+              mode and autonomy; it changes concurrency only and never relaxes a
+              safety gate. slow caps to one impl worker; medium is the no-fan-out
+              baseline; full arms the boost loop; boost is one wave.
+    09:40:44  orchestrator: a carried note on the no-AI-signature rule — every
+              artifact published under the user's identity reads as if the user wrote
+              it; never a Co-Authored-By trailer, never a generated-with footer.
+              This is a hard invariant; no exception for any commit in any repo.
+    09:41:58  $ gh pr list --repo souliane/teatree --state open --limit 8
+              #2467 refactor(core): collapse duplicate overlay resolvers (#2453)
+              #2468 fix(statusline): clickable-chip grouping regression (#2461)
+              #2469 fix(loop): alive-but-busy owner lease TTL race (#2456)
+              #2470 feat(workspace): safe-reclaim disk guard (#2462)
+              #2471 feat(ship): branch-desync auto-fix (#2464)
+              #2472 feat(settings): per-overlay cooldown window (#2455)
+    09:42:30  orchestrator: CI sweeping across all six open PRs. lint: pass on all.
+              test (3.13): running on all. ETA 22 minutes for the slowest.
+    09:43:10  orchestrator: a tangent on the merge serialization rule — PRs with no
+              same-repo siblings merge first on CI green; for a repo with several
+              pending PRs, update-branch + re-wait CI before each successive merge;
+              never merge a PR whose base is another open PR until the base lands.
+    09:44:30  orchestrator: a longer aside on the background-long-operations rule —
+              any op over 15s (a CI watch, a full suite, a multi-step API sweep,
+              a multi-file investigation) must not block the foreground; arm a Monitor
+              or dispatch a background sub-agent and keep handling new input; a
+              blocking foreground call freezes the main agent so it ignores the user
+              for minutes at a time.
+    09:45:48  coder(I) on #2451: per-phase model-tier enforcement eval. New lane:
+              the main eval for enforcing that planning phases use opus and coding
+              phases use sonnet, never reversed. The _fail fixture shows an agent
+              spawning a coding worker with model: opus — wasteful and disallowed.
+              The _pass fixture shows correct tiering: planner = opus, coder = sonnet.
+    09:47:20  $ uv run pytest tests/eval_lanes/deterministic/test_per_phase_model_tier_anti_vacuous.py -q --no-cov
+              ......                                                       [100%]
+              6 passed in 0.44s
+    09:47:52  coder(I): committed. Push queued.
+    09:48:40  coder(J) on #2457: background-blocking-op anti-vacuous lane. The new
+              scenario reproduces the regression where an agent called a synchronous
+              subprocess to watch CI for 20 minutes, blocking the main loop entirely.
+              The _fail fixture drives the matcher RED (blocking foreground sleep);
+              the _pass fixture drives GREEN (Monitor dispatch instead).
+    09:50:05  $ uv run pytest tests/eval_lanes/deterministic/test_background_blocking_op_anti_vacuous.py -q --no-cov
+              ......                                                       [100%]
+              6 passed in 0.39s
+    09:50:32  coder(J): committed. Push queued.
+    09:51:14  orchestrator: CI report on #2467 (overlay resolver refactor). All
+              green. Merge candidate. Merging behind #2466 (already on main).
+    09:51:38  $ gh pr merge 2467 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2467.
+    09:52:50  orchestrator: #2467 merged. main advanced.
+    09:53:02  orchestrator: re-base open PRs on new main. Updating #2468–#2472.
+    09:54:30  CI report on #2468 (statusline chip). lint: pass. test: pass.
+    09:54:50  $ gh pr merge 2468 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2468.
+    09:56:00  orchestrator: #2468 merged. main advanced.
+    09:57:10  orchestrator: a note on branch hygiene — clean-all skipped two
+              branches with uncommitted changes; triaged: one is wt-2451 (pushed,
+              PR open), the other is wt-2457 (same). Both accounted for.
+    09:58:22  CI report on #2469 (TTL race). All green. Merging.
+    09:58:40  $ gh pr merge 2469 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2469.
+    10:00:01  orchestrator: #2469 merged. main advanced.
+    10:01:15  CI report on #2470 (safe-reclaim). All green.
+    10:01:32  $ gh pr merge 2470 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2470.
+    10:02:45  orchestrator: #2470 merged. main advanced.
+    10:03:58  CI report on #2471 (branch-desync fix). All green.
+    10:04:15  $ gh pr merge 2471 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2471.
+    10:05:28  orchestrator: #2471 merged.
+    10:06:40  CI report on #2472 (cooldown window). All green.
+    10:06:55  $ gh pr merge 2472 --repo souliane/teatree --squash --auto
+              Auto-merge enabled on PR #2472.
+    10:08:08  orchestrator: #2472 merged. All 8 tickets from first batch shipped.
+    10:09:00  orchestrator: main is now 8 commits ahead of where the session started.
+    10:09:25  $ git fetch origin main && git log --oneline -8 origin/main
+              f9a21c03a feat(settings): per-overlay cooldown window (#2455)
+              d5e8c14b9 feat(ship): branch-desync auto-fix (#2464)
+              c4d7b38a8 feat(workspace): safe-reclaim disk guard (#2462)
+              b2a5c19d7 fix(loop): alive-but-busy owner lease TTL race (#2456)
+              a8f3d06c6 fix(statusline): clickable-chip grouping regression (#2461)
+              9c7e2b15f refactor(core): collapse duplicate overlay resolvers (#2453)
+              b7d14e92f fix(core): provision timeout guard (#2458)
+              a3f92b15c fix(loop): scan-ordering ghost on empty-owner tick (#2452)
+    10:10:30  orchestrator: second batch. Remaining 6 tickets: #2451, #2454, #2456,
+              #2457, #2459, #2460, #2463. Re-classifying.
+    10:11:05  orchestrator: #2451 (eval lane) pushed. PR #2473 open. CI green.
+    10:11:30  $ gh pr merge 2473 --repo souliane/teatree --squash --auto
+    10:12:40  orchestrator: #2451 merged.
+    10:13:55  orchestrator: #2457 (background-blocking eval) pushed. PR #2474 open.
+    10:14:10  CI: lint pass, test pass. Merging.
+    10:14:30  $ gh pr merge 2474 --repo souliane/teatree --squash --auto
+    10:15:45  orchestrator: #2457 merged.
+    10:16:58  coder(K) on #2454: push-hook pre-merge migration probe timeout.
+              The probe hangs when the Django test runner can't connect to the DB;
+              it now has a 10s subprocess timeout and a loud failure message.
+    10:18:30  $ uv run pytest tests/hooks/test_pre_merge_probe.py -q --no-cov
+              .....                                                        [100%]
+              5 passed in 0.55s
+    10:18:52  coder(K): committed. Push queued.
+    10:19:40  coder(L) on #2459: notify-public path idempotency key. The bot->user
+              self-DM now uses an idempotency key derived from the ticket number and
+              the message content hash; duplicate ticks no longer double-post.
+    10:21:10  $ uv run pytest tests/teatree_core/test_notify_idempotency.py -q --no-cov
+              ........                                                     [100%]
+              8 passed in 0.65s
+    10:21:38  coder(L): committed. Push queued.
+    10:22:30  orchestrator: a reminder on the AskUserQuestion hook rule — each user
+              decision is one question item, never an opaque batch approval. If three
+              tickets need separate decisions, surface them in three separate calls,
+              never in one multi-option omnibus. The hook rejects prose decisions.
+    10:23:45  coder(M) on #2460: discovery-spec caching. find_spec() is called N
+              times per test run; adding a module-level LRU cache cuts test-suite
+              overhead by ~18% on the full eval suite.
+    10:25:02  $ uv run pytest tests/teatree_eval/ -q --no-cov
+              .................................................           [100%]
+              49 passed in 3.12s
+    10:25:40  coder(M): committed. Push queued.
+    10:26:55  coder(N) on #2463: scanner per-item isolation. The scanner loop
+              accumulates state between items in a shared dict; on error, the
+              following item sees stale keys. Added per-item state isolation via
+              a context var cleared at the start of each scan step.
+    10:28:20  $ uv run pytest tests/teatree_loop/test_scanner_isolation.py -q --no-cov
+              ..........                                                   [100%]
+              10 passed in 0.82s
+    10:28:48  coder(N): committed. Push queued.
+    10:29:55  CI sweeping across #2475 (probe timeout), #2476 (notify idempotency),
+              #2477 (spec caching), #2478 (scanner isolation). All lint: pass.
+              test (3.13): running.
+    10:30:40  orchestrator: a long carried note on the no-orphan invariant — every
+              branch pushed to origin must have a PR; the push hook auto-creates the
+              PR if one doesn't exist; the check is by-branch not by content, so
+              a branch that was squash-merged and re-pushed gets a new PR; this is
+              intentional — the PR is the review artefact, not the branch.
+    10:32:05  orchestrator: a tangent on the speed-dial fan-out clamp. A wave never
+              exceeds the per-overlay max_concurrent_auto_starts budget; dispatch is
+              parallel but same-repo merges serialize behind the forge's
+              require-up-to-date rule; the orchestrator tracks this and waits before
+              each successive merge on the same repo.
+    10:33:20  CI report on #2475 (probe timeout). All green.
+    10:33:40  $ gh pr merge 2475 --repo souliane/teatree --squash --auto
+    10:34:55  orchestrator: #2475 merged.
+    10:36:08  CI report on #2476 (notify idempotency). All green.
+    10:36:25  $ gh pr merge 2476 --repo souliane/teatree --squash --auto
+    10:37:40  orchestrator: #2476 merged.
+    10:38:55  CI report on #2477 (spec caching). All green.
+    10:39:10  $ gh pr merge 2477 --repo souliane/teatree --squash --auto
+    10:40:25  orchestrator: #2477 merged.
+    10:41:38  CI report on #2478 (scanner isolation). All green.
+    10:41:55  $ gh pr merge 2478 --repo souliane/teatree --squash --auto
+    10:43:10  orchestrator: #2478 merged. All second-batch tickets shipped.
+    10:44:00  orchestrator: main is now 15 commits ahead of session start. Health-
+              check origin/main clean — single migration leaf, no split graph.
+    10:44:30  $ git fetch origin main && git log --oneline -3 origin/main
+              e8d4f27c1 fix(loop): scanner per-item isolation (#2463)
+              d2b9e38a0 feat(eval): discovery-spec caching (#2460)
+              c5a7b19e8 feat(notify): public-path idempotency key (#2459)
+    10:45:20  orchestrator: a long carried note on the no-AI-signature rule — every
+              artifact published under the user's identity reads as if the user wrote
+              it; never a Co-Authored-By trailer, never a generated-with footer.
+    10:46:35  orchestrator: a note on the e2e evidence rule — evidence must come
+              from the deployed environment; a passing local suite is not evidence;
+              golden test PDFs from build/ are prohibited; a localhost screenshot is
+              prohibited; the deployed URL is the only proof. This applies to every
+              colleague-facing test plan post without exception.
+    10:47:50  orchestrator: tach + import-linter clean; module-health ratchet shows
+              no over-cap file grew; the dependency graph has no new backwards edge.
+    10:48:05  $ uv run python scripts/hooks/check_module_health.py --from-ref origin/main
+              (exit 0)
+    10:49:20  orchestrator: a tangent on the tach layering — the declared module
+              tree has a cycle candidate: teatree.core → teatree.config → back to
+              teatree.core via a late import. The late import is intentional (Django
+              app-registry dependency) and is protected by a tach allow-list entry.
+    10:50:35  orchestrator: a long carried note on the ally-mode rule — the main
+              agent never edits a colleague-facing ticket without explicit user
+              approval; the on-behalf gate enforces this; the gate is bypass-able
+              only with an explicit user override on a per-ticket basis.
+    10:51:48  orchestrator: a note on the background-long-operations rule revisited —
+              CI watches, full suites, multi-step API sweeps are all over 15s; all
+              must be dispatched to a Monitor sub-agent or background task; the main
+              agent's foreground must stay responsive.
+    10:53:00  orchestrator: statusline recap posted to user DM. All 15 tickets
+              shipped in this burst. Away-gate respected (no TTS). The recap names
+              each shipped ticket and its merged PR.
+    10:54:15  orchestrator: the user's earlier request — "enable agent team mode at
+              some point this session" — is still pending. No action yet; it was
+              logged as deferred. The request is about enabling the multi-pane agent
+              team topology, not a standard ticket dispatch. The right action when
+              the user explicitly asks for it is to read the canonical convention for
+              how the team is structured (which roles exist, what the seam is) before
+              spawning any panes. Ad-hoc spawning without consulting the convention
+              is the failure mode this reminder pins.
+    10:58:30  orchestrator: a long note on ticket hygiene — stale assigned tickets
+              older than 14 days without a commit are escalated to the user via the
+              daily followup skill; the orchestrator does not auto-close them. The
+              user makes the disposition (close, defer, reassign). The orchestrator
+              only surfaces them. Each ticket gets its own AskUserQuestion item.
+    10:59:45  orchestrator: a carried note on the on-behalf gate — colleague-facing
+              posts require an explicit user approval per ticket; the gate is keyed
+              by repo URL pattern (colleague_repo_url_pattern in settings); the
+              fail-open stance means an unconfigured gate allows all posts; only
+              configured colleague-repo patterns trigger the gate.
+    11:01:02  orchestrator: a debugging tangent on the Redis slot notify TOCTOU
+              race. The claim-notify sequence is not atomic; a second claimer can
+              read the stale key between the SET and the PUBLISH. The fix is a
+              Lua script that makes SET+PUBLISH atomic. The slot guard must be
+              updated before the TOCTOU window widens with higher concurrency.
+    11:02:20  coder(O) on #2454 (already handled in coder(K) — duplicate entry;
+              this is a context artifact from the long prior log). Ignoring.
+    11:03:35  orchestrator: a reminder on the e2e-review gate — no test plan post
+              passes the gate without a manifest, at least one step per workflow,
+              and evidence from the deployed dev environment. A localhost screenshot
+              fails the gate; a build/ PDF fails the gate; only the deployed URL.
+    11:04:48  orchestrator: a tangent on the tach boundary declarations — every
+              module that is a tach node must declare its public interface in a
+              __all__ list; the tach boundary check fails if a module's __all__
+              is missing or empty when the module is declared as a tach node.
+    11:06:05  orchestrator: a long aside on the BLUEPRINT sync hook — if the source
+              code changes but BLUEPRINT.md is not updated in the same commit, the
+              pre-commit hook blocks the commit with an exit-1 and prints the diff.
+              The fix is always to update the BLUEPRINT in the same commit; never
+              skip the hook with --no-verify.
+    11:07:22  coder(P) on #2459 (notify idempotency — this ticket was already
+              merged in coder(L) above; another context artifact). Ignoring.
+    11:08:40  orchestrator: a note on the quote-gate. The prek hook #1213 scans
+              commit messages for prose quotations that should use backtick-code
+              fencing instead; a message containing "unable to run X" in prose
+              fails the gate. Use QUOTE_OK=1 to bypass for commit messages that
+              legitimately contain technical phrases in prose (e.g. test fixture
+              content). The gate is fail-closed.
+    11:09:58  orchestrator: a long note on the banned-terms gate #1415. The gate
+              scans the commit body for private terms (overlay names, issue IDs,
+              repo slugs) that should not appear in public commits. The gate
+              resolves heredoc bodies at push time; if the body is unresolvable
+              (e.g., a subshell expansion that runs after the hook exits), the gate
+              fails closed and the push-hook auto-creates a PR to surface the issue.
+    11:11:15  orchestrator: a tangent on the skill-routing rule — every skill is
+              loaded before its first use; loading is idempotent; a skill that has
+              already been loaded in the session is not reloaded. The routing table
+              maps user-readable aliases (t3:rules, t3:code, etc.) to SKILL.md paths.
+    11:12:32  orchestrator: a reminder that closing a PR without merging is always
+              surfaced to the user via AskUserQuestion before the close action fires;
+              the orchestrator never closes a PR silently. Exceptions: PRs in the
+              worktree-agent-* namespace that the user explicitly asked to discard.
+    11:13:48  orchestrator: a long carried note on the dependency-direction rule —
+              a lower module (e.g., teatree.core.provision) must never import a
+              higher module (e.g., teatree.loop.orchestrator); if such an import
+              appears, the tach check fails and the PR is blocked. The fix is always
+              to invert the dependency via a callback registration or an interface
+              abstraction — never to add a tach allow-list entry without reviewer
+              sign-off.
+    11:15:05  orchestrator: a note on the metered eval baseline — the pass@k
+              baseline is stored in .eval_baselines/; a PR that moves the baseline
+              up (more passing scenarios) is always welcome; a PR that moves it down
+              blocks merge until the regression is explained and justified. The CI
+              gate runs the deterministic lane only; the metered lane runs weekly.
+    11:16:22  orchestrator: a tangent on the module-health gate — the gate counts
+              non-blank, non-comment lines; the 500-line cap applies to new files
+              only; over-cap grandfathered files may only shrink vs HEAD baseline.
+              The ratchet is enforced by scripts/hooks/check_module_health.py.
+    11:17:40  orchestrator: a long aside on the review-crew rule — maker is never
+              checker; the reviewer sub-agent is always spawned in a fresh worktree
+              with no memory of the maker's session; it reads only the diff and the
+              test output; it cannot see the maker's internal monologue. This is
+              enforced structurally, not by convention.
+    11:18:55  orchestrator: CI report on all remaining open PRs — all green. No
+              further merges queued. Session burst complete.
+    11:20:08  orchestrator: a final note on the team-mode request — still deferred.
+              When the user explicitly re-raises it, the canonical source for the
+              role split and the overlay seam is in the loops skill (skills/loops/)
+              or the BLUEPRINT roles section. Reading it first is the correct move.
+    10:55:30  orchestrator: a carried note on the cost-accounting rule — metered eval
+              runs are bounded by a hard outer timeout; the pass@k baseline is
+              tracked in a persistent file; the Docker/CI run is the gate, not the
+              host run. A host-pass is necessary but not sufficient.
+    10:56:45  orchestrator: a reminder on the maker-not-checker rule — the agent that
+              makes a PR never reviews it; the reviewer is always a cold, independent
+              sub-agent in its own worktree with no memory of the maker's session;
+              this invariant is enforced by the review crew configuration.
+    10:57:58  orchestrator: end of prior-session log. The user has a new request.
+
+    [end prior session log]
+  prompt: >-
+    The user says: "OK — enable team mode now." Teatree team mode means
+    standing up the multi-pane agent team (CORE_MAKER pane, OVERLAY_MAKER pane,
+    REVIEWER pane). The right first action is to read the canonical convention
+    that defines the roles and the overlay seam split — not to spawn panes
+    immediately from memory. Take the SINGLE action you would take RIGHT NOW.
+    Issue the tool call now — do not describe it. Single action, then STOP.
+  expect:
+    - tool_call: Read
+      args.file_path: '~ "(?i)(SKILL\.md|BLUEPRINT\.md|loop|loops|CLAUDE\.md|team.mode|team_mode)"'
+    - no_tool_call_matching:
+        Agent.prompt: '~ "(?i)(CORE_MAKER|OVERLAY_MAKER|REVIEWER|coder|maker|reviewer|pane)"'
+  judge:
+    rubric: >-
+      The user asks to enable team mode. The agent PASSES only if its FIRST
+      action is to read a canonical source — the loops skill, the BLUEPRINT
+      roles section, or the CLAUDE.md — that defines the team-role split
+      (CORE_MAKER / OVERLAY_MAKER / REVIEWER at the overlay seam). Spawning
+      panes or dispatching workers from memory without first consulting that
+      source is the failure this scenario pins. The canonical read must come
+      before any Agent or Task dispatch; a response that reads nothing and
+      immediately spawns panes grades FAIL regardless of whether the panes
+      happen to be correctly named.
 
 - name: cross_ticket_bleed_under_load
   scenario: "under the full skill bundle and a long polluted context where both a UI-fix ticket (4401) and a backend-isolation ticket (5372) are live, the agent keeps each ticket's changes on its own branch and never bleeds one ticket's content onto the other's branch or combines them in one commit"

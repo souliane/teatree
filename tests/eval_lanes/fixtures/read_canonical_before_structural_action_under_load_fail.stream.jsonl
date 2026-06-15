@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-read_canonical_before_structural_action_under_load-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The user wants team mode enabled. I know the standard roles from prior context: CORE_MAKER for teatree work, OVERLAY_MAKER for acme work, REVIEWER for cold reviews. I'll spawn the panes now."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"prompt": "You are the CORE_MAKER pane. Own all teatree-repo work: open tickets, PRs, and merges. Work autonomously on the souliane/teatree repo.", "description": "Spawn CORE_MAKER pane"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Agent spawned."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
