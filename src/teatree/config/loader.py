@@ -230,6 +230,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
         user_identity_aliases=_file_str_list(teatree.get("user_identity_aliases", [])),
         repo_mode=str(teatree.get("repo_mode", "")),
+        colleague_repo_url_pattern=str(teatree.get("colleague_repo_url_pattern", "")),
+        solo_repo_url_pattern=str(teatree.get("solo_repo_url_pattern", "")),
         missing_issue_ref_policy=_resolve_enum_setting(
             teatree,
             "missing_issue_ref_policy",
