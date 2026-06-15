@@ -62,7 +62,12 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review_candidate import eyes_reacted_by_other
-from teatree.loop.review_claim import filter_review_intent_signals, reaction_already_present, record_reaction_claim
+from teatree.loop.review_claim_signals import (
+    filter_review_intent_signals,
+    reaction_already_present,
+    record_reaction_claim,
+)
+from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
@@ -188,8 +193,6 @@ def _seed_review_request_posts(
     and ``done_at`` so the nag state machine is not reset. Merged URLs are
     skipped — only open MRs need nagging.
     """
-    from teatree.loop.review_request_tracker import record_review_request_post  # noqa: PLC0415
-
     for state in _open_subset(states):
         record_review_request_post(
             mr_url=state.url,

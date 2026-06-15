@@ -381,7 +381,13 @@ depends_on = [
   "teatree.loop_enabled",
   "teatree.teams",
   "teatree.loop.statusline_palette",
-  "teatree.loop.statusline_render"
+  "teatree.loop.statusline_render",
+  "teatree.loop.url_specificity",
+  "teatree.loop.review_claim_signals",
+  "teatree.loop.review_request_tracker",
+  "teatree.loop.dispatch_tables",
+  "teatree.loop.pr_ticket_index",
+  "teatree.loop.scanners"
 ]
 
 [[modules]]
@@ -393,6 +399,53 @@ depends_on = []
 path = "teatree.loop.statusline_render"
 layer = "domain"
 depends_on = ["teatree.loop.statusline_palette"]
+
+[[modules]]
+path = "teatree.loop.url_specificity"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.loop.review_request_tracker"
+layer = "domain"
+depends_on = ["teatree.core.models"]
+
+[[modules]]
+path = "teatree.loop.dispatch_tables"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.loop.pr_ticket_index"
+layer = "domain"
+depends_on = ["teatree.loop.dispatch_tables"]
+
+[[modules]]
+path = "teatree.loop.review_claim_signals"
+layer = "domain"
+depends_on = ["teatree.types", "teatree.core.models"]
+
+[[modules]]
+path = "teatree.loop.scanners"
+layer = "domain"
+depends_on = [
+  "teatree.types",
+  "teatree.paths",
+  "teatree.utils",
+  "teatree.url_classify",
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.backends",
+  "teatree.backends.errors",
+  "teatree.backends.github",
+  "teatree.backends.gitlab",
+  "teatree.backends.slack",
+  "teatree.teams",
+  "teatree.loop.url_specificity",
+  "teatree.loop.review_claim_signals",
+  "teatree.loop.review_request_tracker",
+  "teatree.loop.pr_ticket_index"
+]
 
 [[modules]]
 path = "teatree.loops"

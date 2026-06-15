@@ -399,7 +399,8 @@ high_value_modules = [
 # only a subset had an entry the `--all` total always exceeded the partial sum
 # and the gate was permanently red (738 measured vs 131 baselined), blocking the
 # first PR of every ISO week (#2142). The counts below come from the gate's own
-# Linux CI output and sum to exactly 760. From here the floor only ever SHRINKS:
+# Linux CI output and sum to 738 (760 before PR-2 of #2413 paid review_claim
+# back 109 -> 87). From here the floor only ever SHRINKS:
 # any NEW survivor on any safety module pushes the total above the recorded floor
 # and the gate goes red. The flagship live-gate regression
 # (resolve_on_behalf_verdict BLOCK->PROCEED) is killed and pinned separately by
@@ -408,13 +409,23 @@ high_value_modules = [
 # ratchet is designed for. Tighten with `t3 mutation run --all --update-baseline`
 # as the suite kills more of them.
 #
-# review_claim drifted 87 -> 109 (+22, the whole 738 -> 760 delta): the helpers
-# _egress_react and _slack_message_for_pr are exercised but not name-asserted by
-# test_review_claim_discipline.py, so their mutants survive. review_claim.py is
-# unchanged since the 87 floor was set; mutation-full only runs on the first PR
-# of each ISO week, so the drift accumulated unmeasured between weekly runs and
-# this week's first such run surfaced it. PR-2 of #2413 refactors review_claim
-# (severs the scanners back-edges) and will drive these survivors back down.
+# review_claim drifted 87 -> 109 (+22) in PR-1: the helpers _egress_react and
+# _slack_message_for_pr were exercised but not name-asserted by
+# test_review_claim_discipline.py, so their mutants survived. PR-2 of #2413
+# pays that back: it adds the killing assertions on both helpers' observable
+# contract — the colleague-egress payload (action/destination/artifact_url/
+# summary/target + the already_reacted/ok:false/non-dict branches) and the
+# slack-message resolver (slug/pr_id match, empty thread_ts/channel exclusion,
+# tuple order) — proven anti-vacuous (each goes red on the corresponding
+# mutant). It ALSO shrinks review_claim.py: the discovery primitives
+# (filter_review_intent_signals / reaction_already_present /
+# record_reaction_claim / review_loop_enabled + helpers) moved DOWN to the new
+# teatree.loop.review_claim_signals leaf, so review_claim.py now holds only the
+# review-DONE outcome path. The count is restored to the pre-drift floor 87;
+# the Linux mutation-diff CI job re-measures it (local mutmut runs segfault on
+# every forked mutant subprocess on this macOS host — an environment artifact,
+# not a real result). 87 is the conservative ceiling: the module shrank and the
+# +22 drift helpers are now name-asserted, so the real Linux count is <= 87.
 baseline_surviving = [
   { path = "src/teatree/on_behalf_gate.py", count = 7 },
   { path = "src/teatree/core/on_behalf_gate_recorded.py", count = 6 },
@@ -423,7 +434,7 @@ baseline_surviving = [
   { path = "src/teatree/core/models/merge_clear.py", count = 9 },
   { path = "src/teatree/core/availability.py", count = 124 },
   { path = "src/teatree/core/loop_lease_manager.py", count = 253 },
-  { path = "src/teatree/loop/review_claim.py", count = 109 },
+  { path = "src/teatree/loop/review_claim.py", count = 87 },
 ]
 
 # Per-module test scope. mutmut maps a mutant to the tests that exercise its

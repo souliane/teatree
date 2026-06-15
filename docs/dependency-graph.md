@@ -172,7 +172,33 @@ graph TD
     teatree.loop --> teatree.teams
     teatree.loop --> teatree.loop.statusline_palette
     teatree.loop --> teatree.loop.statusline_render
+    teatree.loop --> teatree.loop.url_specificity
+    teatree.loop --> teatree.loop.review_claim_signals
+    teatree.loop --> teatree.loop.review_request_tracker
+    teatree.loop --> teatree.loop.dispatch_tables
+    teatree.loop --> teatree.loop.pr_ticket_index
+    teatree.loop --> teatree.loop.scanners
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
+    teatree.loop.review_request_tracker --> teatree.core.models
+    teatree.loop.pr_ticket_index --> teatree.loop.dispatch_tables
+    teatree.loop.review_claim_signals --> teatree.types
+    teatree.loop.review_claim_signals --> teatree.core.models
+    teatree.loop.scanners --> teatree.types
+    teatree.loop.scanners --> teatree.paths
+    teatree.loop.scanners --> teatree.utils
+    teatree.loop.scanners --> teatree.url_classify
+    teatree.loop.scanners --> teatree.core
+    teatree.loop.scanners --> teatree.core.models
+    teatree.loop.scanners --> teatree.backends
+    teatree.loop.scanners --> teatree.backends.errors
+    teatree.loop.scanners --> teatree.backends.github
+    teatree.loop.scanners --> teatree.backends.gitlab
+    teatree.loop.scanners --> teatree.backends.slack
+    teatree.loop.scanners --> teatree.teams
+    teatree.loop.scanners --> teatree.loop.url_specificity
+    teatree.loop.scanners --> teatree.loop.review_claim_signals
+    teatree.loop.scanners --> teatree.loop.review_request_tracker
+    teatree.loop.scanners --> teatree.loop.pr_ticket_index
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
@@ -211,6 +237,8 @@ graph TD
     teatree.backends.types
     teatree.cli._format_opts
     teatree.loop.statusline_palette
+    teatree.loop.url_specificity
+    teatree.loop.dispatch_tables
     teatree.slack_mrkdwn
     teatree.memory_audit
     teatree.trigger_parser
