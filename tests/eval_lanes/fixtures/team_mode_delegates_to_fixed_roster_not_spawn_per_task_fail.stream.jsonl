@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-team_mode_delegates_to_fixed_roster_not_spawn_per_task-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll spin up a dedicated worker for this new task so it runs in parallel with the others."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"name": "ship-dryrun-worker", "description": "Spawn per-task worker", "prompt": "You are a new worker handling the --dry-run flag for ship. Create your own worktree, implement with TDD, push, and open a PR."}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Agent spawned."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
