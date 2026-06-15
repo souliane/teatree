@@ -14,6 +14,22 @@ hook and when imported as ``hooks.scripts.hook_router`` in tests.
 import re
 from pathlib import Path
 
+# The MR-mutation verb itself — ``glab mr create``/``update``. Matched against
+# the command with quoted spans and heredoc bodies stripped (see
+# :func:`_strip_quoted_and_heredoc`) so it fires only on a REAL invocation, not
+# on the phrase merely embedded in a ``git commit -m '… glab mr create …'``
+# message, a doc string, or a heredoc body.
+_MR_OP_RE = re.compile(r"\bglab\s+mr\s+(create|update)\b")
+# A heredoc body — ``<<['"]?DELIM['"]?`` up to a line that is just ``DELIM``.
+# Stripped FIRST (before quotes) because a quoted delimiter (``<<'PY'``) would
+# otherwise be eaten by the quote-stripper and orphan the body.
+_HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)(?P<delim>\w+)\1.*?^\s*(?P=delim)\b", re.DOTALL | re.MULTILINE)
+# Single- and double-quoted argument spans — a ``-m``/``-F`` message, a quoted
+# title/description value, any quoted text. Removed for DETECTION only; value
+# extraction still runs on the original command.
+_SQUOTE_SPAN_RE = re.compile(r"'[^']*'")
+_DQUOTE_SPAN_RE = re.compile(r'"[^"]*"')
+
 # Inline ``--title``/``--description`` (single OR double quoted, multi-line via
 # DOTALL). The `glab mr` CLI uses ``--title``/``--description``; the long-flag
 # value is captured verbatim from the matching opening quote.
@@ -39,6 +55,24 @@ _DYNAMIC_VALUE_RE = re.compile(r"\$[({A-Za-z_]|`")
 _MSG_FILE_FLAG_RE = re.compile(
     r"(?:(?:--description-file|--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
 )
+
+
+def _strip_quoted_and_heredoc(command: str) -> str:
+    """Command with heredoc bodies and quoted spans removed — for verb DETECTION.
+
+    Heredoc bodies first (line-structured, and a quoted delimiter would confuse
+    the quote pass), then single- and double-quoted argument spans. What remains
+    is the bare command skeleton: a ``glab mr create/update`` here is a real
+    invocation, while the same text inside a ``-m`` message, a quoted title, or a
+    heredoc body is gone. The residual false-negative — a real create/update fed
+    *through* a stripped span (``bash -c "glab mr create …"`` or a heredoc piped
+    to a shell) — is rare and backstopped by the remote MR-title CI gate; the
+    common case (a commit message / doc / verification script that merely quotes
+    the phrase) no longer false-blocks.
+    """
+    without_heredoc = _HEREDOC_RE.sub(" ", command)
+    without_squote = _SQUOTE_SPAN_RE.sub(" ", without_heredoc)
+    return _DQUOTE_SPAN_RE.sub(" ", without_squote)
 
 
 def _looks_dynamic_value(match: "re.Match[str] | None") -> bool:
@@ -108,11 +142,13 @@ def _extract_inline_or_file_desc(command: str) -> str | None:
     return ""
 
 
-def extract_cli_mr_fields(command: str, operation: str) -> tuple[str, str] | None:
+def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
     """Title/description for a ``glab mr create``/``update`` CLI command.
 
-    ``operation`` is ``"create"`` or ``"update"``. ``None`` skips validation
-    (never-lockout); a tuple is validated.
+    ``None`` means "not an MR mutation to validate" — either the command does
+    not actually invoke ``glab mr create/update`` (the verb only appears inside a
+    quoted arg / heredoc body — see :func:`_strip_quoted_and_heredoc`), or it is
+    one but must be skipped (never-lockout). A tuple is validated.
 
     Skips when the hook cannot resolve a field statically — an unexpanded
     ``$(…)``/``${…}``/``$VAR``/backtick the shell only expands at runtime (the
@@ -124,6 +160,10 @@ def extract_cli_mr_fields(command: str, operation: str) -> tuple[str, str] | Non
     stricter both-fields contract — an empty title/description on a create is
     exactly the bad metadata the gate must catch (#119).
     """
+    op_match = _MR_OP_RE.search(_strip_quoted_and_heredoc(command))
+    if op_match is None:
+        return None
+    operation = op_match.group(1)
     title_match = _MR_TITLE_FLAG_RE.search(command)
     if _looks_dynamic_value(title_match):
         return None

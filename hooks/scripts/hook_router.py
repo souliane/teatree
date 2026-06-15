@@ -2364,10 +2364,12 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
 
     if tool_name == "Bash":
         command = tool_input.get("command", "")
-        # Use \s+ (not plain `in`) so double-space variants are caught (F1).
-        mr_op = re.search(r"\bglab\s+mr\s+(create|update)\b", command)
-        if mr_op:
-            return extract_cli_mr_fields(command, mr_op.group(1))
+        # ``extract_cli_mr_fields`` detects a REAL ``glab mr create/update``
+        # invocation (ignoring the verb embedded in a quoted arg / heredoc body)
+        # and returns the fields, or None when it is not a CLI mutation.
+        cli_fields = extract_cli_mr_fields(command)
+        if cli_fields is not None:
+            return cli_fields
         return _extract_api_mr_fields(command)
 
     if tool_name in _MR_TOOLS:

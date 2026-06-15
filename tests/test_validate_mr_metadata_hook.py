@@ -378,3 +378,48 @@ class TestDynamicValueIsSkipped:
     def test_create_with_description_no_title_still_validated(self):
         # Regression: a create missing --title is still bad metadata, not skipped.
         assert self._fields_for("glab mr create --description 'x'") == ("", "x")
+
+
+class TestEmbeddedTriggerIsNotAnMrMutation:
+    """The trigger phrase inside a quoted arg / heredoc body is NOT a mutation.
+
+    The gate must fire only when ``glab mr create/update`` is the command being
+    executed, not when the literal text merely appears inside another command's
+    quoted argument, a ``-m``/``-F`` message, or a heredoc body (a commit
+    message, a doc string, a verification script). Detection runs against the
+    command with quoted spans and heredoc bodies stripped; value extraction
+    still uses the original command so a real invocation is unaffected.
+    """
+
+    def _fields_for(self, command: str):
+        return router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+
+    def test_commit_message_embedding_is_not_a_mutation(self):
+        cmd = "git commit -m 'docs: explain how glab mr create validates titles'"
+        assert self._fields_for(cmd) is None
+
+    def test_double_quoted_commit_message_embedding_is_not_a_mutation(self):
+        cmd = 'git commit -m "fix: stop the gate firing on glab mr update text"'
+        assert self._fields_for(cmd) is None
+
+    def test_heredoc_body_embedding_is_not_a_mutation(self):
+        cmd = "python - <<'PY'\nprint('run glab mr create --title x later')\nPY"
+        assert self._fields_for(cmd) is None
+
+    def test_other_command_quoted_title_embedding_is_not_a_mutation(self):
+        cmd = 'gh issue create --title "gate over-fires on glab mr update string"'
+        assert self._fields_for(cmd) is None
+
+    def test_real_create_after_quoted_decoy_is_still_detected(self):
+        cmd = (
+            "echo 'will run glab mr create' && glab mr create --title 'fix: x (proj#1)' --description 'fix: x (proj#1)'"
+        )
+        assert self._fields_for(cmd) == ("fix: x (proj#1)", "fix: x (proj#1)")
+
+    def test_real_bare_create_is_still_detected(self):
+        title, _desc = _fields("glab mr create --title 'fix: x (proj#1)' --description 'fix: x (proj#1)'")
+        assert title == "fix: x (proj#1)"
+
+    def test_real_metadata_only_update_still_skipped(self):
+        # The strip must not turn a genuine metadata-only update into a mutation.
+        assert self._fields_for("glab mr update 7624 --reviewer alice") is None
