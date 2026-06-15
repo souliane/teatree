@@ -178,6 +178,10 @@ graph TD
     teatree.loop --> teatree.loop.dispatch_tables
     teatree.loop --> teatree.loop.pr_ticket_index
     teatree.loop --> teatree.loop.scanners
+    teatree.loop --> teatree.loop.dispatch_reducer
+    teatree.loop --> teatree.loop.dispatch_gates
+    teatree.loop --> teatree.loop.dispatch
+    teatree.loop --> teatree.loop.self_improve
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.review_request_tracker --> teatree.core.models
     teatree.loop.pr_ticket_index --> teatree.loop.dispatch_tables
@@ -199,6 +203,28 @@ graph TD
     teatree.loop.scanners --> teatree.loop.review_claim_signals
     teatree.loop.scanners --> teatree.loop.review_request_tracker
     teatree.loop.scanners --> teatree.loop.pr_ticket_index
+    teatree.loop.dispatch_reducer --> teatree.url_classify
+    teatree.loop.dispatch_reducer --> teatree.core.modelkit
+    teatree.loop.dispatch_reducer --> teatree.loop.scanners
+    teatree.loop.dispatch_reducer --> teatree.loop.dispatch_tables
+    teatree.loop.dispatch_gates --> teatree.config
+    teatree.loop.dispatch_gates --> teatree.core
+    teatree.loop.dispatch_gates --> teatree.core.models
+    teatree.loop.dispatch_gates --> teatree.core.modelkit
+    teatree.loop.dispatch_gates --> teatree.backends
+    teatree.loop.dispatch_gates --> teatree.loop.scanners
+    teatree.loop.dispatch_gates --> teatree.loop.dispatch_tables
+    teatree.loop.dispatch_gates --> teatree.loop.dispatch_reducer
+    teatree.loop.dispatch_gates --> teatree.loop.review_claim_signals
+    teatree.loop.dispatch --> teatree.loop.scanners
+    teatree.loop.dispatch --> teatree.loop.dispatch_tables
+    teatree.loop.dispatch --> teatree.loop.dispatch_reducer
+    teatree.loop.dispatch --> teatree.loop.dispatch_gates
+    teatree.loop.self_improve --> teatree.core
+    teatree.loop.self_improve --> teatree.core.models
+    teatree.loop.self_improve --> teatree.utils
+    teatree.loop.self_improve --> teatree.loop.scanners
+    teatree.loop.self_improve --> teatree.loop.statusline_render
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
