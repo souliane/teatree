@@ -99,6 +99,10 @@ NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments tha
 
 Skill prose does not propagate into a spawned agent's context — include the instruction verbatim.
 
+### Fixed roster in Agent-Team mode
+
+The fan-out above spawns an ephemeral worker per ticket only in **solo** mode (the main agent owns the Agent/Task tool). When the session is an **Agent Team**, the roster is **fixed up front**: the team's makers and reviewer are created once. A new task is then routed to an **existing idle teammate** via the shared task list — `TaskUpdate` the task's `owner` to that teammate (or the teammate claims it), then a `SendMessage` hands off context. Never spawn a **fresh teammate per task**: teammates cannot spawn teammates, the lead's roster is sized once, and minting a new mate per unit of work fragments ownership and breaks the claim model. Reuse the roster; the task list is the work queue, not a reason to grow the team.
+
 ### Hard rails parallelization must not break
 
 These are references to canonical rule homes, not restatements:

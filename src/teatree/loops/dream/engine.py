@@ -33,6 +33,17 @@ The output store is the DB-backed :class:`~teatree.core.models.ConsolidatedMemor
 ledger; :func:`write_clusters` reuses its ``record_cluster`` factory rather than
 bypassing the manager.
 
+Phase 3b (propose evals — default OFF, #2346) — when ``run_consolidation`` is
+given an ``EvalProposalRequest``, the sibling :mod:`teatree.loops.dream.eval_proposer`
+maps each grounded cluster to an inert eval CANDIDATE and appends it to a JSONL
+review queue. This realises the "a behavioural drift is not fixed until an
+anti-vacuous eval pins it" rule from the dreaming side, but only as a CANDIDATE:
+a core-maker / human ratifies each into a real ``under_load`` scenario (pollution
+preamble + discriminating matchers + ``_pass``/``_fail`` fixtures + the teeth
+proof). The engine never autonomously writes an ``evals.yaml`` or a fixture — the
+LLM-generated, self-anti-vacuous derivation is the deferred follow-up the design
+issue specifies.
+
 Deferred (out of scope for v1 — see issue #1933 § 6): the optional phase-4
 cross-link pass; the phase-5 ``MEMORY.md`` re-index (rewriting the user's real
 155KB index with BINDING entries); the phase-6 decay / archive of the memory
@@ -49,7 +60,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast
+
+if TYPE_CHECKING:
+    from teatree.loops.dream.eval_proposer import EvalProposalRequest
 
 _DEFAULT_LOOKBACK_HOURS = 48
 
@@ -129,9 +143,10 @@ class DreamRunResult:
     clusters_recorded: int
     members_replayed: int
     dry_run: bool
+    evals_proposed: int = 0
 
 
-def _projects_dir() -> Path:
+def default_projects_dir() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
@@ -171,7 +186,7 @@ def enumerate_members(
         cutoff = datetime.now(tz=UTC) - timedelta(hours=lookback_hours)
 
     cutoff_ts = cutoff.timestamp()
-    root = projects_dir or _projects_dir()
+    root = projects_dir or default_projects_dir()
     task_roots = task_output_roots if task_output_roots is not None else _task_output_roots()
 
     members: list[TranscriptMember] = []
@@ -292,11 +307,11 @@ def write_clusters(
     Returns the count of clusters that passed the reject guard. Under *dry_run*
     the count is computed but nothing is written.
     """
-    snippet_texts = {str(snippet.path): _normalize_ws(snippet.text) for snippet in extract.snippets}
+    snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     snippet_weights = {str(snippet.path): snippet.weight for snippet in extract.snippets}
     written = 0
     for cluster in clusters:
-        if not _cluster_is_grounded(cluster, snippet_texts):
+        if not cluster_is_grounded(cluster, snippet_texts):
             continue
         written += 1
         if not dry_run:
@@ -304,15 +319,15 @@ def write_clusters(
     return written
 
 
-def _normalize_ws(text: str) -> str:
+def normalize_ws(text: str) -> str:
     return " ".join(text.split())
 
 
-def _cluster_is_grounded(cluster: DistilledCluster, snippet_texts: dict[str, str]) -> bool:
+def cluster_is_grounded(cluster: DistilledCluster, snippet_texts: dict[str, str]) -> bool:
     sources = [str(path) for path in cluster.source_files if str(path).strip()]
     if not sources or any(source not in snippet_texts for source in sources):
         return False
-    citation = _normalize_ws(cluster.verified_citation)
+    citation = normalize_ws(cluster.verified_citation)
     if not citation:
         return False
     return any(citation in snippet_texts[source] for source in sources)
@@ -493,19 +508,37 @@ def run_consolidation(
     since: datetime | None,
     dry_run: bool,
     distiller: Distiller | None = None,
+    eval_proposals: "EvalProposalRequest | None" = None,
 ) -> DreamRunResult:
     """Run one consolidation pass: replay → extract → distill → write to ledger.
 
     *distiller* defaults to the real SDK distiller; tests inject a fake so the
     engine runs without an LLM. A distiller failure propagates to the caller
     (the command marks the pass attempted-not-succeeded), never swallowed.
+
+    *eval_proposals* is OFF by default (``None``): an unflagged pass is
+    byte-identical to before. When a request is supplied, the sibling
+    :mod:`teatree.loops.dream.eval_proposer` derives inert eval candidates from the
+    grounded clusters and appends them to the review queue — only candidate
+    descriptors, never an ``evals.yaml`` or fixture.
     """
     members = enumerate_members(since=since)
     extract = build_extract(members)
     distill = distiller or _sdk_distiller
     clusters = distill(extract)
     written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
-    return DreamRunResult(clusters_recorded=written, members_replayed=len(members), dry_run=dry_run)
+    proposed = 0
+    if eval_proposals is not None:
+        from teatree.loops.dream import eval_proposer  # noqa: PLC0415
+
+        proposals = eval_proposer.propose_evals(clusters, extract, proposer=eval_proposals.proposer)
+        proposed = eval_proposer.write_eval_proposals(proposals, dry_run=dry_run, out_path=eval_proposals.out_path)
+    return DreamRunResult(
+        clusters_recorded=written,
+        members_replayed=len(members),
+        dry_run=dry_run,
+        evals_proposed=proposed,
+    )
 
 
 __all__ = [
@@ -516,7 +549,10 @@ __all__ = [
     "TranscriptMember",
     "WeightedSnippet",
     "build_extract",
+    "cluster_is_grounded",
+    "default_projects_dir",
     "enumerate_members",
+    "normalize_ws",
     "run_consolidation",
     "write_clusters",
 ]

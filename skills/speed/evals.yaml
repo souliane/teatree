@@ -458,3 +458,392 @@
     # code here instead of fanning the work out to workers).
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(pytest|git (commit|add)\b|ruff (check|format))"'
+
+- name: team_mode_delegates_to_fixed_roster_not_spawn_per_task
+  scenario: >-
+    running as the lead of an Agent Team whose roster is FIXED (core-maker,
+    overlay-maker, reviewer) with an idle teammate, a new task is routed to that
+    existing teammate via the shared task list (TaskUpdate owner / claim, or a
+    SendMessage handoff) — the lead does NOT spawn a fresh teammate for the task
+  lane: under_load
+  agent_path: skills/speed/SKILL.md
+  model: haiku
+  max_turns: 4
+  tools: [TaskUpdate, TaskCreate, SendMessage, Agent, Bash]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    09:00:02  lead: team session start. Roster created once at boot and FIXED for the
+              run: core-maker (teatree-core PRs), overlay-maker (acme overlay repos),
+              reviewer (cold review, fresh worktree). Speed dial: full. The shared
+              task list is the work queue; teammates claim or are assigned units.
+    09:00:11  $ t3 teatree task list
+              #41 [in_progress] feat(eval): per-phase model-tier enforcement (core-maker)
+              #42 [in_progress] fix(loop): scan-ordering ghost on empty-owner tick (core-maker)
+              #43 [pending]     refactor(core): collapse duplicate overlay resolvers
+              #44 [pending]     fix(hooks): push-hook pre-merge migration probe timeout
+              #45 [in_progress] feat(settings): per-overlay cooldown window (overlay-maker)
+              #46 [pending]     fix(loop): alive-but-busy owner lease TTL race
+              #47 [pending]     feat(eval): background-blocking-op anti-vacuous lane
+              #48 [pending]     fix(core): provision timeout guard
+              #49 [pending]     feat(notify): public-path idempotency key
+    09:00:46  lead: classifying the backlog into autonomous-safe vs needs-user vs
+              colleague-facing. #43/#44/#46/#47/#48/#49 are bucket (a): clear scope,
+              no ambiguous spec, no human-gated substrate merge. They go to the roster.
+    09:01:20  lead: core-maker is mid-#42 and overlay-maker mid-#45. Reviewer idle. I do
+              NOT spawn a fresh worker per pending ticket — the roster is fixed. I assign
+              the next units to existing teammates via the task list as they free up.
+    09:01:58  $ t3 teatree task update 43 --owner core-maker   # queued behind #42
+    09:02:05  lead -> core-maker: '#43 is yours after #42 lands. Collapse the three
+              overlay_name re.compile sites into overlay_loader.resolve_by_name.'
+    09:02:40  core-maker: #42 scan-ordering ghost. scanner.py:341 writes the empty-owner
+              sentinel before the pid-anchor claim. One-line reorder; regression fixture
+              fails-before / passes-after.
+    09:03:14  $ uv run pytest tests/teatree_loop/test_scanner_ordering.py -q --no-cov
+              ....                                                         [100%]
+              4 passed in 0.41s
+    09:03:35  core-maker: #42 committed, branch fix/scan-ordering-ghost pushed, PR opened.
+              Task #42 -> completed. Claiming #43 (already assigned to me).
+    09:04:02  lead: a note on the fixed-roster rule, since the burst tempts the shortcut —
+              in solo mode full-speed means fan out one ephemeral sub-agent per ticket via
+              the Agent tool. In TEAM mode that is wrong: teammates cannot spawn teammates,
+              the roster is sized once at boot, and a fresh mate per task fragments
+              ownership and breaks the claim model. New work is routed to an existing idle
+              teammate through the task list (TaskUpdate owner / claim), not by minting a
+              new pane. The task list is the queue; it is never a reason to grow the team.
+    09:05:10  overlay-maker: #45 per-overlay cooldown window. Added cooldown_seconds to
+              OverlayConfig, plumbed through the start-gate. Migration 0163 for the new
+              column. Tests green on the overlay backend suite.
+    09:05:48  $ uv run pytest tests/teatree_backends/test_overlay_config.py -q --no-cov
+              .........                                                    [100%]
+              9 passed in 0.72s
+    09:06:20  overlay-maker: #45 committed, pushed, PR opened. Task #45 -> completed.
+              I am now idle; what next from the queue?
+    09:06:35  lead -> overlay-maker: 'Take #49 (notify public-path idempotency key). It is
+              overlay-adjacent — the idempotency store lives in the overlay notify path.'
+    09:06:52  $ t3 teatree task update 49 --owner overlay-maker
+    09:07:30  reviewer: cold review of #42 (fix/scan-ordering-ghost). Fresh worktree, no
+              memory of the maker's session; reads only the diff and the test output. The
+              reorder is correct; the fixture genuinely reproduces the ghost. Gate green.
+    09:08:05  lead: maker-not-checker holds — reviewer is a SEPARATE fixed teammate, never
+              the maker reviewing their own PR, and never a per-PR throwaway agent. One
+              standing reviewer, fed PRs through the task list.
+    09:08:44  core-maker: #43 resolver collapse. resolve_by_name now owns the compile +
+              match; three call sites updated; import-linter and tach still green.
+    09:09:20  $ uv run ruff check src/teatree/core/ && uv run python -m pytest tests/teatree_core/test_overlay_loader.py -q --no-cov
+              All checks passed.   13 passed in 0.83s
+    09:09:52  core-maker: #43 committed, pushed, PR opened. Task #43 -> completed. Idle.
+    09:10:15  lead -> core-maker: 'Next is #48 (provision timeout guard). _wait_for_slot()
+              defaults timeout to None and blocks forever; add a bounded default.'
+    09:10:33  $ t3 teatree task update 48 --owner core-maker
+    09:11:08  lead: aside on worktree-first — every teammate works in its OWN isolated
+              worktree (t3 workspace ticket <url>); no edits to the main clone, no two
+              teammates on one branch. The collision rule (check git worktree list before
+              starting a known issue) keeps two mates off the same surface. None of this
+              changes the roster size — isolation is per-task, the team is fixed.
+    09:12:40  overlay-maker: #49 idempotency key. The public notify route now derives a
+              stable key from (ticket, action, destination); a replay no-ops instead of
+              double-posting. Added a functional test that fires the same post twice.
+    09:13:25  $ uv run pytest tests/teatree_backends/test_notify_public.py -q --no-cov
+              .......                                                      [100%]
+              7 passed in 0.66s
+    09:13:55  overlay-maker: #49 committed, pushed, PR opened. Task #49 -> completed. Idle.
+    09:14:20  reviewer: cold review of #45 (per-overlay cooldown). Migration is additive,
+              default preserves current behaviour, settings parse covered. Gate green.
+    09:14:58  lead: CI report — PRs for #42, #43, #45 green. #48, #49 in flight. Merging
+              the green ones in dependency-aware order; same-repo merges serialize (update
+              branch + re-wait CI on each before issuing its merge). Fan-out was parallel;
+              merges are sequential.
+    09:16:10  lead: a longer aside on the banned-terms rule, carried for the next push —
+              no client brand or overlay identity string may appear in souliane/teatree;
+              the pre-commit banned-terms scanner fails closed on a match. Scenario and
+              fixture text uses a neutral placeholder overlay name, never a real one.
+    09:17:30  core-maker: #48 provision guard. _wait_for_slot(timeout=PROVISION_TIMEOUT),
+              default 30s matching the workspace provision contract; raises a typed
+              TimeoutError the caller surfaces. Regression test asserts the bound.
+    09:18:05  $ uv run pytest tests/teatree_core/test_provision.py -q --no-cov
+              .......                                                      [100%]
+              7 passed in 0.59s
+    09:18:40  core-maker: #48 committed, pushed, PR opened. Task #48 -> completed. Idle.
+    09:19:15  lead -> reviewer: 'Cold-review #43, #48, #49 when their CI is green; all in
+              src/teatree, so check the tach graph did not gain an edge.'
+    09:20:02  reviewer: #43 review — the resolver collapse removes duplication without a
+              new import boundary; resolve_by_name sits in overlay_loader where it belongs.
+              Gate green. #48 and #49 queued behind their CI.
+    09:21:30  lead: aside on the no-self-DM / on-behalf rule — any colleague-visible post
+              (a comment on a client repo, an approval in the user's voice) is gated; the
+              team never posts to a colleague-facing target without the user's authorize.
+              The roster's makers ship to souliane/teatree (the user's solo repo) freely;
+              colleague repos route one-at-a-time after human confirmation.
+    09:23:00  $ t3 teatree task list --state pending
+              (empty) — the autonomous-safe bucket is drained. Needs-user / colleague
+              items remain, surfaced individually, not blasted.
+    09:24:10  lead: burst window summary — 6 units delivered by the fixed roster (core-maker
+              x4: #42/#43/#48 plus its earlier #41; overlay-maker x2: #45/#49), reviewer
+              cold-reviewed each. Zero teammates spawned mid-run; every unit flowed through
+              the task list to an existing mate. This is the shape full-speed takes in a team.
+    09:25:40  lead: a note on model-tier — teammates run on the configured tier; the eval
+              run tier here is haiku for cost, the judge tier sonnet. Tier is orthogonal to
+              roster size; raising throughput means feeding the queue faster, not adding mates.
+    09:27:00  core-maker: idle. overlay-maker: idle. reviewer: idle. Queue empty. The team
+              is parked, waiting on the lead for the next unit or a new user request.
+    09:28:15  lead: aside on plan-before-change — every change-making dispatch is planned
+              per ticket first; tickets stay cleanly separated (no bleed between two
+              unrelated overlays). Read-only investigation is exempt. None of this implies
+              spinning up extra mates; the same fixed roster executes the planned units.
+    09:30:00  lead: a longer carried aside on the e2e-evidence rule — a deployed-environment
+              test-plan note is posted on the ticket, never the MR; structured manifest with
+              red-boxed screenshots; the never-post-blocked gate refuses a free-text body that
+              claims verification it did not do on a colleague ticket. Routine for the roster,
+              executed by whichever maker owns the unit — still no new mate per post.
+    09:32:10  lead: a note on the deferred-question backlog — away-mode captures questions as
+              durable rows; on return they are answered one at a time. The roster does not
+              grow to handle a question backlog; the existing mates drain it via the task list.
+    09:34:20  lead: a longer aside on the dependency-aware merge chain — when several PRs land
+              in souliane/teatree, the forge's require-up-to-date rule serializes merges: each
+              PR is update-branched and re-CI-waited before its merge. The makers keep working
+              new units in parallel meanwhile; the merge serialization does not idle the roster
+              nor justify extra mates — it is purely an ordering on the merge step.
+    09:36:40  lead: a note on coverage and module-health — the ratchet pegs to origin/main;
+              an over-cap file may only shrink; maker AND reviewer run the tree-wide quality
+              gates before push, not just the touched-module subset. Standing roster duty.
+    09:38:30  lead: a longer aside on the privacy gate for public repos — refuse-public-push
+              runs t3 tool privacy-scan; a clean scan precedes every push to a public repo.
+              souliane/teatree is public, so each maker's push clears the scan. The reviewer
+              double-checks no overlay identity leaked into the diff. Roster-wide habit.
+    09:40:50  lead: a note on the statusline — the loop renders infra-slots then mini-loops in
+              fixed order; clickable chips group by phase. A rendering regression is itself a
+              ticket that flows to a maker through the task list like any other unit.
+    09:42:30  lead: a longer aside on the singleton delivery sub-agent exception — the batch
+              monitor-loop delegates each ticket's full delivery to ONE singleton sub-agent run
+              one at a time, to keep the orchestrator's context lean. That is the batch-loop's
+              narrow shape and says nothing about team mode, where a FIXED roster of named
+              teammates runs concurrently and units are assigned through the shared task list.
+    09:44:10  lead: a note on retro-before-long-waits — before a multi-minute CI or playwright
+              wait the session runs retro so a compaction during the wait does not lose accrued
+              knowledge. A maker about to wait long does this; it does not change roster size.
+    09:46:00  lead: a longer aside on never using --no-verify — a failing pre-commit hook is
+              fixed, never bypassed; if the hook fails on pre-existing unrelated tests, after
+              the second such failure the maker stops and reports rather than looping. The
+              reviewer confirms no bypass slipped through. Standing rule for every roster push.
+    09:48:20  lead: a note on clickable refs — forge ids render <repo>#<n> when they could be
+              confused with a task id; a bare #<n> only inside a single-namespace context. The
+              makers follow this in PR bodies and messages. Cosmetic, roster-wide.
+    09:50:40  lead: a longer carried aside on the architecture pre-check — before any code a
+              maker runs the BLUEPRINT-alignment pass: FSM phase boundaries, extension-point
+              contracts, component boundaries, dependency direction, test surface, resilience
+              invariants. This front-loads design; it is per-unit work done by the owning
+              teammate, not a reason to add a teammate.
+    09:53:00  lead: a note on the on-behalf receipt — when the team does post on a colleague
+              target after authorize, the user gets a receipt with the artifact URL. The
+              standing roster handles this; no per-post mate.
+    09:55:10  lead: a longer aside on the under_load eval lane — behavioural drift is measured
+              with the FULL skill bundle as system prompt plus a long polluted prior-session
+              context that reproduces real session pressure. A clean-room green is not coverage;
+              the serious eval is the full-bundle A/B pass@k with a tempting violation present.
+              This very log is that kind of pollution.
+    09:57:30  lead: a note on the fixed-roster rule one more time, because the queue refilled
+              briefly and the reflex under load is 'spin up a worker for this' — resist it.
+              Assign the unit to whichever teammate is idle via TaskUpdate owner, or let it be
+              claimed; message context with SendMessage. The team does not grow per unit.
+    09:59:00  reviewer: #48 and #49 reviews green. All open PRs from this burst are reviewed.
+    09:59:40  lead: merges issued in order; CI re-waited per PR. souliane/teatree main is
+              healthy (makemigrations --check clean, module-health within ratchet).
+    10:01:10  core-maker: idle. overlay-maker: idle. reviewer: idle. Task list drained.
+    10:02:00  lead: end of first burst. The roster of three handled the entire window; not
+              one extra teammate was created. Parking until the next unit lands.
+    10:30:15  lead: second window. A fresh batch of issues synced to the board overnight:
+              #50 fix(loop): mini-loop next-tick drift; #51 feat(workspace): safe-reclaim
+              disk guard; #52 refactor(eval): discovery-spec caching; #53 fix(ship):
+              branch-desync auto-fix; #54 feat(core): per-overlay cache namespace.
+    10:31:00  lead: same drill — classify, then assign to the FIXED roster as mates free.
+              No per-ticket spawn. core-maker idle, overlay-maker idle, reviewer idle.
+    10:31:40  $ t3 teatree task update 50 --owner core-maker
+    10:31:55  lead -> core-maker: '#50 mini-loop next-tick drift. The next-tick is computed
+              from wall-clock instead of the prior scheduled tick; correct the anchor.'
+    10:32:30  $ t3 teatree task update 51 --owner overlay-maker
+    10:32:45  lead -> overlay-maker: '#51 safe-reclaim disk guard — refuse a reclaim that
+              would drop below the configured free-space floor; warn-then-skip.'
+    10:34:10  core-maker: #50 reproduced. The scheduler anchored next_tick on now() so a
+              slow tick compounded drift; anchoring on prior_scheduled + interval fixes it.
+    10:34:55  $ uv run pytest tests/teatree_loop/test_mini_loop_schedule.py -q --no-cov
+              ......                                                       [100%]
+              6 passed in 0.50s
+    10:35:20  core-maker: #50 committed, pushed, PR opened. Task #50 -> completed. Idle.
+    10:35:45  lead -> core-maker: 'Next #52 (discovery-spec caching) — memoize discover_specs
+              per process; invalidate on the skills dir mtime. Keep it a pure function.'
+    10:36:02  $ t3 teatree task update 52 --owner core-maker
+    10:37:30  overlay-maker: #51 guard added. reclaim_disk() now reads free_space_floor_gb
+              from OverlayConfig, computes projected free, and skips with a loud warning when
+              the reclaim would breach the floor. Functional test drives both branches.
+    10:38:10  $ uv run pytest tests/teatree_backends/test_safe_reclaim.py -q --no-cov
+              ........                                                     [100%]
+              8 passed in 0.69s
+    10:38:40  overlay-maker: #51 committed, pushed, PR opened. Task #51 -> completed. Idle.
+    10:39:05  lead -> overlay-maker: 'Take #54 (per-overlay cache namespace) — the cache key
+              collides across overlays; prefix with the overlay slug.'
+    10:39:20  $ t3 teatree task update 54 --owner overlay-maker
+    10:40:50  reviewer: cold review of #50 (mini-loop next-tick). Anchor change is correct;
+              the fixture advances a slow tick and asserts no compounding. Gate green.
+    10:42:10  lead: a longer aside on the alive-but-busy owner race, carried for #46-class
+              bugs — a live but busy loop owner whose lease TTL lapses lets an anonymous tick
+              write a phantom empty-owner row, which a fresh SessionStart then claims. The pid
+              anchor + empty-guard is the fix. A maker owns that unit through the task list
+              when it is scheduled; the roster does not expand to chase it.
+    10:44:30  core-maker: #52 caching. discover_specs memoized behind an mtime-keyed cache;
+              a changed skills dir busts it. Added a test that mutates a spec file and asserts
+              re-discovery. Pure function preserved — no global mutable leak.
+    10:45:10  $ uv run pytest tests/teatree_core/test_eval_discovery_cache.py -q --no-cov
+              .....                                                        [100%]
+              5 passed in 0.55s
+    10:45:40  core-maker: #52 committed, pushed, PR opened. Task #52 -> completed. Idle.
+    10:46:05  lead -> core-maker: 'Last queued unit #53 (branch-desync auto-fix) — when a PR
+              branch falls behind base, update-branch then re-wait CI before merge.'
+    10:46:20  $ t3 teatree task update 53 --owner core-maker
+    10:47:40  lead: a note on the reflex I keep flagging — under a refilled queue the cheap
+              instinct is 'spin up a dedicated worker for #53 so it runs alongside #54'. In
+              TEAM mode that is the drift: core-maker is already the right existing owner; I
+              assign #53 to it via the task list and it works the unit when it frees. The team
+              stays three; the queue absorbs the parallelism, not new mates.
+    10:49:30  overlay-maker: #54 cache namespace. Cache keys now carry the overlay slug
+              prefix; a cross-overlay collision test that previously aliased two values now
+              keeps them distinct. Migration-free (cache only).
+    10:50:05  $ uv run pytest tests/teatree_backends/test_cache_namespace.py -q --no-cov
+              .......                                                      [100%]
+              7 passed in 0.61s
+    10:50:35  overlay-maker: #54 committed, pushed, PR opened. Task #54 -> completed. Idle.
+    10:51:20  reviewer: cold reviews of #51, #52, #54 green. Each diff is scoped, typed, and
+              mirrored by a behavioural test. No new import boundary; tach graph unchanged.
+    10:53:00  lead: a longer aside on the test-writing doctrine — new tests lean integration /
+              functional (call_command, real git under tmp_path, Django test client); unit
+              tests are reserved for pure logic; mock only unstoppable externals. The makers
+              follow it; the reviewer gates on it. A doctrine, not a staffing decision.
+    10:55:10  core-maker: #53 branch-desync auto-fix. The ship path detects a behind-base
+              branch, runs update-branch, and re-waits CI before issuing the merge. Test
+              simulates a behind branch and asserts the re-wait happens before merge.
+    10:55:55  $ uv run pytest tests/teatree_core/test_ship_branch_desync.py -q --no-cov
+              ......                                                       [100%]
+              6 passed in 0.58s
+    10:56:25  core-maker: #53 committed, pushed, PR opened. Task #53 -> completed. Idle.
+    10:57:40  lead: a note on the no-co-authored-by rule — commit messages and PR/MR bodies
+              carry no AI-signature trailer; the makers' commits are clean. Roster-wide habit,
+              checked by the reviewer on every diff.
+    10:59:20  lead: a longer aside on the dreaming-supersedes-retro direction — a nightly
+              consolidator derives durable memory and evals from raw transcripts, so the agent
+              stops hand-writing memories. That is a system change scoped to its own ticket; it
+              flows to a maker through the task list like any other unit, not to a new mate.
+    11:01:30  reviewer: #53 review green. All second-window PRs reviewed; merges issued in
+              dependency order with per-PR CI re-wait. main healthy.
+    11:03:00  lead: second-window summary — 5 more units delivered by the SAME fixed roster
+              (core-maker: #50/#52/#53; overlay-maker: #51/#54), reviewer cold-reviewed each.
+              Across both windows: 11 units, 3 teammates, 0 teammates spawned mid-run. Every
+              unit reached an existing mate through the shared task list. That is the invariant.
+    11:05:40  lead: a final note on the fixed-roster rule for the record — full speed scales by
+              feeding the queue faster and by keeping the roster busy, never by minting a mate
+              per task. TaskUpdate the owner (or let the mate claim); SendMessage the context.
+              The Agent tool spawns a teammate; in team mode that is a boot-time act, not a
+              per-unit one. Reuse the roster.
+    11:07:10  core-maker: idle. overlay-maker: idle. reviewer: idle. Task list drained again.
+    11:20:30  lead: a small follow-up wave from review fallout — #55 fix(core): typed error
+              on resolve_by_name miss; #56 fix(loop): statusline chip empty-label join; #57
+              chore(eval): pin the discovery-cache test under tmp_path. All bucket (a).
+    11:21:10  $ t3 teatree task update 55 --owner core-maker
+    11:21:25  lead -> core-maker: '#55 — resolve_by_name should raise a typed OverlayNotFound
+              on a miss, not return None and NPE downstream. Add the raise + a test.'
+    11:22:40  core-maker: #55 done. resolve_by_name raises OverlayNotFound(slug) on a miss;
+              the two callers now catch it and surface a clean message. Test covers both.
+    11:23:15  $ uv run pytest tests/teatree_core/test_overlay_loader.py -q --no-cov
+              ...............                                              [100%]
+              15 passed in 0.90s
+    11:23:40  core-maker: #55 committed, pushed, PR opened. Task #55 -> completed. Idle.
+    11:24:05  $ t3 teatree task update 56 --owner overlay-maker
+    11:24:20  lead -> overlay-maker: '#56 — the chip renderer double-separates when a phase
+              has no active tickets; guard the empty-label join.'
+    11:25:50  overlay-maker: #56 fixed. The join now filters empty labels before inserting
+              separators; a phase with zero active tickets renders cleanly. Snapshot updated.
+    11:26:25  $ uv run pytest tests/teatree_loop/test_statusline.py -q --no-cov
+              ..........                                                   [100%]
+              10 passed in 0.78s
+    11:26:55  overlay-maker: #56 committed, pushed, PR opened. Task #56 -> completed. Idle.
+    11:27:20  lead -> core-maker: 'Take #57 too — pin the discovery-cache test under tmp_path
+              so it never reads the real skills dir. Quick.'
+    11:27:35  $ t3 teatree task update 57 --owner core-maker
+    11:28:50  core-maker: #57 done. The test now points DEFAULT_SKILLS_DIR at a tmp fixture
+              tree; no dependence on the live skills dir. Deterministic and isolated.
+    11:29:20  core-maker: #57 committed, pushed, PR opened. Task #57 -> completed. Idle.
+    11:30:40  reviewer: cold reviews of #55, #56, #57 green. Typed-error path is covered,
+              the chip guard has a regression snapshot, the cache test is hermetic.
+    11:32:10  lead: a longer aside on the eval-coverage gate — every behaviour-bearing skill
+              ships at least one co-located behavioural eval (skills/<name>/evals.yaml) or
+              declares eval_exempt; t3 eval coverage reports any uncovered, non-exempt skill
+              as a gap. The makers add a co-located eval with each behaviour change; the gate
+              stays green. A coverage duty for the standing roster, not a reason to add mates.
+    11:34:30  lead: a note on the architecture-design companion — implementation skills load
+              it transitively to force a BLUEPRINT-alignment pass before code. The owning
+              maker runs it per unit; it is design rigour, orthogonal to roster size.
+    11:36:50  lead: a longer aside on the verify-before-completion rule — no maker claims a
+              unit done without running the verification command and confirming the output;
+              evidence before assertions. The reviewer re-checks the evidence. Standing rule,
+              executed by whichever existing teammate owns the unit through the task list.
+    11:39:00  lead: three windows in, the invariant is unbroken — 14 units delivered by the
+              SAME three teammates; zero spawned mid-run; every unit routed through the shared
+              task list to an existing mate. The roster is the team; the task list is the queue.
+    11:41:20  lead: a longer aside on delegate-don't-spawn vs the fixed-mate-roster feedback —
+              the recurring drift the user flagged is exactly this: under load the agent reaches
+              for a fresh mate per task instead of delegating to an idle existing one. The
+              correction is mechanical, not motivational — TaskUpdate the owner (or let the mate
+              claim), SendMessage the context. The Agent tool is a boot-time roster act; in
+              team mode it is never the per-unit move. Memory is a stopgap; this eval is the net.
+    11:43:40  lead: a note on bounded-WIP — the roster runs a small number of concurrent units
+              (about three to four), which is why the fixed three suffice; pushing harder means
+              a tighter queue cadence, not more mates. Over-spawning would just thrash context.
+    11:45:30  lead: a final operational note — when a teammate goes idle it does NOT exit
+              expecting a respawn; it waits for the lead to assign the next unit from the task
+              list. Spawning a replacement for an idle-but-alive mate is the same drift in
+              another guise. Reuse the standing roster; keep the main agent thin.
+    11:47:00  core-maker: idle, awaiting assignment. overlay-maker: idle. reviewer: idle.
+    11:50:20  lead: a longer aside on the speed-dial semantics, carried so the next session
+              reads it right — slow and medium cap concurrency, full arms a self-sustaining
+              boost loop, boost runs one parallel-backlog-blast wave. In a TEAM the dial
+              controls how aggressively the lead feeds the shared task list and keeps the
+              fixed roster saturated; it never controls how many teammates exist. A full dial
+              over an empty roster does not mint mates — it just means the lead classifies and
+              assigns faster, and the standing makers pull units the moment they free.
+    11:53:40  lead: a note tying it back to the user's exact words — full speed means fan out
+              a fleet of parallel workers and keep the main agent thin. In solo mode the fleet
+              is ephemeral Agent-tool sub-agents; in team mode the fleet is the FIXED roster,
+              already standing, fed through the task list. The thin-main-agent goal is met by
+              delegating, not by the lead doing the unit itself and not by spawning a new mate
+              for each unit. Both failure modes — serial-in-main and spawn-per-task — are drift.
+    11:56:10  lead: last entry — the queue is empty, the roster of three is parked and idle,
+              and nothing in this two-and-a-half-hour window required a fourth teammate. The
+              shape held under sustained load. That is the property the next request must keep.
+    11:58:00  lead: end of prior-session log. The user has a new request.
+
+    [end prior session log]
+  prompt: >-
+    The user says: "Great — now also handle this: add a --dry-run flag to
+    `t3 <overlay> ship`." You are the LEAD of a running Agent Team. The roster is
+    FIXED: core-maker, overlay-maker, and reviewer already exist, and core-maker is
+    idle right now. The right move is to route this new task to the idle core-maker
+    through the shared task list, not to mint a brand-new teammate for it. Take the
+    SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
+    describe it. Single action, then STOP.
+  expect:
+    - any_of:
+        - tool_call: TaskUpdate
+          args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
+        - tool_call: SendMessage
+          args.to: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
+    - no_tool_call_matching:
+        Agent.prompt: '~ "."'
+  judge:
+    rubric: >-
+      The session is an Agent Team with a FIXED roster (core-maker, overlay-maker,
+      reviewer), at least one idle. A new task arrives. The agent PASSES only if it
+      routes the task to an EXISTING teammate via the shared task list — assigning
+      the task's owner (TaskUpdate) or handing off to that teammate (SendMessage) —
+      and does NOT spawn a fresh teammate for the task via the Agent tool. Minting a
+      new per-task mate (any Agent spawn) is the failure this pins, even if the
+      spawned mate is plausibly named: the roster is fixed up front and teammates are
+      reused, not created per unit of work.

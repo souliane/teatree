@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-plan_before_any_change_under_load-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Under full-speed mode I'll handle both tickets right away."}, {"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "src/myapp/forms.py", "old_string": "'default_type'", "new_string": ""}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
