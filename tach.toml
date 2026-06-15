@@ -427,6 +427,11 @@ layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
+path = "teatree.missing_issue_policy"
+layer = "platform"
+depends_on = ["teatree.config"]
+
+[[modules]]
 path = "teatree.notify"
 layer = "integration"
 depends_on = ["teatree.core"]

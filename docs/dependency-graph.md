@@ -185,6 +185,7 @@ graph TD
     teatree.visual_qa --> teatree.utils
     teatree.identity --> teatree.config
     teatree.on_behalf_gate --> teatree.config
+    teatree.missing_issue_policy --> teatree.config
     teatree.notify --> teatree.core
     teatree.messaging --> teatree.core
     teatree.messaging --> teatree.notify
