@@ -5,7 +5,7 @@ The review-claim discipline (#113 / #86 / #123) has two strata. The
 the scanners (``slack_broadcasts`` queues review-intent dispatches and dedups
 reactions; ``slack_review_intent`` filters the same signals). The *outcome*
 stratum — posting the review-DONE reaction set — lives in
-:mod:`teatree.loop.review_claim` and is driven by the FSM / ``t3 review record``
+:mod:`teatree.loop.review_claim` and is driven by the FSM / ``t3 teatree review record``
 path. The outcome stratum builds on this one.
 
 This module is the discovery stratum, carved DOWN below
