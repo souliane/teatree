@@ -23,10 +23,14 @@ any top-level import excuse a mis-pathed package test placed anywhere under
 
 A tiny reviewed exemption set keeps legitimate cross-cutting tests out of the
 count: shared dir prefixes (``tests/integration/``, ``tests/conformance/``,
-``tests/e2e*``, ``tests/fixtures/``), the non-test scaffolding files
-(``conftest.py``, ``factories.py``, ``__init__.py``), and a per-file
-``# test-path: cross-cutting`` line pragma for genuine multi-package
-contract/architecture tests.
+``tests/e2e*``, ``tests/fixtures/``, ``tests/agent_behavior/``), the non-test
+scaffolding files (``conftest.py``, ``factories.py``, ``__init__.py``), and a
+per-file ``# test-path: cross-cutting`` line pragma for genuine multi-package
+contract/architecture tests. ``tests/agent_behavior/`` is the behavioral-eval
+suite — scenarios, fixtures, and their replay/harness tests are co-located by
+purpose (the eval lane they belong to), not mirrored to the ``teatree.eval``
+package, exactly as ``tests/integration/`` and ``tests/conformance/`` organize
+by purpose rather than by src package.
 
 Verdict (mirrors :class:`teatree.quality.mutation_run.BaselineRatchet`): the
 live violation count may only ever shrink. ``live_violations > baseline`` ⇒
@@ -58,6 +62,7 @@ EXEMPT_DIR_PREFIXES: frozenset[str] = frozenset(
         "tests/conformance/",
         "tests/e2e",
         "tests/fixtures/",
+        "tests/agent_behavior/",
     }
 )
 EXEMPT_FILENAMES: frozenset[str] = frozenset({"conftest.py", "factories.py", "__init__.py"})
