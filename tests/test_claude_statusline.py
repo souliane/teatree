@@ -51,6 +51,10 @@ def _run(
         env["TEATREE_STATUSLINE_FILE"] = str(statusline_file)
     if registry_dir is not None:
         env["T3_LOOP_REGISTRY_DIR"] = str(registry_dir)
+    # Isolate the Agent-Teams config dir so the developer's real ~/.claude/teams
+    # roster never bleeds into these tests: the mates zone resolves its teams dir
+    # from CLAUDE_CONFIG_DIR (already pinned to state_dir above), so a team config
+    # is discovered ONLY when a test plants it under ``state_dir/teams/``.
     if cpu is not None:
         loadavg_file, ncpu = cpu
         env["TEATREE_STATUSLINE_LOADAVG_FILE"] = str(loadavg_file)
@@ -1007,3 +1011,195 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "loop-owner" not in plain, plain
+
+
+class TestTeamRoster:
+    """The Agent-Teams ``mates:`` zone in the header.
+
+    The statusline reads the harness team config at display time and lists the
+    ACTIVE mates of the team THIS session leads (``leadSessionId`` == ours),
+    excluding the lead itself. It fails open — renders nothing, never errors —
+    whenever there is no session id, no teams dir, no team this session leads,
+    or any read/parse failure, so a colleague who never runs a team sees the
+    statusline they always did.
+    """
+
+    def _write_team(
+        self,
+        state_dir: Path,
+        *,
+        team: str,
+        lead_session_id: str,
+        members: list[dict],
+        lead_agent_id: str = "team-lead",
+    ) -> None:
+        # The mates zone resolves its teams dir from CLAUDE_CONFIG_DIR, which
+        # ``_run`` pins to ``state_dir`` — so the config lives at
+        # ``state_dir/teams/<team>/config.json``, the real default path.
+        team_path = state_dir / "teams" / team
+        team_path.mkdir(parents=True, exist_ok=True)
+        (team_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "name": team,
+                    "leadAgentId": lead_agent_id,
+                    "leadSessionId": lead_session_id,
+                    "members": members,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_lists_active_mates_for_lead_session(self, tmp_path: Path) -> None:
+        """Lead session → ``mates: alice · bob``; lead + inactive members excluded."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_team(
+            state_dir,
+            team="my-team",
+            lead_session_id="lead-sess",
+            lead_agent_id="team-lead@my-team",
+            members=[
+                {"agentId": "team-lead@my-team", "name": "team-lead", "isActive": None},
+                {"agentId": "alice@my-team", "name": "alice", "color": "blue", "isActive": True},
+                {"agentId": "bob@my-team", "name": "bob", "color": "magenta", "isActive": True},
+                {"agentId": "carol@my-team", "name": "carol", "color": "green", "isActive": False},
+            ],
+        )
+
+        result = _run(
+            {"session_id": "lead-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        header = plain.splitlines()[0]
+        assert "mates: alice · bob" in header, header
+        # The lead never lists itself, and an inactive member is omitted.
+        assert "team-lead" not in header, header
+        assert "carol" not in header, header
+
+    def test_mate_painted_in_its_color(self, tmp_path: Path) -> None:
+        """A mate's ``color`` drives its SGR — blue for alice."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_team(
+            state_dir,
+            team="t",
+            lead_session_id="ls",
+            lead_agent_id="lead@t",
+            members=[
+                {"agentId": "lead@t", "name": "lead", "isActive": None},
+                {"agentId": "alice@t", "name": "alice", "color": "blue", "isActive": True},
+            ],
+        )
+
+        result = _run(
+            {"session_id": "ls", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        # Blue SGR present in the raw (non-stripped) output for the mate chip.
+        assert "\033[1;34m" in result.stdout, "expected blue SGR for color=blue mate"
+
+    def test_no_zone_for_non_lead_session(self, tmp_path: Path) -> None:
+        """A session that leads NO team renders no ``mates:`` zone (fail-open)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_team(
+            state_dir,
+            team="other-team",
+            lead_session_id="someone-else",
+            members=[
+                {"agentId": "alice", "name": "alice", "color": "blue", "isActive": True},
+            ],
+        )
+
+        result = _run(
+            {"session_id": "not-the-lead", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "mates:" not in plain, plain
+
+    def test_no_zone_when_teams_dir_absent(self, tmp_path: Path) -> None:
+        """No teams dir at all → no ``mates:`` zone, clean exit (fail-open)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        # No team config planted — state_dir/teams does not exist.
+
+        result = _run(
+            {"session_id": "any-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "mates:" not in plain, plain
+
+    def test_no_zone_when_no_active_mates(self, tmp_path: Path) -> None:
+        """Lead session whose only members are the lead / inactive → no zone."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_team(
+            state_dir,
+            team="lonely",
+            lead_session_id="solo-sess",
+            lead_agent_id="lead@lonely",
+            members=[
+                {"agentId": "lead@lonely", "name": "lead", "isActive": None},
+                {"agentId": "gone@lonely", "name": "gone", "color": "red", "isActive": False},
+            ],
+        )
+
+        result = _run(
+            {"session_id": "solo-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "mates:" not in plain, plain
+
+    def test_no_zone_when_no_session_id(self, tmp_path: Path) -> None:
+        """No session_id → cannot resolve the lead's team → no zone."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_team(
+            state_dir,
+            team="t",
+            lead_session_id="",
+            members=[{"agentId": "alice", "name": "alice", "isActive": True}],
+        )
+
+        result = _run(
+            {"model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "mates:" not in plain, plain
+
+    def test_malformed_team_config_fails_open(self, tmp_path: Path) -> None:
+        """A corrupt config.json → no crash, no zone (fail-open)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        team_path = state_dir / "teams" / "broken"
+        team_path.mkdir(parents=True)
+        (team_path / "config.json").write_text("{ not valid json", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "lead-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "mates:" not in plain, plain
+        # The rest of the header still renders — the bad config did not blank it.
+        assert "model=Claude Opus" in plain, plain
