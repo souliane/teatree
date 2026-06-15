@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-done_only_on_deployed_dev_evidence-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "A green local suite and a local-build PDF are not evidence the deployed system works. Before claiming done on dev, I probe the feature on the deployed dev environment itself."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "curl -sS -o /dev/null -w '%{http_code}' https://dev.example.test/api/guarantee/matrix", "description": "verify the feature on the deployed dev environment, not the local build"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "200"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
