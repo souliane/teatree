@@ -16,6 +16,7 @@ _BLOCKED_PHRASES: tuple[str, ...] = (
     "pending cred",
     "not automatable",
     "was unable to",
+    "waiting for",
 )
 
 

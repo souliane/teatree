@@ -1,6 +1,8 @@
+import json
 import logging
 import re
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -54,6 +56,7 @@ class TestCheckBlockedBodyMustRefuse:
             "pending cred",
             "not automatable",
             "was unable to",
+            "waiting for",
         ]
         for phrase in phrases:
             with pytest.raises(BlockedTestPlanPostError, match="blocked phrase"):
@@ -208,3 +211,54 @@ class TestBlockedGateAtBodyFilePath(TestCase):
             call_command("e2e", "post-test-plan", ticket=_FAKE_COLLEAGUE_URL, body_file=str(body_path))
         assert exc_info.value.code != 0
         host.post_issue_comment.assert_not_called()
+
+
+class TestStructuredManifestRenderIsNotGated(TestCase):
+    """A manifest's `**Blocked:** <reason>` disclosure is the honest mechanism and must post.
+
+    The body gate scans verbatim free-text (the `--body-file` path); the structured
+    `--manifest` render is NOT gated. The `blocked_workflows` feature renders a literal
+    `**Blocked:** <reason>` line — a body scan would falsely refuse every honest
+    colleague test-plan note that discloses a not-yet-deployed workflow.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+        self._monkeypatch = monkeypatch
+        disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+
+        monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
+
+    def test_blocked_workflows_manifest_posts_to_colleague_ticket(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_FAKE_COLLEAGUE_URL)
+        host = MagicMock()
+        host.list_issue_comments.return_value = []
+        host.post_issue_comment.return_value = {"id": 5, "web_url": "u"}
+        host.repo_for_issue_url.return_value = "fake-corp/main-app"
+        self._monkeypatch.setattr(_test_plan, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(
+            _test_plan, "resolve_worktree", MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none"))
+        )
+        manifest = json.dumps(
+            {
+                "ticket": "123",
+                "workflows": [{"workflow": "Login"}],
+                "local": {"commits": {"client": "aabb"}},
+                "blocked_workflows": {"Login": "deploy blocked on cred"},
+            }
+        )
+
+        from django.core.management import call_command  # noqa: PLC0415
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast(
+                "dict[str, object]",
+                call_command("e2e", "post-test-plan", ticket=_FAKE_COLLEAGUE_URL, manifest=manifest),
+            )
+
+        assert result["action"] == "created"
+        host.post_issue_comment.assert_called_once()
+        assert "**Blocked:** deploy blocked on cred" in host.post_issue_comment.call_args.kwargs["body"]

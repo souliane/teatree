@@ -523,7 +523,6 @@ def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTes
     state = merge_state(prior, manifest=post.manifest, title=post.title, embeds=embeds)
     state["ticket"] = post.ticket_id
     body = render_body(state)
-    check_blocked_body_from_config(body, post.issue_url)
     envs = [env for env, side in (("dev", post.manifest.dev), ("local", post.manifest.local)) if side.present]
     match_id = existing.comment_id if existing else None
     if match_id is not None:
