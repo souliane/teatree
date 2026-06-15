@@ -46,6 +46,7 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
+from teatree.core.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.types import RawAPIDict
 
 # Re-exports so callers/tests import the test-plan surface from one module.
@@ -104,18 +105,12 @@ class TestPlanMediaError(TestPlanValidationError):
 
 @dataclass(frozen=True, slots=True)
 class ExistingNote:
-    """THIS ticket's prior test-plan note: its comment id and recovered state."""
-
     comment_id: int
     state: TestPlanState
 
 
 def find_existing_note(comments: list[RawAPIDict], *, ticket_id: str) -> ExistingNote | None:
-    """Return THIS ticket's existing test-plan note (matched on the ticket marker), or ``None``.
-
-    There is one note per ticket, so the first comment whose marker carries
-    this ticket id wins. The recovered hidden-JSON state backs the merge.
-    """
+    """Return the first comment whose marker matches ``ticket_id``, or ``None``."""
     for comment in comments:
         body = str(comment.get("body", ""))
         if not find_ticket_marker(body, ticket_id=ticket_id):
@@ -315,7 +310,7 @@ def post_body_file_comment(
     blocked = on_behalf_block_message(issue_url, _ON_BEHALF_ACTION)
     if blocked:
         raise OnBehalfPostBlockedError(issue_url, _ON_BEHALF_ACTION)
-
+    check_blocked_body_from_config(body, issue_url)
     existing = find_existing_note(host.list_issue_comments(issue_url=issue_url), ticket_id=ticket_id)
     match_id = existing.comment_id if existing else None
     if match_id is not None:
@@ -394,7 +389,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
                 ticket_id=resolved_ticket.ticket_number,
                 body=body_content,
             )
-        except (TestPlanValidationError, OnBehalfPostBlockedError) as err:
+        except (TestPlanValidationError, OnBehalfPostBlockedError, BlockedTestPlanPostError) as err:
             write_err(str(err))
             raise SystemExit(1) from err
         comment_id = result["comment_id"]
@@ -415,7 +410,7 @@ def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single s
     try:
         post = build_validated_post(flags)
         result = post_test_plan_comment(host, post)
-    except (TestPlanValidationError, OnBehalfPostBlockedError) as err:
+    except (TestPlanValidationError, OnBehalfPostBlockedError, BlockedTestPlanPostError) as err:
         write_err(str(err))
         raise SystemExit(1) from err
     envs = ", ".join(result["envs"])
@@ -528,7 +523,7 @@ def post_test_plan_comment(host: CodeHostBackend, post: TestPlanPost) -> PostTes
     state = merge_state(prior, manifest=post.manifest, title=post.title, embeds=embeds)
     state["ticket"] = post.ticket_id
     body = render_body(state)
-
+    check_blocked_body_from_config(body, post.issue_url)
     envs = [env for env, side in (("dev", post.manifest.dev), ("local", post.manifest.local)) if side.present]
     match_id = existing.comment_id if existing else None
     if match_id is not None:
