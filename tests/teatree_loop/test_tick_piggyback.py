@@ -128,7 +128,8 @@ class TestTickPiggybackSlackAnswer:
         row.refresh_from_db()
         assert row.eyes_reacted_at is None
         assert backend.reactions == []
-        assert "OK" in out.getvalue()
+        # Quiet-exit contract (#2417): a non-actionable tick emits no WARN line.
+        assert "WARN" not in out.getvalue()
 
     def test_tick_piggyback_throttled_within_cadence(self) -> None:
         """Two ticks inside the cadence window → exactly one eyes reaction."""

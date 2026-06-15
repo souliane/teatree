@@ -278,9 +278,6 @@ class Command(TyperCommand):
                 )
             )
             return
-        self.stdout.write(
-            f"OK    [{name}] {len(outcome.dispatched_loops)} loop(s) dispatched, {outcome.actions_count} action(s)."
-        )
         for loop_name, message in outcome.errors.items():
             self.stdout.write(f"WARN  {loop_name}: {message}")
 
@@ -401,10 +398,6 @@ class Command(TyperCommand):
         result = _report_to_dict(report)
         if json_output:
             self.stdout.write(json.dumps(result, indent=2))
-        else:
-            self.stdout.write(f"OK    {report.signal_count} signal(s), {report.action_count} action(s).")
-            if report.errors:
-                for name, message in report.errors.items():
-                    self.stdout.write(f"WARN  {name}: {message}")
-            if report.statusline_path:
-                self.stdout.write(f"      statusline → {report.statusline_path}")
+        elif report.errors:
+            for name, message in report.errors.items():
+                self.stdout.write(f"WARN  {name}: {message}")

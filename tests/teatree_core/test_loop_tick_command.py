@@ -51,7 +51,7 @@ class TestReportToDict(TestCase):
 
 
 class TestLoopTickCommand(TestCase):
-    def test_text_output(self) -> None:
+    def test_quiet_exit_when_no_errors(self) -> None:
         report = _build_report(statusline_path=Path("/tmp/sl.txt"))
         stdout = StringIO()
         with (
@@ -60,9 +60,19 @@ class TestLoopTickCommand(TestCase):
         ):
             call_command("loop_tick", stdout=stdout)
 
+        assert stdout.getvalue() == ""
+
+    def test_text_output_with_errors(self) -> None:
+        report = _build_report(statusline_path=Path("/tmp/sl.txt"), errors={"my_prs": "RuntimeError: x"})
+        stdout = StringIO()
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=stdout)
+
         output = stdout.getvalue()
-        assert "1 signal(s)" in output
-        assert "statusline" in output
+        assert "WARN  my_prs" in output
 
     def test_drains_deferred_reinstall_before_running_scanners(self) -> None:
         """#1760: the deferred-reinstall drain is the FIRST owner-tick step.
