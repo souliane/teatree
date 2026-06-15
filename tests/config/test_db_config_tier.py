@@ -141,3 +141,78 @@ issue_implementer_enabled = false
         _write_toml(self.config_path, "[teatree]\n")
         ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
         assert get_effective_settings().excluded_skills == ["foo", "bar"]
+
+
+class TestPerOverlayDbScope(TestCase):
+    """Per-overlay scope in the DB override tier — global then overlay (later wins).
+
+    The DB tier mirrors the TOML two-tier shape: a global ``ConfigSetting`` row
+    (``scope=""``) applies to every overlay; an overlay-scoped row applies to
+    that overlay alone and beats the global DB row, exactly as a per-overlay
+    ``[overlays.<name>]`` TOML value beats the global ``[teatree]`` value.
+
+    Integration-first: real TOML under ``tmp_path``, the active overlay set via
+    ``T3_OVERLAY_NAME``, asserted through the real ``get_effective_settings``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        # A registered overlay so T3_OVERLAY_NAME resolves to an active overlay.
+        _write_toml(
+            self.config_path,
+            '[teatree]\nissue_implementer_enabled = false\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
+        )
+        self.monkeypatch = monkeypatch
+
+    def test_overlay_scoped_db_row_beats_global_db_row(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)  # global
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        # Active overlay = my-overlay -> overlay-scoped True wins over global False.
+        assert get_effective_settings().issue_implementer_enabled is True
+
+    def test_overlay_scoped_db_row_ignored_for_a_different_overlay(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)  # global
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        # No active overlay (or a different one) -> only the global row applies.
+        assert get_effective_settings().issue_implementer_enabled is False
+        # And an explicit named-overlay resolution for another overlay ignores it.
+        assert get_effective_settings("another").issue_implementer_enabled is False
+
+    def test_global_db_row_applies_when_overlay_has_no_row(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)  # global only
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        # The overlay has no scoped row -> the global DB row still applies.
+        assert get_effective_settings().issue_implementer_enabled is True
+
+    def test_overlay_scoped_row_resolves_through_named_overlay_path(self) -> None:
+        # The loop's per-overlay scanners call get_effective_settings(overlay_name);
+        # that path must read the overlay's DB scope too (no env applied there).
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)  # global
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        assert get_effective_settings("my-overlay").issue_implementer_enabled is True
+
+    def test_env_still_wins_over_overlay_scoped_db_row(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False, scope="my-overlay")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
+        # env is the highest tier — it beats an overlay-scoped DB row too.
+        assert get_effective_settings().issue_implementer_enabled is True
+
+    def test_overlay_scope_matches_canonical_alias(self) -> None:
+        # A row stored under the t3- entry-point spelling resolves for the short
+        # alias active overlay (and vice versa) — same canonical fold as TOML.
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="t3-my-overlay")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        assert get_effective_settings().issue_implementer_enabled is True
+
+    def test_empty_overlay_scope_is_still_a_no_op(self) -> None:
+        # The per-overlay extension keeps the empty-table no-op invariant: with no
+        # rows at all, an active overlay resolves to the file value unchanged.
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        assert ConfigSetting.objects.count() == 0
+        assert get_effective_settings().issue_implementer_enabled is False

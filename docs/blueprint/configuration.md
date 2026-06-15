@@ -110,7 +110,7 @@ A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
 1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`).
-2. **DB override tier** — a `ConfigSetting` row whose `key` is an overridable setting ([#1775](https://github.com/souliane/teatree/issues/1775), the first slice of "move config to the database").
+2. **DB override tier** — a `ConfigSetting` row whose `key` is an overridable setting ([#1775](https://github.com/souliane/teatree/issues/1775), "move config to the database"). Itself two-scoped (see below): an **overlay-scoped** DB row beats a **global** DB row.
 3. Active overlay's override from `[overlays.<name>]`.
 4. Global `[teatree]` value.
 5. `UserSettings` dataclass default.
@@ -125,6 +125,25 @@ pre-migration), so this hot config path never raises on a missing table. The
 tier is scoped to keys registered in `OVERLAY_OVERRIDABLE_SETTINGS`, coercing the
 stored JSON value with that registry's parser; a row for any other key is
 ignored.
+
+**Per-overlay + global DB scope.** Each `ConfigSetting` row carries a `scope`,
+mirroring the TOML two-tier shape in the database: the empty-string scope
+(`scope = ""`) is the **global** scope — the row applies to every overlay, the
+original single-tier behaviour — and a non-empty `scope` is an **overlay name**
+(the same identifier as `[overlays.<name>]`) scoping the row to that overlay alone.
+Uniqueness is the `(scope, key)` pair, so a global and an overlay row for the
+same key coexist. `_db_setting_overrides()` layers the **global rows first, then
+the active overlay's rows on top** (later wins) — so an overlay-scoped DB row
+beats a global DB row, exactly as a per-overlay `[overlays.<name>]` TOML value
+beats the global `[teatree]` value, and an env var still beats both. The active
+overlay is resolved the same way the per-overlay TOML layer resolves it
+(`overlay_name` argument on the named-overlay path the loop scanners use, else
+`T3_OVERLAY_NAME` / cwd discovery), and the overlay scope is matched
+**canonical-alias-tolerantly** (a row under `t3-myproject` resolves for an active
+`myproject` overlay and vice versa). With no overlay-scoped rows the resolution
+is byte-identical to the global-only tier, so this extension is itself a no-op
+until a scoped row is written. Admin path: `config_setting set|get|clear`
+take `--overlay <name>` (omitted = global); `list` names each row's scope.
 
 The stored value is **validated at WRITE time** ([#258](https://github.com/souliane/teatree/issues/258)):
 `config_setting set` runs the same registry parser before persisting, so an
@@ -154,9 +173,10 @@ The model reaches the
 resolver via `django.apps.apps.get_model("core", "ConfigSetting")` (a runtime
 lookup, not a static import) so the `config` platform layer never takes a
 backwards edge on the `core` domain layer (tach-clean). Admin path:
-`t3 <overlay> config_setting set <key> <json> | get <key> | clear <key> | list | import`.
-`get` is the read side of the dual-read store — it prints a setting's resolved
-value and names its source (`db` when a row exists, else `file/env`). `import` is
+`t3 <overlay> config_setting set <key> <json> [--overlay <name>] | get <key> [--overlay <name>] | clear <key> [--overlay <name>] | list | import`.
+`--overlay <name>` on `set`/`get`/`clear` addresses that overlay's DB scope (omit
+for the global scope). `get` is the read side of the dual-read store — it prints a
+setting's resolved value and names its source (`db` when a row exists, else `file/env`). `import` is
 the one-time dual-read migration ([#938](https://github.com/souliane/teatree/issues/938)):
 it seeds the store from every operational `[teatree]` toml key that is a registered
 `OVERLAY_OVERRIDABLE_SETTINGS` field (coerced through that registry's parser,

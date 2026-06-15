@@ -6734,11 +6734,15 @@ Usage: t3 teatree config_setting [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 
- Upsert the DB override row for *key* to the JSON-parsed *value*.
+ Upsert the DB override row for *key* (in *overlay*'s scope or global) to
+ *value*.
 
  Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
  not valid JSON, and a *value* that JSON-parses but is invalid for the
  setting's type, leaving the store untouched on any error.
+
+ ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
+ per-overlay TOML override); omitted, it writes the global scope.
 
  The type check runs the **same** registry parser the resolver applies on
  read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
@@ -6752,7 +6756,9 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 │ *    value      TEXT  JSON value, e.g. true / false / '"x"' / 3. [required]  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --overlay        TEXT  Overlay name to scope the row to; omit for the global │
+│                        scope (every overlay).                                │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6764,17 +6770,20 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
  Print the resolved value for *key* and name its source (DB vs file/env).
 
  The read side of the dual-read store: when a ``ConfigSetting`` row exists
- it is reported as the ``db`` source; otherwise the value falls through to
- the file/env layer and is reported as the ``file/env`` source. Refuses a
- key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud, not a
- silent ``file/env`` answer for a non-setting.
+ in the requested scope it is reported as the ``db`` source; otherwise the
+ value falls through to the file/env layer and is reported as the
+ ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
+ Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud,
+ not a silent ``file/env`` answer for a non-setting.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key      TEXT  UserSettings field name to read (must be overridable).   │
 │                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --overlay        TEXT  Overlay name to scope the row to; omit for the global │
+│                        scope (every overlay).                                │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6783,16 +6792,21 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
 ```
 Usage: t3 teatree config_setting clear [OPTIONS] KEY
 
- Delete the DB override row for *key*; falls back to the file/env source.
+ Delete the DB override row for *key* in *overlay*'s scope (or global).
 
- Exits non-zero when no row exists so a typo'd key is loud, not silent.
+ After clearing, the setting falls back through the remaining tiers (an
+ overlay-scoped clear falls back to the global DB row / file / env). Exits
+ non-zero when no row exists in that scope so a typo'd key is loud, not
+ silent.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key      TEXT  UserSettings field name whose DB override to remove.     │
 │                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --overlay        TEXT  Overlay name to scope the row to; omit for the global │
+│                        scope (every overlay).                                │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6801,7 +6815,7 @@ Usage: t3 teatree config_setting clear [OPTIONS] KEY
 ```
 Usage: t3 teatree config_setting list [OPTIONS]
 
- List every DB config override row (read-only).
+ List every DB config override row, naming each row's scope (read-only).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

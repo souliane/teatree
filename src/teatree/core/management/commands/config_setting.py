@@ -11,6 +11,12 @@ the resolver would silently ignore. The ``value`` is parsed as JSON, so a bool
 kill-switch (``true``/``false``), a string (``'"ready"'``), an int (``3``), or a
 list (``'["a","b"]'``) all round-trip into the store.
 
+Every write/read subcommand takes ``--overlay <name>``: omitted (the default) it
+addresses the GLOBAL scope (every overlay, the original #1775 behaviour); with a
+name it addresses that overlay's scope alone — the DB twin of the
+``[overlays.<name>]`` TOML override. The resolver layers global rows then the
+active overlay's rows on top, so an overlay-scoped row beats a global one.
+
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 ``call_command``; ``typer.Exit`` is the wrong primitive on that path.
 """
@@ -24,6 +30,16 @@ from django_typer.management import TyperCommand, command
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
 
+_OverlayOption = Annotated[
+    str,
+    typer.Option("--overlay", help="Overlay name to scope the row to; omit for the global scope (every overlay)."),
+]
+
+
+def _scope_label(scope: str) -> str:
+    """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
+    return "global" if not scope else f"overlay {scope!r}"
+
 
 class Command(TyperCommand):
     @command()
@@ -31,12 +47,16 @@ class Command(TyperCommand):
         self,
         key: Annotated[str, typer.Argument(help="UserSettings field name (must be overridable).")],
         value: Annotated[str, typer.Argument(help="JSON value, e.g. true / false / '\"x\"' / 3.")],
+        overlay: _OverlayOption = "",
     ) -> None:
-        """Upsert the DB override row for *key* to the JSON-parsed *value*.
+        """Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value*.
 
         Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
         not valid JSON, and a *value* that JSON-parses but is invalid for the
         setting's type, leaving the store untouched on any error.
+
+        ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
+        per-overlay TOML override); omitted, it writes the global scope.
 
         The type check runs the **same** registry parser the resolver applies on
         read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
@@ -65,57 +85,63 @@ class Command(TyperCommand):
         # type — scalar, list, or a ``StrEnum`` (which a ``JSONField`` persists as
         # its string value) — so the parsed value round-trips through the store
         # and the read tier re-coerces it to the same value.
-        ConfigSetting.objects.set_value(key, canonical)
+        ConfigSetting.objects.set_value(key, canonical, scope=overlay)
         # Verify-by-re-read: report the stored value the resolver will now see.
-        stored = ConfigSetting.objects.get_effective(key)
-        self.stdout.write(f"  set {key} = {stored!r}")
+        stored = ConfigSetting.objects.get_effective(key, scope=overlay)
+        self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]")
 
     @command()
     def clear(
         self,
         key: Annotated[str, typer.Argument(help="UserSettings field name whose DB override to remove.")],
+        overlay: _OverlayOption = "",
     ) -> None:
-        """Delete the DB override row for *key*; falls back to the file/env source.
+        """Delete the DB override row for *key* in *overlay*'s scope (or global).
 
-        Exits non-zero when no row exists so a typo'd key is loud, not silent.
+        After clearing, the setting falls back through the remaining tiers (an
+        overlay-scoped clear falls back to the global DB row / file / env). Exits
+        non-zero when no row exists in that scope so a typo'd key is loud, not
+        silent.
         """
-        if ConfigSetting.objects.clear(key):
-            self.stdout.write(f"  cleared DB override for {key}")
+        if ConfigSetting.objects.clear(key, scope=overlay):
+            self.stdout.write(f"  cleared DB override for {key}  [{_scope_label(overlay)}]")
             return
-        self.stderr.write(f"  no DB override row for {key}")
+        self.stderr.write(f"  no DB override row for {key}  [{_scope_label(overlay)}]")
         raise SystemExit(1)
 
     @command(name="list")
     def list_rows(self) -> None:
-        """List every DB config override row (read-only)."""
+        """List every DB config override row, naming each row's scope (read-only)."""
         rows = list(ConfigSetting.objects.all())
         if not rows:
             self.stdout.write("  (no DB config overrides)")
             return
         for row in rows:
-            self.stdout.write(f"  {row.key} = {row.value!r}")
+            self.stdout.write(f"  {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
 
     @command()
     def get(
         self,
         key: Annotated[str, typer.Argument(help="UserSettings field name to read (must be overridable).")],
+        overlay: _OverlayOption = "",
     ) -> None:
         """Print the resolved value for *key* and name its source (DB vs file/env).
 
         The read side of the dual-read store: when a ``ConfigSetting`` row exists
-        it is reported as the ``db`` source; otherwise the value falls through to
-        the file/env layer and is reported as the ``file/env`` source. Refuses a
-        key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud, not a
-        silent ``file/env`` answer for a non-setting.
+        in the requested scope it is reported as the ``db`` source; otherwise the
+        value falls through to the file/env layer and is reported as the
+        ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
+        Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud,
+        not a silent ``file/env`` answer for a non-setting.
         """
         if key not in OVERLAY_OVERRIDABLE_SETTINGS:
             self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
             raise SystemExit(2)
-        stored = ConfigSetting.objects.get_effective(key)
+        stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
-            self.stdout.write(f"  {key} = {stored!r}  [source: db]")
+            self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]")
             return
-        fallback = getattr(get_effective_settings(), key, None)
+        fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]")
 
     @command(name="import")

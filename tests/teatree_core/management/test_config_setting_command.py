@@ -209,3 +209,51 @@ class TestConfigSettingImport(TestCase):
         call_command("config_setting", "import", stdout=StringIO())
         call_command("config_setting", "import", stdout=StringIO())
         assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1
+
+
+class TestConfigSettingOverlayScope(TestCase):
+    """``--overlay`` scoping on set / clear / get / list (per-overlay + global)."""
+
+    def test_set_with_overlay_writes_overlay_scoped_row(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "true", "--overlay", "ov")
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="ov") is True
+        # The global scope is untouched by an overlay-scoped write.
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is None
+
+    def test_set_global_and_overlay_coexist_via_cli(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "false")
+        call_command("config_setting", "set", "issue_implementer_enabled", "true", "--overlay", "ov")
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="ov") is True
+
+    def test_clear_with_overlay_is_scope_isolated(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "false")
+        call_command("config_setting", "set", "issue_implementer_enabled", "true", "--overlay", "ov")
+        call_command("config_setting", "clear", "issue_implementer_enabled", "--overlay", "ov")
+        # The overlay row is gone; the global row survives.
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="ov") is None
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
+
+    def test_clear_overlay_absent_row_exits_nonzero(self) -> None:
+        # A global row exists, but clearing the overlay scope (no row there) is loud.
+        call_command("config_setting", "set", "issue_implementer_enabled", "true")
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "clear", "issue_implementer_enabled", "--overlay", "ov")
+
+    def test_get_with_overlay_reports_db_source(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", "7", "--overlay", "ov")
+        out = StringIO()
+        call_command("config_setting", "get", "issue_implementer_max_concurrent", "--overlay", "ov", stdout=out)
+        rendered = out.getvalue().lower()
+        assert "7" in rendered
+        assert "db" in rendered
+        assert "ov" in rendered
+
+    def test_list_names_each_rows_scope(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "true")
+        call_command("config_setting", "set", "issue_implementer_label", '"ready"', "--overlay", "ov")
+        out = StringIO()
+        call_command("config_setting", "list", stdout=out)
+        rendered = out.getvalue()
+        assert "global" in rendered
+        assert "ov" in rendered
