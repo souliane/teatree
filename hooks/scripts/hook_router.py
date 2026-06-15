@@ -40,6 +40,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from django_bootstrap import bootstrap_teatree_django
+from mr_cli_fields import extract_cli_mr_fields
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
@@ -2243,18 +2244,10 @@ def handle_protect_default_branch(data: dict) -> bool:
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
-# Inline ``--title``/``--description`` (single OR double quoted, multi-line:
-# ``[^'"]`` already spans newlines, no DOTALL needed). The `glab mr` CLI uses
-# ``--title``/``--description``; the long-flag value is captured verbatim.
-_MR_TITLE_FLAG_RE = re.compile(r"""--title[ =]+(['"])(?P<val>.*?)\1""", re.DOTALL)
-_MR_DESC_FLAG_RE = re.compile(r"""--description[ =]+(['"])(?P<val>.*?)\1""", re.DOTALL)
-# A file-based description flag (``--description-file``/``-F``) is PRESENT even
-# when the inline quote-capture fails: used to decide whether to fall back to
-# :func:`_read_message_file` rather than pass a falsely-empty description
-# through the validator. ``--description`` is included because the inline
-# capture failing on it (``--description "$(cat f)"`` / heredoc) still means a
-# description WAS intended — re-read it from the resolvable file arg if any.
-_MR_DESC_FLAG_PRESENT_RE = re.compile(r"(?:--description-file|--description\b|\s-F\b)")
+# The ``glab mr create``/``update`` inline/file/dynamic title & description
+# parsing lives in the bare sibling module ``mr_cli_fields`` (split out for
+# module health); ``extract_cli_mr_fields`` is imported above. The REST-API
+# surface and the target-repo parsing stay here.
 # REST-API field args set on a ``glab api``/``gh api`` MR/PR write
 # (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). Three
 # shapes, in order:
@@ -2284,26 +2277,7 @@ _GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests
 _GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
 
 
-def _extract_inline_or_file_desc(command: str) -> str:
-    """Description text from a Bash MR command — inline quote, then file/heredoc.
-
-    Inline ``--description 'x'`` wins. When the flag is present but the inline
-    capture is empty (file-based ``-F``/``--description-file``, a heredoc, or a
-    ``$(...)`` substitution), fall back to :func:`_read_message_file` so a
-    multi-line description is actually read and validated rather than passed
-    through as a falsely-empty (and trivially "valid"-looking) string. Returns
-    ``""`` only when no description source can be resolved — the validator then
-    rejects the empty first line, which is the correct verdict for an MR create
-    with a genuinely empty description.
-    """
-    inline = _MR_DESC_FLAG_RE.search(command)
-    if inline is not None and inline.group("val"):
-        return inline.group("val")
-    if _MR_DESC_FLAG_PRESENT_RE.search(command):
-        from_file = _read_message_file(command)
-        if from_file is not None:
-            return from_file
-    return ""
+# MR title/description value parsing moved to mr_cli_fields (module health).
 
 
 def _extract_api_mr_fields(command: str) -> tuple[str, str] | None:
@@ -2363,12 +2337,17 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     Covers four surfaces so a non-compliant title/description cannot slip onto
     the forge through any of them:
 
-    1.  ``glab mr create/update --title/--description`` (inline quotes).
-    2.  The same command's file-based / heredoc / ``$(...)`` description
+    1.  ``glab mr create/update --title/--description`` (inline quotes), via
+        :func:`extract_cli_mr_fields`. ``create`` validates both fields;
+        ``update`` validates ONLY the field(s) it sets (a metadata-only
+        reviewer/label/state edit is skipped — never-lockout).
+    2.  The same command's file-based / heredoc description
         (``-F``/``--description-file``) — read via :func:`_read_message_file`
         instead of passed through as a falsely-empty string (the slip class: a
         multi-line prose description whose first line was not the
-        ``type(scope): … (ticket_url)`` form).
+        ``type(scope): … (ticket_url)`` form). A double-quoted ``$(…)``/``$VAR``
+        the hook cannot resolve before shell expansion is SKIPPED, never
+        validated as the truncated literal fragment.
     3.  Out-of-band ``glab api``/``gh api`` PUT/POST to an MR/PR endpoint —
         the web-UI-equivalent description edit that bypasses the CLI (this is
         the GitHub PR-create path: ``gh api repos/<o>/<r>/pulls``).
@@ -2385,10 +2364,12 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
 
     if tool_name == "Bash":
         command = tool_input.get("command", "")
-        if re.search(r"\bglab\s+mr\s+(?:create|update)\b", command):
-            title_match = _MR_TITLE_FLAG_RE.search(command)
-            title = title_match.group("val") if title_match else ""
-            return title, _extract_inline_or_file_desc(command)
+        # ``extract_cli_mr_fields`` detects a REAL ``glab mr create/update``
+        # invocation (ignoring the verb embedded in a quoted arg / heredoc body)
+        # and returns the fields, or None when it is not a CLI mutation.
+        cli_fields = extract_cli_mr_fields(command)
+        if cli_fields is not None:
+            return cli_fields
         return _extract_api_mr_fields(command)
 
     if tool_name in _MR_TOOLS:
@@ -2535,46 +2516,12 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
 # ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
 
-# File-based message args — the standard multi-line path (#831's shape).
-# ``git commit -F/-C/--file FILE``, ``gh pr create --body-file FILE``,
-# ``glab mr create --description FILE``. The captured token is a path
-# (optionally quoted); a missing/binary file fails open (no scan, no
-# crash) — see ``_read_message_file``.
-#
-# Long flags require a space or ``=`` separator (``--body-file FILE`` /
-# ``--body-file=FILE``). Short flags additionally accept the GLUED form
-# git's getopt permits — ``git commit -F<path>`` / ``-C<path>`` with no
-# separator at all (the residual #862 cold-review found: a glued short
-# flag carrying a banned trailer slipped past the space/``=``-only
-# matcher). ``[ =]*`` on the short-flag branch covers glued, space, and
-# ``=`` uniformly.
-_MSG_FILE_FLAG_RE = re.compile(
-    r"(?:(?:--description-file|--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
-)
 _PR_CREATE_TOOLS = {
     "mcp__glab__glab_mr_create",
     "mcp__glab__glab_mr_update",
     "mcp__github__create_pull_request",
     "mcp__github__update_pull_request",
 }
-
-
-def _read_message_file(command: str) -> str | None:
-    """Read a file-based message arg (``-F``/``--body-file``/etc.).
-
-    The standard multi-line path is exactly #831's shape. A
-    missing/unreadable/binary file fails open (returns ``None``: no
-    scan, no crash) — matching the other t3-shelling hooks' posture of
-    never blocking the agent on a broken environment.
-    """
-    match = _MSG_FILE_FLAG_RE.search(command)
-    if match is None:
-        return None
-    path = Path(match.group(1))
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
 
 
 # REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.

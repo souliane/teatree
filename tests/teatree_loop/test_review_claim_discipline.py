@@ -272,6 +272,163 @@ class TestReviewLoopStopped(TestCase):
         assert any(a.kind == "agent" and a.zone == "t3:reviewer" for a in actions)
 
 
+class TestEgressReactPayload(TestCase):
+    """Pin the EXACT colleague-egress payload ``_egress_react`` builds (#2413 PR-2).
+
+    ``emit_review_done_reactions`` asserts only the posted emoji list; the
+    ``action`` / ``destination`` / ``artifact_url`` / ``summary`` / ``target``
+    strings that drive the on-behalf gate's audit key and the after-receipt DM
+    are unasserted, so their mutants survive. These assertions kill them.
+    """
+
+    def _post(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
+
+    @staticmethod
+    def _captured_react_kwargs(captured: list[dict[str, str]]):
+        from teatree.core.on_behalf_egress import OnBehalfSlackEgress  # noqa: PLC0415
+
+        class _SpyEgress:
+            def __init__(self, messaging: object) -> None:
+                self._inner = OnBehalfSlackEgress(messaging)
+
+            def react(self, **kwargs: str) -> RawAPIDict:
+                captured.append(dict(kwargs))
+                return self._inner.react(**kwargs)
+
+        return _SpyEgress
+
+    def test_react_payload_carries_emoji_scoped_action_destination_summary(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        self._post()
+        backend = _FakeMessaging()
+        captured: list[dict[str, str]] = []
+
+        with patch("teatree.loop.review_claim.OnBehalfSlackEgress", self._captured_react_kwargs(captured)):
+            posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        assert posted == ["eyes"]
+        assert captured == [
+            {
+                "channel": CHANNEL,
+                "ts": TS,
+                "emoji": "eyes",
+                "target": MR,
+                "action": "review_done_reaction:eyes",
+                "destination": f"review-request for {MR}",
+                "artifact_url": MR,
+                "summary": ":eyes: review-DONE reaction",
+            }
+        ]
+
+    def test_already_reacted_response_counts_as_posted(self) -> None:
+        self._post()
+        backend = _FakeMessaging(routed_response={"ok": False, "error": "already_reacted"})
+
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # ``already_reacted`` is success — the emoji IS present — so it is recorded.
+        assert posted == ["eyes"]
+        assert OutboundClaim.objects.filter(kind=OutboundClaim.Kind.SLACK_REACTION).count() == 1
+
+    def test_not_ok_without_already_reacted_is_not_posted(self) -> None:
+        self._post()
+        backend = _FakeMessaging(routed_response={"ok": False, "error": "channel_not_found"})
+
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # A genuine transport failure is NOT success — nothing posted, nothing recorded.
+        assert posted == []
+        assert OutboundClaim.objects.filter(kind=OutboundClaim.Kind.SLACK_REACTION).count() == 0
+
+    def test_non_dict_response_is_not_posted(self) -> None:
+        self._post()
+
+        @dataclass
+        class _NonDictReactBackend(_FakeMessaging):
+            def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+                self.react_routed_calls.append((channel, ts, emoji))
+                return ["not", "a", "dict"]  # type: ignore[return-value]
+
+        backend = _NonDictReactBackend()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        assert posted == []
+
+
+class TestSlackMessageResolution(TestCase):
+    """Pin ``_slack_message_for_pr`` row selection (#2413 PR-2 mutation paydown).
+
+    The resolver matches the FIRST ``ReviewRequestPost`` whose URL parses to the
+    same ``(slug, pr_id)``, requires a non-empty ``slack_thread_ts`` and
+    ``slack_channel_id``, and returns ``(channel, ts, mr_url)`` in that order.
+    Each clause below kills the corresponding mutant.
+    """
+
+    OTHER_MR = "https://gitlab.example.com/team/project/-/merge_requests/9999"
+    OTHER_SLUG_MR = "https://gitlab.example.com/other/repo/-/merge_requests/7567"
+
+    def test_resolves_channel_ts_url_in_order_for_matching_slug_and_pr_id(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
+
+        backend = _FakeMessaging()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        assert posted == ["eyes"]
+        # Tuple order (channel, ts, url) drives the react coordinates: a swapped
+        # tuple would react on the wrong channel/ts.
+        assert backend.react_routed_calls == [(CHANNEL, TS, "eyes")]
+
+    def test_wrong_pr_id_row_is_not_matched(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=self.OTHER_MR, slack_channel_id="C0WRONG", slack_thread_ts="9.9")
+
+        backend = _FakeMessaging()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # pr_id 7567 != 9999 — no row matches, nothing posted.
+        assert posted == []
+        assert backend.react_routed_calls == []
+
+    def test_wrong_slug_row_is_not_matched(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=self.OTHER_SLUG_MR, slack_channel_id="C0WRONG", slack_thread_ts="9.9")
+
+        backend = _FakeMessaging()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # slug other/repo != team/project — no match.
+        assert posted == []
+        assert backend.react_routed_calls == []
+
+    def test_row_with_empty_thread_ts_is_excluded(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts="")
+
+        backend = _FakeMessaging()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # An untracked thread (empty ts) has no Slack message to react on.
+        assert posted == []
+        assert backend.react_routed_calls == []
+
+    def test_row_with_empty_channel_is_not_matched(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id="", slack_thread_ts=TS)
+
+        backend = _FakeMessaging()
+        posted = emit_review_done_reactions(slug="team/project", pr_id=7567, emojis=("eyes",), messaging=backend)
+
+        # No channel id — the post can't be located, so nothing reacts.
+        assert posted == []
+        assert backend.react_routed_calls == []
+
+    def test_empty_slug_or_zero_pr_id_short_circuits(self) -> None:
+        ReviewRequestPost.objects.create(mr_url=MR, slack_channel_id=CHANNEL, slack_thread_ts=TS)
+        backend = _FakeMessaging()
+
+        assert emit_review_done_reactions(slug="", pr_id=7567, emojis=("eyes",), messaging=backend) == []
+        assert emit_review_done_reactions(slug="team/project", pr_id=0, emojis=("eyes",), messaging=backend) == []
+        assert backend.react_routed_calls == []
+
+
 class TestReviewRecordCommandEmitsReaction(TestCase):
     """``t3 review record`` posts the verdict reaction set, never an author DM."""
 

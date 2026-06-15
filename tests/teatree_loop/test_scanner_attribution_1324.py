@@ -21,7 +21,7 @@ from typing import Any
 from teatree.core.backend_protocols import ReviewState
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
-from teatree.loop.tick_resolvers import best_url_match_specificity, url_match_specificity, url_matches_prefix
+from teatree.loop.url_specificity import best_url_match_specificity, url_match_specificity, url_matches_prefix
 from teatree.types import RawAPIDict
 
 

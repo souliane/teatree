@@ -59,12 +59,26 @@ from teatree.notify import NotifyKind
 logger = logging.getLogger(__name__)
 
 
+def default_drift_notifier(alert_text: str, idempotency_key: str) -> None:
+    """Production drift-notifier: post via the overlay bot, idempotent on key.
+
+    Uses the verified-delivery wrapper (#1181) so a silent primary
+    ``notify_user`` failure (the #1173 class) auto-falls back to a direct,
+    round-trip-verified send instead of dropping the drift alert. Lives here
+    (the orchestration construction site) rather than inside the
+    ``outbound_audit`` scanner so the scanner stays in the ``domain`` layer
+    with no ``messaging``/``notify`` (``integration``) up-edge — it is
+    injected into :class:`OutboundAuditScanner` at construction.
+    """
+    notify_with_fallback(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+
+
 def _global_dispatch_jobs() -> list[_ScannerJob]:
     """The always-on global set ``build_default_jobs`` fans out once per tick."""
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
-        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
+        _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
     ]
 

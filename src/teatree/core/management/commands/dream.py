@@ -41,16 +41,25 @@ class Command(TyperCommand):
             bool,
             typer.Option("--dry-run", help="Do everything except writing ConsolidatedMemory rows / the marker."),
         ] = False,
+        propose_evals: Annotated[
+            bool,
+            typer.Option(
+                "--propose-evals",
+                help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
+            ),
+        ] = False,
     ) -> None:
         """Run one consolidation pass NOW (manual escape hatch; ignores cadence)."""
-        self._run_pass(since=_parse_since(since), dry_run=dry_run, enforce_cadence=False)
+        self._run_pass(since=_parse_since(since), dry_run=dry_run, enforce_cadence=False, propose_evals=propose_evals)
 
     @command(name="tick")
     def tick(self) -> None:
         """Run one consolidation pass IF the dream cadence has elapsed (cron entry)."""
-        self._run_pass(since=None, dry_run=False, enforce_cadence=True)
+        self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=False)
 
-    def _run_pass(self, *, since: dt.datetime | None, dry_run: bool, enforce_cadence: bool) -> None:
+    def _run_pass(
+        self, *, since: dt.datetime | None, dry_run: bool, enforce_cadence: bool, propose_evals: bool
+    ) -> None:
         import os  # noqa: PLC0415
 
         from django.utils import timezone  # noqa: PLC0415
@@ -72,8 +81,9 @@ class Command(TyperCommand):
             self.stdout.write("SKIP  another dream pass is already running — dream-tick lease held.")
             return
 
+        enabled = propose_evals or _env_propose_evals()
         try:
-            succeeded = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now)
+            succeeded = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now, propose_evals=enabled)
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
@@ -86,22 +96,27 @@ class Command(TyperCommand):
             stamped = marker.last_succeeded_at.isoformat() if marker and marker.last_succeeded_at else "none"
             self.stdout.write(f"      dream marker last_succeeded_at={stamped}")
 
-    def _consolidate_and_mark(self, *, since: dt.datetime | None, dry_run: bool, now: dt.datetime) -> bool:
+    def _consolidate_and_mark(
+        self, *, since: dt.datetime | None, dry_run: bool, now: dt.datetime, propose_evals: bool
+    ) -> bool:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415
         from teatree.loops.dream import engine  # noqa: PLC0415
+        from teatree.loops.dream.eval_proposer import EvalProposalRequest  # noqa: PLC0415
 
+        request = EvalProposalRequest() if propose_evals else None
         try:
-            result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run)
+            result = engine.run_consolidation(overlay="", since=since, dry_run=dry_run, eval_proposals=request)
         except Exception as exc:  # noqa: BLE001
             if not dry_run:
                 DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(f"FAIL  dream pass raised: {type(exc).__name__}: {exc}")
             return False
 
+        evals = f"; {result.evals_proposed} eval candidate(s)" if result.evals_proposed else ""
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s); no rows or marker written.",
+                f"from {result.members_replayed} member(s){evals}; no rows or marker written.",
             )
             return False
 
@@ -113,9 +128,21 @@ class Command(TyperCommand):
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s).",
+            f"from {result.members_replayed} member(s){evals}.",
         )
         return True
+
+
+def _env_propose_evals() -> bool:
+    """Read the ``T3_DREAM_PROPOSE_EVALS`` opt-in env (default OFF).
+
+    Gives the cadence-driven ``tick`` path (which takes no flags) a way to enable
+    the inert eval-candidate phase without a code change; truthy values are
+    ``1``/``true``/``yes`` (case-insensitive). Absent or anything else → OFF.
+    """
+    import os  # noqa: PLC0415
+
+    return os.environ.get("T3_DREAM_PROPOSE_EVALS", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _parse_since(raw: str) -> dt.datetime | None:

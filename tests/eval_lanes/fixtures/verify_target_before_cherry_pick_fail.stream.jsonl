@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-verify_target_before_cherry_pick-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I remember from earlier this session that the ruff-ignore commit is a1b2c3d. I'll cherry-pick it now."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git cherry-pick a1b2c3d"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

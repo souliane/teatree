@@ -100,33 +100,32 @@ class VerifyResult:
 type Verifier = Callable[[OutboundClaimModel], VerifyResult]
 
 
-def _default_notifier(alert_text: str, idempotency_key: str) -> None:
-    """Production drift-notifier: post via the overlay bot, idempotent on key.
+def _noop_notifier(alert_text: str, idempotency_key: str) -> None:
+    """Silent drift sink — the default when no notifier is injected.
 
-    Uses the verified-delivery wrapper (#1181) so a silent primary
-    ``notify_user`` failure (the #1173 class) auto-falls back to a direct,
-    round-trip-verified send instead of dropping the drift alert.
+    Drift is still detected and recorded on the row; only the DM is
+    suppressed. The production notifier (``messaging``/``notify`` egress)
+    lives at the orchestration construction site
+    (:func:`teatree.loop.domain_jobs.default_drift_notifier`) and is injected,
+    so this scanner stays in the ``domain`` layer with no ``integration``
+    up-edge.
     """
-    from teatree.messaging import (  # noqa: PLC0415 — lazy keeps import side-effects out of module load
-        notify_with_fallback,
-    )
-    from teatree.notify import NotifyKind  # noqa: PLC0415
-
-    notify_with_fallback(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
 
 
 @dataclass(slots=True)
 class OutboundAuditScanner:
     """Verify each claimed outbound post against the third-party API.
 
-    The *notifier* dependency is injected so tests can mock the DM sink.
-    In production it defaults to :func:`_default_notifier` which calls
-    :func:`teatree.notify.notify_user`. Pass ``notifier=lambda *_: None``
-    (or any silent callable) to disable DMs while keeping drift detection.
+    The *notifier* dependency is injected so tests can mock the DM sink and
+    the loop construction site (:func:`domain_jobs._global_dispatch_jobs`)
+    wires the production
+    :func:`teatree.loop.domain_jobs.default_drift_notifier`. Defaults to
+    :func:`_noop_notifier` (drift recorded, no DM) so a bare construction
+    never reaches into the ``messaging``/``notify`` integration layer.
     """
 
     verifiers: dict[str, Verifier] = field(default_factory=dict)
-    notifier: "DriftNotifier" = field(default=_default_notifier)
+    notifier: "DriftNotifier" = field(default=_noop_notifier)
     limit: int = 50
     name: str = "outbound_audit"
     _now_factory: Callable[[], dt.datetime] = field(default=timezone.now)

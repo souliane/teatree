@@ -13,6 +13,16 @@ from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_validate_mr_metadata
+from teatree.core.mr_metadata import validate_mr_metadata
+from teatree.types import DEFAULT_MR_TITLE_REGEX
+
+
+def _verdict(command: str) -> list[str] | None:
+    """``validate_mr_metadata`` verdict for *command* (``None`` when gate skips)."""
+    fields = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+    if fields is None:
+        return None
+    return validate_mr_metadata(fields[0], fields[1], DEFAULT_MR_TITLE_REGEX)
 
 
 def _glab_create(title: str, description: str) -> dict:
@@ -343,3 +353,121 @@ class TestEnvVarOverrideStillWorks:
         argv = run.call_args[0][0]
         assert str(script) in argv
         assert "validate-mr" not in argv
+
+
+class TestUpdateValidatesOnlySetFields:
+    """``glab mr update`` must validate only the field(s) it actually sets.
+
+    It over-fired by demanding BOTH a title and a description on every update, so
+    a reviewer-only or single-field edit was force-validated against an empty
+    sibling and blocked. Mirrors the out-of-band API path's never-lockout shape.
+    """
+
+    def test_metadata_only_update_is_skipped(self):
+        for cmd in (
+            "glab mr update 7624 --reviewer WouterLachat",
+            "glab mr update --add-label needs-review",
+            "glab mr update 12 --ready",
+        ):
+            assert router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": cmd}}) is None
+
+    def test_title_only_update_does_not_demand_a_description(self):
+        # Updating only the title must not block on a missing What/Why body.
+        assert _verdict("glab mr update --title 'fix: rename widget (proj#1)'") == []
+
+    def test_title_only_update_still_catches_a_bad_title(self):
+        assert _verdict("glab mr update --title 'rename widget'")
+
+    def test_description_only_update_validates_the_description(self):
+        good = "config(ci): real first line (proj#1)\n\n## What\nbody"
+        assert _verdict(f"glab mr update --description '{good}'") == []
+
+    def test_description_only_update_catches_a_bad_first_line(self):
+        bad = "Summary of changes\n\n## What\nbody"
+        assert _verdict(f"glab mr update --description '{bad}'")
+
+    def test_update_with_both_fields_validates_both(self):
+        assert _verdict("glab mr update --title 'fix: x (proj#1)' --description 'not conventional'")
+
+
+class TestDynamicValueIsSkipped:
+    """A double-quoted ``$(…)``/``$VAR``/backtick value is skipped, not validated.
+
+    The PreToolUse hook sees the command BEFORE the shell expands it, so such a
+    value is not the real one (a nested quote truncates it to e.g. ``$(cat ``).
+    Validating the captured literal fragment false-blocks; the remote CI gate is
+    the backstop.
+    """
+
+    def _fields_for(self, command: str):
+        return router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+
+    def test_command_substitution_description_is_skipped(self):
+        cmd = 'glab mr create --title \'techdebt(x): real (proj#1)\' --description "$(cat "$DESC")"'
+        assert self._fields_for(cmd) is None
+
+    def test_variable_expansion_description_is_skipped(self):
+        cmd = "glab mr create --title 'fix: x (proj#1)' --description \"$BODY\""
+        assert self._fields_for(cmd) is None
+
+    def test_command_substitution_title_is_skipped(self):
+        cmd = "glab mr create --title \"$(echo hi)\" --description 'fix: x (proj#1)'"
+        assert self._fields_for(cmd) is None
+
+    def test_double_quoted_backtick_description_is_skipped(self):
+        cmd = "glab mr create --title 'fix: x (proj#1)' --description \"use `foo` helper\""
+        assert self._fields_for(cmd) is None
+
+    def test_single_quoted_literal_dollar_is_validated_not_skipped(self):
+        # Single-quoted values are literal: a literal '$' is real text, validated.
+        title, _desc = _fields("glab mr create --title 'fix: costs $5 (proj#1)' --description 'fix: costs $5 (proj#1)'")
+        assert title == "fix: costs $5 (proj#1)"
+
+    def test_create_with_description_no_title_still_validated(self):
+        # Regression: a create missing --title is still bad metadata, not skipped.
+        assert self._fields_for("glab mr create --description 'x'") == ("", "x")
+
+
+class TestEmbeddedTriggerIsNotAnMrMutation:
+    """The trigger phrase inside a quoted arg / heredoc body is NOT a mutation.
+
+    The gate must fire only when ``glab mr create/update`` is the command being
+    executed, not when the literal text merely appears inside another command's
+    quoted argument, a ``-m``/``-F`` message, or a heredoc body (a commit
+    message, a doc string, a verification script). Detection runs against the
+    command with quoted spans and heredoc bodies stripped; value extraction
+    still uses the original command so a real invocation is unaffected.
+    """
+
+    def _fields_for(self, command: str):
+        return router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+
+    def test_commit_message_embedding_is_not_a_mutation(self):
+        cmd = "git commit -m 'docs: explain how glab mr create validates titles'"
+        assert self._fields_for(cmd) is None
+
+    def test_double_quoted_commit_message_embedding_is_not_a_mutation(self):
+        cmd = 'git commit -m "fix: stop the gate firing on glab mr update text"'
+        assert self._fields_for(cmd) is None
+
+    def test_heredoc_body_embedding_is_not_a_mutation(self):
+        cmd = "python - <<'PY'\nprint('run glab mr create --title x later')\nPY"
+        assert self._fields_for(cmd) is None
+
+    def test_other_command_quoted_title_embedding_is_not_a_mutation(self):
+        cmd = 'gh issue create --title "gate over-fires on glab mr update string"'
+        assert self._fields_for(cmd) is None
+
+    def test_real_create_after_quoted_decoy_is_still_detected(self):
+        cmd = (
+            "echo 'will run glab mr create' && glab mr create --title 'fix: x (proj#1)' --description 'fix: x (proj#1)'"
+        )
+        assert self._fields_for(cmd) == ("fix: x (proj#1)", "fix: x (proj#1)")
+
+    def test_real_bare_create_is_still_detected(self):
+        title, _desc = _fields("glab mr create --title 'fix: x (proj#1)' --description 'fix: x (proj#1)'")
+        assert title == "fix: x (proj#1)"
+
+    def test_real_metadata_only_update_still_skipped(self):
+        # The strip must not turn a genuine metadata-only update into a mutation.
+        assert self._fields_for("glab mr update 7624 --reviewer alice") is None

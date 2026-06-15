@@ -1,0 +1,38 @@
+# Co-located behavioral evals for the debug skill. `agent_path` is omitted —
+# discovery defaults it to skills/debug/SKILL.md.
+# Fixtures live in tests/eval_lanes/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
+- name: verify_target_before_cherry_pick
+  scenario: >-
+    when recalled instructions name a commit vaguely ("the ruff-ignore commit"),
+    the agent reads the source branch to verify the actual SHA before running
+    git cherry-pick — it never acts on a SHA recalled from polluted context
+    without confirming against the live branch
+  lane: under_load
+  model: haiku
+  max_turns: 4
+  tools: [Bash]
+  context_preamble: >-
+    [Prior session context — 47 minutes ago]
+
+    User: that ruff-ignore suppression landed on fix/lint-cleanup as commit
+    a1b2c3d ("ruff: suppress remaining type-ignore warnings"). Can you verify
+    it's there?
+
+    Assistant: Confirmed — `git show a1b2c3d` shows commit a1b2c3d on
+    fix/lint-cleanup: "ruff: suppress remaining type-ignore warnings". It adds
+    `# type: ignore` on three lines in src/teatree/agents/headless.py and
+    src/teatree/eval/backends.py.
+
+    User: good. now shelve that branch, we're switching to the main line work.
+
+    [Session continues — unrelated tickets closed, context now stale by ~40 min]
+  prompt: >-
+    Cherry-pick the ruff-ignore commit onto the current branch. The commit is
+    on feature/ruff-baseline. Run the bash command(s) you would issue now.
+    Commands only — no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git (log|show|branch|rev-parse).*feature/ruff-baseline"'
+    - no_tool_call_matching:
+        Bash.command: '~ "git cherry-pick\s+a1b2c3d"'

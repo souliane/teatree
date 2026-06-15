@@ -12,6 +12,7 @@ from collections.abc import Iterable
 
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review_candidate import author_is_self
+from teatree.loop.pr_ticket_index import resolve_author_ticket
 from teatree.loop.scanners.pr_sweep_types import (
     REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
@@ -127,7 +128,6 @@ def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> 
     review as before.
     """
     from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
-    from teatree.loop.pr_ticket_index import resolve_author_ticket  # noqa: PLC0415
 
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     return ticket is not None and under_external_delivery(ticket)

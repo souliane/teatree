@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -454,8 +455,6 @@ class ReviewerPrsScanner:
 
     def _url_allowed(self, url: str) -> bool:
         """Same per-overlay URL-prefix gate as ``MyPrsScanner._url_allowed`` (#1015, #1324)."""
-        from teatree.loop.tick_resolvers import best_url_match_specificity  # noqa: PLC0415
-
         if not self.allowed_url_prefixes:
             return True
         if not url:

@@ -14,6 +14,7 @@ from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.loop.dispatch_reducer import slack_pr_url, task_pr_url
 from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload, DispatchAction
+from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,6 @@ def gate_review_intent(signal: ScanSignal) -> list[DispatchAction] | None:
     ``None`` lets the enabled, still-open case fall through to the generic
     ``AGENT_BY_KIND`` route.
     """
-    from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
-
     if not review_loop_enabled():
         return []
     pr_url = str(signal.payload.get("mr_url") or signal.payload.get("url") or "")
@@ -149,8 +148,6 @@ def review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAct
     one). Fails open on UNKNOWN so a transient API hiccup never drops a
     legitimate review.
     """
-    from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
-
     if not review_loop_enabled():
         return []
     if review_target_is_dead(pr_url):
