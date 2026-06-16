@@ -1,6 +1,6 @@
 """``manage.py loop_state`` — pause/resume/disable/enable a mini-loop (#1913).
 
-Backs ``t3 loop pause/resume/disable/enable/status <name>``. ORM access lives
+Backs ``t3 loop {pause,resume,disable,enable,status} <name>``. ORM access lives
 here (a management command, not a plain typer command) per the project's
 "anything touching the ORM is a management command" rule.
 

@@ -1,4 +1,4 @@
-"""``t3 loop pause/resume/disable/enable/loop-state`` — per-loop control plane (#1913).
+"""``t3 loop {pause,resume,disable,enable,loop-state}`` — per-loop control plane (#1913).
 
 Split out of ``cli.loop`` (module-health: that file owns the tick / start /
 dashboard concerns; the per-loop control plane is a distinct concern).
