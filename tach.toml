@@ -388,7 +388,11 @@ depends_on = [
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
   "teatree.loop.pr_ticket_index",
-  "teatree.loop.scanners"
+  "teatree.loop.scanners",
+  "teatree.loop.dispatch_reducer",
+  "teatree.loop.dispatch_gates",
+  "teatree.loop.dispatch",
+  "teatree.loop.self_improve"
 ]
 
 [[modules]]
@@ -451,6 +455,50 @@ depends_on = [
   "teatree.loop.review_claim_signals",
   "teatree.loop.review_request_tracker",
   "teatree.loop.pr_ticket_index"
+]
+
+[[modules]]
+path = "teatree.loop.dispatch_reducer"
+layer = "domain"
+depends_on = [
+  "teatree.url_classify",
+  "teatree.core.modelkit",
+  "teatree.loop.scanners",
+  "teatree.loop.dispatch_tables"
+]
+
+[[modules]]
+path = "teatree.loop.dispatch_gates"
+layer = "domain"
+depends_on = [
+  "teatree.config",
+  "teatree.core.models",
+  "teatree.core.modelkit",
+  "teatree.backends",
+  "teatree.loop.scanners",
+  "teatree.loop.dispatch_tables",
+  "teatree.loop.dispatch_reducer",
+  "teatree.loop.review_claim_signals"
+]
+
+[[modules]]
+path = "teatree.loop.dispatch"
+layer = "domain"
+depends_on = [
+  "teatree.loop.scanners",
+  "teatree.loop.dispatch_tables",
+  "teatree.loop.dispatch_reducer",
+  "teatree.loop.dispatch_gates"
+]
+
+[[modules]]
+path = "teatree.loop.self_improve"
+layer = "domain"
+depends_on = [
+  "teatree.core.models",
+  "teatree.utils",
+  "teatree.loop.scanners",
+  "teatree.loop.statusline_render"
 ]
 
 [[modules]]

@@ -11,8 +11,8 @@ but they currently resolve to an empty detector list.
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from teatree.core.backend_protocols import MessagingBackend
 from teatree.loop.self_improve.actions import ActionResult, run_action_ladder
 from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 from teatree.loop.self_improve.detectors import (
@@ -21,6 +21,9 @@ from teatree.loop.self_improve.detectors import (
     StaleStatuslineEntryDetector,
 )
 from teatree.loop.self_improve.detectors.base import DetectorReport, SelfImproveDetector
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 
 class Tier:
@@ -81,7 +84,7 @@ class TierResult:
 def run_tier(
     tier: str,
     *,
-    messaging: MessagingBackend | None = None,
+    messaging: "MessagingBackend | None" = None,
     detectors: list[SelfImproveDetector] | None = None,
     budget: BudgetVerdict | None = None,
     auto_fix_callable: Callable[[DetectorReport], None] | None = None,
