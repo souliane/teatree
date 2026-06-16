@@ -7,7 +7,7 @@ replayed over a real on-disk session transcript — i.e. the gates DID their job
 (or weren't needed) in production.
 
 Table-driven over :data:`INVARIANT_REGISTRY`, mirroring #168's registry shape
-and the ``tests/eval_lanes/deterministic/test_scenarios_anti_vacuous.py`` PASS-green / RED-surgical
+and the ``tests/eval_replay/test_scenarios_anti_vacuous.py`` PASS-green / RED-surgical
 pattern:
 
 the ``all_pass`` fixture is GREEN on every LIVE invariant; each live invariant

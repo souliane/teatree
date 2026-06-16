@@ -10,7 +10,7 @@ It is token-free and deterministic by construction — it never shells
 the Agent SDK. The violating and compliant runs are built in process from the
 ``worktree_first`` catalog scenario (the agent must create a worktree before
 editing the canonical clone). ``t3 eval negative-control`` and
-``tests/eval_lanes/deterministic/test_negative_control.py`` both drive this module.
+``tests/eval_replay/test_negative_control.py`` both drive this module.
 """
 
 import dataclasses

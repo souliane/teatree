@@ -80,6 +80,8 @@ class TestDeniesRawReviewWrites:
         reason = deny["permissionDecisionReason"]
         assert "review post-comment" in reason
         assert "post-draft-note" in reason
+        assert "update-note" in reason
+        assert "delete-discussion" in reason
         assert "draft" in reason
         assert "dedup" in reason
         assert "on-behalf approval" in reason

@@ -246,7 +246,17 @@ class TestExemptions:
         planted = _plant(tmp_path, "tests", name, "from teatree.hooks.x import y\n")
         assert check_file(planted, tmp_path) is None
 
-    @pytest.mark.parametrize("rel_dir", ["tests/integration", "tests/conformance", "tests/e2e_flows", "tests/fixtures"])
+    @pytest.mark.parametrize(
+        "rel_dir",
+        [
+            "tests/integration",
+            "tests/conformance",
+            "tests/e2e_flows",
+            "tests/fixtures",
+            "tests/eval_replay",
+            "tests/eval_harness",
+        ],
+    )
     def test_exempt_dir_prefix(self, rel_dir: str, tmp_path: Path) -> None:
         planted = _plant(tmp_path, rel_dir, "test_x.py", "from teatree.hooks.x import y\n")
         assert check_file(planted, tmp_path) is None

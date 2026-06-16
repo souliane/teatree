@@ -2,9 +2,9 @@
 
 Phase-3b of the dream pass (default OFF): turn the engine's GROUNDED drift
 clusters into eval CANDIDATES — descriptors a core-maker / human ratifies into a
-real anti-vacuous ``under_load`` scenario (pollution preamble + discriminating
-matchers + ``_pass``/``_fail`` fixtures + the teeth proof). This module
-deliberately writes no ``evals.yaml``, fixture, or test; it appends candidate
+real anti-vacuous ``under_load`` scenario under ``evals/scenarios/`` (pollution
+preamble + discriminating matchers + ``_pass``/``_fail`` fixtures + the teeth
+proof). This module deliberately writes no scenario file, fixture, or test; it appends candidate
 descriptors to a JSONL review queue, the same high-blast-radius boundary that
 defers the engine's phase-4/5/6 file rewrites. The LLM-generated,
 self-anti-vacuous derivation is the deferred follow-up the design issue specifies.
@@ -125,9 +125,9 @@ def write_eval_proposals(proposals: Sequence[ProposedEval], *, dry_run: bool, ou
     """Append inert eval candidates to the review queue; never write an eval/fixture.
 
     The output is a JSONL CANDIDATE queue a core-maker / human ratifies into a real
-    anti-vacuous ``under_load`` scenario — this function deliberately writes no
-    ``evals.yaml``, no fixture, and no test. Returns the count; under *dry_run* the
-    count is computed but nothing is written.
+    anti-vacuous ``under_load`` scenario under ``evals/scenarios/`` — this function
+    deliberately writes no scenario file, no fixture, and no test. Returns the count;
+    under *dry_run* the count is computed but nothing is written.
     """
     if not proposals:
         return 0

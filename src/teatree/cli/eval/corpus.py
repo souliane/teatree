@@ -49,6 +49,9 @@ class CorpusGradeRow:
     oracle: str
     verdict: str
     detail: str
+    #: True when this entry carries a judge oracle that was requested but skipped
+    #: (claude absent) — the judge graded nothing, so a green verdict is vacuous.
+    judge_skipped: bool = False
 
 
 def grade_corpus_rows(labels: list[CorpusLabel], *, directory: Path, judge: JudgeGrader | None) -> list[CorpusGradeRow]:
@@ -161,6 +164,19 @@ def grade_entries(
     Console().print(_build_grade_table(rows))
     if any(row.verdict == "fail" for row in rows):
         sys.exit(1)
+    if judge:
+        # `--judge` asked for a metered judge run. If judge-oracle entries exist
+        # but every one skipped (claude absent), the judge graded nothing — a
+        # vacuous green. Fail loud rather than report it as passed (§4a).
+        eligible = [row for row in rows if row.oracle in {"judge", "both"}]
+        if eligible and all(row.judge_skipped for row in eligible):
+            typer.echo(
+                f"--judge requested and {len(eligible)} judge-oracle entr(y/ies) ran, but the judge graded "
+                "0 of them — every judge call skipped (likely `claude` not on PATH). This fails loud rather "
+                "than reporting a vacuous green; provision claude/CLAUDE_CODE_OAUTH_TOKEN or drop --judge.",
+                err=True,
+            )
+            sys.exit(1)
 
 
 def _grade_row(label: CorpusLabel, *, directory: Path, judge: JudgeGrader | None) -> CorpusGradeRow:
@@ -176,6 +192,7 @@ def _grade_row(label: CorpusLabel, *, directory: Path, judge: JudgeGrader | None
         oracle=label.oracle,
         verdict=result.verdict,
         detail=_detail(label, result, judge),
+        judge_skipped=result.judge is not None and result.judge.skipped,
     )
 
 

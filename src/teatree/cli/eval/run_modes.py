@@ -21,8 +21,10 @@ from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    UnmeteredJudgeError,
     UnmeteredSdkRunError,
     assert_executed_when_required,
+    assert_judge_was_metered,
     assert_sdk_run_was_metered,
 )
 
@@ -50,6 +52,23 @@ class RunGuards:
         RunGuards.sdk_metered_total(
             backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
         )
+
+    @staticmethod
+    def judge_metered(*, judge_requested: bool, results: list[ScenarioResult]) -> None:
+        """Fail-loud when ``--judge`` graded zero of its judge-oracle scenarios.
+
+        ``r.judge`` is set only for a scenario carrying a judge block (the eligible
+        set); a non-skipped :class:`JudgeOutcome` means the judge actually graded.
+        So a judge-oracle scenario that executed but whose judge skipped is the
+        fake-green this turns RED — see :func:`assert_judge_was_metered`.
+        """
+        eligible = sum(1 for r in results if not r.skipped and r.judge is not None)
+        calls = sum(1 for r in results if r.judge is not None and not r.judge.skipped)
+        try:
+            assert_judge_was_metered(judge_requested=judge_requested, judge_eligible=eligible, judge_calls=calls)
+        except UnmeteredJudgeError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
 
     @staticmethod
     def sdk_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:

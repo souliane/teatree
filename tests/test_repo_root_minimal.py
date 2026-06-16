@@ -46,6 +46,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         "docs",
         "hooks",
         "skills",
+        "evals",  # eval definitions (specs + fixtures); SOT is evals/README.md
         "e2e",
         # Build / tool dirs and manifests required at root by external tooling
         "dist",

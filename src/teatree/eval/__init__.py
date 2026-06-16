@@ -8,7 +8,7 @@ structured tool calls, and dispatches the matchers. The point is to convert
 observable and gated", so regressions surface as a red test rather than as a
 recurring red-card moment.
 
-See ``src/teatree/eval/README.md`` for the scenario YAML schema and the
+See ``evals/README.md`` for the scenario YAML schema and the
 list of supported operators.
 """
 
