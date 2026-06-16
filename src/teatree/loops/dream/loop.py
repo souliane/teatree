@@ -40,50 +40,74 @@ DREAM_DEFAULT_CADENCE_SECONDS = 24 * 3600  # nightly; the cron drives the actual
 DREAM_PASS_BUDGET_SECONDS = 30 * 60
 DREAM_LEASE_SECONDS = DREAM_PASS_BUDGET_SECONDS + 5 * 60
 
-#: The nightly eval-derivation seam is LIVE by default (#2346 "make it live"): the
-#: cadence-driven ``tick`` requests eval proposals unless explicitly disabled. The
-#: kill-switch is two-layered, first match wins:
+#: Every dream phase that can be turned off is LIVE by default (#2346 "make it
+#: live", #1933 phases 4-6). Each carries the SAME two-layer kill-switch, first
+#: match wins:
 #:
-#: 1. ``T3_DREAM_PROPOSE_EVALS`` env — ``0``/``false``/``no`` disables, anything
-#:    else (incl. absent) defers to the toml layer; truthy explicitly enables.
-#: 2. ``[loops.dream] propose_evals`` in ``~/.teatree.toml`` — an explicit bool.
+#: 1. ``T3_DREAM_<PHASE>`` env — ``0``/``false``/``no``/``off`` disables, an
+#:    explicit truthy value enables, an absent/unknown value defers to the toml.
+#: 2. ``[loops.dream] <phase>`` in ``~/.teatree.toml`` — an explicit bool.
 #:
-#: Default (no env, no toml key) is ON, so the seam is live out of the box while a
-#: single toml line (or a falsy env var) turns it off without a code change.
-_DEFAULT_PROPOSE_EVALS = True
-_ENV_PROPOSE_EVALS = "T3_DREAM_PROPOSE_EVALS"
+#: Default (no env, no toml key) is ON, so each phase is live out of the box while
+#: a single toml line (or a falsy env var) turns it off without a code change.
 _FALSY = frozenset({"0", "false", "no", "off"})
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+#: One phase toggle: the ``[loops.dream]`` toml key and its ``T3_DREAM_*`` env var.
+_PROPOSE_EVALS = ("propose_evals", "T3_DREAM_PROPOSE_EVALS")
+_CROSS_LINK = ("cross_link", "T3_DREAM_CROSS_LINK")
+_REINDEX = ("reindex", "T3_DREAM_REINDEX")
+_DECAY = ("decay", "T3_DREAM_DECAY")
 
-def propose_evals_enabled(*, config_path: Path | None = None) -> bool:
-    """Resolve whether the nightly ``tick`` should request eval proposals (default ON).
+
+def _phase_enabled(toml_key: str, env_var: str, *, config_path: Path | None) -> bool:
+    """Resolve a dream-phase toggle (default ON) across the env + toml kill-switch.
 
     The env layer wins when it carries an explicit truthy/falsy value; an absent
-    or unrecognised env value defers to the ``[loops.dream] propose_evals`` toml
-    key, which itself defaults to :data:`_DEFAULT_PROPOSE_EVALS` (ON). *config_path*
-    overrides the toml location for tests.
+    or unrecognised env value defers to the ``[loops.dream] <toml_key>`` key, which
+    itself defaults to ON. *config_path* overrides the toml location for tests.
     """
-    raw_env = os.environ.get(_ENV_PROPOSE_EVALS, "").strip().lower()
+    raw_env = os.environ.get(env_var, "").strip().lower()
     if raw_env in _FALSY:
         return False
     if raw_env in _TRUTHY:
         return True
-    return _toml_propose_evals(config_path)
+    return _toml_phase_enabled(toml_key, config_path)
 
 
-def _toml_propose_evals(config_path: Path | None) -> bool:
-    """Read ``[loops.dream] propose_evals`` from the toml; default ON, never raise."""
+def _toml_phase_enabled(toml_key: str, config_path: Path | None) -> bool:
+    """Read ``[loops.dream] <toml_key>`` from the toml; default ON, never raise."""
     path = config_path if config_path is not None else Path.home() / ".teatree.toml"
     try:
         if not path.is_file():
-            return _DEFAULT_PROPOSE_EVALS
+            return True
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
-        return _DEFAULT_PROPOSE_EVALS
-    dream_table = data.get("loops", {}).get("dream", {}) if isinstance(data.get("loops"), dict) else {}
-    value = dream_table.get("propose_evals") if isinstance(dream_table, dict) else None
-    return value if isinstance(value, bool) else _DEFAULT_PROPOSE_EVALS
+        return True
+    loops = data.get("loops")
+    dream_table = loops.get("dream", {}) if isinstance(loops, dict) else {}
+    value = dream_table.get(toml_key) if isinstance(dream_table, dict) else None
+    return value if isinstance(value, bool) else True
+
+
+def propose_evals_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether the nightly ``tick`` should request eval proposals (default ON)."""
+    return _phase_enabled(*_PROPOSE_EVALS, config_path=config_path)
+
+
+def cross_link_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase 4 (cross-link related memories) runs (default ON)."""
+    return _phase_enabled(*_CROSS_LINK, config_path=config_path)
+
+
+def reindex_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase 5 (regenerate ``MEMORY.md``) runs (default ON)."""
+    return _phase_enabled(*_REINDEX, config_path=config_path)
+
+
+def decay_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase 6 (decay/archive stale memories) runs (default ON)."""
+    return _phase_enabled(*_DECAY, config_path=config_path)
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":

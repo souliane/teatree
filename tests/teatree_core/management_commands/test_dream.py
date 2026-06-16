@@ -9,6 +9,7 @@ engine is a typed seam.
 
 import datetime as dt
 from io import StringIO
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -199,6 +200,104 @@ class DreamNightlyTickRequestsProposalsTestCase(TestCase):
         out = stdout.getvalue()
         assert "promoted 1 live eval(s)" in out
         assert "rejected 1 vacuous candidate(s)" in out
+
+
+class DreamMemoryPhasesPipelineTestCase(TestCase):
+    """A successful tick runs phases 4-6 over the discovered memory dirs (#1933 §6).
+
+    All tests inject a TMP memory dir via ``discover_memory_dirs`` — the real
+    ``~/.claude`` is never touched.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        # Two related memories so phase 4 has an edge to add and phase 5 has lines.
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+
+    #: All four phase toggles cleared to default-ON unless a test overrides one.
+    _PHASE_ENV: ClassVar[dict[str, str]] = {
+        "T3_DREAM_PROPOSE_EVALS": "",
+        "T3_DREAM_CROSS_LINK": "",
+        "T3_DREAM_REINDEX": "",
+        "T3_DREAM_DECAY": "",
+    }
+
+    def _tick(self, stdout: StringIO, *, env: dict[str, str] | None = None) -> None:
+        environ = {**self._PHASE_ENV, **(env or {})}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict("os.environ", environ, clear=False),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_phases_run_by_default_and_report(self) -> None:
+        stdout = StringIO()
+        self._tick(stdout)
+        out = stdout.getvalue()
+        # Phase 4 linked the two related memories; phase 5 regenerated the index.
+        assert "cross-linked" in out
+        assert "re-indexed" in out
+        assert (self.memdir / "MEMORY.md").is_file()
+        assert "[[mem_b]]" in (self.memdir / "mem_a.md").read_text(encoding="utf-8")
+
+    def test_phase_disabled_by_kill_switch_does_not_run(self) -> None:
+        stdout = StringIO()
+        self._tick(stdout, env={"T3_DREAM_CROSS_LINK": "0"})
+        # cross-link disabled -> no link added, no cross-link clause.
+        assert "[[mem_b]]" not in (self.memdir / "mem_a.md").read_text(encoding="utf-8")
+        assert "cross-linked" not in stdout.getvalue()
+
+    def test_reindex_disabled_writes_no_index(self) -> None:
+        stdout = StringIO()
+        self._tick(stdout, env={"T3_DREAM_REINDEX": "0"})
+        assert "re-indexed" not in stdout.getvalue()
+        assert not (self.memdir / "MEMORY.md").exists()
+
+    def test_decay_disabled_archives_nothing(self) -> None:
+        # An old, unreferenced memory that decay WOULD archive — but decay is off.
+        import os  # noqa: PLC0415
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        old = (datetime.now(tz=UTC) - timedelta(days=90)).timestamp()
+        stale = self.memdir / "mem_old.md"
+        stale.write_text("name: mem_old\nan old unreferenced lesson\n", encoding="utf-8")
+        os.utime(stale, (old, old))
+        stdout = StringIO()
+        self._tick(stdout, env={"T3_DREAM_DECAY": "0"})
+        assert "archived" not in stdout.getvalue()
+        assert stale.exists()
+
+    def test_one_phase_failing_does_not_crash_the_tick(self) -> None:
+        stdout = StringIO()
+        with patch("teatree.loops.dream.cross_link.cross_link_memories", side_effect=RuntimeError("phase4 boom")):
+            self._tick(stdout)
+        out = stdout.getvalue()
+        # The pass still stamped success; the phase failure is warned, not fatal,
+        # and the LATER phases still ran.
+        assert "WARN cross-link raised: RuntimeError" in out
+        assert "re-indexed" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_no_memory_dirs_is_clean_noop(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "cross-linked" not in out
+        assert "OK    dream pass" in out
 
 
 class DreamLeaseTtlTestCase(TestCase):
