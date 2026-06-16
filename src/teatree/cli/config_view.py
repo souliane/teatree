@@ -1,11 +1,13 @@
 """Read-only ``t3 config show`` view: text-file intent vs DB-cached state.
 
 Encodes the #628 cache-vs-intent invariant in the output itself. The
-**intent** section is the resolved ``~/.teatree.toml`` — the user-authored
-source of truth; deleting it loses user intent. The **derived** section is
-DB / data-dir state that can be deleted and deterministically rebuilt from
-the text files plus repo state; every entry is flagged ``regenerable`` so
-the invariant is visible, not just documented.
+**intent** section is the resolved user-authored config — under the #1775
+partition that spans BOTH homes: the ``~/.teatree.toml`` carve-out and the
+DB-home ``ConfigSetting`` store (rows are user intent, not regenerable cache).
+Deleting either loses user intent. The **derived** section is DB / data-dir
+state that can be deleted and deterministically rebuilt from the config plus
+repo state (tickets, sessions, update/skill caches); every entry is flagged
+``regenerable`` so the invariant is visible, not just documented.
 
 Building the view never imports the ORM eagerly and never writes anything
 — it must work with the DB absent (offline-readable, mirroring the
@@ -123,7 +125,7 @@ def _render_derived_entry(entry: dict[str, Any]) -> str:
 def render_config_view(view: ConfigView) -> str:
     status = "present" if view.config_exists else "absent (defaults shown)"
     lines = [
-        f"Intent — text-file source of truth ({view.config_path}, {status}):",
+        f"Intent — user-authored source of truth (TOML {view.config_path}, {status}; + DB ConfigSetting store):",
         *(f"  {key} = {view.intent[key]}" for key in sorted(view.intent)),
         "",
         "Derived — DB / data-dir regenerable cache (deletable, rebuilt from intent + repo):",
