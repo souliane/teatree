@@ -12,9 +12,11 @@ live here:
     ``--file``/``--line``) invocations, closing the #72
     silent-degradation foot-gun observed on !6220.
 * :func:`register` — wires the ``delete-draft-note``,
-    ``delete-discussion``, ``list-draft-notes``, ``publish-draft-notes``,
-    ``resolve-discussion``, and ``update-note`` typer commands onto the
-    ``review`` typer app. These are the draft/note-management cluster:
+    ``delete-discussion``, ``delete-issue-note``, ``list-draft-notes``,
+    ``publish-draft-notes``, ``resolve-discussion``, and ``update-note``
+    typer commands onto the ``review`` typer app. The issue-note variant is
+    the sanctioned path the ``block-raw-review-post`` hook (#1164) leaves no
+    other way to take. These are the draft/note-management cluster:
     lifecycle operations on individual notes (publish, delete, list,
     edit, resolve) distinct from the posting commands
     (``post-draft-note``/``post-comment``) which carry their own
@@ -104,6 +106,33 @@ def _delete_discussion(
         raise typer.Exit(code=code)
 
 
+def _delete_issue_note(
+    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
+    issue_iid: int = typer.Argument(help="Issue / work-item IID"),
+    note_id: int = typer.Argument(help="Published note ID to delete"),
+) -> None:
+    """Delete a *published* note from a GitLab ISSUE / work-item.
+
+    The issue/work-item twin of `delete-discussion` (which removes an MR
+    note). Use to clean up a published note on an issue/work-item under
+    the user's identity. This is the sanctioned path: a raw
+    `glab api --method DELETE projects/.../issues/<iid>/notes/<id>` is
+    denied by the `block-raw-review-post` hook (souliane/teatree#1164),
+    which has no bypass — only this command routes through the on-behalf
+    pre-gate the raw write skips. Respects the `on_behalf_post_mode`
+    pre-gate (#960), scoped to `<repo>#<issue>` (record an approval via
+    `t3 review approve-on-behalf <repo>#<issue> delete_issue_note
+    --approver <user-id>`).
+    """
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
+
+    service = _require_token()
+    msg, code = service.delete_issue_note(repo, issue_iid, note_id)
+    typer.echo(msg)
+    if code:
+        raise typer.Exit(code=code)
+
+
 def _publish_draft_notes(
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
@@ -166,6 +195,7 @@ def _resolve_discussion(
 _COMMANDS: tuple[tuple[str, Callable[..., Any]], ...] = (
     ("delete-draft-note", _delete_draft_note),
     ("delete-discussion", _delete_discussion),
+    ("delete-issue-note", _delete_issue_note),
     ("publish-draft-notes", _publish_draft_notes),
     ("list-draft-notes", _list_draft_notes),
     ("update-note", _update_note),

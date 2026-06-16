@@ -715,6 +715,64 @@ class TestDeleteDiscussion:
             assert "No GitLab token" in result.output
 
 
+# -- delete-issue-note (published ISSUE/work-item note removal) ----------------
+
+
+class TestDeleteIssueNote:
+    """``delete-issue-note`` removes a published issue note via DELETE /issues/{iid}/notes/{id}."""
+
+    def test_delete_issue_note_success_hits_issue_endpoint(self, monkeypatch):
+        """A 204 reports OK and targets the ISSUE notes endpoint (never merge_requests)."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.delete.return_value = 204
+        mock_api.get_json.side_effect = _readback_404
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "delete-issue-note", "org/repo", "8568", "3456141979"])
+            assert result.exit_code == 0, result.output
+            assert "OK deleted note_id=3456141979 on issue #8568" in result.output
+            endpoint = mock_api.delete.call_args.args[0]
+            assert "issues/8568/notes/3456141979" in endpoint
+            assert "merge_requests" not in endpoint
+
+    def test_delete_issue_note_failure_surfaces_http_status(self, monkeypatch):
+        """A non-204 response is surfaced as ``Failed: HTTP <status>`` with that exit code."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.delete.return_value = 404
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "delete-issue-note", "org/repo", "8568", "99"])
+            assert result.exit_code == 404
+            assert "Failed: HTTP 404" in result.output
+
+    def test_delete_issue_note_unverified_when_note_survives(self, monkeypatch):
+        """ANTI-VACUITY: a 204 whose read-back still finds the note must NOT report deleted.
+
+        verify_issue_note_deleted (#2081) reads the note back; a 200 means the
+        delete did not take, so the call rolls back to a failure, never a
+        phantom "OK deleted".
+        """
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mock_api = MagicMock()
+        mock_api.delete.return_value = 204
+        # The deleted note is STILL present on read-back — the delete was a no-op.
+        mock_api.get_json.return_value = {"id": 99}
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(app, ["review", "delete-issue-note", "org/repo", "8568", "99"])
+            assert result.exit_code != 0
+            assert "OK deleted" not in result.output
+            assert "still present" in result.output
+
+    def test_delete_issue_note_token_rejected(self, monkeypatch):
+        """No token → ``No GitLab token`` refusal, no HTTP call."""
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(stderr="", returncode=1)
+            result = runner.invoke(app, ["review", "delete-issue-note", "org/repo", "8568", "99"])
+            assert result.exit_code == 1
+            assert "No GitLab token" in result.output
+
+
 # -- approve / unapprove -------------------------------------------------------
 
 

@@ -40,6 +40,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from django_bootstrap import bootstrap_teatree_django
+from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from subagent_skill_gate import build_load_first_reason, filter_unreferenced, required_skills_for_task
@@ -5952,11 +5953,10 @@ def _self_pump_suppressed(session_id: str) -> bool:
     no-op, so a session can stop driving the loop in-process without
     touching the registry or ending the session.
 
-    An explicit user pause (availability=away, #2247/#2250) likewise gates
-    the pump off via :func:`_pause_suppresses_self_pump`, so the standing
-    loop directive stops re-firing while the user has paused the work.
+    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) or a
+    durable DB ``LoopState`` pause of ``dispatch`` (#1913, :func:`db_loop_state_suppresses_self_pump`) gate it off.
     """
-    if _all_loops_disabled():
+    if _all_loops_disabled() or db_loop_state_suppresses_self_pump():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return True
@@ -7141,9 +7141,9 @@ _REVIEW_POST_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to a review discussion/notes/comments "
     "endpoint bypasses the sanctioned review-post CLI. To CREATE a note use "
     "`t3 <overlay> review post-comment` (draft by default, #1207) or `post-draft-note`; "
-    "to EDIT or REMOVE an existing one use `t3 <overlay> review update-note` or "
-    "`delete-discussion` — the CLI enforces draft-default, dedup, and on-behalf approval, "
-    "which a direct REST write skips. Read-only `glab api`/`gh api` GETs are unaffected."
+    "to EDIT use `t3 <overlay> review update-note`; to REMOVE use `delete-discussion` (MR) "
+    "or `delete-issue-note` (issue/work-item) — the CLI enforces draft-default, dedup, and "
+    "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
 )
 
 

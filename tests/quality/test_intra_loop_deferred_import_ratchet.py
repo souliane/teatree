@@ -195,7 +195,11 @@ class TestLoopScannersNode:
     def test_review_claim_signals_is_a_clean_leaf(self) -> None:
         entry = _module_entry("teatree.loop.review_claim_signals")
         assert entry["layer"] == "domain"
-        assert set(entry.get("depends_on", [])) == {"teatree.types", "teatree.core.models"}
+        assert set(entry.get("depends_on", [])) == {
+            "teatree.types",
+            "teatree.core.models",
+            "teatree.loop.loop_state_db",
+        }
 
     def test_url_specificity_is_a_pure_leaf(self) -> None:
         entry = _module_entry("teatree.loop.url_specificity")
