@@ -10,8 +10,11 @@ tach's acyclic guard cannot see intra-node cycles, so the back-edges that route
 human reading the module header. The #2413 sub-layering (mirroring the #2385
 core carve) declares the lowest leaves as their own tach nodes so the acyclic
 guard applies *within* ``loop``; until that carve is complete (PR-2 declares
-``scanners`` and severs the ``review_claim`` back-edges, PR-3/PR-4 the rest),
-this ratchet keeps the deferred-import count from growing.
+``scanners`` and severs the ``review_claim`` back-edges, PR-3 declares the
+eager-clean ``dispatch`` flat-file cluster + the ``self_improve`` detector
+package, PR-4 the ``rendering`` + ``tick`` / ``phases`` top once the
+``statusline_loops`` deferred up-edges are severed), this ratchet keeps the
+deferred-import count from growing.
 
 It is a SHRINK-only peg: an AST walk counts every ``import``/``from`` whose
 enclosing scope is a function/method (not module-level) and whose target module
@@ -51,8 +54,13 @@ _TACH = _REPO_ROOT / "tach.toml"
 # declared eager sub-node edges (2x `review_loop_enabled`, 2x
 # `best_url_match_specificity`, `record_review_request_post`,
 # `resolve_author_ticket`), dropping the count 42 -> 36.
-# SHRINK-ONLY: lower this as PR-3+ convert more deferred edges into declared tach
-# sub-node edges; never raise it.
+# PR-3 declares the `dispatch` flat-file cluster (`dispatch` / `dispatch_gates` /
+# `dispatch_reducer`) and the `self_improve` package as tach nodes. Both were
+# already eager-clean (every intra-loop edge pointed DOWN, zero deferred
+# up-edges), so the carve converts NO deferred edge — the count stays 36. The
+# win is structural: tach's acyclic guard now applies WITHIN those clusters.
+# SHRINK-ONLY: lower this as PR-4 converts the `statusline_loops` deferred
+# up-edges into declared tach sub-node edges; never raise it.
 _FROZEN_INTRA_LOOP_DEFERRED = 36
 
 
@@ -88,6 +96,12 @@ def _count_all() -> int:
 def _module_entry(path: str) -> dict[str, object]:
     data = tomllib.loads(_TACH.read_text(encoding="utf-8"))
     return next(m for m in data["modules"] if m["path"] == path)
+
+
+def _depends_on(path: str) -> list[str]:
+    raw = _module_entry(path).get("depends_on", [])
+    assert isinstance(raw, list)
+    return [str(dep) for dep in raw]
 
 
 class TestIntraLoopDeferredImportRatchet:
@@ -210,3 +224,92 @@ class TestLoopScannersNode:
             if "teatree.loop.review_claim" in _eager_loop_imports(py)
         )
         assert offenders == [], f"scanners eagerly importing orchestration-top review_claim: {offenders}"
+
+
+class TestLoopDispatchNode:
+    """The ``dispatch`` flat-file cluster is declared as tach domain nodes (#2413 PR-3).
+
+    The cluster (``dispatch`` > ``dispatch_gates`` > ``dispatch_reducer`` >
+    ``dispatch_tables``) was eager-clean — every intra-loop edge already pointed
+    DOWN (to ``scanners`` / ``dispatch_tables`` / ``review_claim_signals``) with
+    zero deferred up-edges — but lived inside the single ``teatree.loop`` node,
+    so tach's acyclic guard could not see it. Declaring each flat file as its own
+    ``domain`` node makes the within-cluster DAG enforced: a future back-edge
+    (e.g. ``dispatch_reducer`` importing ``dispatch`` or the orchestration top)
+    is now a tach failure, not an invisible cycle.
+    """
+
+    def test_dispatch_cluster_files_are_domain_nodes(self) -> None:
+        for path in (
+            "teatree.loop.dispatch",
+            "teatree.loop.dispatch_gates",
+            "teatree.loop.dispatch_reducer",
+        ):
+            assert _module_entry(path)["layer"] == "domain", path
+
+    def test_dispatch_never_depends_on_the_orchestration_top(self) -> None:
+        # No file in the dispatch cluster may declare a dependency on the
+        # orchestration-top `teatree.loop` (the parent) — that is the back-edge
+        # the carve forbids structurally.
+        for path in (
+            "teatree.loop.dispatch",
+            "teatree.loop.dispatch_gates",
+            "teatree.loop.dispatch_reducer",
+        ):
+            assert "teatree.loop" not in _depends_on(path), path
+
+    def test_dispatch_reducer_is_the_lowest_dispatch_file(self) -> None:
+        # `dispatch_reducer` sits just above the `dispatch_tables` leaf: it may
+        # reach `scanners` + `dispatch_tables` but must NOT pull in its siblings
+        # `dispatch_gates` / `dispatch` (the cluster DAG points one way).
+        deps = _depends_on("teatree.loop.dispatch_reducer")
+        assert "teatree.loop.dispatch_tables" in deps
+        assert "teatree.loop.dispatch_gates" not in deps
+        assert "teatree.loop.dispatch" not in deps
+
+    def test_parent_loop_declares_the_dispatch_children(self) -> None:
+        deps = _depends_on("teatree.loop")
+        for child in (
+            "teatree.loop.dispatch",
+            "teatree.loop.dispatch_gates",
+            "teatree.loop.dispatch_reducer",
+        ):
+            assert child in deps, child
+
+
+_SELF_IMPROVE_ROOT = _LOOP_ROOT / "self_improve"
+
+
+class TestLoopSelfImproveNode:
+    """``teatree.loop.self_improve`` is a declared domain node (#2413 PR-3).
+
+    The detector package depended only on the ``scanners`` leaf and (via the
+    ``statusline`` re-export facade) on ``statusline_render.default_path``. The
+    facade hop is repointed straight at the ``statusline_render`` leaf so the
+    node's only intra-loop deps are two declared leaves — ``self_improve`` never
+    reaches the orchestration top, and no scanner/up-edge can sneak in.
+    """
+
+    def test_self_improve_is_a_domain_node(self) -> None:
+        assert _module_entry("teatree.loop.self_improve")["layer"] == "domain"
+
+    def test_self_improve_intra_loop_deps_are_only_declared_leaves(self) -> None:
+        deps = _depends_on("teatree.loop.self_improve")
+        loop_deps = {d for d in deps if d.startswith("teatree.loop")}
+        assert loop_deps == {"teatree.loop.scanners", "teatree.loop.statusline_render"}
+        # The orchestration-top parent is NEVER a self_improve dep.
+        assert "teatree.loop" not in deps
+
+    def test_no_self_improve_module_eagerly_imports_the_statusline_facade(self) -> None:
+        # `stale_statusline` reaches `default_path` via the `statusline_render`
+        # leaf directly, not the `teatree.loop.statusline` facade (which carries
+        # the `statusline_loops` deferred up-edges into the orchestration top).
+        offenders = sorted(
+            str(py.relative_to(_SELF_IMPROVE_ROOT))
+            for py in _SELF_IMPROVE_ROOT.rglob("*.py")
+            if "teatree.loop.statusline" in _eager_loop_imports(py)
+        )
+        assert offenders == [], f"self_improve eagerly importing the statusline facade: {offenders}"
+
+    def test_parent_loop_declares_self_improve(self) -> None:
+        assert "teatree.loop.self_improve" in _depends_on("teatree.loop")

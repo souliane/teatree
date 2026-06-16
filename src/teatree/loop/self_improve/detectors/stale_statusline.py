@@ -25,7 +25,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
-from teatree.loop.statusline import default_path
+from teatree.loop.statusline_render import default_path
 
 # Generic URL extractor — covers GitHub/GitLab PR + issue URLs in the
 # statusline text (the OSC8 hyperlink wrapper still contains the URL in

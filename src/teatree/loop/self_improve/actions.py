@@ -19,8 +19,8 @@ gated by detector-declared ``max_rung``; ``auto_fix`` is whitelisted
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, fresh_or_escalated
 from teatree.loop.self_improve.persistence import (
@@ -29,6 +29,9 @@ from teatree.loop.self_improve.persistence import (
     recent_slack_firings_within,
     record_firing,
 )
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +99,7 @@ def _slack_capped(now_count: int) -> bool:
 def run_action_ladder(
     report: DetectorReport,
     *,
-    messaging: MessagingBackend | None = None,
+    messaging: "MessagingBackend | None" = None,
     auto_fix_callable: Callable[[DetectorReport], None] | None = None,
 ) -> ActionResult | None:
     """Advance the ladder by at most one rung for one detector report.

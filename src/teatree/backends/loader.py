@@ -6,6 +6,7 @@ The loader is the only place that branches on platform. Caller code consumes
 GitHub vs GitLab and Slack vs Noop is encoded on ``OverlayBase.config``.
 """
 
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
@@ -15,13 +16,21 @@ from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
-from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_protocols import (
+    BackendResolutionError,
+    CIService,
+    CodeHostBackend,
+    MessagingBackend,
+    PrOpenState,
+)
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+logger = logging.getLogger(__name__)
 
 
 def get_code_host(overlay: "OverlayBase") -> CodeHostBackend | None:
@@ -111,6 +120,31 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     if not forge:
         return get_code_host(overlay)
     return _host_backend(overlay, forge)
+
+
+def pr_is_merged_or_closed(pr_url: str) -> bool:
+    """Whether the PR/MR at *pr_url* is provably MERGED or CLOSED (#2081).
+
+    Resolves the per-URL code host with the active overlay's credentials and
+    reads live state via :meth:`CodeHostBackend.get_pr_open_state`. Fail-OPEN:
+    only a *definite* MERGED/CLOSED returns ``True``; an empty URL, UNKNOWN
+    (auth / network / parse failure), an unresolvable host, or any exception
+    returns ``False`` so a transient API hiccup never suppresses a downstream
+    action.
+    """
+    if not pr_url:
+        return False
+    from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415
+
+    try:
+        host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)
+        if host is None:
+            return False
+        state = host.get_pr_open_state(pr_url=pr_url)
+    except Exception:
+        logger.exception("Live-state check failed for %s — failing open", pr_url)
+        return False
+    return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
 
 
 def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBackend | None:
