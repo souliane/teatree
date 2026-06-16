@@ -54,6 +54,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 loop automatically while consolidated work remains — exactly │
 │                 one consolidation loop per agent identity, deduped across    │
 │                 all sessions (#786 WS4); it idles when none.                 │
+│ loops           Manage DB-configured autonomous loops (#1796).               │
 │ teams           Agent-teams master switch. The teams.enabled config key      │
 │                 (default off) gates the pane-backed teammate layer; off      │
 │                 keeps the classic in-session sub-agent fan-out.              │
@@ -3506,6 +3507,38 @@ Usage: t3 loop slack-answer start [OPTIONS]
  (seconds; floor 15).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 loops`
+
+```
+Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
+
+ Manage DB-configured autonomous loops (#1796).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list  List DB-configured autonomous loops: name, enabled, delay, last run,   │
+│       next due.                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops list`
+
+```
+Usage: t3 loops list [OPTIONS]
+
+ List DB-configured autonomous loops: name, enabled, delay, last run, next due.
+
+ Read-only: it reads the ``Loop`` table and prints it — never ticks, marks a
+ run, or mutates a row.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the loops as JSON.                                      │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

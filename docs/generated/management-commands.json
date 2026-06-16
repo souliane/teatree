@@ -387,6 +387,11 @@
       "subcommands": []
     },
     {
+      "help": "List DB-configured autonomous loops (read-only; #1796).",
+      "name": "loops_list",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "mr_reminder",
       "subcommands": [
