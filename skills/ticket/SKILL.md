@@ -63,6 +63,17 @@ The user should be able to type "review <one URL>" and have the agent assemble:
 
 Asking the user for additional URLs they've already cross-linked is a retro-worthy failure.
 
+#### One Ticket At A Time — Never Conflate (Non-Negotiable)
+
+Under load — a polluted prior-session context, a coordinator brief, several tickets discussed in one breath — the failure is to fetch the **wrong** ticket, or to blend two tickets' details into one. Do this, never that:
+
+1. **Fetch exactly the id in the live request.** The ticket to act on is the one in the user's *current* message, not the one a stale brief, handover, or earlier turn named as "current"/"next". When in doubt, fetch the id the user just typed — never a remembered one.
+2. **Pin the id before the fetch.** State the single `<repo>#<iid>` (or full URL) you are about to fetch, then run the one `glab issue view` / `gh issue view` command above against exactly that id.
+3. **Never merge two tickets' context.** If the session has touched ticket A and the user now hands you ticket B, fetch B fresh and keep A's acceptance criteria, scope, and tenant out of B. Lessons carry; details do not.
+4. **One fetch, one ticket, then stop and read it.** Do not batch-fetch a menu of ids you "might" need; fetch the requested one and act on it.
+
+Acting on a different ticket than the one requested — or smearing one ticket's spec onto another — is a retro-worthy failure even when an upstream brief made the conflation tempting.
+
 #### Per-Platform Traversal
 
 | Starting URL | What to traverse |
@@ -74,7 +85,22 @@ Asking the user for additional URLs they've already cross-linked is a retro-wort
 
 #### Tooling Rules
 
-- **CLI over MCP** — use `glab`, `gh`, `t3 tool notion-download` first; reach for MCP only for services without a CLI.
+- **CLI over MCP (do this — never the reverse).** Fetch the issue body with the forge CLI as the **first** action. Reach for an MCP service only for a source that has no CLI (e.g. Notion, Slack). Do **not** open an MCP issue-fetch when `glab`/`gh` can read the same issue.
+
+  The one command to run for the URL the user pasted — copy-paste, fill the placeholders, no narration:
+
+  ```bash
+  # GitLab issue (gitlab.com/<group>/<repo>/-/issues/<iid>) — body + every discussion in one pass
+  glab issue view <iid> --repo <group>/<repo> --comments
+
+  # GitHub issue (github.com/<owner>/<repo>/issues/<n>) — body + all comments
+  gh issue view <n> --repo <owner>/<repo> --comments
+
+  # Notion / Slack / other CLI-less source only
+  t3 tool notion-download <signed-url>
+  ```
+
+  Then traverse the linked graph (sub-pages, related MRs, threads) per the table above. `glab issue view ... --comments` / `gh issue view ... --comments` is the canonical intake fetch — not an MCP call.
 - **Image safety** — before reading any downloaded image, validate it with `file <path>`. Only raster (PNG/JPEG/GIF/WebP) are safe to read. Non-raster (SVG/XML/HTML) or empty/corrupt files will poison the conversation context with unrecoverable "Could not process image" errors.
 - **Pagination** — `glab api .../notes` returns one page (typically 20). Use `?per_page=100` or `--paginate` and de-duplicate.
 - **Inaccessible sources** — if a link points to a source you cannot reach (e.g., partner Jira behind SSO), STOP and report it. Do not silently proceed with a partial picture.
