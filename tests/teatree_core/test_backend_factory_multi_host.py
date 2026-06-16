@@ -10,10 +10,13 @@ alias pointing at the first entry.
 
 from unittest.mock import patch
 
+from django.test import TestCase
+
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.core.backend_factory import iter_overlay_backends, reset_backend_caches
+from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 
@@ -76,26 +79,22 @@ def test_hosts_is_back_compatible_with_single_host_field() -> None:
     assert dual.host is dual.hosts[0]
 
 
-def test_identity_aliases_threaded_from_user_settings(tmp_path) -> None:
-    """`[teatree] user_identity_aliases` lands on every overlay's `identities`."""
-    from teatree.config import load_config  # noqa: PLC0415
+class TestIdentityAliasesThreaded(TestCase):
+    """The DB-home `user_identity_aliases` lands on every overlay's `identities`."""
 
-    cfg_path = tmp_path / "teatree.toml"
-    cfg_path.write_text(
-        '[teatree]\nuser_identity_aliases = ["user-main", "user-alt"]\n',
-        encoding="utf-8",
-    )
-    cfg = load_config(cfg_path)
+    def setUp(self) -> None:
+        reset_backend_caches()
+        self.addCleanup(reset_backend_caches)
 
-    with (
-        patch("teatree.config.load_config", return_value=cfg),
-        patch.object(
+    def test_identity_aliases_threaded_from_user_settings(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["user-main", "user-alt"])
+
+        with patch.object(
             overlay_loader_mod,
             "_discover_overlays",
             return_value={"dual": _DualTokenOverlay()},
-        ),
-    ):
-        backends = iter_overlay_backends()
+        ):
+            backends = iter_overlay_backends()
 
-    [dual] = [b for b in backends if b.name == "dual"]
-    assert dual.identities == ("user-main", "user-alt"), f"aliases must reach the backend; got {dual.identities!r}"
+        [dual] = [b for b in backends if b.name == "dual"]
+        assert dual.identities == ("user-main", "user-alt"), f"aliases must reach the backend; got {dual.identities!r}"

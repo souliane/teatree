@@ -17,23 +17,38 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, ConfigSetting
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
-def _stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, overlay: str, autonomy: str, extra: str = "") -> None:
+def _stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    overlay: str,
+    autonomy: str,
+    notify_on_post_on_behalf: bool | None = None,
+) -> None:
+    # ``slack_user_id`` is a RAW key (TOML-home) — keep both the global and the
+    # per-overlay value in TOML so notify_user resolves the user id. ``autonomy``
+    # and ``notify_on_post_on_behalf`` are DB-home (#1775, no ``T3_*`` env var)
+    # so a TOML value for them is ignored on read — stage ``autonomy`` in the
+    # ``ConfigSetting`` store scoped to the overlay, and the global toggle in the
+    # global scope.
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "U-OPERATOR"\n{extra}'
-        f'[overlays.{overlay}]\nslack_user_id = "U-OPERATOR"\nautonomy = "{autonomy}"\n',
+        f'[teatree]\nslack_user_id = "U-OPERATOR"\n[overlays.{overlay}]\nslack_user_id = "U-OPERATOR"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_OVERLAY_NAME", overlay)
+    ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+    if notify_on_post_on_behalf is not None:
+        ConfigSetting.objects.set_value("notify_on_post_on_behalf", notify_on_post_on_behalf)
 
 
 def _stub_backend() -> MagicMock:
@@ -67,7 +82,7 @@ class TestNotifyTierFiresAfterReceiptDm:
             self.monkeypatch,
             overlay="t3-client",
             autonomy="notify",
-            extra="notify_on_post_on_behalf = false\n",
+            notify_on_post_on_behalf=False,
         )
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
@@ -98,7 +113,7 @@ class TestNotifyTierFiresAfterReceiptDm:
             self.monkeypatch,
             overlay="t3-teatree",
             autonomy="full",
-            extra="notify_on_post_on_behalf = false\n",
+            notify_on_post_on_behalf=False,
         )
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)

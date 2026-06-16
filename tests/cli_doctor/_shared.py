@@ -36,9 +36,18 @@ def _stage_home(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _fake_entry_point(dist_name: str = "my-overlay") -> object:
-    """Return a fake ``importlib.metadata.EntryPoint`` with ``dist.name``."""
+    """Return a fake ``importlib.metadata.EntryPoint`` with ``dist.name``.
+
+    A real ``EntryPoint`` also carries a ``value`` (the overlay class path),
+    which overlay discovery reads (``discover_overlays``); the fake provides a
+    plausible one so the entry-point branch resolves without an attribute error.
+    """
     dist = type("_FakeDist", (), {"name": dist_name})()
-    return type("_FakeEP", (), {"name": f"t3-{dist_name}", "dist": dist})()
+    return type(
+        "_FakeEP",
+        (),
+        {"name": f"t3-{dist_name}", "value": f"{dist_name}.overlay:Overlay", "dist": dist},
+    )()
 
 
 def _editable_map(**dists: tuple[bool, str]):

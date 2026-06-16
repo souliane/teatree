@@ -4,18 +4,18 @@ The first-class CLI surface for the single ``autonomy`` knob (souliane/teatree
 #1668) that collapses the three user-approval gates — colleague auto-approve
 (``on_behalf_post_mode``), auto-merge (``require_human_approval_to_merge``),
 and answer (``require_human_approval_to_answer``) — so a user flips an overlay
-to full merge/approve autonomy with one command instead of hand-editing TOML.
+to full merge/approve autonomy with one command instead of hand-editing config.
 
-Integration-first: a real ``~/.teatree.toml`` fixture under ``tmp_path`` with
-``teatree.config.CONFIG_PATH`` monkeypatched, exercised through the typer
-``CliRunner`` against the same ``autonomy`` subgroup the overlay app builder
-attaches via :func:`teatree.cli.autonomy.register_autonomy_commands`, then the
-persisted value is round-tripped through :func:`get_effective_settings` to
-assert the gates collapse — and the safety floor does NOT.
+``autonomy`` is DB-home (#1775): its sole authoritative tier is the
+``ConfigSetting`` store, so ``set`` writes a DB ROW (the active/``--overlay``
+overlay's OVERLAY-scoped row by default, the GLOBAL-scope row with ``--global``)
+— a ``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on read.
+Integration-first: the ``set`` write is asserted on the persisted
+``ConfigSetting`` row and round-tripped through :func:`get_effective_settings`
+so the gates collapse — and the safety floor does NOT.
 """
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import typer
@@ -23,6 +23,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings
+from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
 
@@ -33,136 +34,113 @@ def _app() -> typer.Typer:
     return app
 
 
+@pytest.mark.django_db
 class TestAutonomySetGlobal:
-    def test_global_writes_teatree_table(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "full", "--global"])
+    def test_global_writes_global_scope_row(self) -> None:
+        result = runner.invoke(_app(), ["autonomy", "set", "full", "--global"])
         assert result.exit_code == 0
-        body = config_path.read_text(encoding="utf-8")
-        assert 'autonomy = "full"' in body
-        assert "[teatree]" in result.stdout
+        assert ConfigSetting.objects.get_effective("autonomy") == Autonomy.FULL.value
+        assert "global config store" in result.stdout
 
-    def test_global_creates_config_when_absent(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "notify", "--global"])
+    def test_global_upserts_over_existing_row(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.BABYSIT.value)
+        result = runner.invoke(_app(), ["autonomy", "set", "notify", "--global"])
         assert result.exit_code == 0
-        assert config_path.is_file()
-        assert 'autonomy = "notify"' in config_path.read_text(encoding="utf-8")
+        assert ConfigSetting.objects.get_effective("autonomy") == Autonomy.NOTIFY.value
 
-    def test_global_preserves_other_keys(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nmode = "auto"\nbranch_prefix = "ac-"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            runner.invoke(_app(), ["autonomy", "set", "babysit", "--global"])
-        body = config_path.read_text(encoding="utf-8")
-        assert 'mode = "auto"' in body
-        assert 'branch_prefix = "ac-"' in body
-        assert 'autonomy = "babysit"' in body
+    def test_global_leaves_overlay_scope_untouched(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.NOTIFY.value, scope="t3-teatree")
+        runner.invoke(_app(), ["autonomy", "set", "babysit", "--global"])
+        assert ConfigSetting.objects.get_effective("autonomy") == Autonomy.BABYSIT.value
+        # The overlay-scoped row is a distinct ``(scope, key)`` and is preserved.
+        assert ConfigSetting.objects.get_effective("autonomy", scope="t3-teatree") == Autonomy.NOTIFY.value
 
 
+@pytest.mark.django_db
 class TestAutonomySetPerOverlay:
-    def test_named_overlay_writes_overlays_table(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "t3-teatree"])
+    def test_named_overlay_writes_overlay_scope_row(self) -> None:
+        result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "t3-teatree"])
         assert result.exit_code == 0
-        body = config_path.read_text(encoding="utf-8")
-        assert "[overlays.t3-teatree]" in body
-        assert 'autonomy = "full"' in body
-        assert "[overlays.t3-teatree]" in result.stdout
+        assert ConfigSetting.objects.get_effective("autonomy", scope="t3-teatree") == Autonomy.FULL.value
+        assert "t3-teatree" in result.stdout
 
-    def test_named_overlay_preserves_sibling_overlay(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text(
-            '[teatree]\n[overlays.t3-client]\nautonomy = "babysit"\nmode = "interactive"\n',
-            encoding="utf-8",
-        )
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "t3-teatree"])
-        body = config_path.read_text(encoding="utf-8")
-        # The sibling overlay's own knobs are untouched ...
-        assert 'mode = "interactive"' in body
-        # ... and its babysit value is preserved while the new overlay gets full.
-        assert "[overlays.t3-client]" in body
-        assert "[overlays.t3-teatree]" in body
+    def test_named_overlay_preserves_sibling_overlay(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.BABYSIT.value, scope="t3-client")
+        runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "t3-teatree"])
+        # The sibling overlay's own value is a distinct row and is preserved ...
+        assert ConfigSetting.objects.get_effective("autonomy", scope="t3-client") == Autonomy.BABYSIT.value
+        # ... while the new overlay gets full.
+        assert ConfigSetting.objects.get_effective("autonomy", scope="t3-teatree") == Autonomy.FULL.value
 
     def test_defaults_to_active_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With no --overlay, the value lands in the active overlay's table (real resolver)."""
+        """With no --overlay, the value lands in the active overlay's scope (real resolver).
+
+        Overlay discovery is RAW/TOML (#1775 KEEP-TOML): a bare
+        ``[overlays.t3-active]`` table is what makes ``t3-active`` the resolvable
+        active overlay. The autonomy *value* itself is DB-home, so the write
+        lands as an overlay-scoped ``ConfigSetting`` row, not a TOML key.
+        """
         config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\n[overlays.t3-active]\nmode = "auto"\n', encoding="utf-8")
+        config_path.write_text("[teatree]\n[overlays.t3-active]\n", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
         monkeypatch.setenv("T3_OVERLAY_NAME", "t3-active")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "full"])
+        result = runner.invoke(_app(), ["autonomy", "set", "full"])
         assert result.exit_code == 0
-        assert "[overlays.t3-active]" in config_path.read_text(encoding="utf-8")
+        assert ConfigSetting.objects.get_effective("autonomy", scope="t3-active") == Autonomy.FULL.value
 
     def test_no_active_overlay_and_no_target_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """No --overlay, no --global, and no resolvable active overlay → refuse, write nothing."""
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        before = config_path.read_text(encoding="utf-8")
         # No installed overlays and a cwd free of manage.py → no active overlay resolves.
         monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         away = tmp_path / "no_manage"
         away.mkdir()
         monkeypatch.chdir(away)
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "full"])
+        result = runner.invoke(_app(), ["autonomy", "set", "full"])
         assert result.exit_code == 1
-        assert config_path.read_text(encoding="utf-8") == before
+        assert ConfigSetting.objects.count() == 0
 
 
+@pytest.mark.django_db
 class TestAutonomySetValidation:
-    def test_typo_is_rejected_and_writes_nothing(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        before = config_path.read_text(encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "set", "yolo", "--global"])
+    def test_typo_is_rejected_and_writes_nothing(self) -> None:
+        result = runner.invoke(_app(), ["autonomy", "set", "yolo", "--global"])
         assert result.exit_code == 1
-        assert config_path.read_text(encoding="utf-8") == before
+        assert ConfigSetting.objects.count() == 0
 
 
+@pytest.mark.django_db
 class TestAutonomyShow:
-    def test_show_reports_effective_value(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nautonomy = "notify"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "show"])
+    def test_show_reports_effective_value(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.NOTIFY.value)
+        result = runner.invoke(_app(), ["autonomy", "show"])
         assert result.exit_code == 0
         assert result.stdout.strip() == Autonomy.NOTIFY.value
 
-    def test_show_defaults_to_babysit_when_unset(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["autonomy", "show"])
+    def test_show_defaults_to_babysit_when_unset(self) -> None:
+        result = runner.invoke(_app(), ["autonomy", "show"])
         assert result.exit_code == 0
         assert result.stdout.strip() == Autonomy.BABYSIT.value
 
-    def test_show_is_read_only(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nautonomy = "full"\n', encoding="utf-8")
-        before = config_path.read_text(encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            runner.invoke(_app(), ["autonomy", "show"])
-        assert config_path.read_text(encoding="utf-8") == before
+    def test_show_is_read_only(self) -> None:
+        ConfigSetting.objects.set_value("autonomy", Autonomy.FULL.value)
+        runner.invoke(_app(), ["autonomy", "show"])
+        # ``show`` is a pure resolver read — no row is written or cleared.
+        assert ConfigSetting.objects.count() == 1
+        assert ConfigSetting.objects.get_effective("autonomy") == Autonomy.FULL.value
 
 
 @pytest.fixture
 def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Patch ``CONFIG_PATH``, blank installed overlays, and a manage.py-free cwd.
+    """Blank the TOML config, blank installed overlays, and a manage.py-free cwd.
 
     Mirrors the ``config_file`` + ``no_installed_overlays`` + ``elsewhere``
     triple the package-local ``tests/config/conftest.py`` provides — replicated
     here because this module sits at the ``tests/`` root, outside that package.
-    Returns the staged ``~/.teatree.toml`` path the test writes its fixture to.
+    The ``autonomy`` value itself is DB-home now (#1775): the staged
+    ``~/.teatree.toml`` only carries the TOML-home knobs (``privacy``) a couple
+    of cases assert the floor against. Returns the staged config path.
     """
     cfg = tmp_path / ".teatree.toml"
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
@@ -175,13 +153,14 @@ def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return cfg
 
 
+@pytest.mark.django_db
 class TestAutonomyKnobCollapsesGatesNotFloor:
     """The knob the CLI persists flips the approval gates, never the safety floor.
 
     These round-trip through ``get_effective_settings`` after the CLI write so
     the must-ALLOW (autonomous colleague auto-approve + auto-merge) and the
     must-DENY (safety floor stays in force) outcomes are proven end-to-end, not
-    just asserted on the raw toml.
+    just asserted on the raw store.
     """
 
     def test_full_must_allow_colleague_autoapprove_and_automerge(
@@ -225,7 +204,10 @@ class TestAutonomyKnobCollapsesGatesNotFloor:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``autonomy set babysit`` keeps every approval gate blocking (the conservative default)."""
-        isolated_resolution.write_text('[teatree]\n[overlays.careful]\nmode = "auto"\n', encoding="utf-8")
+        isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
+        # ``mode = auto`` is a per-overlay opinion; under the partition it is the
+        # overlay-scoped DB row, not a ``[overlays.<name>]`` TOML key.
+        ConfigSetting.objects.set_value("mode", Mode.AUTO.value, scope="careful")
         runner.invoke(_app(), ["autonomy", "set", "babysit", "--overlay", "careful"])
 
         monkeypatch.setenv("T3_OVERLAY_NAME", "careful")

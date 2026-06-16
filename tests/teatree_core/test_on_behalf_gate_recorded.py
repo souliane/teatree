@@ -35,10 +35,20 @@ from teatree.core.on_behalf_gate_recorded import (
 pytestmark = pytest.mark.django_db
 
 
-def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+def _set_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
+    """Stage ``on_behalf_post_mode`` (DB-home, #1775) via the ``T3_*`` env tier.
+
+    A ``[teatree]`` TOML value for ``on_behalf_post_mode`` is ignored on read
+    under the hard partition, so the mode is set through the env layer (which
+    wins for a DB-home key and needs no DB). ``mode=None`` leaves it unset so
+    the field resolves to its ``DRAFT_OR_ASK`` default. ``CONFIG_PATH`` is
+    pinned at an empty TOML so the developer's real config is never read.
+    """
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(body, encoding="utf-8")
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    if mode is not None:
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
 
 
 def _noop() -> None:
@@ -47,14 +57,14 @@ def _noop() -> None:
 
 class TestRecordedOnBehalfGate:
     def test_immediate_mode_proceeds_without_approval(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "immediate"\n')
+        _set_mode(tmp_path, monkeypatch, "immediate")
         require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=_noop)
         assert OnBehalfAudit.objects.count() == 0
         # No DM either — IMMEDIATE is silent.
         assert BotPing.objects.count() == 0
 
     def test_ask_mode_no_approval_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         with pytest.raises(OnBehalfPostBlockedError) as exc:
             require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=_noop)
         # The message must tell the user exactly how to satisfy the gate (no TTY).
@@ -64,7 +74,7 @@ class TestRecordedOnBehalfGate:
     def test_ask_mode_with_recorded_approval_proceeds_and_audits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         OnBehalfApproval.record(target="org/repo#42", action="post_comment", approver_id="souliane")
         require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=_noop)
         assert OnBehalfAudit.objects.filter(target="org/repo#42", action="post_comment").count() == 1
@@ -73,12 +83,12 @@ class TestRecordedOnBehalfGate:
             require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=_noop)
 
     def test_default_is_fail_closed_for_non_draft_action(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, "[teatree]\n")  # setting unset → DRAFT_OR_ASK
+        _set_mode(tmp_path, monkeypatch, None)  # setting unset → DRAFT_OR_ASK
         with pytest.raises(OnBehalfPostBlockedError):
             require_on_behalf_approval(target="t#1", action="post_comment", publish=_noop)
 
     def test_recorded_approval_scope_is_exact(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         OnBehalfApproval.record(target="org/repo#1", action="post_comment", approver_id="souliane")
         # Wrong action — still blocked, the recorded approval does not match.
         with pytest.raises(OnBehalfPostBlockedError):
@@ -96,7 +106,7 @@ class TestPublishCallbackAtomicity:
     def test_block_with_approval_runs_publish_consumes_and_audits(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         approval = OnBehalfApproval.record(target="org/repo#42", action="post_comment", approver_id="souliane")
 
         calls: list[str] = []
@@ -116,7 +126,7 @@ class TestPublishCallbackAtomicity:
     def test_failed_publish_rolls_back_consume_and_writes_no_audit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         approval = OnBehalfApproval.record(target="org/repo#42", action="post_comment", approver_id="souliane")
 
         class PostError(RuntimeError):
@@ -137,7 +147,7 @@ class TestPublishCallbackAtomicity:
     def test_failed_publish_then_retry_succeeds_consuming_exactly_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         OnBehalfApproval.record(target="org/repo#42", action="post_comment", approver_id="souliane")
 
         attempts = {"n": 0}
@@ -160,14 +170,14 @@ class TestPublishCallbackAtomicity:
     def test_immediate_mode_runs_publish_without_consume_or_audit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "immediate"\n')
+        _set_mode(tmp_path, monkeypatch, "immediate")
 
         result = require_on_behalf_approval(target="org/repo#42", action="post_comment", publish=lambda: "posted")
         assert result == "posted"
         assert OnBehalfAudit.objects.count() == 0
 
     def test_block_with_no_approval_never_runs_publish(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
 
         calls: list[str] = []
 
@@ -186,7 +196,7 @@ class TestNonConsumingPeek:
     def test_block_with_no_approval_returns_message_without_consuming(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         msg = on_behalf_block_message("org/repo#42", "post_comment")
         assert "approve-on-behalf" in msg
         assert OnBehalfAudit.objects.count() == 0
@@ -194,7 +204,7 @@ class TestNonConsumingPeek:
     def test_block_with_approval_returns_empty_and_does_not_consume(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         approval = OnBehalfApproval.record(target="org/repo#42", action="post_comment", approver_id="souliane")
         assert on_behalf_block_message("org/repo#42", "post_comment") == ""
         # The peek must NOT consume — the approval survives for the real post.
@@ -203,18 +213,18 @@ class TestNonConsumingPeek:
         assert OnBehalfAudit.objects.count() == 0
 
     def test_immediate_mode_returns_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "immediate"\n')
+        _set_mode(tmp_path, monkeypatch, "immediate")
         assert on_behalf_block_message("org/repo#42", "post_comment") == ""
 
     def test_auto_draft_action_returns_empty_without_dm(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
+        _set_mode(tmp_path, monkeypatch, "draft_or_ask")
         assert on_behalf_block_message("org/repo!7", "post_draft_note") == ""
         # A peek never fires the autodraft DM — that is deferred to the atomic publish.
         assert BotPing.objects.count() == 0
 
     def test_draft_action_peek_returns_empty_under_ask(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A draft is exempt under ASK too — the peek refuses nothing (no approval needed)."""
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
         assert on_behalf_block_message("org/repo!7", "post_draft_note") == ""
         assert BotPing.objects.count() == 0
 
@@ -225,7 +235,7 @@ class TestAutoDraftVerdict:
     def test_post_draft_note_under_draft_or_ask_records_bot_ping(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
+        _set_mode(tmp_path, monkeypatch, "draft_or_ask")
 
         require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
 
@@ -243,7 +253,7 @@ class TestAutoDraftVerdict:
         Pre-fix this raised :class:`OnBehalfPostBlockedError` (the bug).
         The fix exempts drafts from the gate under ASK too.
         """
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "ask"\n')
+        _set_mode(tmp_path, monkeypatch, "ask")
 
         # Must NOT raise — a draft is exempt under ASK.
         require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
@@ -254,7 +264,7 @@ class TestAutoDraftVerdict:
         assert OnBehalfAudit.objects.count() == 0
 
     def test_double_call_is_idempotent_on_bot_ping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
+        _set_mode(tmp_path, monkeypatch, "draft_or_ask")
 
         require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
         require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
@@ -263,7 +273,7 @@ class TestAutoDraftVerdict:
 
     def test_non_draft_action_under_draft_or_ask_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """``draft_or_ask`` only auto-drafts ``post_draft_note`` — other actions BLOCK."""
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
+        _set_mode(tmp_path, monkeypatch, "draft_or_ask")
         with pytest.raises(OnBehalfPostBlockedError):
             require_on_behalf_approval(target="org/repo!7", action="post_comment", publish=_noop)
         # No spurious BotPing for blocked actions.
@@ -274,7 +284,7 @@ class TestAutoDraftDmFailureNeverRaises:
     """``notify_user`` failures must not bubble up — drafts must publish either way."""
 
     def test_notify_user_returning_false_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\non_behalf_post_mode = "draft_or_ask"\n')
+        _set_mode(tmp_path, monkeypatch, "draft_or_ask")
 
         with patch("teatree.notify.notify_user", return_value=False):
             # Must return cleanly even when the DM degraded to a no-op.

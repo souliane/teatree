@@ -26,15 +26,29 @@ import pytest
 from teatree.config import Autonomy, Mode
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.scanner_factories import _effective_settings_for_overlay, _pr_sweep_scanner_for
 
 
-def _stage_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str) -> None:
+def _stage_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str = "[teatree]\n") -> None:
+    """Point the resolver at an empty workspace config.
+
+    Under the #1775 partition ``autonomy`` / ``mode`` /
+    ``require_human_approval_to_merge`` are DB-home, so they are staged via
+    :class:`ConfigSetting` rows (see ``_stage_autonomy``), not the
+    ``[overlays.<name>]`` TOML table (which is ignored on read for a DB-home
+    key). The config file only supplies TOML-home keys.
+    """
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(toml, encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+
+
+def _stage_autonomy(overlay: str, tier: Autonomy) -> None:
+    """Stage a per-overlay ``autonomy`` tier in the DB-home store (#1775)."""
+    ConfigSetting.objects.set_value("autonomy", tier.value, scope=overlay)
 
 
 def _backend(
@@ -60,6 +74,7 @@ def _backend(
     )
 
 
+@pytest.mark.django_db
 class TestEffectiveSettingsForOverlaySeesCollapse:
     """A.3 — the loop resolver routes through ``_apply_autonomy``."""
 
@@ -68,11 +83,8 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
         settings = _effective_settings_for_overlay("t3-teatree")
         assert settings.autonomy is Autonomy.FULL
         assert settings.mode is Mode.AUTO
@@ -83,11 +95,8 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-client]\nautonomy = "notify"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-client", Autonomy.NOTIFY)
         settings = _effective_settings_for_overlay("t3-client")
         assert settings.autonomy is Autonomy.NOTIFY
         assert settings.mode is Mode.AUTO
@@ -99,13 +108,17 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The over-pin fix is visible through the loop resolver too."""
+        """The over-pin fix is visible through the loop resolver too.
+
+        A GLOBAL-scope ``mode`` row is a workspace default (not a hard pin), so
+        it must NOT defeat the autonomy ``mode = auto`` collapse — staged as a
+        global ``ConfigSetting`` (no scope), the DB-home twin of the old global
+        ``[teatree] mode``.
+        """
         monkeypatch.delenv("T3_MODE", raising=False)
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\nmode = "interactive"\n[overlays.t3-teatree]\nautonomy = "full"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        ConfigSetting.objects.set_value("mode", Mode.INTERACTIVE.value)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
         settings = _effective_settings_for_overlay("t3-teatree")
         assert settings.mode is Mode.AUTO
 
@@ -114,16 +127,14 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.careful]\nautonomy = "babysit"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("careful", Autonomy.BABYSIT)
         settings = _effective_settings_for_overlay("careful")
         assert settings.autonomy is Autonomy.BABYSIT
         assert settings.require_human_approval_to_merge is True
 
 
+@pytest.mark.django_db
 class TestPrSweepSoloOverlayGate:
     """B.4 — the single-author CLEAR-skipping bypass is exclusive to ``full``."""
 
@@ -132,11 +143,8 @@ class TestPrSweepSoloOverlayGate:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
@@ -153,11 +161,8 @@ class TestPrSweepSoloOverlayGate:
         ``solo_overlay = True`` would let the sweep merge an un-CLEARed MR via
         a direct ``gh pr merge``, bypassing colleague approval.
         """
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-client]\nautonomy = "notify"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-client", Autonomy.NOTIFY)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-client"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is False
@@ -167,11 +172,8 @@ class TestPrSweepSoloOverlayGate:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.careful]\nautonomy = "babysit"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("careful", Autonomy.BABYSIT)
         scanner = _pr_sweep_scanner_for(_backend(name="careful"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is False
@@ -182,11 +184,8 @@ class TestPrSweepSoloOverlayGate:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``full`` autonomy collapses ``require_human_approval_to_merge`` → arms #68."""
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
@@ -208,11 +207,11 @@ class TestPrSweepSoloOverlayGate:
         own review. This is the case that catches a future collapse-precedence
         regression silently arming a human-approval overlay.
         """
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\nrequire_human_approval_to_merge = true\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
+        # A per-overlay (overlay-scoped) gate row is a HARD pin — it survives the
+        # ``full`` collapse, keeping the human in the merge loop.
+        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True, scope="t3-teatree")
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
@@ -230,11 +229,8 @@ class TestPrSweepSoloOverlayGate:
         scanner — without it ``pr_authored_by_self`` has no identity set to
         match against and (fail-closed) would arm nothing, defeating #68.
         """
-        _stage_config(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
-        )
+        _stage_config(tmp_path, monkeypatch)
+        _stage_autonomy("t3-teatree", Autonomy.FULL)
         backend = _backend(name="t3-teatree", identities=("souliane", "souliane-alt"))
         scanner = _pr_sweep_scanner_for(backend, slack_user_id="")
         assert scanner is not None

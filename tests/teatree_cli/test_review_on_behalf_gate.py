@@ -43,7 +43,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
-from teatree.core.models import BotPing, OnBehalfApproval
+from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -58,12 +58,13 @@ def _http_404() -> httpx.HTTPStatusError:
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
+    # ``on_behalf_post_mode`` is DB-home (#1775): it resolves only from the
+    # ``ConfigSetting`` store, so staging it via TOML would be a no-op on read.
+    # An empty config file keeps the active-config path pinned to ``tmp_path``.
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\non_behalf_post_mode = "{mode.value}"\n',
-        encoding="utf-8",
-    )
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
 
 
 # Modes under which a non-draft colleague-visible action is blocked.

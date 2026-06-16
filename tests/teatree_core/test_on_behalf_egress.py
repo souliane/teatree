@@ -83,12 +83,16 @@ class _NoRouteFake:
 
 
 def _write_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    # ``slack_user_id`` is a RAW key (TOML-home); ``on_behalf_post_mode`` is
+    # DB-home (#1775) so a TOML value for it is ignored on read — stage it via
+    # the ``T3_*`` env tier, which wins for a DB-home key and needs no DB.
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\n',
+        f'[teatree]\nslack_user_id = "{_USER_ID}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
 
 
 class TestColleagueGate(TestCase):

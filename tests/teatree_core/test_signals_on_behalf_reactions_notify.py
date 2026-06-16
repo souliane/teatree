@@ -65,16 +65,17 @@ def _notify_backend() -> MagicMock:
 class TestSignalsAfterReceiptDm(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # One config carrying BOTH the immediate (gate-off) mode and
-        # slack_user_id — the shared mode_immediate_cm() helper repoints
-        # CONFIG_PATH at a gate-only TOML with no slack_user_id, which
-        # would starve notify_user's user-id resolution.
+        # ``slack_user_id`` is a RAW key (TOML-home) — notify_user resolves the
+        # user id from it. ``on_behalf_post_mode`` is DB-home (#1775) so a TOML
+        # value for it is ignored on read; stage the immediate (gate-off) mode
+        # via the ``T3_*`` env tier instead.
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text(
-            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "immediate"\n',
+            '[teatree]\nslack_user_id = "U-OPERATOR"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", _notify_backend)
         self.monkeypatch = monkeypatch
 

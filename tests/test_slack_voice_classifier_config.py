@@ -1,68 +1,46 @@
-"""TOML config resolution for ``slack_voice_classifier_mode`` (#1395).
+"""Config resolution for ``slack_voice_classifier_mode`` (#1395).
 
-Confirms the loader accepts both the flat ``[teatree]
-slack_voice_classifier_mode`` key and the nested
-``[teatree.publish_gates]`` table the issue brief sketched, defaults
-to ``WARN`` when absent (backward-compat), and surfaces a clean
-``ValueError`` on a typo so a silent mode downgrade never lands.
+``slack_voice_classifier_mode`` is DB-home (#1775): its sole authoritative tier
+is the ``ConfigSetting`` store (+ ``T3_*`` env). The pre-partition TOML surface
+— the flat ``[teatree] slack_voice_classifier_mode`` key and the nested
+``[teatree.publish_gates]`` table the issue brief sketched — is ignored on read
+now; the mode is staged via ``ConfigSetting.objects.set_value`` instead. This
+confirms the resolver defaults to ``WARN`` when no row is set (backward-compat),
+reads a stored ``strict`` / ``off`` row, and surfaces a clean ``ValueError`` on a
+corrupt stored value so a silent mode downgrade never lands. ``CONFIG_PATH`` is
+isolated so the real ``~/.teatree.toml`` never leaks in.
 """
 
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 from teatree.backends.slack.voice_classifier import ClassifierMode
-from teatree.config import load_config
+from teatree.config import get_effective_settings
+from teatree.core.models import ConfigSetting
 
 
-@pytest.fixture
-def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    return cfg
+class TestVoiceClassifierModeResolution(TestCase):
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
+    def test_default_is_warn_when_no_row(self) -> None:
+        """No DB row and no config file → the dataclass default ``WARN``."""
+        assert get_effective_settings().slack_voice_classifier_mode is ClassifierMode.WARN
 
-def _write(cfg: Path, body: str) -> None:
-    cfg.write_text(body, encoding="utf-8")
+    def test_stored_strict(self) -> None:
+        ConfigSetting.objects.set_value("slack_voice_classifier_mode", "strict")
+        assert get_effective_settings().slack_voice_classifier_mode is ClassifierMode.STRICT
 
+    def test_stored_off(self) -> None:
+        ConfigSetting.objects.set_value("slack_voice_classifier_mode", "off")
+        assert get_effective_settings().slack_voice_classifier_mode is ClassifierMode.OFF
 
-class TestVoiceClassifierModeResolution:
-    def test_default_is_warn_when_absent(self, config_file: Path) -> None:
-        _write(config_file, "[teatree]\n")
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.WARN
-
-    def test_default_is_warn_when_file_missing(self, config_file: Path) -> None:
-        # No file written; loader returns defaults.
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.WARN
-
-    def test_flat_strict(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nslack_voice_classifier_mode = "strict"\n')
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.STRICT
-
-    def test_flat_off(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nslack_voice_classifier_mode = "off"\n')
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.OFF
-
-    def test_nested_publish_gates_strict(self, config_file: Path) -> None:
-        _write(
-            config_file,
-            '[teatree.publish_gates]\nslack_voice_classifier_mode = "strict"\n',
-        )
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.STRICT
-
-    def test_flat_wins_over_nested(self, config_file: Path) -> None:
-        _write(
-            config_file,
-            (
-                "[teatree]\n"
-                'slack_voice_classifier_mode = "off"\n'
-                "[teatree.publish_gates]\n"
-                'slack_voice_classifier_mode = "strict"\n'
-            ),
-        )
-        assert load_config().user.slack_voice_classifier_mode is ClassifierMode.OFF
-
-    def test_invalid_value_raises(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nslack_voice_classifier_mode = "loud"\n')
+    def test_corrupt_stored_value_raises(self) -> None:
+        """A corrupt stored value is raised LOUD, never silently downgraded."""
+        ConfigSetting.objects.set_value("slack_voice_classifier_mode", "loud")
         with pytest.raises(ValueError, match="slack_voice_classifier_mode"):
-            load_config()
+            get_effective_settings()

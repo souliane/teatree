@@ -5,7 +5,14 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, discover_overlays, load_config
+from teatree.config import (
+    OVERLAY_OVERRIDABLE_SETTINGS,
+    UserSettings,
+    discover_overlays,
+    get_effective_settings,
+    load_config,
+)
+from teatree.core.models import ConfigSetting
 
 
 def _write(body: str) -> Path:
@@ -34,18 +41,15 @@ class TestDefaults(TestCase):
 
 
 class TestParsing(TestCase):
-    """``load_config`` parses the knobs from ``[teatree]``."""
+    """The DB-home knobs resolve from the ``ConfigSetting`` store (#1775)."""
 
     def test_parses_all_knobs(self) -> None:
-        path = _write(
-            "[teatree]\n"
-            "idle_stack_reaper_disabled = true\n"
-            "idle_stack_idle_minutes = 45\n"
-            "idle_stack_reaper_cadence_minutes = 10\n"
-            "local_stack_queue_disabled = true\n"
-            "local_stack_queue_max_attempts = 8\n",
-        )
-        settings = load_config(path).user
+        ConfigSetting.objects.set_value("idle_stack_reaper_disabled", value=True)
+        ConfigSetting.objects.set_value("idle_stack_idle_minutes", 45)
+        ConfigSetting.objects.set_value("idle_stack_reaper_cadence_minutes", 10)
+        ConfigSetting.objects.set_value("local_stack_queue_disabled", value=True)
+        ConfigSetting.objects.set_value("local_stack_queue_max_attempts", 8)
+        settings = get_effective_settings()
         assert settings.idle_stack_reaper_disabled is True
         assert settings.idle_stack_idle_minutes == 45
         assert settings.idle_stack_reaper_cadence_minutes == 10
@@ -53,8 +57,8 @@ class TestParsing(TestCase):
         assert settings.local_stack_queue_max_attempts == 8
 
     def test_missing_knobs_use_defaults(self) -> None:
-        path = _write("[teatree]\nloop_cadence_seconds = 60\n")
-        settings = load_config(path).user
+        # No DB rows -> the dataclass defaults (no TOML tier for a DB-home key).
+        settings = get_effective_settings()
         assert settings.idle_stack_reaper_disabled is False
         assert settings.idle_stack_idle_minutes == 30
 

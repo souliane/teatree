@@ -39,7 +39,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
-from teatree.core.models import BotPing, LivePostApproval
+from teatree.core.models import BotPing, ConfigSetting, LivePostApproval
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -48,13 +48,19 @@ _runner = CliRunner()
 
 
 def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
-    """Pin the active config to a known ``slack_user_id`` + IMMEDIATE on-behalf gate."""
+    """Pin the active config to a known ``slack_user_id`` + IMMEDIATE on-behalf gate.
+
+    ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
+    ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
+    ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
+    """
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "{user_id}"\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n',
+        f'[teatree]\nslack_user_id = "{user_id}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
 def _wire_notify_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:

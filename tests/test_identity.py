@@ -1,14 +1,17 @@
 """Tests for the user-on-behalf signature policy.
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures under
-``tmp_path`` with ``teatree.config.CONFIG_PATH`` monkeypatched to them.
-No mocks — `load_config` is exercised end-to-end.
+``agent_signature`` is DB-home (#1775): the default-off behaviour resolves from
+the dataclass default (no row needed), and enabling it is a GLOBAL-scope
+``ConfigSetting`` row — a ``[teatree] agent_signature`` TOML key is ignored on
+read. Integration-first per the Test-Writing Doctrine: ``get_effective_settings``
+is exercised end-to-end through ``agent_signature_enabled`` / ``_suffix``.
 """
 
 from pathlib import Path
 
 import pytest
 
+from teatree.core.models import ConfigSetting
 from teatree.identity import agent_signature_enabled, agent_signature_suffix
 
 
@@ -30,7 +33,11 @@ def test_signature_disabled_when_no_config(config_file: Path) -> None:
     assert agent_signature_suffix("\nCo-Authored-By: agent <a@b>") == ""
 
 
-def test_signature_enabled_passes_suffix_through(config_file: Path) -> None:
-    config_file.write_text("[teatree]\nagent_signature = true\n", encoding="utf-8")
-    assert agent_signature_enabled() is True
-    assert agent_signature_suffix("\n— from the assistant") == "\n— from the assistant"
+@pytest.mark.django_db
+class TestSignatureEnabled:
+    """Enabling the signature is the DB-home ``agent_signature`` row (#1775)."""
+
+    def test_signature_enabled_passes_suffix_through(self) -> None:
+        ConfigSetting.objects.set_value("agent_signature", value=True)
+        assert agent_signature_enabled() is True
+        assert agent_signature_suffix("\n— from the assistant") == "\n— from the assistant"

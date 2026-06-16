@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from teatree.config import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, MissingIssuePolicy, load_config
+from teatree.core.models import ConfigSetting
 from teatree.missing_issue_policy import MissingIssueVerdict, resolve_missing_issue_verdict
 
 
@@ -64,47 +65,57 @@ class TestDefaultPolicy:
         )
 
 
+@pytest.mark.django_db
 class TestExplicitCreatePolicy:
-    """``create`` is opt-in: it authorises auto-create on colleague repos too."""
+    """``create`` is opt-in: it authorises auto-create on colleague repos too.
 
-    def test_create_on_colleague_repo_creates(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "create"\n')
+    ``missing_issue_ref_policy`` is DB-home (#1775): the opt-in value is the
+    GLOBAL-scope ``ConfigSetting`` row, not a ``[teatree]`` TOML key (which is
+    ignored on read).
+    """
+
+    def test_create_on_colleague_repo_creates(self) -> None:
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.CREATE.value)
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.CREATE
 
-    def test_create_still_prefers_found_existing(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "create"\n')
+    def test_create_still_prefers_found_existing(self) -> None:
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.CREATE.value)
         assert (
             resolve_missing_issue_verdict(colleague_facing=True, existing_found=True)
             is MissingIssueVerdict.USE_EXISTING
         )
 
 
+@pytest.mark.django_db
 class TestExplicitDummyPolicy:
-    """``dummy`` is opt-in: it authorises a placeholder ref on colleague repos too."""
+    """``dummy`` is opt-in: it authorises a placeholder ref on colleague repos too.
 
-    def test_dummy_on_colleague_repo_uses_dummy(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "dummy"\n')
+    DB-home (#1775): the opt-in value is the GLOBAL-scope ``ConfigSetting`` row.
+    """
+
+    def test_dummy_on_colleague_repo_uses_dummy(self) -> None:
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.DUMMY.value)
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.DUMMY
 
-    def test_dummy_still_prefers_found_existing(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "dummy"\n')
+    def test_dummy_still_prefers_found_existing(self) -> None:
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.DUMMY.value)
         assert (
             resolve_missing_issue_verdict(colleague_facing=True, existing_found=True)
             is MissingIssueVerdict.USE_EXISTING
         )
 
 
+@pytest.mark.django_db
 class TestPerOverlayOverride:
-    def test_per_overlay_override_wins_over_global(self, config_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A trusted overlay can opt into ``create`` without flipping the global."""
-        _write(
-            config_file,
-            "[teatree]\n"
-            'missing_issue_ref_policy = "find_existing_then_ask"\n'
-            "[overlays.trusted]\n"
-            'overlay_class = "x.Y"\n'
-            'missing_issue_ref_policy = "create"\n',
-        )
+    def test_per_overlay_override_wins_over_global(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A trusted overlay can opt into ``create`` without flipping the global.
+
+        DB-home (#1775): both tiers are ``ConfigSetting`` rows — the global value
+        is the GLOBAL scope (``""``) and the per-overlay opt-in is the overlay's
+        scope, which the resolver layers on top so it wins.
+        """
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.FIND_EXISTING_THEN_ASK.value)
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.CREATE.value, scope="trusted")
         monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.CREATE
 
@@ -116,11 +127,18 @@ class TestEnvOverride:
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.DUMMY
 
 
+@pytest.mark.django_db
 class TestInvalidValue:
-    def test_typo_raises_loud(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "auto_create"\n')
+    def test_typo_raises_loud(self) -> None:
+        """An invalid stored value is raised LOUD with the key named (#1775).
+
+        ``missing_issue_ref_policy`` is DB-home, so the authoritative value is a
+        ``ConfigSetting`` row; the partition coerces stored values at resolve time
+        and a per-row parser failure is raised (never swallowed to the default).
+        """
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", "auto_create")
         with pytest.raises(ValueError, match="missing_issue_ref_policy"):
-            load_config()
+            resolve_missing_issue_verdict(colleague_facing=True, existing_found=False)
 
 
 class TestRegistryMembership:
