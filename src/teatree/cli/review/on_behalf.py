@@ -63,6 +63,17 @@ def gate_target(repo: str, mr: int) -> str:
     return f"{repo}!{mr}"
 
 
+def issue_gate_target(repo: str, issue_iid: int) -> str:
+    """Stable ``(repo, issue)`` identifier the recorded approval scopes to.
+
+    The issue/work-item twin of :func:`gate_target`. Uses ``#`` (not ``!``)
+    so an issue-note action can never satisfy — or be satisfied by — an
+    approval scoped to the same-numbered MR. It is the target the user types
+    into ``t3 review approve-on-behalf`` to authorise an issue-note delete.
+    """
+    return f"{repo}#{issue_iid}"
+
+
 def check_on_behalf(repo: str, mr: int, action: str) -> str:
     """Return an actionable error string when the on-behalf gate refuses, else ``""``.
 
@@ -95,6 +106,30 @@ def publish_on_behalf[T](repo: str, mr: int, action: str, publish: Callable[[], 
     from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
 
     return require_on_behalf_approval(target=gate_target(repo, mr), action=action, publish=publish)
+
+
+def check_on_behalf_issue(repo: str, issue_iid: int, action: str) -> str:
+    """Issue/work-item twin of :func:`check_on_behalf` — non-consuming peek scoped to the issue.
+
+    Returns an actionable error when the on-behalf gate refuses (gate ON and no
+    recorded :class:`OnBehalfApproval` matches ``(<repo>#<issue>, <action>)``),
+    else ``""``.
+    """
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
+
+    return on_behalf_block_message(issue_gate_target(repo, issue_iid), action)
+
+
+def publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: Callable[[], T]) -> T:
+    """Issue/work-item twin of :func:`publish_on_behalf` — atomic consume + audit scoped to the issue.
+
+    A BLOCK with no recorded approval raises :class:`OnBehalfPostBlockedError`
+    before *publish* runs; a post that raises rolls back the consume so the
+    approval survives a retry.
+    """
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+
+    return require_on_behalf_approval(target=issue_gate_target(repo, issue_iid), action=action, publish=publish)
 
 
 def register(review_app: typer.Typer) -> None:

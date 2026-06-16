@@ -24,6 +24,7 @@ from teatree.cli.review.audit import (
     verify_approval_landed,
     verify_bulk_publish,
     verify_discussion_resolved,
+    verify_issue_note_deleted,
     verify_note_deleted,
     verify_note_landed,
     verify_unapproval_landed,
@@ -312,6 +313,33 @@ def delete_discussion_impl(
             ),
         )
         return f"OK deleted note_id={note_id}", 0
+    return f"Failed: HTTP {status}", status
+
+
+def delete_issue_note_impl(
+    service: "ReviewService", repo: str, issue_iid: int, note_id: int, *, encoded: str
+) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.delete_issue_note`.
+
+    The issue/work-item twin of :func:`delete_discussion_impl`: DELETE the
+    note off the issue's notes endpoint, then read it back (#2081) so a
+    phantom delete cannot be reported as done.
+    """
+    api = service._get_api()
+    status = api.delete(f"projects/{encoded}/issues/{issue_iid}/notes/{note_id}")
+    if status == HTTPStatus.NO_CONTENT:
+        verify_issue_note_deleted(api, encoded, issue_iid, note_id)
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            0,
+            review_action=ReviewAfterReceipt(
+                action="delete_issue_note",
+                summary=f"deleted note {note_id} on issue {repo}#{issue_iid}",
+            ),
+            issue_iid=issue_iid,
+        )
+        return f"OK deleted note_id={note_id} on issue #{issue_iid}", 0
     return f"Failed: HTTP {status}", status
 
 

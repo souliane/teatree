@@ -57,6 +57,10 @@ class TestDeniesRawReviewWrites:
             "glab api projects/42/merge_requests/7/discussions --method=GET --method PATCH -f body=x",
             # DELETE is a write — an effective GET is the ONLY read.
             "glab api projects/42/merge_requests/7/notes -X DELETE -f x",
+            # ISSUE/work-item note DELETE: the exact raw bypass the sanctioned
+            # `t3 review delete-issue-note` replaces — still hard-denied here.
+            "glab api projects/42/issues/8568/notes/3456141979 --method DELETE",
+            "glab api projects/42/issues/8568/notes/3456141979 -X DELETE",
             # pflag NO-SPACE shorthand (`-XPOST`/`-XPUT`) is a real method
             # override; the spaced-only regex missed it, leaving the IDENTICAL
             # `-XPUT` bypass on this gate. Must be DENIED.
@@ -83,6 +87,16 @@ class TestDeniesRawReviewWrites:
         assert "draft" in reason
         assert "dedup" in reason
         assert "on-behalf approval" in reason
+
+    def test_deny_message_names_the_sanctioned_delete_clis(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A blocked issue-note DELETE points at the sanctioned delete CLIs, not just the post ones."""
+        command = "glab api projects/42/issues/8568/notes/3456141979 --method DELETE"
+        handle_block_raw_review_post(_bash_event(command))
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        reason = deny["permissionDecisionReason"]
+        assert "delete-issue-note" in reason
+        assert "delete-discussion" in reason
 
 
 class TestAllowsReadsAndUnrelated:
@@ -116,6 +130,10 @@ class TestAllowsReadsAndUnrelated:
             "ls -la",
             "echo 'glab api discussions -X POST is just a string here'",
             "t3 teatree review post-comment 7 --file a.py --line 3 --body x",
+            # The sanctioned issue-note delete CLI is NOT a raw forge api call —
+            # it must pass through (it routes through the on-behalf gate itself).
+            "t3 teatree review delete-issue-note org/repo 8568 3456141979",
+            "t3 teatree review delete-discussion org/repo 7 99",
         ],
     )
     def test_command_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
