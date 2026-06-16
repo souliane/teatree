@@ -13,6 +13,18 @@ def merge_base(repo: str = ".", target: str = "origin/main") -> str:
     return run_strict(repo=repo, args=["merge-base", target, "HEAD"])
 
 
+def branch_diff(repo: str = ".", target: str = "origin/main") -> str:
+    """Diff of this branch's commits against their merge-base with *target*.
+
+    Measures what the branch actually changes (``<merge-base>..HEAD``), so a
+    per-diff gate sees the PR's committed lines and never the clone's unrelated
+    uncommitted edits. Prefixes are forced (``a/``/``b/``) so the unified-diff
+    parser is independent of a user's ``diff.noprefix`` config.
+    """
+    base = merge_base(repo, target)
+    return run(repo=repo, args=["diff", base, "HEAD", "--src-prefix=a/", "--dst-prefix=b/"])
+
+
 def rev_count(repo: str = ".", range_spec: str = "") -> int:
     out = run_strict(repo=repo, args=["rev-list", "--count", range_spec])
     return int(out)

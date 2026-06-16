@@ -86,7 +86,7 @@ class TestToolCommands:
 
     def test_diff_coverage_passes_exit_zero(self, tmp_path):
         with (
-            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.git.branch_diff", return_value=""),
             patch("teatree.utils.diff_coverage.measure_diff_coverage") as mock,
         ):
             mock.return_value = MagicMock(passes=lambda: True, summary=lambda: "clean")
@@ -100,7 +100,7 @@ class TestToolCommands:
             unreferenced_symbols=["widget"],
         )
         with (
-            patch("teatree.utils.git.full_worktree_diff", return_value="diff"),
+            patch("teatree.utils.git.branch_diff", return_value="diff"),
             patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
         ):
             result = runner.invoke(app, ["tool", "diff-coverage", "--repo", str(tmp_path), "--json"])
@@ -116,7 +116,7 @@ class TestToolCommands:
         # measured nothing) without changing exit semantics.
         report = MagicMock(passes=lambda: True, summary=lambda: "clean")
         with (
-            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.git.branch_diff", return_value=""),
             patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
         ):
             absent = str(tmp_path / "absent.coverage")
@@ -134,7 +134,7 @@ class TestToolCommands:
         cov.write_text("", encoding="utf-8")
         report = MagicMock(passes=lambda: True, summary=lambda: "clean")
         with (
-            patch("teatree.utils.git.full_worktree_diff", return_value=""),
+            patch("teatree.utils.git.branch_diff", return_value=""),
             patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
         ):
             result = runner.invoke(
@@ -154,7 +154,7 @@ class TestToolCommands:
         os.utime(cov, (past, past))
         report = MagicMock(passes=lambda: True, summary=lambda: "clean")
         with (
-            patch("teatree.utils.git.full_worktree_diff", return_value="diff --git a/src.py b/src.py\n+x = 1"),
+            patch("teatree.utils.git.branch_diff", return_value="diff --git a/src.py b/src.py\n+x = 1"),
             patch("teatree.utils.diff_coverage.measure_diff_coverage", return_value=report),
         ):
             result = runner.invoke(

@@ -59,18 +59,21 @@ def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
 def diff_coverage(
     *,
     repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+    base: str = typer.Option("origin/main", "--base", help="Ref to diff against (merge-base..HEAD)"),
     coverage_file: Path = typer.Option(Path(".coverage"), "--coverage-file", help="Path to .coverage data file"),
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
 
-    Measures coverage on the *diff's* added production lines (not the global
-    ``fail_under``) and requires every new/changed production symbol to be
-    imported by a changed test (the test-a-local-copy anti-vacuity check).
-    Exits non-zero when a new line is uncovered or a symbol is unreferenced.
+    Measures coverage on the *branch's* added production lines — the committed
+    diff against its merge-base with ``--base`` (default ``origin/main``), NOT the
+    clone's working tree, so unrelated uncommitted edits never enter the gate.
+    Requires every new/changed production symbol to be imported by a changed test
+    (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
+    uncovered or a symbol is unreferenced.
     """
     from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415
-    from teatree.utils.git import full_worktree_diff  # noqa: PLC0415
+    from teatree.utils.git import branch_diff  # noqa: PLC0415
 
     if not coverage_file.exists():
         typer.echo(
@@ -86,7 +89,7 @@ def diff_coverage(
             err=True,
         )
 
-    diff = full_worktree_diff(str(repo))
+    diff = branch_diff(str(repo), base)
     report = measure_diff_coverage(diff, coverage_data_file=coverage_file, repo_root=repo)
     if output_json:
         typer.echo(
