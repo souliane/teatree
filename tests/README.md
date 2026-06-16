@@ -16,12 +16,20 @@
 ## Running
 
 ```bash
-uv run pytest --no-cov -x -q          # fast: no coverage, stop on first failure
-uv run pytest                          # full: with coverage, all tests
+uv run pytest                          # full suite, parallel (-n auto), no coverage — fast default
+uv run pytest -x -q                    # add --exitfirst/-x to stop on first failure
 uv run pytest tests/teatree_core/      # specific module
 uv run pytest --tach                   # skip tests unaffected by changes
+bash dev/test-cov.sh                   # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 ```
+
+The default `addopts` is lean and parallel (`-n auto`, pytest-xdist): no
+coverage, no doctests, no `--exitfirst`. Coverage + doctests + the 93% floor
+live in the dedicated CI `test (3.13)` lane and `dev/test-cov.sh`, so the inner
+loop stays fast and the gate stays honest.
 
 ## Coverage
 
-Target: 100% (`fail_under = 100` in pyproject.toml). Use `pragma: no cover` sparingly and only for genuinely unreachable code (e.g., `if __name__ == "__main__"`).
+Floor: `fail_under = 93` (branch coverage) in `pyproject.toml`. Use `pragma: no
+cover` sparingly and only for genuinely unreachable code (e.g., `if __name__ ==
+"__main__"`).

@@ -268,7 +268,8 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 ### Testing
 
 ```bash
-uv run pytest                       # Test suite with coverage (>93% required)
+uv run pytest                       # Full suite, parallel (-n auto), NO coverage — the fast default
+bash dev/test-cov.sh                # Coverage lane: parallel + --cov --doctest-modules, 93% floor (CI parity)
 prek run --all-files                # Commit-stage hooks ONLY (ruff, codespell, tach, ty)
 t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages
 bash dev/test-fast.sh               # Opt-in local suite: Python 3.13, host, parallel
