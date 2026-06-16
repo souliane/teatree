@@ -10,14 +10,22 @@ only when the DISPATCH PROMPT itself instructs the sub-agent to load the skill.
 
 This module owns three pieces.
 
-``required_skills_for_task`` derives the lifecycle skill from the task
-description, its transitive ``requires``/``companions`` closure, and the active
-overlay's companion skills for EVERY lifecycle (not just ``review``).
+``required_skills_for_task`` derives the UN-DERIVABLE ROOTS a fanned-out task
+must name: the lifecycle skill detected from the description plus the active
+overlay's companion skills for that lifecycle (every lifecycle, not just
+``review``). It does NOT expand the transitive ``requires``/``companions``
+closure — the ``Skill`` tool pulls each root's dependencies itself, so demanding
+the whole closure over-blocks a dispatch that correctly names only the roots
+(e.g. a reviewer dispatch naming ``/t3:review`` need not also enumerate
+``code``/``workspace``/``platforms``/``architecture-design``). A trivial or
+ambiguous task (``fix the typo``, ``push the branch``, ``investigate the build``)
+yields no demand at all — see ``_task_is_trivial``.
 
 ``task_references_skill`` tests whether a task prompt already instructs the
 sub-agent to load a given skill: a ``/t3:<name>`` / ``/<name>`` token, a
 ``<name>/SKILL.md`` path reference, or a ``load the <name> skill`` / ``Skill
-tool`` instruction naming it.
+tool`` instruction naming it — but a NEGATED mention (``do not load the code
+skill``, ``skip the ship skill``) does NOT count as a reference.
 
 ``build_load_first_reason`` is the deny message listing the exact
 ``Read …/<name>/SKILL.md`` lines the orchestrator must embed in the dispatch.
@@ -38,6 +46,21 @@ from pathlib import Path
 _PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
+def is_file_safe(path: Path) -> bool:
+    """``path.is_file()`` that returns ``False`` instead of raising ``OSError``.
+
+    A 255+ byte path segment makes ``is_file`` raise ``OSError`` ("File name
+    too long"). The ``TaskCreated`` gate aborts on ANY handler stderr, so a
+    pathological skill name in ``<session>.pending`` reaching a filesystem probe
+    must degrade to "absent" rather than propagate — the name is then treated as
+    unresolvable (fail open) instead of locking out task creation.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _skill_segment(name: str) -> str:
     """Return the bare skill segment of *name* (drops namespace + ``SKILL.md``).
 
@@ -50,20 +73,71 @@ def _skill_segment(name: str) -> str:
     return stripped.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
 
 
-def required_skills_for_task(description: str, search_dirs: list[Path]) -> list[str]:
-    """Skills a fanned-out task must load, derived from its DESCRIPTION.
+# A trivial / ambiguous fan-out incidentally carries a lifecycle keyword
+# (``fix the typo`` → ``fix``; ``push the branch`` → ``push``) but is not the
+# substantive lifecycle dispatch the gate exists to govern. Forcing it to
+# slash-list skills over-blocks.
+#
+# STRONG markers name a file/format edit that is trivial at ANY length.
+_STRONG_TRIVIAL_RE = re.compile(
+    r"\b(?:typo|readme|whitespace|formatting|lint|one-?liner|trivial|bump|wording)\b",
+    re.IGNORECASE,
+)
+# WEAK markers (``investigate``/``rename``/``why``…) are ambiguous: a long
+# substantive dispatch legitimately contains them (``rename the public API
+# across all consumers``), so they count as trivial ONLY in a short prompt.
+_WEAK_TRIVIAL_RE = re.compile(
+    r"\b(?:comment|rename|investigate|look into|figure out|find out|check why|why)\b",
+    re.IGNORECASE,
+)
+# A substantive lifecycle dispatch reads like a real instruction, not a bare
+# 3-word imperative (``push the branch``). At or below this word count a lone
+# weak keyword is treated as trivial.
+_MAX_TRIVIAL_WORDS = 3
+# A weak marker only signals trivial within a short-enough prompt; above this
+# the prompt is substantive enough that the marker is incidental.
+_MAX_WEAK_MARKER_WORDS = 8
 
-    The lifecycle skill (``lifecycle_for_task_text``) plus its transitive
-    ``requires``/``companions`` closure, unioned with the active overlay's
-    companion skills for THAT lifecycle. Generalizes the former review-only
-    seed: a ``code``/``e2e``/``test`` task demands the overlay's companions too,
-    so an overlay's own code task demands its skill, not just a review task.
+
+def _task_is_trivial(description: str) -> bool:
+    """Whether *description* is a trivial/ambiguous task the gate should not force.
+
+    True when the text carries a STRONG trivial marker (a file/format edit:
+    ``typo``/``readme``/…), is a bare short imperative (``push the branch``), or
+    carries a WEAK marker (``investigate``/``rename``/``why``…) in a short prompt.
+    A trivial task yields no skill demand so ``fix the typo in the README`` /
+    ``push the branch`` / ``investigate why the build is broken`` are never forced
+    to slash-list skills, while a long substantive dispatch that merely contains a
+    weak marker (``rename the public API across all consumers``) still enforces.
+    """
+    if _STRONG_TRIVIAL_RE.search(description):
+        return True
+    word_count = len(description.split())
+    if word_count <= _MAX_TRIVIAL_WORDS:
+        return True
+    return word_count <= _MAX_WEAK_MARKER_WORDS and _WEAK_TRIVIAL_RE.search(description) is not None
+
+
+def required_skills_for_task(description: str, search_dirs: list[Path]) -> list[str]:
+    """The un-derivable ROOT skills a fanned-out task must name, from its DESCRIPTION.
+
+    The lifecycle skill (``lifecycle_for_task_text``) unioned with the active
+    overlay's companion skills for THAT lifecycle (every lifecycle, not just
+    ``review``) — and NOTHING more. The transitive ``requires``/``companions``
+    closure is deliberately NOT expanded: the ``Skill`` tool pulls each root's
+    dependencies itself, so a dispatch that names the root passes even when it
+    does not enumerate every transitive dep. Demanding the closure denied a
+    reviewer dispatch that correctly named only ``/t3:review`` + the overlay
+    review companion (over-block).
+
+    A trivial/ambiguous task (:func:`_task_is_trivial`) yields ``[]`` so it is
+    never forced to slash-list skills.
 
     Fail-open: any resolution failure (teatree not importable in this hook
     process, no lifecycle match, no configured overlay) yields ``[]`` so the
     gate degrades to the explicit pending demand alone — never a lockout.
     """
-    if not description:
+    if not description or _task_is_trivial(description):
         return []
 
     scripts_dir = _PLUGIN_ROOT / "scripts"
@@ -76,19 +150,18 @@ def required_skills_for_task(description: str, search_dirs: list[Path]) -> list[
     try:
         from lib.skill_loader import build_trigger_index  # noqa: PLC0415
 
-        from teatree.skill_support.deps import resolve_companions  # noqa: PLC0415
         from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
 
         index = build_trigger_index(search_dirs)
         lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(description, trigger_index=index)
         if not lifecycle:
             return []
-        seed = [lifecycle, *_overlay_companions_for_lifecycle(lifecycle)]
-        resolved, _missing = resolve_companions(seed, index)
+        roots = [lifecycle, *_overlay_companions_for_lifecycle(lifecycle)]
     except Exception:  # noqa: BLE001
         return []
     else:
-        return resolved
+        seen: set[str] = set()
+        return [r for r in roots if not (r in seen or seen.add(r))]
     finally:
         for extra in added:
             with contextlib.suppress(ValueError):
@@ -133,16 +206,50 @@ def _reference_pattern(skill_name: str) -> re.Pattern[str]:
     )
 
 
+# A reference whose OWN clause carries one of these markers is a NEGATED
+# mention — ``do not load the code skill`` / ``skip the ship skill`` — and must
+# NOT satisfy the gate, else a negation falsely clears the demand (under-block).
+_NEGATION_RE = re.compile(
+    r"(?:\bnot\b|n't\b|\bnever\b|\bno\b|\bskip\b|\bwithout\b|\bdon'?t\b|\bavoid\b|\bdrop\b)",
+    re.IGNORECASE,
+)
+# Clause boundaries that RESET the negation scope: a negation in a PRIOR clause
+# (``Do not skip steps. Load /t3:review``; ``This is not optional: load
+# /t3:review``) does not negate this reference. The colon resets only the scope
+# BEFORE it, so a negation AFTER it (``Note: do not load X``) still governs —
+# it fixes the emphatic-positive over-block without opening an under-block. The
+# comma is deliberately NOT a boundary: it appears WITHIN a single negated
+# imperative (``do not, under any circumstances, load X``), so resetting on it
+# would let that negation escape (under-block).
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.;:\n]")
+
+
 def task_references_skill(task_text: str, skill_name: str) -> bool:
     """Whether *task_text* instructs the sub-agent to load *skill_name*.
 
     The satisfaction test for the ``TaskCreated`` gate: a required skill is
     satisfied when the DISPATCH PROMPT references loading it (so the blank
-    sub-agent is told to), NOT when the parent session happens to hold it.
+    sub-agent is told to), NOT when the parent session happens to hold it. A
+    NEGATED mention in the reference's own clause (``do not load the code
+    skill``) is not a reference.
     """
     if not task_text or not skill_name:
         return False
-    return _reference_pattern(skill_name).search(task_text) is not None
+    pattern = _reference_pattern(skill_name)
+    return any(not _is_negated(task_text, match.start()) for match in pattern.finditer(task_text))
+
+
+def _is_negated(text: str, match_start: int) -> bool:
+    """Whether the reference at *match_start* sits in a negated clause.
+
+    Scopes to the clause containing the match — the span after the last clause
+    boundary (``.``/``;``/``:``/newline; NOT the comma, which appears within a
+    single negated imperative) before it — so a negation in a prior clause does
+    not falsely negate a genuine positive reference here.
+    """
+    boundaries = list(_CLAUSE_BOUNDARY_RE.finditer(text, 0, match_start))
+    clause_start = boundaries[-1].end() if boundaries else 0
+    return _NEGATION_RE.search(text, clause_start, match_start) is not None
 
 
 def _skill_md_path(skill_name: str, search_dirs: list[Path]) -> str:
@@ -156,7 +263,7 @@ def _skill_md_path(skill_name: str, search_dirs: list[Path]) -> str:
     seg = _skill_segment(skill_name)
     for directory in search_dirs:
         candidate = directory / seg / "SKILL.md"
-        if candidate.is_file():
+        if is_file_safe(candidate):
             return str(candidate)
     return f"{seg}/SKILL.md"
 
@@ -202,3 +309,28 @@ def filter_unreferenced(
         seen.add(seg)
         demand.append(name)
     return demand
+
+
+def unreferenced_demand_reason(
+    *,
+    prompt: str,
+    description: str,
+    pending: list[str],
+    search_dirs: list[Path],
+    resolves: Callable[[str], bool],
+) -> str:
+    """The ``TaskCreated`` deny reason, or ``""`` when nothing is unreferenced.
+
+    Owns the whole demand computation (roots + ``<session>.pending``, minus
+    resolvable-and-already-referenced) AND its never-lockout fail-open: ANY
+    internal error — notably a 255+ byte pending name making ``is_file`` raise
+    ``OSError`` — returns ``""`` (allow) rather than propagating, since
+    TaskCreated aborts on any handler stderr. The router handler stays a thin
+    caller so the over-cap router nets smaller.
+    """
+    try:
+        required = [*pending, *required_skills_for_task(description, search_dirs)]
+        unreferenced = filter_unreferenced(prompt, required, resolves=resolves)
+        return build_load_first_reason(unreferenced, search_dirs) if unreferenced else ""
+    except Exception:  # noqa: BLE001 — never-lockout: fail OPEN, never abort TaskCreated.
+        return ""

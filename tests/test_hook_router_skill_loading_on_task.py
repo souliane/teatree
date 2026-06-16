@@ -74,6 +74,11 @@ def gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     _seed_skill(skills_dir, "review", requires=["workspace", "code"])
     _seed_skill(skills_dir, "code", requires=["workspace"])
     _seed_skill(skills_dir, "workspace")
+    # ``debug``/``ship`` are seeded so the trivial-task examples (``fix the typo``
+    # → ``debug``, ``push the branch`` → ``ship``) WOULD resolve a demand without
+    # the trivial guard — keeping those tests anti-vacuous.
+    _seed_skill(skills_dir, "debug", requires=["workspace"])
+    _seed_skill(skills_dir, "ship", requires=["workspace"])
     monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
 
     yield skills_dir
@@ -146,20 +151,28 @@ class TestPromptWithoutSkillReferenceIsDenied:
         assert payload["continue"] is False
         assert "permissionDecision" not in payload
         reason = payload["stopReason"]
-        # The deny lists the exact Read lines to ADD to the dispatch prompt.
+        # The deny lists the exact Read line for the ROOT skill to ADD.
         assert "Read" in reason
         assert "review/SKILL.md" in reason
-        # ``review`` requires ``code`` → ``workspace`` transitively.
-        assert "code/SKILL.md" in reason
-        assert "workspace/SKILL.md" in reason
 
-    def test_review_task_without_reference_demands_transitive_code(self, gate: Path) -> None:
-        blocked, payload = _run(_task(description="please review the open PR and leave feedback"))
+    def test_roots_only_does_not_demand_transitive_closure(self, gate: Path) -> None:
+        # The fix: only the un-derivable ROOTS are demanded. ``review`` requires
+        # ``code`` → ``workspace`` transitively, but the Skill tool pulls those
+        # itself, so the deny must NOT list them (the over-block #1 defect).
+        blocked, payload = _run(_task(description="review the open PR thoroughly"))
         assert blocked is True
         assert payload is not None
         reason = payload["stopReason"]
-        assert "review/SKILL.md" in reason
-        assert "code/SKILL.md" in reason
+        assert "code/SKILL.md" not in reason
+        assert "workspace/SKILL.md" not in reason
+
+    def test_dispatch_naming_only_the_root_passes(self, gate: Path) -> None:
+        # A dispatch that names the root lifecycle skill but NOT its transitive
+        # deps must pass — this is the reviewer-dispatch shape the old closure
+        # gate wrongly denied (#1).
+        blocked, payload = _run(_task(description="Load /t3:review, then review the open PR thoroughly."))
+        assert blocked is False
+        assert payload is None
 
     def test_pending_demand_without_reference_blocks(self, gate: Path) -> None:
         # Even with a neutral description, an explicit ``<session>.pending``
@@ -204,9 +217,10 @@ class TestPromptReferencingSkillsPasses:
         assert blocked is False
         assert payload is None
 
-    def test_partial_reference_still_blocks_on_the_missing_one(self, gate: Path) -> None:
-        # References ``code`` + ``workspace`` but the ``review`` lifecycle skill
-        # itself is unreferenced → still denied, listing only the missing one.
+    def test_unreferenced_root_still_blocks_listing_only_the_root(self, gate: Path) -> None:
+        # The prompt references the transitive deps ``code`` + ``workspace`` but
+        # not the ``review`` ROOT itself → still denied, listing ONLY the root
+        # (the transitive deps were never demanded — roots-only #1).
         description = "Read code/SKILL.md and workspace/SKILL.md, then review the open PR."
         blocked, payload = _run(_task(description=description))
         assert blocked is True
@@ -220,28 +234,26 @@ class TestPromptReferencingSkillsPasses:
 class TestReviewLifecycleUnionsOverlayCompanions:
     """A review task unions the active overlay's review companions into the demand."""
 
+    @staticmethod
+    def _patch_roots(monkeypatch: pytest.MonkeyPatch, roots: list[str]) -> None:
+        import subagent_skill_gate  # noqa: PLC0415
+
+        monkeypatch.setattr(subagent_skill_gate, "required_skills_for_task", lambda description, search_dirs: roots)
+
     def test_overlay_review_companion_is_demanded_when_unreferenced(
         self, gate: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _seed_skill(gate, "code-review")
-        monkeypatch.setattr(
-            router,
-            "required_skills_for_task",
-            lambda description, search_dirs: ["review", "code", "workspace", "code-review"],
-        )
-        blocked, payload = _run(_task(description="review the open PR"))
+        self._patch_roots(monkeypatch, ["review", "code-review"])
+        blocked, payload = _run(_task(description="review the open PR thoroughly"))
         assert blocked is True
         assert payload is not None
         assert "code-review/SKILL.md" in payload["stopReason"]
 
     def test_overlay_review_companion_referenced_passes(self, gate: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(gate, "code-review")
-        monkeypatch.setattr(
-            router,
-            "required_skills_for_task",
-            lambda description, search_dirs: ["review", "code", "workspace", "code-review"],
-        )
-        description = "Load /review /code /workspace and /code-review, then review the open PR."
+        self._patch_roots(monkeypatch, ["review", "code-review"])
+        description = "Load /review and /code-review, then review the open PR thoroughly."
         blocked, payload = _run(_task(description=description))
         assert blocked is False
         assert payload is None
@@ -308,6 +320,131 @@ class TestFailOpen:
         assert stderr == ""
 
 
+class TestTrivialTasksAreNotForced:
+    """Trivial / ambiguous fan-outs are not forced to slash-list skills (#2)."""
+
+    def test_fix_the_typo_in_readme_passes(self, gate: Path) -> None:
+        # ``fix`` maps to the ``debug`` lifecycle, but a README typo fix is not a
+        # substantive debug dispatch — must not be forced.
+        blocked, payload = _run(_task(description="fix the typo in the README"))
+        assert blocked is False
+        assert payload is None
+
+    def test_push_the_branch_passes(self, gate: Path) -> None:
+        # ``push`` maps to ``ship``; a bare three-word imperative is trivial.
+        blocked, payload = _run(_task(description="push the branch"))
+        assert blocked is False
+        assert payload is None
+
+    def test_investigate_why_the_build_is_broken_passes(self, gate: Path) -> None:
+        # ``broken`` maps to ``debug``; an investigation is ambiguous, not forced.
+        blocked, payload = _run(_task(description="investigate why the build is broken"))
+        assert blocked is False
+        assert payload is None
+
+    def test_substantive_review_dispatch_still_blocks(self, gate: Path) -> None:
+        # Anti-vacuous: a substantive lifecycle dispatch IS still demanded, so
+        # the relaxation did not disable the gate wholesale.
+        blocked, payload = _run(_task(description="review the open PR thoroughly"))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+    def test_long_dispatch_with_weak_marker_still_enforces(self, gate: Path) -> None:
+        # A weak marker (``review``/``why``) in a LONG substantive dispatch must
+        # NOT suppress the demand — the weak-marker triviality is short-only.
+        description = "review the open PR and explain why each change was made, then leave detailed feedback"
+        blocked, payload = _run(_task(description=description))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+
+class TestNegatedReferenceDoesNotSatisfy:
+    """A negated skill mention does not falsely satisfy the gate (#4)."""
+
+    def test_do_not_load_phrasing_still_blocks(self, gate: Path) -> None:
+        # ``do not load the review skill`` is a NEGATED mention — it must not
+        # count as a reference, so the demand stands.
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(_task(description="do not load the review skill; just summarize the diff briefly"))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+    def test_skip_phrasing_still_blocks(self, gate: Path) -> None:
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(_task(description="skip the review skill and just read the file then report back"))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+    def test_positive_reference_after_negated_clause_passes(self, gate: Path) -> None:
+        # Anti-vacuous: a genuine positive reference outside the negation window
+        # still satisfies the gate — the guard does not over-block.
+        _write_pending("sess-task", ["review"])
+        description = "Do not skip steps. Load /t3:review via the Skill tool, then review the open PR."
+        blocked, payload = _run(_task(description=description))
+        assert blocked is False
+        assert payload is None
+
+    def test_emphatic_positive_after_colon_passes(self, gate: Path) -> None:
+        # A negation before a colon scopes to its own clause: an emphatic
+        # positive instruction after the boundary is NOT negated.
+        _write_pending("sess-task", ["review"])
+        for description in (
+            "This is not optional: load /t3:review then review the open PR thoroughly.",
+            "No shortcuts: load /t3:review via the Skill tool then review the open PR.",
+        ):
+            blocked, payload = _run(_task(description=description))
+            assert blocked is False, description
+            assert payload is None
+
+    def test_negation_after_colon_still_blocks(self, gate: Path) -> None:
+        # The colon boundary must not let a genuine negation AFTER it escape:
+        # ``Note: do not load …`` still negates the in-clause reference.
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(_task(description="Note: do not load the review skill. Just read the diff please."))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+    def test_comma_inside_negated_imperative_still_blocks(self, gate: Path) -> None:
+        # The comma is NOT a clause boundary: it appears WITHIN a single negated
+        # imperative, so a negation must not escape across it (under-block guard).
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(
+            _task(description="Do not, under any circumstances, load the review skill; just read the diff.")
+        )
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+
+class TestPathologicalPendingNameFailsOpenSilently:
+    """A 255+ byte pending skill name fails OPEN — never aborts TaskCreated (#3)."""
+
+    def test_overlong_pending_name_does_not_abort(self, gate: Path) -> None:
+        # ``is_file`` raises OSError ("File name too long") on a 255+ byte
+        # segment; the handler must catch it and fail OPEN with no stderr (the
+        # harness aborts TaskCreated on ANY handler stderr → lockout).
+        _write_pending("sess-task", ["x" * 300])
+        blocked, stderr = _run_capturing_stderr(_task(description="do some neutral work"))
+        assert blocked is False
+        assert stderr == ""
+
+    def test_overlong_name_alongside_real_demand_still_blocks_silently(self, gate: Path) -> None:
+        # A real unreferenced demand still blocks even when a pathological name
+        # sits beside it — the fail-open is per-error, not a blanket pass.
+        _write_pending("sess-task", ["review", "y" * 300])
+        blocked, stderr = _run_capturing_stderr(_task(description="do some neutral work"))
+        assert blocked is True
+        assert stderr == ""
+        _, payload = _run(_task(description="do some neutral work", session_id="sess-task"))
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+
 class TestIgnoresFanoutShape:
     """The gate enforces skill-loading ONLY — never agent-count/budget/size caps."""
 
@@ -324,7 +461,7 @@ class TestIgnoresFanoutShape:
 
     def test_huge_fanout_without_reference_blocks_on_skill_only(self, gate: Path) -> None:
         blocked, payload = _run(
-            _task(description="review the PR", extra={"agent_count": 64, "token_budget": 9_000_000})
+            _task(description="review the open PR thoroughly", extra={"agent_count": 64, "token_budget": 9_000_000})
         )
         assert blocked is True
         assert payload is not None

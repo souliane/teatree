@@ -43,7 +43,7 @@ from django_bootstrap import bootstrap_teatree_django
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
-from subagent_skill_gate import build_load_first_reason, filter_unreferenced, required_skills_for_task
+from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
 STATE_DIR = Path(
@@ -1408,14 +1408,14 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     if stripped.endswith("/SKILL.md"):
         # Path-shaped overlay ``skill_path``: literal path, then the
         # ``<skill>`` parent-dir name — both taken verbatim.
-        if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
+        if any(is_file_safe(d.parent / name) or is_file_safe(d / name) for d in search_dirs):
             return True
         segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
     else:
         segment = stripped.rsplit("/", 1)[-1]
     if not segment or segment == "SKILL.md":
         return False
-    return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
+    return any(is_file_safe(d / segment / "SKILL.md") for d in search_dirs)
 
 
 def _plugin_namespace() -> str:
@@ -1749,10 +1749,11 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 # sub-agent starts BLANK: it holds only its task prompt and lacks the
 # ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
 # The gate is therefore satisfied by the DISPATCH PROMPT instructing the
-# sub-agent to load the skill — not by the parent's loaded set. The demand
-# and the satisfaction test live in the ``subagent_skill_gate`` sibling
-# (``required_skills_for_task`` / ``filter_unreferenced`` /
-# ``build_load_first_reason``).
+# sub-agent to load the skill — not by the parent's loaded set. The whole
+# demand computation + never-lockout fail-open lives in the
+# ``subagent_skill_gate`` sibling behind ``unreferenced_demand_reason`` (over
+# ``required_skills_for_task`` / ``filter_unreferenced`` /
+# ``build_load_first_reason``); the router only calls that one entry point.
 #
 # The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
 # against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
@@ -1819,17 +1820,11 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     ``<name>/SKILL.md`` path, or a ``Skill tool`` / ``load the <name> skill``
     instruction), NOT by the parent's loaded set.
 
-    Demand set = the lifecycle skill detected from ``task_description`` + its
-    transitive companions + the active overlay's companions for that lifecycle
-    (:func:`required_skills_for_task`), unioned with ``<session>.pending``,
-    minus any name that does not resolve (fail-open on a stale/renamed skill)
-    and any name the prompt already references. The deny lists the exact
-    ``Read …/SKILL.md`` lines to ADD so the orchestrator embeds skill-loading
-    in the dispatch.
-
-    Skill-loading ONLY: no agent-count / token-budget / workflow-size field is
-    read, so ultracode keeps maximal fan-out room. Fails open (passes through)
-    on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, or a
+    The deny reason (un-derivable ROOTS + ``<session>.pending``, minus
+    resolvable-and-already-referenced) and its never-lockout fail-open are owned
+    by :func:`unreferenced_demand_reason`. Skill-loading ONLY: no agent-count /
+    budget / size field is read, so ultracode keeps maximal fan-out room. Fails
+    open on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, or a
     missing session id.
     """
     session_id = data.get("session_id", "")
@@ -1843,16 +1838,17 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
         return False
 
     search_dirs = _skill_search_dirs()
-    required: list[str] = [
-        *_read_lines(_state_file(session_id, "pending")),
-        *required_skills_for_task(description, search_dirs),
-    ]
-
-    unreferenced = filter_unreferenced(prompt, required, resolves=lambda s: _skill_resolves(s, search_dirs))
-    if not unreferenced:
+    reason = unreferenced_demand_reason(
+        prompt=prompt,
+        description=description,
+        pending=_read_lines(_state_file(session_id, "pending")),
+        search_dirs=search_dirs,
+        resolves=lambda s: _skill_resolves(s, search_dirs),
+    )
+    if not reason:
         return False
 
-    return emit_task_create_deny(build_load_first_reason(unreferenced, search_dirs))
+    return emit_task_create_deny(reason)
 
 
 def _resolve_worktree_state(toplevel: str) -> str | None:
