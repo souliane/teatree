@@ -314,7 +314,7 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
     review skill plus the active overlay's review skills (deduped, order
     preserved) — so the overlay conventions reach every reviewer structurally,
-    which is also what ``hook_router._companions_for_task_text`` enforces.
+    which is also what ``subagent_skill_gate.required_skills_for_task`` enforces.
 
     *review_skills* overrides the overlay resolution when supplied (e.g. a
     caller that already resolved the bundle); otherwise the active overlay's

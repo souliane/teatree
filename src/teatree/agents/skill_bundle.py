@@ -6,6 +6,7 @@ from teatree.types import SkillMetadata
 __all__ = [
     "DEFAULT_SKILLS_DIR",
     "active_overlay_companion_skills",
+    "active_overlay_lifecycle_skills",
     "active_overlay_pr_review_companion",
     "active_overlay_review_skills",
     "resolve_skill_bundle",
@@ -83,6 +84,29 @@ def active_overlay_review_skills() -> list[str]:
         return []
     try:
         skills = getter()
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(skills, list):
+        return []
+    return [s for s in skills if isinstance(s, str) and s]
+
+
+def active_overlay_lifecycle_skills(lifecycle: str) -> list[str]:
+    """Return the active overlay's ``get_lifecycle_companion_skills(lifecycle)``.
+
+    Generalizes :func:`active_overlay_review_skills` to every lifecycle so a
+    fanned-out ``code``/``e2e``/``test`` task — not only a reviewing task —
+    demands the overlay's companion skills. When no overlay is reachable, or the
+    overlay predates the hook, the caller behaves as if none were declared.
+    """
+    config = _active_overlay_config()
+    if config is None:
+        return []
+    getter = getattr(config, "get_lifecycle_companion_skills", None)
+    if not callable(getter):
+        return []
+    try:
+        skills = getter(lifecycle)
     except Exception:  # noqa: BLE001
         return []
     if not isinstance(skills, list):

@@ -42,6 +42,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from django_bootstrap import bootstrap_teatree_django
 from mr_cli_fields import extract_cli_mr_fields
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+from subagent_skill_gate import build_load_first_reason, filter_unreferenced, required_skills_for_task
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
 STATE_DIR = Path(
@@ -1356,8 +1357,8 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 # of it. Conflating distinct skills across namespaces (``t3:review`` vs a
 # hypothetical ``other:review``) by stripping the qualifier would be wrong,
 # so both the WRITE boundary (the pending writer, :func:`_record_skills`)
-# and the MATCH boundary (:func:`handle_enforce_skill_loading` /
-# :func:`handle_enforce_skill_loading_on_task_create`) normalize UP to the
+# and the ``PreToolUse`` MATCH boundary (:func:`handle_enforce_skill_loading`)
+# normalize UP to the
 # fully-qualified canonical via :func:`_canonical_skill_token` — a bare name
 # owned by this plugin gains its namespace (``rules`` → ``t3:rules``), never
 # stripped down to the bare segment. WRITE keeps state clean going forward;
@@ -1743,12 +1744,19 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 # auto-loading the matching teatree lifecycle skill. That is the loophole
 # that let a bespoke review workflow run instead of ``/t3:review``.
 #
+# The teatree skill injection reaches the MAIN agent only. The fanned-out
+# sub-agent starts BLANK: it holds only its task prompt and lacks the
+# ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
+# The gate is therefore satisfied by the DISPATCH PROMPT instructing the
+# sub-agent to load the skill — not by the parent's loaded set. The demand
+# and the satisfaction test live in the ``subagent_skill_gate`` sibling
+# (``required_skills_for_task`` / ``filter_unreferenced`` /
+# ``build_load_first_reason``).
+#
 # The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
 # against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
 # with ``task_id``/``task_subject``/``task_description``; a hook output of
-# ``{"continue": false, ...}`` sets ``preventContinuation``). This handler
-# rides that event to force the matching lifecycle skill + its
-# already-transitive companions onto the dispatched task.
+# ``{"continue": false, ...}`` sets ``preventContinuation``).
 #
 # It enforces SKILL-LOADING ONLY — it never inspects agent count, token
 # budget, ``run_in_background``, or any workflow-size field, so ultracode
@@ -1787,81 +1795,6 @@ def _task_text_skip_token(text: str) -> str | None:
     return match.group(1).strip() or None
 
 
-def _companions_for_task_text(task_text: str) -> list[str]:
-    """Resolve the lifecycle skill for *task_text* plus its companion closure.
-
-    Routes the task text through the production
-    :meth:`SkillLoadingPolicy.lifecycle_for_task_text` (text → lifecycle
-    skill: ``review``/``code``/``ship``/…) and then expands that single
-    skill through :func:`resolve_companions` against the real trigger index
-    (parsed from real ``SKILL.md`` frontmatter). The companions are already
-    transitive — ``review`` pulls in ``code``/``workspace``/``platforms``/
-    … — so no companion-resolution logic is rebuilt here. When the lifecycle
-    resolves to ``review`` the active overlay's
-    ``get_review_companion_skills()`` are unioned in, so a fanned-out
-    reviewing task that fails to load the overlay's review skills is denied.
-    On any resolution failure (teatree not importable in this hook process, no
-    lifecycle match) the closure is empty and the gate falls back to the
-    ``<session>.pending`` demand set alone.
-    """
-    if not task_text:
-        return []
-
-    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added: list[str] = []
-    for extra in (str(scripts_dir), str(src_dir)):
-        if extra not in sys.path:
-            sys.path.insert(0, extra)
-            added.append(extra)
-    try:
-        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
-
-        from teatree.skill_support.deps import resolve_companions  # noqa: PLC0415
-        from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
-
-        index = build_trigger_index(_skill_search_dirs())
-        lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(task_text, trigger_index=index)
-        seed = _review_task_seed(lifecycle)
-        resolved, _missing = resolve_companions(seed, index) if seed else ([], [])
-    except Exception:  # noqa: BLE001
-        return []
-    else:
-        return resolved
-    finally:
-        for extra in added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(extra)
-
-
-def _review_task_seed(lifecycle: str) -> list[str]:
-    """Return the companion-resolution seed for *lifecycle*.
-
-    A ``review`` lifecycle unions in the active overlay's review companions so a
-    fanned-out reviewing task that skips them is denied; any other lifecycle
-    seeds only itself.
-    """
-    if lifecycle == "review":
-        return [lifecycle, *_overlay_review_companions()]
-    return [lifecycle] if lifecycle else []
-
-
-def _overlay_review_companions() -> list[str]:
-    """Return the active overlay's ``get_review_companion_skills()``, or ``[]``.
-
-    Fail-open: any import or resolution failure (teatree unimportable, no
-    configured overlay) yields an empty list so the review-task closure
-    degrades to the lifecycle skill's own transitive companions alone — never
-    a lockout.
-    """
-    try:
-        from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
-
-        return active_overlay_review_skills()
-    except Exception:  # noqa: BLE001
-        return []
-
-
 def emit_task_create_deny(reason: str) -> bool:
     """Emit the ``TaskCreated`` deny envelope and return ``True``.
 
@@ -1876,19 +1809,27 @@ def emit_task_create_deny(reason: str) -> bool:
 
 
 def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
-    """Force the matching lifecycle skill + companions onto a fanned-out task.
+    """Demand the fanned-out task's DISPATCH PROMPT instruct skill-loading.
 
-    Demand set = ``(<session>.pending minus <session>.skills)`` union the
-    companion closure of ``lifecycle_for_task_text(task_description)``, with each name
-    dropped if it does not resolve via :func:`_skill_resolves` (fail-open on
-    a renamed/stale skill — this also defuses the auto-loader's observed
-    demand for an ``ac-exporting-webhook-mapping`` that errors "Unknown
-    skill"). The gate denies only when a RESOLVABLE skill is still unloaded.
+    A sub-agent spawned via the Workflow/Task fan-out starts BLANK — it holds
+    only its task prompt and lacks the ``Skill`` tool, so what the PARENT
+    session loaded does NOT transfer to it. The gate is therefore satisfied by
+    the dispatch PROMPT referencing the skill (a ``/t3:<name>`` token, a
+    ``<name>/SKILL.md`` path, or a ``Skill tool`` / ``load the <name> skill``
+    instruction), NOT by the parent's loaded set.
 
-    Skill-loading ONLY: no agent-count / token-budget / workflow-size field
-    is read, so ultracode keeps maximal fan-out room. Fails open (passes
-    through) on the kill-switch, a valid ``[skip-skill-gate: <reason>]``
-    token, or a missing session id.
+    Demand set = the lifecycle skill detected from ``task_description`` + its
+    transitive companions + the active overlay's companions for that lifecycle
+    (:func:`required_skills_for_task`), unioned with ``<session>.pending``,
+    minus any name that does not resolve (fail-open on a stale/renamed skill)
+    and any name the prompt already references. The deny lists the exact
+    ``Read …/SKILL.md`` lines to ADD so the orchestrator embeds skill-loading
+    in the dispatch.
+
+    Skill-loading ONLY: no agent-count / token-budget / workflow-size field is
+    read, so ultracode keeps maximal fan-out room. Fails open (passes through)
+    on the kill-switch, a valid ``[skip-skill-gate: <reason>]`` token, or a
+    missing session id.
     """
     session_id = data.get("session_id", "")
     if not session_id or not _skill_loading_gate_enabled():
@@ -1896,51 +1837,21 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
 
     subject = data.get("task_subject", "") or ""
     description = data.get("task_description", "") or ""
-    if _task_text_skip_token(f"{subject}\n{description}"):
+    prompt = f"{subject}\n{description}"
+    if _task_text_skip_token(prompt):
         return False
 
-    owned, namespace = _skill_canon_snapshot()
-    loaded_canonical = {
-        _canonical_skill_token(s, owned, namespace) for s in _read_lines(_state_file(session_id, "skills"))
-    }
-
-    def _is_loaded(name: str) -> bool:
-        return _canonical_skill_token(name, owned, namespace) in loaded_canonical
-
-    pending = [s for s in _read_lines(_state_file(session_id, "pending")) if not _is_loaded(s)]
-    detected = [s for s in _companions_for_task_text(description) if not _is_loaded(s)]
-
-    demanded: list[str] = []
-    for name in [*pending, *detected]:
-        if name and name not in demanded:
-            demanded.append(name)
-    if not demanded:
-        return False
-
-    # A demanded skill that does not resolve (a stale/renamed keyword→skill
-    # mapping in ``~/.teatree-skills.yml``, e.g. one pointing at a skill name
-    # the registry no longer carries) is dropped from the demand — never
-    # blocked on. The drop is SILENT: the harness treats ANY ``TaskCreated``
-    # hook stderr as an error and aborts task creation, so a fail-open skip
-    # must emit nothing. (#1488 originally warned here, which made every task
-    # whose text mapped to an unresolvable skill fail to be created.) The
-    # ``PreToolUse`` counterpart still warns — there stderr is the documented
-    # logging channel and does not abort the tool call.
     search_dirs = _skill_search_dirs()
-    enforceable = [s for s in demanded if _skill_resolves(s, search_dirs)]
-    if not enforceable:
+    required: list[str] = [
+        *_read_lines(_state_file(session_id, "pending")),
+        *required_skills_for_task(description, search_dirs),
+    ]
+
+    unreferenced = filter_unreferenced(prompt, required, resolves=lambda s: _skill_resolves(s, search_dirs))
+    if not unreferenced:
         return False
 
-    skill_list = " ".join(f"/{s}" for s in enforceable)
-    reason = (
-        "SKILL LOADING ENFORCEMENT (TaskCreated): this fanned-out task must "
-        f"load these teatree skills first: {skill_list}. Call the Skill tool "
-        "for each one in the task before doing its work — do NOT run a bespoke "
-        "workflow that skips them. (Disable with `t3 <overlay> gate "
-        "skill-loading disable` or prefix the task with "
-        "`[skip-skill-gate: <reason>]`.)"
-    )
-    return emit_task_create_deny(reason)
+    return emit_task_create_deny(build_load_first_reason(unreferenced, search_dirs))
 
 
 def _resolve_worktree_state(toplevel: str) -> str | None:

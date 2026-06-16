@@ -331,23 +331,25 @@ class OverlayConfig:
         """Return the skills a reviewer must hold, deduped and order-preserving.
 
         ``[pr_review_companion, *companion_skills]``: the project's
-        review-quality bar (#1135) followed by the overlay's standing
-        companions. This is the single source of truth threaded through
-        :func:`active_overlay_review_skills` into both the reviewing-phase
-        skill bundle and the reviewing-phase system context, so a headless
-        reviewer receives the overlay's review conventions in full rather than
-        a demoted ``"available — load if needed"`` summary. An overlay
-        broadens the set by overriding this method; core stays
-        overlay-agnostic.
+        review-quality bar (#1135) then the overlay's standing companions,
+        threaded through :func:`active_overlay_review_skills` into the
+        reviewing-phase bundle and system context so a headless reviewer
+        receives the overlay's review conventions in full. An overlay broadens
+        the set by overriding this method; core stays overlay-agnostic.
         """
-        ordered = [self.pr_review_companion, *self.companion_skills]
-        seen: set[str] = set()
-        result: list[str] = []
-        for name in ordered:
-            if name and name not in seen:
-                seen.add(name)
-                result.append(name)
-        return result
+        return list(dict.fromkeys(s for s in [self.pr_review_companion, *self.companion_skills] if s))
+
+    def get_lifecycle_companion_skills(self, lifecycle: str) -> list[str]:
+        """Return the overlay's companion skills a *lifecycle* task must hold.
+
+        Generalizes :meth:`get_review_companion_skills` beyond reviewing so a
+        fanned-out ``code``/``e2e``/``test`` task demands the overlay's
+        companions too. ``review`` keeps the richer review set; every other
+        lifecycle gets the standing ``companion_skills``.
+        """
+        if lifecycle == "review":
+            return self.get_review_companion_skills()
+        return [s for s in self.companion_skills if s]
 
 
 # ── Overlay metadata ─────────────────────────────────────────────────
