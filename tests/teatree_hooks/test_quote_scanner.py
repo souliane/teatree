@@ -1234,7 +1234,11 @@ class TestFormatHelpers:
         result = ScanResult(findings=[Finding(name="heading-user-mandate", severity=quote_scanner.HIGH, excerpt="x")])
         message = quote_scanner.format_block_message(result)
         assert "heading-user-mandate" in message
-        assert "--quote-ok" in message
+        # The escape names the env PREFIX that works on every command, never a
+        # ``--quote-ok`` CLI flag a ``t3 review post-comment`` subcommand would
+        # reject as an unknown option (#1415).
+        assert "QUOTE_OK=1" in message
+        assert "--quote-ok" not in message
 
     def test_warn_message_lists_matched_pattern_names(self) -> None:
         result = ScanResult(findings=[Finding(name="per-user-direction", severity=quote_scanner.MEDIUM, excerpt="x")])

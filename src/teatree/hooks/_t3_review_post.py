@@ -84,7 +84,7 @@ def _t3_review_post_verb_index(words: list[str]) -> int | None:
     return None
 
 
-def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:
+def _t3_review_note_body(words: list[str], raws: list[str], verb_index: int) -> str | None:
     """Return the positional ``NOTE`` body of a ``t3 review`` post, or ``None``.
 
     Walks the tokens AFTER the verb, skipping flags (and the value of a
@@ -94,13 +94,15 @@ def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:
     so a dash-leading note (which Typer requires ``--`` to pass) is captured
     as the NOTE body rather than mistaken for a flag. ``None`` when fewer than
     three positionals are present. The body is passed through
-    :func:`resolve_inline_body_value` so a ``$(cat <path>)`` / ``$VAR`` note
-    resolves to its real content, consistent with the inline body flags; an
-    unresolvable indirection fails closed.
+    :func:`resolve_inline_body_value` (with the NOTE token's verbatim source
+    span from ``raws``) so a LIVE ``$(cat <path>)`` / ``$VAR`` note resolves to
+    its real content while a single-quoted INERT ``$(...)`` a multiline note
+    merely MENTIONS is scanned verbatim rather than fail-closed (#1415);
+    consistent with the inline body flags.
     """
     from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
 
-    positionals: list[str] = []
+    positionals: list[tuple[str, str]] = []
     i = verb_index + 1
     n = len(words)
     end_of_options = False
@@ -116,27 +118,30 @@ def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:
                 continue
             i += 1
             continue
-        positionals.append(word)
+        positionals.append((word, raws[i]))
         if len(positionals) > _T3_REVIEW_NOTE_POSITIONAL_INDEX:
-            return resolve_inline_body_value(positionals[_T3_REVIEW_NOTE_POSITIONAL_INDEX], None)
+            note_value, note_raw = positionals[_T3_REVIEW_NOTE_POSITIONAL_INDEX]
+            return resolve_inline_body_value(note_value, None, note_raw)
         i += 1
     return None
 
 
-def append_t3_review_note_payload(words: list[str], payloads: list[str]) -> bool:
+def append_t3_review_note_payload(words: list[str], raws: list[str], payloads: list[str]) -> bool:
     """Append a ``t3 review`` post's positional NOTE body and report handling.
 
     Returns ``True`` when ``words`` is a ``t3 review post-comment`` /
     ``post-draft-note`` segment — the caller then SKIPS the generic body-flag
     and body-file walkers so the segment's inline ``--file`` anchor is never
     scanned as the published body (#2278/#2270). The extracted NOTE (when
-    present) is appended to ``payloads``. Returns ``False`` for a non-review
-    segment, leaving ``payloads`` untouched.
+    present) is appended to ``payloads``. ``raws`` carries each WORD token's
+    verbatim source span (parallel to ``words``) so the NOTE resolver can tell a
+    single-quoted INERT ``$(...)`` from a live one. Returns ``False`` for a
+    non-review segment, leaving ``payloads`` untouched.
     """
     verb_index = _t3_review_post_verb_index(words)
     if verb_index is None:
         return False
-    note = _t3_review_note_body(words, verb_index)
+    note = _t3_review_note_body(words, raws, verb_index)
     if note is not None:
         payloads.append(note)
     return True

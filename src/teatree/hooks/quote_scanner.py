@@ -522,14 +522,22 @@ def log_decision(
 
 
 def format_block_message(result: ScanResult) -> str:
-    """Render the PreToolUse deny reason for a HIGH match."""
+    """Render the PreToolUse deny reason for a HIGH match.
+
+    The false-positive escape names the leading ``QUOTE_OK=1`` env PREFIX, not a
+    ``--quote-ok`` CLI flag: the flag is consumed by the gate's parser, never by
+    the posting command, so a ``t3 review post-comment`` (or any other
+    subcommand) would reject it as an unknown option. The env prefix is a real
+    shell construct every command accepts and is the spelling that actually
+    works at the prompt.
+    """
     names = ", ".join(sorted({f.name for f in result.high}))
     return (
         "BLOCKED: pre-publish quote-scanner gate (#1213). "
         f"Matched patterns: {names}. "
         "Paraphrase any user-attributed content; do not quote verbatim. "
-        "If the match is a false positive, re-issue the command with --quote-ok "
-        "(or set QUOTE_OK=1 in the tool env)."
+        "If the match is a false positive, re-issue the command with a leading "
+        "QUOTE_OK=1 env prefix (e.g. `QUOTE_OK=1 <command>`)."
     )
 
 
