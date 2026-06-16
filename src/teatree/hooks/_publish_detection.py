@@ -33,10 +33,11 @@ persistent flag -- the closed inversion the anti-whack-a-mole doctrine requires.
 """
 
 import re
+from itertools import starmap
 from typing import Final
 
 from teatree.hooks._gh_glab_hiding import token_has_substitution_marker
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
+from teatree.hooks._shell_lexer import TokenKind, raw_substitution_sees_live, split_commands, tokenize
 
 _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 
@@ -351,9 +352,82 @@ def command_has_token_aware_publish_surface(command: str) -> bool:
     )
 
 
+def _segment_raws(command: str) -> list[list[str]]:
+    """Return each top-level segment's WORD ``raw`` spans, env-prefix stripped.
+
+    Parallel to :func:`segment_word_lists` (same env-prefix stripping), but
+    carrying each WORD token's verbatim source span instead of its decoded
+    value — so a caller can tell whether a ``$(...)`` marker in a token sits
+    inside a single-quoted (inert) span or a live one.
+    """
+    segments: list[list[str]] = []
+    for segment in split_commands(tokenize(command)):
+        word_tokens = [tok for tok in segment if tok.kind is TokenKind.WORD]
+        while word_tokens and _ENV_ASSIGNMENT_RE.fullmatch(word_tokens[0].value):
+            word_tokens = word_tokens[1:]
+        if word_tokens:
+            segments.append([tok.raw for tok in word_tokens])
+    return segments
+
+
+# Substitution openers bash expands outside single quotes: command
+# substitution ``$(...)``, process substitution ``<(...)``/``>(...)``, and the
+# legacy backtick command substitution. The two-char ``$(`` family and the
+# one-char backtick compose as literal-prefix markers.
+_SUBSTITUTION_OPENERS: Final[tuple[str, ...]] = ("$(", "<(", ">(", "`")
+
+
+def _raw_has_live_substitution(raw: str) -> bool:
+    """Return True iff a ``$(`` / ``<(`` / ``>(`` / backtick in ``raw`` is LIVE.
+
+    A substitution is live (bash WOULD run it) only OUTSIDE a single-quoted
+    span; inside single quotes it is inert literal text. Delegates to the
+    shared quote-aware walker (:func:`raw_substitution_sees_live`), which tracks
+    BOTH single- and double-quote context — so an apostrophe inside a
+    double-quoted span (``"it's $(gh ...)"``) is a literal character and the
+    genuinely LIVE substitution after it is reported live, not mis-classified as
+    inert. An empty ``raw`` is treated as live (conservative).
+    """
+    if not raw:
+        return True
+    return raw_substitution_sees_live(raw, _SUBSTITUTION_OPENERS)
+
+
+def _segment_is_opaque_forge_transport_raw(words: list[str], raws: list[str]) -> bool:
+    """Raw-aware :func:`segment_is_opaque_forge_transport`.
+
+    A segment is an opaque forge transport when its leader is not a parseable
+    forge tool AND it carries either a forge-tool marker OR a LIVE substitution
+    (one bash would expand). A substitution that sits entirely inside a
+    single-quoted span is inert literal text the gate already holds in the
+    decoded value, so it does NOT make the segment opaque — this stops a
+    ``t3 review post-comment`` NOTE (or any non-forge segment) that merely
+    MENTIONS a ``$(...)`` snippet in its single-quoted body from being treated
+    as an unscannable hidden forge call (#1415). The decoded ``words`` drive the
+    leader/forge-marker checks; the parallel ``raws`` drive the inert-vs-live
+    substitution test.
+    """
+    rest_words = _strip_cd_env_prefix(words)
+    if not rest_words or rest_words[0] in _PARSEABLE_FORGE_LEADERS:
+        return False
+    skipped = len(words) - len(rest_words)
+    rest_raws = raws[skipped:]
+    carries_forge = any(any(marker in token for marker in _FORGE_TOOL_MARKERS) for token in rest_words)
+    carries_live_substitution = any(_raw_has_live_substitution(raw) for raw in rest_raws)
+    return carries_forge or carries_live_substitution
+
+
 def command_has_opaque_forge_transport(command: str) -> bool:
-    """Return True iff any segment hides a forge call in an opaque interpreter arg."""
-    return any(segment_is_opaque_forge_transport(words) for words in segment_word_lists(command))
+    """Return True iff any segment hides a forge call in an opaque interpreter arg.
+
+    Raw-aware: a substitution marker only makes a non-forge segment opaque when
+    it is LIVE (bash would expand it). A single-quoted ``$(...)`` in a body the
+    gate already decodes and scans is inert and does not fail the segment closed
+    (#1415).
+    """
+    word_segments = segment_word_lists(command)
+    raw_segments = _segment_raws(command)
+    return any(starmap(_segment_is_opaque_forge_transport_raw, zip(word_segments, raw_segments, strict=True)))
 
 
 def _forge_title_value(words: list[str]) -> str | None:

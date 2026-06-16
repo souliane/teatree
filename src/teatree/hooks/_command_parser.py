@@ -327,7 +327,7 @@ def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _walk_body_flags(words: list[str], payloads: list[str], base: "Path | None") -> None:
+def _walk_body_flags(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
     """Extract ``--body``/``--description``/``--message``/``--title``/``-m``/``-b`` payloads.
 
     Handles both space-separated (``--body "x"``) and equals-separated
@@ -335,8 +335,12 @@ def _walk_body_flags(words: list[str], payloads: list[str], base: "Path | None")
     :func:`_body_file_resolution.resolve_inline_body_value`, which resolves a
     ``$(cat <path>)`` command substitution to the file content and a ``$VAR`` to
     its environment value (``base`` is the cold-hook cwd fallback for a relative
-    cat path); an unresolvable indirection yields the fail-closed sentinel so the
-    scan blocks rather than reads an unexpanded shell token.
+    cat path); a LIVE unresolvable indirection (one bash would expand) yields the
+    fail-closed sentinel so the scan blocks rather than reads an unexpanded shell
+    token. ``raws`` carries each value token's verbatim source span (parallel to
+    ``words``) so the resolver can tell a single-quoted INERT ``$(...)`` (the body
+    is the literal text — scanned) from a live one — an embedded substitution in a
+    body the gate can read is no longer mis-flagged as unresolvable.
     """
     from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
 
@@ -345,21 +349,21 @@ def _walk_body_flags(words: list[str], payloads: list[str], base: "Path | None")
     while i < n:
         word = words[i]
         if word in _BODY_FLAG_NAMES and i + 1 < n:
-            payloads.append(resolve_inline_body_value(words[i + 1], base))
+            payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
             i += 2
             continue
         attached_handled = False
         for flag in _BODY_FLAG_NAMES:
             attached = attached_value(word, flag + "=")
             if attached is not None:
-                payloads.append(resolve_inline_body_value(attached, base))
+                payloads.append(resolve_inline_body_value(attached, base, raws[i]))
                 attached_handled = True
                 break
         if attached_handled:
             i += 1
             continue
         if word in _BODY_SHORT_FLAGS and i + 1 < n:
-            payloads.append(resolve_inline_body_value(words[i + 1], base))
+            payloads.append(resolve_inline_body_value(words[i + 1], base, raws[i + 1]))
             i += 2
             continue
         i += 1
@@ -385,12 +389,14 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
     payloads.extend(_json_body_fields(content))
 
 
-def _walk_api_fields(words: list[str], payloads: list[str], base: "Path | None") -> None:
+def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
     """Extract ``-f``/``-F``/``--field``/``--raw-field`` ``body=`` assignments.
 
     Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
     and ``--input <missing>`` (fail closed). Field assignments other than
-    ``body=`` are ignored.
+    ``body=`` are ignored. ``raws`` (parallel to ``words``) carries each token's
+    verbatim source span so a single-quoted INERT ``$(...)`` in a ``body=``
+    field is scanned rather than fail-closed.
     """
     field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
     i = 0
@@ -398,7 +404,7 @@ def _walk_api_fields(words: list[str], payloads: list[str], base: "Path | None")
     while i < n:
         word = words[i]
         if word in field_flags and i + 1 < n:
-            _handle_field_assignment(words[i + 1], payloads, base)
+            _handle_field_assignment(words[i + 1], payloads, base, raws[i + 1])
             i += 2
             continue
         if word == "--input" and i + 1 < n:
@@ -411,7 +417,7 @@ def _walk_api_fields(words: list[str], payloads: list[str], base: "Path | None")
         i += 1
 
 
-def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None") -> None:
+def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None", raw: str = "") -> None:
     """Parse a ``-F body=value`` style argument and append the resolved value.
 
     The ``body=`` prefix is required — other field names (``title=``,
@@ -420,8 +426,9 @@ def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None")
     ``--body``/``-m``/positional-NOTE handling uses — so a ``-f body=$(cat
     <path>)`` / ``-f body=$VAR`` field is scanned against the resolved file/var
     content rather than the literal ``$(cat …)`` / ``$VAR`` token (a leak inside
-    the referenced file would otherwise slip onto a public repo). An
-    unresolvable indirection yields the fail-closed sentinel.
+    the referenced file would otherwise slip onto a public repo). ``raw`` is the
+    field token's verbatim source span so a single-quoted INERT ``$(...)`` is
+    scanned; a LIVE unresolvable indirection yields the fail-closed sentinel.
     """
     from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
 
@@ -429,7 +436,7 @@ def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None")
         return
     name, _, value = arg.partition("=")
     if name == "body":
-        payloads.append(resolve_inline_body_value(value, base))
+        payloads.append(resolve_inline_body_value(value, base, raw))
 
 
 # ── Command-segment walking ─────────────────────────────────────────
@@ -456,22 +463,30 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
     from teatree.hooks._t3_review_post import append_t3_review_note_payload  # noqa: PLC0415
 
-    words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+    word_tokens = [tok for tok in segment if tok.kind is TokenKind.WORD]
+    words = [tok.value for tok in word_tokens]
     if not words:
         return
+    # The verbatim source span (quotes intact) of each WORD, parallel to
+    # ``words``. The inline-body resolver reads it to tell a LIVE ``$(...)``
+    # bash would expand (double-quoted / unquoted ⇒ fail closed) from an INERT
+    # one bash passes verbatim (single-quoted ⇒ the body is fully present and
+    # scanned) — so a commit/note body that merely MENTIONS a ``$(...)`` snippet
+    # is no longer mis-classified as an unreadable source (#1415).
+    raws = [tok.raw for tok in word_tokens]
     first, _ = _first_two_words(segment)
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
-    _walk_body_flags(words, payloads, ctx.base)
+    _walk_body_flags(words, raws, payloads, ctx.base)
     # ``t3 review`` posts carry the body as the positional NOTE and use
     # ``--file`` as a diff ANCHOR, not a body-file — extract the NOTE and SKIP
     # the body-file walker so the anchored source is never scanned (#2278/#2270).
-    if append_t3_review_note_payload(words, payloads):
+    if append_t3_review_note_payload(words, raws, payloads):
         return
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
-        _walk_api_fields(words, payloads, ctx.base)
+        _walk_api_fields(words, raws, payloads, ctx.base)
     if first == "curl":
         _walk_curl_args(words, payloads)
 

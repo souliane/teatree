@@ -330,12 +330,21 @@ def _matched_term(report: str) -> str | None:
 
 
 def format_block_message(term: str) -> str:
-    """Render the PreToolUse deny reason for a banned-term match."""
+    """Render the PreToolUse deny reason for a banned-term match.
+
+    The false-positive escape names the leading ``ALLOW_BANNED_TERM=1`` env
+    PREFIX, not a ``--allow-banned-term`` CLI flag: the flag is consumed by the
+    gate's parser, never by the posting command, so a ``t3 review post-comment``
+    (or any other subcommand) would reject it as an unknown option. The env
+    prefix is a real shell construct every command accepts — it sets a variable
+    bash scopes to that one command and never reaches the subcommand's arg
+    parser — so it is the spelling that actually works at the prompt.
+    """
     return (
         f"BLOCKED: banned-terms posting gate (#1415). The body carries the banned term "
         f"'{term}'. Remove the overlay/customer term before posting to the public surface. "
-        f"If the match is a false positive, re-issue the command with {_OVERRIDE_FLAG} "
-        f"(or set {_OVERRIDE_ENV}=1 in the tool env)."
+        f"If the match is a false positive, re-issue the command with a leading "
+        f"{_OVERRIDE_ENV}=1 env prefix (e.g. `{_OVERRIDE_ENV}=1 <command>`)."
     )
 
 

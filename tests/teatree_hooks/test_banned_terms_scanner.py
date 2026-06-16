@@ -753,6 +753,187 @@ class TestMixedCommandSubstitutionBodyStillFailsClosed:
         assert FAIL_CLOSED_SENTINEL in payload
 
 
+class TestInertSingleQuotedSubstitutionBodyIsScanned:
+    """A SINGLE-quoted body that merely MENTIONS a ``$(...)`` is scanned, not blocked.
+
+    Inside single quotes bash never expands a ``$(...)`` — it passes the text
+    verbatim — so the body the gate decodes IS the published body, fully present
+    and scannable. A multiline commit/PR/note body that documents a shell snippet
+    (``ran $(date) to stamp``) used to hit the ``$(`` fail-closed branch and deny
+    with "publish body could not be read", forcing ``--body-file``/heredoc
+    workarounds on a perfectly readable body (#1415). The resolver now reads the
+    value token's verbatim source span: a single-quoted ``$(...)`` is INERT and
+    scanned; a double-quoted / unquoted one is LIVE and still fails closed
+    (TestMixedCommandSubstitutionBodyStillFailsClosed above). The scan is NOT
+    bypassed — a planted banned term in such a body is still caught.
+    """
+
+    def test_single_quoted_body_with_dollar_paren_is_scanned_not_failed_closed(self) -> None:
+        body = "chore: stamp build\n\nran $(date) to record the build time"
+        cmd = f"gh pr create -R o/r --title t --body '{body}'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "ran $(date) to record the build time" in payload
+
+    def test_single_quoted_body_with_planted_banned_term_is_still_caught(self, config: Path) -> None:
+        # ANTI-VACUOUS: the inert-substitution body is genuinely SCANNED, not
+        # waved through. A banned term sitting next to the inert ``$(...)`` is
+        # surfaced — proving the fix reads the body rather than bypassing it.
+        body = "deploy steps\n\nrun $(make build) then ship to acmecorp"
+        cmd = f"gh pr create -R o/r --title t --body '{body}'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert banned_terms_scanner.scan_text(payload, config_path=config) == "acmecorp"
+
+    def test_multiline_single_quoted_typographic_body_passes_clean(self, config: Path) -> None:
+        # A clean multiline body with typographic chars (arrow U+2192, em-dash
+        # U+2014) AND an inert ``$(...)`` snippet scans clean — no fail-closed,
+        # no banned term.
+        body = "flow: A → B — done\n\nset via $(git rev-parse HEAD) at deploy"
+        cmd = f"gh pr create -R o/r --title t --body '{body}'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "→" in payload
+        assert banned_terms_scanner.scan_text(payload, config_path=config) is None
+
+    def test_git_commit_single_quoted_multiline_body_mentioning_subst_is_scanned(self) -> None:
+        # Case 3: a plain ``git commit -m '<multiline body mentioning $(...)>'``
+        # no longer trips "publish body could not be read". The commit IS a
+        # publish surface (lands in public history) so it is still scanned —
+        # but a single-quoted body bash passes verbatim is readable, not opaque.
+        body = "chore: pin version\n\nstamped with $(date) in the release notes"
+        cmd = f"git commit -m '{body}'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "stamped with $(date) in the release notes" in payload
+
+    def test_double_quoted_live_subst_in_git_commit_still_fails_closed(self) -> None:
+        # The security boundary holds: a DOUBLE-quoted ``$(...)`` in a commit body
+        # IS expanded by bash, so the gate cannot see the real content and must
+        # still fail closed — the fix only relaxes the provably-inert case.
+        cmd = 'git commit -m "chore: pin\n\nstamped with $(cat /no/such/secret-zzz.md)"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_t3_review_single_quoted_note_mentioning_subst_is_scanned(self) -> None:
+        # Case 1: a multiline positional NOTE on a ``t3 review`` post that mentions
+        # a ``$(...)`` snippet is scanned verbatim, not denied as unresolvable.
+        note = "Review note.\n\nThe helper calls $(date) for the timestamp."
+        cmd = f"t3 teatree review post-comment o/r 5 '{note}' --general"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "The helper calls $(date) for the timestamp." in payload
+
+    def test_t3_review_single_quoted_note_planted_term_is_still_caught(self, config: Path) -> None:
+        # ANTI-VACUOUS for the NOTE path: a banned term in an inert-subst NOTE is
+        # surfaced, proving the NOTE is scanned rather than bypassed.
+        note = "Review note.\n\nrun $(make) before shipping to acmecorp"
+        cmd = f"t3 teatree review post-comment o/r 5 '{note}' --general"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert banned_terms_scanner.scan_text(payload, config_path=config) == "acmecorp"
+
+
+class TestDoubleQuotedApostropheLiveSubstitutionFailsClosed:
+    """A DOUBLE-quoted body whose literal apostrophe precedes a LIVE ``$(...)`` fails closed.
+
+    The fail-open regression this guards against: the raw-span walker toggled
+    its single-quote flag on EVERY ``'`` without tracking double-quote context.
+    Inside a double-quoted span an apostrophe is a LITERAL character, not a
+    single-quote delimiter — so a genuinely LIVE ``$(...)`` after that apostrophe
+    (``--body "it's $(cat secret)"`` — the whole body is one double-quoted string,
+    bash WILL expand the substitution) was misclassified as INERT and the gate
+    scanned the literal token instead of failing closed. A planted banned term
+    inside that substitution leaked. The state machine now tracks both
+    ``in_single`` and ``in_double``; the apostrophe is the ONLY difference between
+    a leak and a correct fail-closed block.
+    """
+
+    def test_double_quoted_apostrophe_then_live_cat_subst_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # PROOF (verifier): the whole body is one DOUBLE-quoted string; the inner
+        # ``'`` is a literal apostrophe, so bash expands ``$(cat <file>)`` at post
+        # time. The planted banned term in that file WOULD be published, so the
+        # gate MUST fail closed (block). RED before the fix (the walker treats the
+        # apostrophe as opening a single-quoted region and reports the live subst
+        # INERT → scans the literal token → ALLOW/leak).
+        secret = tmp_path / "secret.txt"
+        secret.write_text("ship to acmecorp\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "it\'s $(cat {secret})"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+    def test_apostrophe_is_the_only_difference_from_failclosed_control(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # CONTROL: the same body WITHOUT the apostrophe already fails closed today.
+        # Proving both spellings block establishes the apostrophe is the only
+        # difference — the live substitution is the real trigger, not the quote.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("ship to acmecorp\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "its $(cat {secret})"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_double_quoted_apostrophe_live_subst_payload_fails_closed(self, tmp_path: Path) -> None:
+        # The payload-level twin: the extracted publish payload must carry the
+        # fail-closed sentinel (not the literal ``$(cat ...)`` token) because the
+        # gate cannot read what bash will expand at post time.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("anything\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "it\'s $(cat {secret})"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_double_quoted_apostrophe_live_subst_forge_transport_is_opaque(self) -> None:
+        # SYMMETRIC case for ``_raw_has_live_substitution`` (the opaque-transport
+        # detector). The trailing ``&& sh -c "…"`` segment is opaque ONLY because
+        # of its LIVE substitution — the substitution is ``$(cat …)`` with NO
+        # ``gh``/``glab``/``curl`` marker word, so the ``carries_forge`` branch
+        # cannot fire and the verdict turns purely on substitution liveness. A
+        # non-forge interpreter that runs a live ``$(…)`` could expand into ANY
+        # forge call the gate cannot see, so it must fail closed. The leading real
+        # publish segment makes this a publish command so the payload path runs.
+        # RED before the fix: the literal apostrophe made the old single-quote-only
+        # walker treat the rest of the double-quoted span as a single-quoted region
+        # and report the genuinely LIVE ``$(cat …)`` INERT → the segment looked
+        # clean → NO fail-closed sentinel was appended (the opaque transport
+        # slipped through). The control WITHOUT the apostrophe already fails closed
+        # — the apostrophe is the ONLY difference between a leak and a block.
+        apos = 'gh pr create -R o/r --title t --body ok && sh -c "it\'s here: $(cat /tmp/payload.sh)"'
+        ctrl = 'gh pr create -R o/r --title t --body ok && sh -c "its here: $(cat /tmp/payload.sh)"'
+        apos_payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": apos})
+        ctrl_payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": ctrl})
+        assert apos_payload is not None
+        assert ctrl_payload is not None
+        # Both spellings must fail closed; the apostrophe must not flip the verdict.
+        assert FAIL_CLOSED_SENTINEL in apos_payload
+        assert FAIL_CLOSED_SENTINEL in ctrl_payload
+
+    def test_genuinely_single_quoted_live_subst_in_double_then_inert_still_scanned(self) -> None:
+        # The inverse boundary: a ``"…"`` double-quoted prefix that CLOSES, then a
+        # genuinely single-quoted ``'$(date)'`` span, keeps the substitution INERT
+        # — the state machine must still treat the truly-single-quoted region as
+        # inert and SCAN the literal body, not fail closed.
+        body = "header done"
+        cmd = f"gh pr create -R o/r --title t --body \"{body}\"' literal $(date) here'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+
 class TestReadOnlyCommandsAreNotPublishes:
     """A read-only command that merely QUOTES a publish substring is NOT a post.
 
@@ -1492,7 +1673,11 @@ class TestFormatBlockMessage:
     def test_message_names_the_term_and_the_override(self) -> None:
         message = banned_terms_scanner.format_block_message("acmecorp")
         assert "acmecorp" in message
-        assert "--allow-banned-term" in message
+        # The escape names the env PREFIX that works on every command, never a
+        # ``--allow-banned-term`` CLI flag a ``t3 review post-comment`` subcommand
+        # would reject as an unknown option (#1415).
+        assert "ALLOW_BANNED_TERM=1" in message
+        assert "--allow-banned-term" not in message
 
     def test_unresolvable_body_message_is_distinct_from_banned_term_message(self) -> None:
         message = banned_terms_scanner.format_unresolvable_body_message()

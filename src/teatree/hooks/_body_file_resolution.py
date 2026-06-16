@@ -33,7 +33,7 @@ from teatree.hooks._command_parser import (
     attached_value,
     read_file_arg,
 )
-from teatree.hooks._shell_lexer import Token, TokenKind, split_commands
+from teatree.hooks._shell_lexer import Token, TokenKind, raw_substitution_sees_live, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
@@ -58,8 +58,43 @@ _CAT_SUBST_RE: Final[re.Pattern[str]] = re.compile(
 # fails closed.
 _VAR_REF_RE: Final[re.Pattern[str]] = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
 
+# A whole-value ``$VAR`` / ``${VAR}`` reference anchored INSIDE a double-quote
+# span (``"$VAR"``) -- the live form the env resolver reads. A single-quoted
+# ``'$VAR'`` is inert literal text bash never expands, so it must NOT be env
+# resolved (the ``$VAR`` is the published body itself, e.g. documenting a flag).
+_DOUBLE_QUOTED_VAR_REF_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\"$",
+)
 
-def resolve_inline_body_value(value: str, base: Path | None) -> str:
+
+def _raw_substitution_is_live(raw: str) -> bool:
+    """Return True iff a ``$(...)`` in ``raw`` sits OUTSIDE a single-quoted span.
+
+    A command substitution is expanded by bash only when it is unquoted or
+    inside DOUBLE quotes; inside SINGLE quotes (``'...$(x)...'``) it is inert
+    literal text bash passes verbatim, so the gate already holds the real body
+    in the decoded value and can scan it. This walks the verbatim source span
+    with a quote-context state machine (:func:`raw_substitution_sees_live`):
+    a ``'`` opens a single-quoted region only when NOT already inside double
+    quotes -- inside a double-quoted span an apostrophe is a LITERAL character,
+    not a delimiter -- and a ``$(`` is reported live the moment it opens while
+    NOT inside a single-quoted region (unquoted OR double-quoted, both of which
+    bash expands). Without this double-quote awareness a body like
+    ``"it's $(cat secret)"`` -- one double-quoted string whose ``'`` is a
+    literal apostrophe -- would mis-toggle into a phantom single-quoted region
+    and report the genuinely LIVE ``$(...)`` as inert, scanning the literal
+    token instead of failing closed (a fail-open leak).
+
+    ``raw`` defaults to empty for in-process callers that do not carry a source
+    span; an empty/absent ``raw`` is treated as live (conservative -- the gate
+    keeps failing closed on an embedded ``$(...)`` it cannot prove inert).
+    """
+    if not raw:
+        return True
+    return raw_substitution_sees_live(raw, ("$(",))
+
+
+def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> str:
     """Resolve a ``--description``/``--body`` value's indirection to the real body.
 
     Three forms are resolved so the banned-terms / quote scan runs against the
@@ -72,15 +107,22 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
         the hook subprocess env; absent yields the UNAVAILABLE-body-source
         sentinel (the value does not exist before the command runs, so the gate
         renders the actionable "write the body to an absolute file" message,
-        #2369).
+        #2369). Only the DOUBLE-quoted (``"$VAR"``) live form env-resolves -- a
+        single-quoted ``'$VAR'`` is inert literal text bash never expands, so it
+        is the published body and is scanned verbatim.
     - anything else -- returned verbatim (a normal inline body).
 
-    A value the resolver returns verbatim that STILL carries an unexpanded
-    ``$(...)`` command-substitution marker (a mixed ``"prefix $(cat x)"`` the
-    single-form matchers above do not fully resolve) yields the fail-closed
-    sentinel: the embedded substitution's content is unreadable, so passing the
-    literal would let a leak inside it slip. Resolution is never a bypass -- an
-    unresolvable ``$(...)`` source always fails closed.
+    A value that STILL carries an embedded ``$(...)`` command-substitution
+    marker the single-form matchers above did not fully resolve is fail-closed
+    ONLY when that substitution is LIVE -- i.e. its source span (``raw``) shows
+    the ``$(`` sitting outside any single-quoted region, so bash WOULD expand it
+    and the gate cannot see the real content (a mixed ``"prefix $(cat x)"``). A
+    ``$(...)`` that sits INSIDE a single-quoted span (``'... $(date) ...'``,
+    ``git commit -m 'ran $(date)'``) is inert literal text bash passes verbatim:
+    the body is fully present in ``value`` and is SCANNED, not blocked. Without a
+    source span (``raw`` empty) an embedded ``$(`` stays fail-closed --
+    conservative, since the gate cannot prove it inert. Resolution is never a
+    bypass: a live ``$(...)`` source the gate cannot read always fails closed.
 
     A backtick is NOT a fail-closed trigger. The extracted value is a literal
     argv element the gate only SCANS (never re-feeds to a shell), so a markdown
@@ -90,15 +132,15 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
     ``--body-file``/heredoc workarounds.
     """
     cat_match = _CAT_SUBST_RE.match(value)
-    if cat_match is not None:
+    if cat_match is not None and _raw_substitution_is_live(raw):
         path = cat_match.group("path").strip("'\"")
         content = read_file_arg(path, base)
         return content if content is not None else FAIL_CLOSED_SENTINEL
     var_match = _VAR_REF_RE.match(value)
-    if var_match is not None:
+    if var_match is not None and (not raw or _DOUBLE_QUOTED_VAR_REF_RE.match(raw)):
         resolved = os.environ.get(var_match.group("name"))
         return resolved if resolved is not None else UNAVAILABLE_BODY_SOURCE_SENTINEL
-    if "$(" in value:
+    if "$(" in value and _raw_substitution_is_live(raw):
         return FAIL_CLOSED_SENTINEL
     return value
 
