@@ -84,7 +84,7 @@ class Command(TyperCommand):
         if not won:
             self._emit_skip(
                 f"master not owned by this session — owner is session {owner_session} "
-                "(run `t3 loops claim --take-over` from the main session to take over).",
+                "(run `t3 loop claim --slot t3-master --take-over` from the main session to take over).",
                 json_output=json_output,
                 statusline_file=statusline_file,
             )
