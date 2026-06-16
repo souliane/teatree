@@ -1,14 +1,22 @@
 """Layer-neutral mini-loop enable resolution by loop NAME (#79).
 
-The single source of the loop-enable doctrine (env kill-switch → per-loop
-table → global), housed in a leaf module both layers can import.
-:class:`teatree.loops.config.LoopsConfig` has the :class:`MiniLoop` object
-and resolves enable/cadence for the orchestrator and live-tick fan-out. The
-review-claim chokepoint in :mod:`teatree.loop` only knows the loop NAME and
-must not import :mod:`teatree.loops` (a forbidden up-stack dependency), so it
-reaches an identical verdict through this module. Keeping the resolution here
-— not duplicated in each consumer — means the "is the review loop stopped?"
-answer cannot drift between the fan-out gate and the claim gate.
+The single source of the env/toml loop-enable doctrine (env kill-switch →
+per-loop table → global), housed in a leaf module both layers can import.
+:class:`teatree.loops.config.LoopsConfig` has the :class:`MiniLoop` object and
+resolves enable/cadence for the orchestrator and live-tick fan-out. The
+review-claim chokepoint in :mod:`teatree.loop` only knows the loop NAME and must
+not import :mod:`teatree.loops` (a forbidden up-stack dependency), so it reaches
+an identical env/toml verdict through this module. Keeping the resolution here —
+not duplicated in each consumer — means the "is the review loop stopped?" answer
+cannot drift between the fan-out gate and the claim gate.
+
+The DB-backed ``LoopState`` control tier (#1913) sits ABOVE this primitive but
+cannot live in it: this is a ``platform``-layer leaf and the ORM is a ``domain``
+layer, so reading the DB here would be a backwards tach edge. The DB tier is
+applied by each caller that may legally read the ORM — the tick via
+:meth:`teatree.loops.config.LoopsConfig.is_enabled` and the review-claim
+chokepoint via :func:`teatree.loop.loop_state_db.loop_held_in_db`, both reading
+the single :class:`teatree.core.models.LoopState` model.
 """
 
 import os
@@ -19,7 +27,7 @@ from teatree.config import CONFIG_PATH
 
 
 def loop_enabled_by_name(name: str, *, always_on: bool = False, path: Path | None = None) -> bool:
-    """Resolve a mini-loop's enable state by NAME.
+    """Resolve a mini-loop's env/toml enable state by NAME.
 
     First match wins:
 
@@ -29,7 +37,8 @@ def loop_enabled_by_name(name: str, *, always_on: bool = False, path: Path | Non
     3. ``[loops] enabled`` global (default ``True``).
 
     Fail-safe: any read error returns ``True`` — an unreadable config must
-    never silently disable a loop.
+    never silently disable a loop. The DB ``LoopState`` tier (#1913) is layered
+    ON TOP by the caller (see the module docstring), not here.
     """
     env_disabled = _loops_disabled_env()
     if not always_on and ("all" in env_disabled or name in env_disabled):

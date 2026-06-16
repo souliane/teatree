@@ -2922,6 +2922,16 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                     ``install-watchdog``.                                    │
 │ list                Print LIVE loop status: each loop's enabled state,       │
 │                     cadence, last fire, and next tick.                       │
+│ pause               Pause a mini-loop durably (#1913) — survives restart,    │
+│                     honoured by tick + self-pump.                            │
+│ resume              Resume a paused OR disabled mini-loop — return it to the │
+│                     ENABLED state.                                           │
+│ disable             Disable a mini-loop durably — the restart-surviving      │
+│                     kill-switch.                                             │
+│ enable              Enable a disabled mini-loop — return it to the ENABLED   │
+│                     state (alias of resume).                                 │
+│ loop-state          Show a mini-loop's durable state (ENABLED when it has    │
+│                     never been touched).                                     │
 │ self-improve        Self-improving monitor — scheduled smell detection with  │
 │                     a tiered action ladder. Runs in the same loop-owner      │
 │                     session as `t3 loop tick` on a separate LoopLease so a   │
@@ -3237,6 +3247,89 @@ Usage: t3 loop list [OPTIONS]
 │ --json          Emit the live loop status as JSON.                           │
 │ --all           Also show the per-loop owning sessions (cross-session health │
 │                 view, #1834).                                                │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop pause`
+
+```
+Usage: t3 loop pause [OPTIONS] NAME
+
+ Pause a mini-loop durably (#1913) — survives restart, honoured by tick +
+ self-pump.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Mini-loop name (e.g. review, ship, dispatch).           │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop resume`
+
+```
+Usage: t3 loop resume [OPTIONS] NAME
+
+ Resume a paused OR disabled mini-loop — return it to the ENABLED state.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Mini-loop name. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop disable`
+
+```
+Usage: t3 loop disable [OPTIONS] NAME
+
+ Disable a mini-loop durably — the restart-surviving kill-switch.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Mini-loop name. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop enable`
+
+```
+Usage: t3 loop enable [OPTIONS] NAME
+
+ Enable a disabled mini-loop — return it to the ENABLED state (alias of
+ resume).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Mini-loop name. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop loop-state`
+
+```
+Usage: t3 loop loop-state [OPTIONS] NAME
+
+ Show a mini-loop's durable state (ENABLED when it has never been touched).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Mini-loop name. [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

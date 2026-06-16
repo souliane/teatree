@@ -41,6 +41,7 @@ from teatree.cli.loop_claim_next import claim_next_command
 from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
+from teatree.cli.loop_state import register as register_loop_state
 from teatree.cli.loop_watchdog import register as register_watchdog
 from teatree.config import cadence_seconds
 from teatree.loop.statusline import default_path
@@ -511,3 +512,8 @@ register_watchdog(loop_app)
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.
 loop_app.command("list")(list_command)
+
+# #1913 — the DB-backed per-loop control plane: flat ``t3 loop
+# pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
+# off (same module-health reason) into ``teatree.cli.loop_state``.
+register_loop_state(loop_app)

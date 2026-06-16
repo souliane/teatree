@@ -384,6 +384,7 @@ depends_on = [
   "teatree.loop.statusline_render",
   "teatree.loop.url_specificity",
   "teatree.loop.review_claim_signals",
+  "teatree.loop.loop_state_db",
   "teatree.loop.review_request_tracker",
   "teatree.loop.dispatch_tables",
   "teatree.loop.pr_ticket_index",
@@ -427,7 +428,12 @@ depends_on = ["teatree.loop.dispatch_tables"]
 [[modules]]
 path = "teatree.loop.review_claim_signals"
 layer = "domain"
-depends_on = ["teatree.types", "teatree.core.models"]
+depends_on = ["teatree.types", "teatree.core.models", "teatree.loop.loop_state_db"]
+
+[[modules]]
+path = "teatree.loop.loop_state_db"
+layer = "domain"
+depends_on = ["teatree.core.models"]
 
 [[modules]]
 path = "teatree.loop.scanners"
@@ -502,6 +508,7 @@ depends_on = [
   "teatree.config",
   "teatree.core",
   "teatree.loop",
+  "teatree.loop.loop_state_db",
   "teatree.messaging",
   "teatree.notify",
   "teatree.utils"
