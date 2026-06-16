@@ -3560,6 +3560,10 @@ Usage: t3 loops [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ list  List DB-configured autonomous loops: name, enabled, delay, last run,   │
 │       next due.                                                              │
+│ tick  Run the master ONCE: run every enabled, due loop (each on its own      │
+│       cadence), then render.                                                 │
+│ run   Run the master CONTINUOUSLY: tick, wait ``--interval``, tick — until   │
+│       interrupted.                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3576,6 +3580,48 @@ Usage: t3 loops list [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the loops as JSON.                                      │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops tick`
+
+```
+Usage: t3 loops tick [OPTIONS]
+
+ Run the master ONCE: run every enabled, due loop (each on its own cadence),
+ then render.
+
+ The master claims the ``t3-master`` lease and dispatches only the loops whose
+ DB row is enabled and due. Delegates to the ``loops_tick`` management command.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Restrict scanning to the named overlay (default:      │
+│                        all).                                                 │
+│ --json                 Emit the tick report as JSON.                         │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loops run`
+
+```
+Usage: t3 loops run [OPTIONS]
+
+ Run the master CONTINUOUSLY: tick, wait ``--interval``, tick — until
+ interrupted.
+
+ This is the runner, not a loop itself: each beat it asks the DB which loops
+ are due and runs them. Per-loop cadence lives in the ``Loop`` rows, so the
+ interval only sets how often the master re-checks.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --interval        INTEGER  Seconds between master ticks (each loop gated by  │
+│                            its own cadence).                                 │
+│                            [default: 60]                                     │
+│ --overlay         TEXT     Restrict scanning to the named overlay (default:  │
+│                            all).                                             │
+│ --once                     Run a single tick and return (test hook).         │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4727,10 +4773,24 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
  Prune merged worktrees/branches/stashes, orphan databases + docker + env
  roots, and DSLR snapshots.
 
+ Unattended by default (#2361): never blocks on stdin; an uncertain worktree
+ is kept with a warning, not prompted. ``--interactive`` opts into the
+ per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
+ loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
+ the deterministic squash signal are unchanged.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --keep-dslr        INTEGER  Number of DSLR snapshots to keep per tenant.     │
-│                             [default: 1]                                     │
-│ --help                      Show this message and exit.                      │
+│ --keep-dslr                          INTEGER  Number of DSLR snapshots to    │
+│                                               keep per tenant.               │
+│                                               [default: 1]                   │
+│ --interactive    --no-interactive             Prompt push/abandon/skip per   │
+│                                               worktree with unsynced work    │
+│                                               (#2361). Default is fully      │
+│                                               unattended — uncertain         │
+│                                               worktrees are kept with a      │
+│                                               warning, never prompted.       │
+│                                               [default: no-interactive]      │
+│ --help                                        Show this message and exit.    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -207,6 +207,10 @@ Run one tick: scan all overlays, dispatch, render statusline.
 
 List DB-configured autonomous loops (read-only; #1796).
 
+## `loops_tick`
+
+Run one master tick: run every enabled, due loop (DB-configured); render statusline.
+
 ## `mr_reminder`
 
 | Subcommand | Description |

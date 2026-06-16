@@ -392,6 +392,11 @@
       "subcommands": []
     },
     {
+      "help": "Run one master tick: run every enabled, due loop (DB-configured); render statusline.",
+      "name": "loops_tick",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "mr_reminder",
       "subcommands": [

@@ -30,3 +30,22 @@ class TestLoopsGroupRegistered:
     def test_loops_group_wired_onto_root_app(self) -> None:
         names = {group.name for group in app.registered_groups}
         assert "loops" in names
+
+
+class TestLoopsTickRun:
+    def test_tick_delegates_to_management_command(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loops_app, ["tick"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loops_tick")
+
+    def test_tick_passes_overlay_and_json(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            runner.invoke(loops_app, ["tick", "--overlay", "acme", "--json"])
+        call.assert_called_once_with("loops_tick", overlay="acme", json_output=True)
+
+    def test_run_once_ticks_then_returns(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loops_app, ["run", "--once"])
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loops_tick")
