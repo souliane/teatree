@@ -13,6 +13,10 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.config.resolution import get_effective_settings
+from teatree.config.settings import Autonomy
+from teatree.core.models import ConfigSetting
+from teatree.core.overlay_loader import infer_overlay_for_url
 from teatree.eval import regression_corpus_predicates as predicates
 
 
@@ -78,3 +82,33 @@ class TestPredicatesAreAntiVacuous(TestCase):
         with patch("teatree.hooks._repo_visibility.slug_is_allowlisted_private", return_value=True):
             # A matcher that flags the public alias-glued slug → must-not-match leg fails.
             assert predicates._check_private_repo_allowlist_path_segment_match() is False
+
+
+class TestStagedAutonomyHermeticAgainstDbTier(TestCase):
+    """The substrate-floor helper pins autonomy regardless of a live DB override (#1775 host leak).
+
+    The DB config override tier (#1775) wins over the file tier, so a host
+    carrying a per-overlay ``autonomy`` ``ConfigSetting`` row silently overrode
+    the hermetic TOML the floor check stages — the floor then read the host's
+    live autonomy instead of the staged value and failed on that host. The
+    helper must neutralise the DB (and env) tier so the staged TOML is
+    authoritative. Both tests go RED on the pre-fix helper (the seeded ``full``
+    row leaks past the staged ``babysit``).
+    """
+
+    def _pin_overlay_autonomy_full_in_db(self) -> str:
+        overlay_name = infer_overlay_for_url("souliane/teatree") or "t3-teatree"
+        ConfigSetting.objects.set_value("autonomy", Autonomy.FULL.value, scope=overlay_name)
+        return overlay_name
+
+    def test_staged_babysit_wins_over_db_full_override(self) -> None:
+        overlay_name = self._pin_overlay_autonomy_full_in_db()
+        with predicates._staged_overlay_autonomy(overlay_name, "babysit"):
+            resolved = get_effective_settings(overlay_name).autonomy
+        assert resolved is Autonomy.BABYSIT
+
+    def test_substrate_floor_holds_with_live_full_db_override(self) -> None:
+        self._pin_overlay_autonomy_full_in_db()
+        # The below-full floor must still BLOCK a human-less substrate CLEAR even
+        # though the host DB pins this overlay to full.
+        assert predicates._check_merge_precondition_substrate_human_authorize() is True
