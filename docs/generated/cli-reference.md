@@ -4837,6 +4837,7 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
 
  ``--target dev|local`` selects the dual-env target and is forwarded to
  whichever runner handles the overlay (see ``external`` for semantics).
+ ``--branch``/``--ref`` overrides the ``external`` runner's specs ref.
 
  ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo is not
  DB-linked to the backend worktree (a frequent shape for
@@ -4861,6 +4862,10 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
 │                                                        no-update-snapshots]  │
 │ --docker              --no-docker                      [default: docker]     │
 │ --linked-to                                   INTEGER  [default: 0]          │
+│ --branch,--ref                                TEXT     Specs git ref,        │
+│                                                        overriding the        │
+│                                                        .branch default (e.g. │
+│                                                        an open MR's branch). │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4892,6 +4897,9 @@ Usage: t3 teatree e2e external [OPTIONS]
      ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
  - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``.private_tests``
      config key.
+
+ ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
+ ``.branch`` default) to run from an open MR's branch.
 
  ``--target dev|local`` selects the dual-env target deterministically:
 
@@ -4930,6 +4938,10 @@ Usage: t3 teatree e2e external [OPTIONS]
 │                                                        no-update-snapshots]  │
 │ --playwright-args                             TEXT                           │
 │ --linked-to                                   INTEGER  [default: 0]          │
+│ --branch,--ref                                TEXT     Specs git ref,        │
+│                                                        overriding the        │
+│                                                        .branch default (e.g. │
+│                                                        an open MR's branch). │
 │ --help                                                 Show this message and │
 │                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯

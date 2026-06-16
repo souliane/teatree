@@ -57,6 +57,26 @@ def _popen_for(result: MagicMock) -> MagicMock:
     return MagicMock(return_value=ctx)
 
 
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run([_GIT, "-C", str(cwd), *args], capture_output=True, text=True, check=True)
+
+
+def _make_upstream_with_branches(base: Path, branches: tuple[str, ...]) -> Path:
+    """Create a real upstream repo carrying *branches*; return its path (the clone URL)."""
+    upstream = base / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    _git(upstream, "config", "user.email", "t@example.com")
+    _git(upstream, "config", "user.name", "Test")
+    (upstream / "e2e").mkdir()
+    (upstream / "e2e" / "playwright.config.ts").write_text("export default {};\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "init")
+    for branch in branches:
+        _git(upstream, "branch", branch)
+    return upstream
+
+
 class TestE2eTriggerCi(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -828,8 +848,8 @@ class TestE2eExternal(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"BASE_URL": "https://dev.example.com"}, clear=False),
-                patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
-                patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
+                patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
+                patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -975,6 +995,14 @@ class TestE2eRun(TestCase):
             call_command("e2e", "run")
         assert exc_info.value.code == 2
 
+    @_patch_overlays(_EXTERNAL_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_run_threads_branch_to_external_runner(self) -> None:
+        """``e2e run --branch`` forwards the ref through ``_dispatch_runner`` to ``external``."""
+        with patch.object(e2e_mod.Command, "external", return_value="E2E passed.") as mock_external:
+            call_command("e2e", "run", branch="mr/working-branch")
+        assert mock_external.call_args.kwargs["branch"] == "mr/working-branch"
+
 
 # ── _clone_or_update_e2e_repo ─────────────────────────────────────────
 
@@ -1041,6 +1069,50 @@ class TestCloneOrUpdateE2eRepo(TestCase):
 
             assert result == tmp_path / "e2e-repos" / "demo-svc" / "playwright"
 
+    def test_default_ref_is_repo_branch(self) -> None:
+        """With no override, the cloned ref is ``repo.branch`` (back-compat)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
+            ):
+                e2e_mod._clone_or_update_e2e_repo(self._make_repo())
+            call_args = mock_run.call_args[0][0]
+            assert "feature/e2e" in call_args
+
+    def test_branch_override_replaces_repo_branch(self) -> None:
+        """``branch_override`` checks out a real working branch, not ``repo.branch``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("feature/e2e", "mr/working-branch"))
+
+            repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
+            with patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"):
+                root = e2e_mod._clone_or_update_e2e_repo(repo, "mr/working-branch")
+
+            head = subprocess.run(
+                [_GIT, "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert head == "mr/working-branch"
+
+    def test_missing_branch_raises_branch_not_found(self) -> None:
+        """A ref absent from the remote raises ``E2eBranchNotFoundError`` (clear message)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("feature/e2e",))
+
+            repo = config_mod.E2ERepo(name="demo-svc", url=str(upstream), branch="feature/e2e")
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                pytest.raises(e2e_mod.E2eBranchNotFoundError) as exc_info,
+            ):
+                e2e_mod._clone_or_update_e2e_repo(repo, "no-such-branch")
+            assert "no-such-branch" in str(exc_info.value)
+
 
 # ── e2e external --repo ───────────────────────────────────────────────
 
@@ -1054,7 +1126,7 @@ class TestE2eExternalRepo(TestCase):
         Regression for #932.
         """
         with (
-            patch.object(e2e_mod, "load_e2e_repos", return_value=[]),
+            patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[]),
             pytest.raises(SystemExit) as exc_info,
         ):
             call_command("e2e", "external", repo="nonexistent")
@@ -1085,8 +1157,8 @@ class TestE2eExternalRepo(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
-                patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
+                patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
+                patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
@@ -1096,14 +1168,91 @@ class TestE2eExternalRepo(TestCase):
         run_cwd = mock_run.call_args[1]["cwd"]
         assert str(run_cwd) == str(playwright_root)
 
+    def _run_external_capturing_ref(self, captured: dict[str, str], **call_kwargs: object) -> None:
+        """Drive ``e2e external --repo`` with a stubbed clone that records the ref override."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            playwright_root = tmp_path / "clone" / "e2e"
+            playwright_root.mkdir(parents=True)
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/branch-ref")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+
+            def fake_clone(_repo: object, branch_override: str = "") -> Path:
+                captured["ref"] = branch_override
+                return playwright_root
+
+            repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
+                patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", side_effect=fake_clone),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
+                patch.object(utils_run_mod, "Popen", _popen_for(MagicMock(returncode=0))),
+            ):
+                call_command("e2e", "external", repo="demo-svc", **call_kwargs)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_branch_option_threads_to_clone(self) -> None:
+        """``--branch`` is forwarded to the clone as the specs ref override."""
+        captured: dict[str, str] = {}
+        self._run_external_capturing_ref(captured, branch="mr/working-branch")
+        assert captured["ref"] == "mr/working-branch"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_no_branch_preserves_default_ref(self) -> None:
+        """Omitting ``--branch`` forwards an empty override — clone keeps ``repo.branch``."""
+        captured: dict[str, str] = {}
+        self._run_external_capturing_ref(captured)
+        assert captured["ref"] == ""
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_branch_not_found_exits_1_with_message(self) -> None:
+        """A missing specs ref surfaces ``E2eBranchNotFoundError`` as a clean exit 1."""
+        repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
+        with (
+            patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
+            patch.object(
+                e2e_runners_mod,
+                "clone_or_update_e2e_repo",
+                side_effect=e2e_mod.E2eBranchNotFoundError(name="demo-svc", ref="gone", url="git@x:o/s.git"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external", repo="demo-svc", branch="gone")
+        assert exc_info.value.code == 1
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_branch_without_repo_is_rejected(self) -> None:
+        """``--branch`` against the T3_PRIVATE_TESTS path is a misuse — exit 2."""
+        with (
+            patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=Path("/tmp/specs")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external", branch="mr/working-branch")
+        assert exc_info.value.code == 2
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_external_repo_git_failure_surfaces_error(self) -> None:
         """subprocess.CalledProcessError from git is raised to the caller."""
         repo = config_mod.E2ERepo(name="demo-svc", url="git@example.com:org/svc.git", branch="feature/e2e")
+        git_failure = subprocess.CalledProcessError(1, "git")
         with (
-            patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
-            patch.object(e2e_mod, "_clone_or_update_e2e_repo", side_effect=subprocess.CalledProcessError(1, "git")),
+            patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
+            patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", side_effect=git_failure),
             pytest.raises(subprocess.CalledProcessError),
         ):
             call_command("e2e", "external", repo="demo-svc")

@@ -46,7 +46,9 @@ slack_user_id = "U01ABCD1234"
 
 # External Playwright E2E repos — used by `t3 e2e external --repo <name>`
 # Teatree clones/updates the repo to ~/.local/share/teatree/e2e-repos/<name>/
-# and runs Playwright from <clone>/<e2e_dir>.
+# and runs Playwright from <clone>/<e2e_dir>. `branch` is the default ref;
+# `--branch <name>` (alias `--ref`) overrides it to run the suite from an open
+# MR's source branch instead.
 [e2e_repos.my-service]
 url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
