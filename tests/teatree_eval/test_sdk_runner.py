@@ -18,7 +18,6 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.sdk_runner import (
     DEFAULT_WATCHDOG_SECONDS,
-    KNOWN_BUILTIN_TOOLS,
     MAX_BUDGET_USD,
     WATCHDOG_SECONDS,
     BudgetExceededError,
@@ -27,9 +26,10 @@ from teatree.eval.sdk_runner import (
     SdkInProcessRunner,
     build_sdk_options,
     classify_terminal_error,
-    compute_available_tools,
-    compute_disallowed_tools,
+    is_success_result_error,
 )
+from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
+from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS, compute_available_tools, compute_disallowed_tools
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
 
@@ -64,6 +64,11 @@ def _fake_query(messages: list[Any]):
         await asyncio.sleep(0)
         captured["prompt"] = prompt
         captured["options"] = options
+        # The clean-room options spill the system prompt to a --system-prompt-file
+        # under the isolated cwd, which is deleted when the context exits; resolve
+        # it to text HERE, while the file still exists, so post-hoc assertions can
+        # inspect the actual prompt content the CLI receives.
+        captured["system_prompt_text"] = resolve_system_prompt(options.system_prompt) if options else ""
         for message in messages:
             yield message
 
@@ -399,7 +404,7 @@ class TestSdkInProcessRunnerAgentDefinition:
             agent_sections=("Background Long Operations",),
         )
         captured = self._run(spec, workspace=tmp_path)
-        system_prompt = captured["options"].system_prompt
+        system_prompt = captured["system_prompt_text"]
         assert "Background >15s work." in system_prompt
         assert "fifty other rules here." not in system_prompt
 
@@ -418,7 +423,7 @@ class TestSdkInProcessRunnerAgentDefinition:
         captured = self._run(spec, workspace=tmp_path)
         from teatree.eval.prompt_framing import LIVE_ENV_FRAMING  # noqa: PLC0415
 
-        assert captured["options"].system_prompt == full + LIVE_ENV_FRAMING
+        assert captured["system_prompt_text"] == full + LIVE_ENV_FRAMING
 
     def test_runner_appends_live_environment_framing(self, tmp_path: Path) -> None:
         # The clean-room runner appends the live-environment framing so the model
@@ -437,7 +442,7 @@ class TestSdkInProcessRunnerAgentDefinition:
             source_path=tmp_path / "spec.yaml",
         )
         captured = self._run(spec, workspace=tmp_path)
-        system_prompt = captured["options"].system_prompt
+        system_prompt = captured["system_prompt_text"]
         assert system_prompt.endswith(LIVE_ENV_FRAMING)
         assert "issuing the actual tool call" in system_prompt
         assert "never print the command as text" in system_prompt
@@ -491,7 +496,7 @@ class TestSdkInProcessRunnerMessageMapping:
             patch("teatree.eval.sdk_runner.query", query),
         ):
             SdkInProcessRunner(workspace=tmp_path).run(spec)
-        assert captured["options"].system_prompt.strip()
+        assert captured["system_prompt_text"].strip()
 
     def test_relative_agent_path_not_found_raises(self, tmp_path: Path, monkeypatch) -> None:
         # No candidate resolves (cwd and teatree-root both miss) -> the loop
@@ -743,6 +748,171 @@ class TestClassifyTerminalError:
     def test_returns_none_for_a_genuine_error(self) -> None:
         assert classify_terminal_error("Claude Code returned an error result: error_during_execution") is None
         assert classify_terminal_error("some other RuntimeError about a socket") is None
+
+
+#: A whole-skill system prompt is hundreds of KB; the metered lane crashed with
+#: ``[Errno 7] Argument list too long`` (E2BIG) because the SDK rendered it as a
+#: single ``--system-prompt <text>`` argv token. 200 KB reproduces that scale.
+_HUGE_SYSTEM_PROMPT = "# Big Skill\n\n" + ("x" * 200_000)
+#: A single argv token this large is what blew ARG_MAX. The fixed transport must
+#: keep every token well under it (the prompt now travels as a file path).
+_ARGV_TOKEN_CEILING = 8_192
+
+
+class TestLargeSystemPromptDoesNotBlowArgMax:
+    """A 200 KB system prompt must not become a giant argv token (E2BIG regression).
+
+    The metered ``eval`` job failed before any scenario with
+    ``CLIConnectionError: Failed to start Claude Code: [Errno 7] Argument list
+    too long`` because the clean-room options carried the whole skill as a
+    plain-string ``system_prompt``, which the SDK transport renders as
+    ``--system-prompt <whole-skill>`` — one argv argument over the OS limit. The
+    fix spills the prompt to a file and passes ``--system-prompt-file <path>``, so
+    no single argv token grows with skill size.
+    """
+
+    def test_build_sdk_options_spills_a_huge_prompt_to_a_file(self, tmp_path: Path) -> None:
+        config = CleanRoomConfig(
+            system_prompt=_HUGE_SYSTEM_PROMPT,
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        options = build_sdk_options(config)
+        # The prompt is a file reference, not an inline string the transport would
+        # pass via argv.
+        assert isinstance(options.system_prompt, dict)
+        assert options.system_prompt["type"] == "file"
+        assert resolve_system_prompt(options.system_prompt) == _HUGE_SYSTEM_PROMPT
+
+    def test_sdk_command_has_no_arg_over_the_ceiling_for_a_huge_prompt(self, tmp_path: Path) -> None:
+        # Exercise the REAL SDK transport arg builder: with the old inline-string
+        # prompt this produced a single 200 KB argv token (E2BIG); the file-based
+        # transport keeps every token small.
+        from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport  # noqa: PLC0415
+
+        config = CleanRoomConfig(
+            system_prompt=_HUGE_SYSTEM_PROMPT,
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        options = build_sdk_options(config)
+        transport = SubprocessCLITransport(prompt="hi", options=options)
+        transport._cli_path = "/usr/local/bin/claude"
+        command = transport._build_command()
+        # No single argv token carries the prompt body, and the prompt text itself
+        # appears in NO argv argument — it travels only inside the spilled file.
+        assert all(len(arg) < _ARGV_TOKEN_CEILING for arg in command)
+        assert not any(_HUGE_SYSTEM_PROMPT in arg for arg in command)
+        # It is passed by reference, not value.
+        assert "--system-prompt-file" in command
+
+    def test_spill_round_trips_content_and_keeps_the_path_short(self, tmp_path: Path) -> None:
+        ref = spill_system_prompt(_HUGE_SYSTEM_PROMPT, str(tmp_path))
+        assert ref["type"] == "file"
+        assert len(ref["path"]) < _ARGV_TOKEN_CEILING
+        assert resolve_system_prompt(ref) == _HUGE_SYSTEM_PROMPT
+
+    def test_runner_starts_a_huge_prompt_scenario_without_oserror(self, tmp_path: Path) -> None:
+        # End-to-end at the runner boundary: a scenario whose skill is 200 KB runs
+        # through the runner (SDK mocked) and produces a normal EvalRun — no
+        # OSError/E2BIG at the spawn boundary.
+        agent = tmp_path / "huge_skill.md"
+        agent.write_text(_HUGE_SYSTEM_PROMPT, encoding="utf-8")
+        spec = EvalSpec(
+            name="huge",
+            scenario="a 200KB skill must not blow ARG_MAX at spawn",
+            agent_path=str(agent),
+            prompt="do the one thing.",
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),),
+            source_path=tmp_path / "spec.yaml",
+            tools=("Bash",),
+        )
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            run = SdkInProcessRunner(workspace=tmp_path).run(spec)
+        assert run.terminal_reason == "success"
+        assert run.is_error is False
+        assert _HUGE_SYSTEM_PROMPT in captured["system_prompt_text"]
+
+
+class TestSuccessResultIsNotAnError:
+    """A ``result`` mislabeled ``error_result: success`` must grade as a success.
+
+    The metered run also raised ``Exception: Claude Code returned an error result:
+    success`` at the end: the CLI exits non-zero while its ``result`` event subtype
+    reads ``"success"``, and the SDK wraps that as a bare error Exception. The
+    runner must recognize this SUCCESS terminus and grade the captured trajectory
+    normally instead of crashing the whole run.
+    """
+
+    def _run_with_query(self, spec: EvalSpec, query, **kwargs: Any):
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+
+    def test_is_success_result_error_recognizes_the_marker(self) -> None:
+        assert is_success_result_error("Claude Code returned an error result: success") is True
+        assert is_success_result_error("Claude Code returned an error result: error_max_turns") is False
+
+    def test_success_labeled_error_after_a_result_grades_as_a_normal_run(self, tmp_path: Path) -> None:
+        # The SUCCESS ResultMessage reached the consumer before the spurious error,
+        # so the run grades from the captured trajectory: success, not error.
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+            _result(subtype="success", total_cost_usd=0.0321),
+        ]
+        query = _yield_then_raise_query(messages, "Claude Code returned an error result: success")
+        run = self._run_with_query(spec, query)
+        assert run.terminal_reason == "success"
+        assert run.is_error is False
+        assert len(run.tool_calls) == 1
+        assert run.tool_calls[0].input["command"].startswith("git worktree add")
+        assert run.cost_usd == pytest.approx(0.0321)
+
+    def test_success_labeled_run_grades_through_report_evaluate(self, tmp_path: Path) -> None:
+        # The deliverable shape: a success-labeled run produces a normal graded
+        # ScenarioResult (not a crash), with the matcher deciding pass/fail.
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
+                model="haiku",
+            ),
+            _result(subtype="success", total_cost_usd=0.01),
+        ]
+        query = _yield_then_raise_query(messages, "Claude Code returned an error result: success")
+        run = self._run_with_query(spec, query)
+        result = evaluate(spec, run)
+        assert result.skipped is False
+        assert result.passed is True
+        assert result.verdict == "pass"
+
+    def test_a_genuine_error_result_still_propagates(self, tmp_path: Path) -> None:
+        # Anti-vacuity: only the "success" subtype is rescued. A real error subtype
+        # is NOT swallowed by the success path — it stays a propagating crash.
+        spec = _spec(tmp_path)
+        query = _yield_then_raise_query([], "Claude Code returned an error result: error_during_execution")
+        with pytest.raises(Exception, match="error_during_execution"):
+            self._run_with_query(spec, query)
 
 
 class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:

@@ -35,7 +35,13 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.sdk_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, env_float
+from teatree.eval.sdk_runner import (
+    CleanRoomConfig,
+    build_sdk_options,
+    classify_terminal_error,
+    env_float,
+    is_success_result_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -188,9 +194,16 @@ def _judge_options(*, model: str, cwd: str, env: dict[str, str]) -> ClaudeAgentO
 
 async def _judge_result(prompt: str, options: ClaudeAgentOptions) -> StructuredVerdict | None:
     structured: StructuredVerdict | None = None
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            structured = StructuredVerdict.from_structured_output(message.structured_output)
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, ResultMessage):
+                structured = StructuredVerdict.from_structured_output(message.structured_output)
+    except Exception as exc:
+        # A SUCCESS mislabeled as an error result (the CLI exited non-zero on a
+        # "success" subtype) must not crash the judge: the verdict-bearing
+        # ResultMessage already arrived, so return what was captured.
+        if not is_success_result_error(str(exc)):
+            raise
     return structured
 
 
