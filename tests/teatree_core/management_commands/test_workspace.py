@@ -1869,7 +1869,9 @@ class TestWorkspaceCleanMerged(TestCase):
         other = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
         Worktree.objects.create(overlay="test", ticket=other, repo_path="repo2", branch="ac-repo2-71")
 
-        with patch.object(workspace_mod, "cleanup_worktree", return_value="Cleaned: repo (ac-repo-70)") as mock_cleanup:
+        with patch.object(
+            ws_cleanup_mod, "cleanup_worktree", return_value="Cleaned: repo (ac-repo-70)"
+        ) as mock_cleanup:
             cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
 
         assert cleaned == ["Cleaned: repo (ac-repo-70)"]
@@ -1890,10 +1892,26 @@ class TestWorkspaceCleanMerged(TestCase):
         )
         Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-72")
 
-        with patch.object(workspace_mod, "cleanup_worktree", side_effect=RuntimeError("docker down failed")):
+        with patch.object(ws_cleanup_mod, "cleanup_worktree", side_effect=RuntimeError("docker down failed")):
             cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
 
         assert any("FAILED" in c and "docker down failed" in c for c in cleaned)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_skips_worktree_whose_overlay_is_not_installed(self) -> None:
+        # A merged row for an overlay not installed in this environment must be
+        # SKIPPED per row, not abort the whole sweep (#2472).
+        merged = Ticket.objects.create(
+            overlay="t3-ghost",
+            issue_url="https://example.com/issues/73",
+            state=Ticket.State.MERGED,
+        )
+        Worktree.objects.create(overlay="t3-ghost", ticket=merged, repo_path="repo", branch="ac-repo-73")
+
+        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+
+        assert any("SKIPPED" in c and "overlay" in c.lower() for c in cleaned)
 
 
 def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):

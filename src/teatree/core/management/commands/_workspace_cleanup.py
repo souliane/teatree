@@ -11,11 +11,18 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.config import get_effective_settings
-from teatree.core.cleanup import _branch_tree_matches_squash, _ref_captured_by_merge, _remote_tracking_ref_exists
+from teatree.core.cleanup import (
+    _branch_tree_matches_squash,
+    _ref_captured_by_merge,
+    _remote_tracking_ref_exists,
+    cleanup_worktree,
+)
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.management.commands._workspace_reap import reap_one_worktree
-from teatree.core.models import Worktree
+from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -591,4 +598,32 @@ def _fix_drift(drift: "Drift") -> list[str]:
         for m in drift.missing_dbs
     )
 
+    fixes.extend(
+        f"unresolvable overlay {u.overlay!r} on wt#{u.worktree_pk} — not installed here; "
+        f"reinstall it or remove the row (its docker/DB can't be reconciled without the overlay)"
+        for u in drift.unresolvable_overlays
+    )
+
     return fixes
+
+
+def clean_merged_worktrees() -> list[str]:
+    """Tear down every worktree whose ticket is already MERGED.
+
+    Fails open per row: a worktree whose overlay is not installed in this
+    environment is SKIPPED (recorded) rather than aborting the whole sweep
+    (#2472); a teardown ``RuntimeError`` is reported as FAILED. Errors are
+    surfaced inline — no suppression.
+    """
+    cleaned: list[str] = []
+    for ticket in Ticket.objects.filter(state=Ticket.State.MERGED):
+        for wt in Worktree.objects.filter(ticket=ticket):
+            try:
+                cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
+            except ImproperlyConfigured as exc:
+                cleaned.append(f"SKIPPED {wt.repo_path} ({wt.branch}): overlay not installed here — {exc}")
+            except RuntimeError as exc:
+                cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
+    if not cleaned:
+        return ["No merged tickets have lingering worktrees."]
+    return cleaned
