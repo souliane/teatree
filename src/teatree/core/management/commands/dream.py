@@ -54,8 +54,16 @@ class Command(TyperCommand):
 
     @command(name="tick")
     def tick(self) -> None:
-        """Run one consolidation pass IF the dream cadence has elapsed (cron entry)."""
-        self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=False)
+        """Run one consolidation pass IF the dream cadence has elapsed (cron entry).
+
+        The eval-derivation seam is LIVE by default here (#2346): proposals are
+        requested unless the ``T3_DREAM_PROPOSE_EVALS`` env / ``[loops.dream]
+        propose_evals`` toml kill-switch disables it (see
+        :func:`teatree.loops.dream.loop.propose_evals_enabled`).
+        """
+        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415
+
+        self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
 
     def _run_pass(
         self, *, since: dt.datetime | None, dry_run: bool, enforce_cadence: bool, propose_evals: bool
@@ -131,19 +139,45 @@ class Command(TyperCommand):
             return False
 
         DreamRunMarker.objects.mark_succeeded(now)
+        promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}.",
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}.",
         )
         return True
 
+    def _promote_candidates(self, *, propose_evals: bool, dry_run: bool) -> str:
+        """Promote the freshly-derived candidates to live scenarios (guarded; never raises).
+
+        Runs only when proposals were requested. Each candidate clears the
+        NON-BYPASSABLE anti-vacuity guard (:func:`teatree.loops.dream.promote.guard_can_fail`)
+        or is rejected (no file written). A promotion failure is reported in the
+        summary line, never crashing the pass that already stamped success.
+        """
+        if not propose_evals:
+            return ""
+        try:
+            from teatree.loops.dream import promote  # noqa: PLC0415
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+
+            outcomes = promote.promote_proposals_file(_default_proposals_path(), dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
+        promoted = sum(1 for o in outcomes if o.promoted)
+        rejected = len(outcomes) - promoted
+        if not outcomes:
+            return ""
+        return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s)"
+
 
 def _env_propose_evals() -> bool:
-    """Read the ``T3_DREAM_PROPOSE_EVALS`` opt-in env (default OFF).
+    """Read the ``T3_DREAM_PROPOSE_EVALS`` opt-in env for the manual ``run`` path.
 
-    Gives the cadence-driven ``tick`` path (which takes no flags) a way to enable
-    the inert eval-candidate phase without a code change; truthy values are
-    ``1``/``true``/``yes`` (case-insensitive). Absent or anything else → OFF.
+    The manual ``run`` enables the eval phase when ``--propose-evals`` is given OR
+    this env is truthy (``1``/``true``/``yes``, case-insensitive). The cadence-
+    driven ``tick`` path does NOT route through here — it resolves the seam (LIVE
+    by default, env/toml kill-switch) via
+    :func:`teatree.loops.dream.loop.propose_evals_enabled`.
     """
     import os  # noqa: PLC0415
 

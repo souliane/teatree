@@ -22,7 +22,13 @@ from teatree.core.loop_lease_manager import LoopLeaseManager
 from teatree.core.models import MiniLoopMarker
 from teatree.loops.base import MiniLoop
 from teatree.loops.config import LoopsConfig
-from teatree.loops.dream.loop import DREAM_LEASE_SECONDS, DREAM_LOOP_NAME, DREAM_PASS_BUDGET_SECONDS, MINI_LOOP
+from teatree.loops.dream.loop import (
+    DREAM_LEASE_SECONDS,
+    DREAM_LOOP_NAME,
+    DREAM_PASS_BUDGET_SECONDS,
+    MINI_LOOP,
+    propose_evals_enabled,
+)
 from teatree.loops.fanout import build_registry_jobs
 from teatree.loops.orchestrator import Orchestrator
 from teatree.loops.orchestrator import TickRequest as OrchestratorTickRequest
@@ -113,6 +119,48 @@ class OffLiveTickFieldTestCase(TestCase):
     def test_default_off_live_tick_is_false(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=lambda **_: [])
         assert loop.off_live_tick is False
+
+
+class ProposeEvalsKillSwitchTestCase(TestCase):
+    """The nightly eval-derivation seam is LIVE by default, flippable via env/toml (#2346)."""
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.toml = __import__("pathlib").Path(self.tmp) / "t3.toml"
+
+    def test_default_is_on_with_no_env_no_toml(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            assert propose_evals_enabled(config_path=self.toml) is True
+
+    def test_falsy_env_disables(self) -> None:
+        for value in ("0", "false", "no", "off", "FALSE"):
+            with patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": value}):
+                assert propose_evals_enabled(config_path=self.toml) is False, value
+
+    def test_truthy_env_enables(self) -> None:
+        with patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "1"}):
+            assert propose_evals_enabled(config_path=self.toml) is True
+
+    def test_toml_false_disables_when_env_absent(self) -> None:
+        self.toml.write_text("[loops.dream]\npropose_evals = false\n", encoding="utf-8")
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            assert propose_evals_enabled(config_path=self.toml) is False
+
+    def test_env_falsy_wins_over_toml_true(self) -> None:
+        self.toml.write_text("[loops.dream]\npropose_evals = true\n", encoding="utf-8")
+        with patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}):
+            assert propose_evals_enabled(config_path=self.toml) is False
+
+    def test_corrupt_toml_falls_back_to_default_on_never_raises(self) -> None:
+        # A malformed toml must not take down the nightly cron — default ON.
+        self.toml.write_text("[loops.dream]\npropose_evals = = broken\n", encoding="utf-8")
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            assert propose_evals_enabled(config_path=self.toml) is True
 
 
 class DreamLeaseSizingTestCase(TestCase):
