@@ -62,7 +62,10 @@ class RunConsolidationSeamTestCase(TestCase):
             seen.append(extract)
             return []
 
-        run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
         assert len(seen) == 1
         assert isinstance(seen[0], ConsolidationExtract)
 
