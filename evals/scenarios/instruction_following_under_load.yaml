@@ -55,7 +55,7 @@
         - tool_call: TaskCreate
           args.tasks: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation)"
         - tool_call: AskUserQuestion
-          args.questions: ~ "(?i)(plan|which ticket|two ticket|scope|separate)"
+          args.questions: '~ "(?i)(plan|which.*(ticket|first|one|order)|two.*ticket|scope|separate|split|bundl|sequence|one at a time|tackle)"'
     - no_tool_call_matching:
         Edit.file_path: ~ "."
     - no_tool_call_matching:
