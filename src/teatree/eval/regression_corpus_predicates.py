@@ -34,25 +34,41 @@ _SHA_B = "b" * 40
 
 @contextmanager
 def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
-    """Run the block with a hermetic ``~/.teatree.toml`` pinning *overlay_name* to *autonomy*.
+    """Run the block with a hermetic config pinning *overlay_name* to *autonomy*.
 
     An eval-isolation helper for assertions whose outcome depends on the
-    overlay's effective autonomy (the substrate-merge carve-out). Swaps
-    ``teatree.config.CONFIG_PATH`` at the single seam ``get_effective_settings``
-    reads, so the resolved autonomy is deterministic regardless of the
-    developer's live config, and restores it on exit.
+    overlay's effective autonomy (the substrate-merge carve-out). It pins all
+    three tiers ``get_effective_settings`` layers so the resolved autonomy is the
+    staged value regardless of the developer's live config: it swaps
+    ``teatree.config.CONFIG_PATH`` to a hermetic ``~/.teatree.toml`` holding only
+    the staged autonomy, and neutralises the DB override tier (#1775) and the env
+    tier to ``{}`` for the block so a live ``ConfigSetting`` row on the host (an
+    overlay such as ``t3-teatree`` pinned to ``full``) or a ``T3_*`` env var
+    cannot win over the staged TOML.
+
+    Without the DB-tier pin the hermetic file is silently overridden by the host
+    database (the DB tier wins over the file tier), so the substrate floor check
+    read the host's live autonomy instead of the staged ``babysit`` and failed on
+    any host carrying a per-overlay autonomy override. All seams are restored on
+    exit.
     """
+    from unittest.mock import patch  # noqa: PLC0415
+
     from teatree import config as config_module  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as raw:
         cfg = Path(raw) / ".teatree.toml"
         cfg.write_text(f'[teatree]\n[overlays.{overlay_name}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
-        original = config_module.CONFIG_PATH
+        original_path = config_module.CONFIG_PATH
         config_module.CONFIG_PATH = cfg
         try:
-            yield
+            with (
+                patch("teatree.config.resolution._db_setting_overrides", return_value={}),
+                patch("teatree.config.resolution._env_setting_overrides", return_value={}),
+            ):
+                yield
         finally:
-            config_module.CONFIG_PATH = original
+            config_module.CONFIG_PATH = original_path
 
 
 def _check_branch_currency_conflict_only() -> bool:

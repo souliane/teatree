@@ -1,6 +1,7 @@
 ---
 name: backlog-sweep
 description: Periodic evidence-gated triage of the issue backlog — for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "superseded by merged PR #X" class), posting a one-line reason on every close. Use when the user says "sweep backlog", "backlog sweep", "triage issues", "prune the backlog", "retire stale issues", or "clean up the issue tracker".
+eval_exempt: evidence-gated backlog-triage walkthrough — the retire counterpart to teatree-plan's prioritize; it reuses teatree-plan's AskUserQuestion one-decision-per-question flow (pinned in the rules skill scenarios) and closes only on user approval, so the issue close/cite chokepoint's own deterministic tests grade the actual behaviour
 compatibility: macOS/Linux, git, gh CLI, GitHub Projects v2 board.
 requires:
   - teatree-plan
