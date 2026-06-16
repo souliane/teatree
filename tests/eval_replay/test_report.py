@@ -39,6 +39,7 @@ def _spec(
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _run(  # noqa: PLR0913 — test-data builder mirroring the EvalRun dataclass fields.
     *,
     spec_name: str = "scenario_one",

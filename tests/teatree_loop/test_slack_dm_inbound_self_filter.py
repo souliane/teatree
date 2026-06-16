@@ -29,6 +29,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _OWN_USER_ID = "U_BOT_SELF"

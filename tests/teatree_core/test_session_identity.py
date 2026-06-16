@@ -24,6 +24,7 @@ from django.utils import timezone
 from teatree.core.models import LoopLease
 from teatree.core.session_identity import current_session_id, current_session_pid
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

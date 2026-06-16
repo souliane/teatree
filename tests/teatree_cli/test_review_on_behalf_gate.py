@@ -45,6 +45,7 @@ from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, OnBehalfApproval
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _runner = CliRunner()

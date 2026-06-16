@@ -463,6 +463,7 @@ class Command(RubricCommands, TyperCommand):
         return {"ticket_id": int(ticket.pk), "context": edited}
 
     @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def clear(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to a §17.4.2 CLEAR field; the arg list IS the public CLI surface (same rationale as the file-wide PLR6301 ignore), not an internal design smell.
         self,
         pr_id: int,
@@ -716,6 +717,7 @@ class Command(RubricCommands, TyperCommand):
         return {"error": f"No code host could be resolved for {issue_url}"}
 
     @command(name="create-sub")
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def create_sub(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public --parent/--title/--description/--description-file/--labels/--type surface (same rationale as `clear`), not an internal design smell.
         self,
         *,

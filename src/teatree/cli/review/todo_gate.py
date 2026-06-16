@@ -156,6 +156,7 @@ class InlineAnchor(NamedTuple):
     line: int
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def check_todo_anchor(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + anchor + the #126 override).
     *,
     api: "GitLabHTTPClient",

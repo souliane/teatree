@@ -263,6 +263,7 @@ class CostBoundsGate:
         return result.failed
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` flag through the persist+gate tail.
     results: list[ScenarioResult],
     *,

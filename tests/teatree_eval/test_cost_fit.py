@@ -20,6 +20,7 @@ def _billed(usage: TokenUsage, *, base_in: float, out: float) -> float:
     return base_in * usage.effective_billed_input + out * usage.output
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _cell(  # noqa: PLR0913 — test-data builder: one kwarg per TokenUsage/rate field a case varies.
     inp: int, cc: int, cr: int, out: int, *, base_in: float, out_rate: float
 ) -> CostCell:

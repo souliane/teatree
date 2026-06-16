@@ -126,6 +126,7 @@ class BudgetVerdict:
         return cls(ok=True, reason="")
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def precheck_budget(  # noqa: PLR0913  # each kwarg is a BLUEPRINT § 5.7 guardrail input; kwargs-only.
     *,
     ram_used_percent: float | None = None,

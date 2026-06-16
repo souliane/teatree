@@ -58,6 +58,7 @@ class UnknownBackendError(ValueError):
     """Raised for a ``--backend`` value outside :data:`KNOWN_BACKENDS`."""
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction knob (turns / budget / effort / require / transcript-dir) from the `t3 eval run` CLI; the list IS the backend contract.
     backend: str,
     *,

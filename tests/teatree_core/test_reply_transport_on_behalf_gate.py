@@ -36,6 +36,7 @@ def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPost
 _BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReplyTransportOnBehalfGate:
     @pytest.fixture(autouse=True)
@@ -120,6 +121,7 @@ def _notify_backend() -> MagicMock:
     return backend
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReplyTransportAfterReceiptDm:
     """#949: a SENT on-behalf reply fires one after-receipt DM; post_dm does not."""
@@ -220,6 +222,7 @@ class _FlakyReplier(_BaseReplier):
         return "https://example.com/posted"
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestRedeliverReusesReservation:
     """#1879: a failed redeliver rolls back the consume — the approval is reused, not burned per retry."""

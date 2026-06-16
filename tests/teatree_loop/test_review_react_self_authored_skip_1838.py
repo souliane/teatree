@@ -100,6 +100,7 @@ def _seed(*, reacted: bool) -> ReviewRequestPost:
     )
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestSelfAuthoredReactSkipMatrix:
     """author x state x already-reacted: react only on (colleague, merged, not-reacted)."""

@@ -14,6 +14,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

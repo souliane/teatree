@@ -166,6 +166,7 @@ class ReviewService:
 
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post_draft_note(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-draft-note`` CLI flags; ``evidence`` is the #1280 structured-evidence record and the ``allow_*`` overrides are the #126 documented escapes — all must stay kwargs on this surface.
         self,
         repo: str,
@@ -214,6 +215,7 @@ class ReviewService:
             repo, mr, "post_draft_note", lambda: self._post_draft_note_impl(repo, mr, note, file=file, line=line)
         )
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def _run_pre_publish_gates(  # noqa: PLR0913
         self,
         *,
@@ -267,6 +269,7 @@ class ReviewService:
 
         return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` (#1207 default-flip), ``evidence`` (#1280) and the ``allow_*`` escapes (#126) must stay kwargs on this surface.
         self,
         repo: str,

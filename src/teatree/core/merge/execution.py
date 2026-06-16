@@ -156,6 +156,7 @@ def _reconcile_if_already_merged(
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; each kwarg is a documented step input.
     *,
     clear: object,

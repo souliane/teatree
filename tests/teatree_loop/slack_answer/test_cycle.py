@@ -23,6 +23,7 @@ from teatree.core.models import PendingChatInjection, Task, Ticket
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

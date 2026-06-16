@@ -297,6 +297,7 @@ class TestF4GitlabApprovalsNoPhantomBlankOverlayTicket(TestCase):
     or pass the scanner's real overlay.
     """
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     pytestmark = pytest.mark.django_db
 
     def test_no_phantom_blank_overlay_ticket_created(self) -> None:

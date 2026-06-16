@@ -22,6 +22,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.loop.self_update_reinstall import DrainOutcome, drain_pending_reinstall
 from teatree.self_update import ReinstallResult
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

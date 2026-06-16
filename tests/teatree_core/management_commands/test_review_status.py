@@ -22,6 +22,7 @@ from django.test import TestCase
 from teatree.core.models import MergeClear, ReviewVerdict
 from tests.factories import TicketFactory
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _REVIEWED = "a" * 40

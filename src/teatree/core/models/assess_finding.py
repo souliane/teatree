@@ -47,6 +47,7 @@ class AssessFinding(models.Model):
         return f"assess-finding<{self.pk}:{self.repo}:{self.file_path}>"
 
     @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — model-level ledger record API; each kwarg is a documented field.
         cls,
         *,

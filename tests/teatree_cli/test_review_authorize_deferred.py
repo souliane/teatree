@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _runner = CliRunner()

@@ -108,6 +108,7 @@ class ConsolidatedMemory(models.Model):
         return f"consolidated-memory<{self.pk}:{self.status}:{self.rule[:40]}>"
 
     @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record_cluster(  # noqa: PLR0913 — guarded ledger factory: each kwarg is a documented column, kwargs-only.
         cls,
         *,

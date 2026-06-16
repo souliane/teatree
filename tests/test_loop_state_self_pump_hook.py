@@ -24,6 +24,7 @@ import hooks.scripts.hook_router as router
 import hooks.scripts.loop_state_self_pump_gate as gate
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_loop_self_pump
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

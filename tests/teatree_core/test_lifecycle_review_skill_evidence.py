@@ -26,6 +26,7 @@ from teatree.core.gates.review_skill_gate import configured_review_skill, record
 from teatree.core.management.commands.lifecycle import ReviewSkillEvidenceError
 from teatree.core.models import Session, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

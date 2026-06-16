@@ -985,6 +985,7 @@ from teatree.core.models import OutboundClaim  # noqa: E402
 from teatree.loop.scanners.outbound_audit import _hash_body  # noqa: E402
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestGitHubCommentOutboundClaim:
     """``post_pr_comment`` / ``post_issue_comment`` record an OutboundClaim (#1198).

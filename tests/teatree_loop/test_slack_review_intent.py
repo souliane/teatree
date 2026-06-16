@@ -20,6 +20,7 @@ from teatree.core.models import ReviewAssignment, ReviewIntent
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

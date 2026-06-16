@@ -412,6 +412,7 @@ class OverlayMetadata:
 # ── Overlay base class ───────────────────────────────────────────────
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count reflects surface, not poor encapsulation.
     django_app: str | None = None
     config: OverlayConfig = OverlayConfig()
@@ -482,6 +483,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         """
         return variant
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input, not poor design.
         self,
         worktree: "Worktree",

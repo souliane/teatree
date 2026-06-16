@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from teatree.cli.codex import codex_app
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

@@ -19,6 +19,7 @@ def _spec(name: str) -> EvalSpec:
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _row(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a MatrixRow field a case varies.
     scenario: str,
     model: str,

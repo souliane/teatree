@@ -27,6 +27,7 @@ from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _DM_CHANNEL = "D_SELF"

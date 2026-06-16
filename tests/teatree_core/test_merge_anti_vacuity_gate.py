@@ -23,6 +23,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from tests.teatree_core.test_merge_execution import _GhStub
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

@@ -340,6 +340,7 @@ def post_body_file_comment(
     return PostTestPlanResult(issue_url=issue_url, comment_id=comment_id, envs=[], action=action)
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_post_test_plan(  # noqa: PLR0913 — the CLI flags map 1:1 to a single shared entry point.
     *,
     manifest: str,

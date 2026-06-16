@@ -19,6 +19,7 @@ runner = CliRunner()
 # records a ``BotPing`` row — both touch the ORM. The gate-mechanics
 # tests below therefore need DB access (the after-receipt DM is an
 # intrinsic side effect of the publish path, not test scaffolding).
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
@@ -903,6 +904,7 @@ class TestApprove:
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_approve_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → approve refuses without an API call (#1013)."""
@@ -949,6 +951,7 @@ class TestApprove:
             assert result.exit_code == 1
             assert "Failed: HTTP 404" in result.output
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_unapprove_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → unapprove refuses without an API call (#1013)."""

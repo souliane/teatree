@@ -29,6 +29,7 @@ from teatree.loop.scanners.codex_review import (
     _decode_pr,
 )
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

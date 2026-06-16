@@ -14,6 +14,7 @@ import pytest
 from teatree.core.models import PendingChatInjection
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

@@ -277,6 +277,7 @@ STRICT_HELP = (
 )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` / `t3 eval all` flag. The arg list IS the CLI contract.
     *,
     backend: str,

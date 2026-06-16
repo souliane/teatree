@@ -13,6 +13,7 @@ import pytest
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.pending_chat_injection import _classify_is_question
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

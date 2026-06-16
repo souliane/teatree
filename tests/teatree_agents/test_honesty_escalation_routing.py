@@ -27,6 +27,7 @@ from django.utils import timezone
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.core.models.honesty_escalation import _DEFAULT_TTL, HonestyEscalation
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 SESSION = "11111111-2222-3333-4444-555555555555"

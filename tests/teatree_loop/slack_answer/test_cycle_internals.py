@@ -24,6 +24,7 @@ from teatree.loop.slack_answer.cycle import (
 )
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

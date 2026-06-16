@@ -72,6 +72,7 @@ def _parse_evidence(raw: str) -> "FindingEvidence | None":
 
 
 @review_app.command(name="post-draft-note")
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json + the #126 gate escapes). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
@@ -140,6 +141,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
 
 
 @review_app.command(name="post-comment")
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),

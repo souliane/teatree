@@ -100,6 +100,7 @@ class DeferredQuestion(models.Model):
         return self.answered_at is None and self.dismissed_at is None
 
     @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — guarded factory: each kwarg is a documented column, kwargs-only.
         cls,
         question: str,

@@ -26,6 +26,7 @@ from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase, OverlayMetadata
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "b" * 40

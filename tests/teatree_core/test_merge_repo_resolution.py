@@ -30,6 +30,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import MergeClear, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

@@ -28,6 +28,7 @@ import pytest
 from teatree.core.models import BotPing
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

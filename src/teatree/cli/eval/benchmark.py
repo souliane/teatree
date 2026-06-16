@@ -36,6 +36,7 @@ from teatree.utils.django_bootstrap import ensure_django
 BENCHMARK_DEFAULT_BUDGET_USD = 2.0
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval benchmark`` flag.
     models: str = typer.Option(
         ...,
@@ -142,6 +143,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         raise typer.Exit(code=1)
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
     *,
     models: str,
@@ -174,6 +176,7 @@ def _dispatch_to_docker(  # noqa: PLR0913 — each kwarg is one benchmark flag t
         raise typer.Exit(code=2) from None
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _docker_passthrough(  # noqa: PLR0913 — each kwarg is one benchmark flag threaded into the container.
     *,
     models: str,

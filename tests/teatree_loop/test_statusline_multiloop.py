@@ -41,6 +41,7 @@ def _make_lease(name: str, *, expires_in: timedelta, session_id: str = "sess-A")
     )
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestLiveLoopsAnchor:
     """``live_loops_anchor()`` returns one per-loop-named summary line."""
@@ -92,6 +93,7 @@ class TestLiveLoopsAnchor:
         assert "loop:owner" not in joined, repr(joined)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestForeignHijackStillRed:
     """The #1073 foreign-hijack RED line is preserved through every refit."""
@@ -108,6 +110,7 @@ class TestForeignHijackStillRed:
         assert "NOT this session" in line
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestPopulateLoopsAnchorIntegration:
     """The rendering layer emits the consolidated line for live LoopLease rows."""

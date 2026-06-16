@@ -75,6 +75,7 @@ def _fake_query(messages: list[Any]):
     return _query, captured
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a ResultMessage field a case varies.
     *,
     subtype: str = "success",

@@ -29,6 +29,7 @@ import pytest
 
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 # The same MR expressed in the three surface forms the consume call sites

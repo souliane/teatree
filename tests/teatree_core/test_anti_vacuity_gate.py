@@ -28,6 +28,7 @@ from teatree.core.gates.anti_vacuity_gate import (
 )
 from teatree.core.models import Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

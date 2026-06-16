@@ -620,6 +620,7 @@ class TestSlackUserReplyNeverRendersVerbatim:
         assert "some text" not in blob, repr(blob)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestTicketExtraPrsResolvesMrToTicket:
     """#1113 Defect 3 — bare manually-opened MR buckets under its ticket.
@@ -666,6 +667,7 @@ class TestTicketExtraPrsResolvesMrToTicket:
         assert "\n[t3-teatree] !145" not in blob, repr(blob)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestPostedReviewRequestPermalinkNotInChip:
     """#1377: the chip is bare — review-permalink suffix removed from the chip.
@@ -714,6 +716,7 @@ class TestPostedReviewRequestPermalinkNotInChip:
         assert "(review" not in blob, repr(blob)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestNoAgentsLineInInFlight:
     """The ``[ov] agents: …`` row is gone post-#1156.

@@ -37,6 +37,7 @@ def _render_blob(actions: list[DispatchAction]) -> str:
     )
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestShortDescriptionInScanner:
     """``ActiveTicketsScanner`` prefers ``ticket.short_description`` over ``issue_title``."""
@@ -89,6 +90,7 @@ class TestShortDescriptionTruncation:
         assert long_title not in blob, repr(blob)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEveryActiveTicketHasDescriptionChunk:
     """The scanner + renderer emit a description chunk for every active ticket."""

@@ -20,6 +20,7 @@ def _spec() -> EvalSpec:
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an EvalRun field a case varies.
     spec: EvalSpec,
     *,

@@ -13,6 +13,7 @@ from django.core.management import call_command
 
 from teatree.core.models import HonestyEscalation
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SESSION = "99999999-aaaa-bbbb-cccc-dddddddddddd"

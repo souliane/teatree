@@ -68,6 +68,7 @@ class ProvisionReport:
         return "\n".join(lines)
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_step(  # noqa: PLR0913
     name: str,
     cmd: list[str],

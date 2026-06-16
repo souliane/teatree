@@ -21,6 +21,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _CHANNEL = "D-user"

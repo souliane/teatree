@@ -10,6 +10,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own_loop
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 

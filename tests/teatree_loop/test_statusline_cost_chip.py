@@ -18,6 +18,7 @@ from teatree.loop.rendering import cost_chip_lines
 from teatree.loop.tick_freshness import _write_tick_meta
 from tests.factories import TicketFactory
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

@@ -33,6 +33,7 @@ class TestAvailabilitySegment:
         assert availability_segment(Resolution(mode="???", source="default")) == ""
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestAvailabilitySegmentRidesLoopLineLive:
     @pytest.fixture

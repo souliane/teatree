@@ -15,6 +15,7 @@ from django.test import TestCase
 
 from teatree.core.models import ReviewLoop, Task, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SLUG = "acme/repo"

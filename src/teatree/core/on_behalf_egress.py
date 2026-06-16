@@ -79,6 +79,7 @@ class OnBehalfSlackEgress:
             return False
         return bool(self._messaging._is_self_dm(channel))  # type: ignore[attr-defined]  # noqa: SLF001
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def react(  # noqa: PLR0913 — colleague-egress chokepoint; each kwarg is a documented gate/route/audit input, kwargs-only.
         self,
         *,
@@ -117,6 +118,7 @@ class OnBehalfSlackEgress:
             )
         return response
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post(  # noqa: PLR0913 — colleague-egress chokepoint; each kwarg is a documented gate/route/audit input, kwargs-only.
         self,
         *,

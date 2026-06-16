@@ -89,6 +89,7 @@ def list_scenarios() -> None:
 
 
 @eval_app.command("run")
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval run`` flag. The arg list IS the CLI contract.
     name: str | None = typer.Argument(None, help="Scenario name to run (omit to run all)."),
     lane: str | None = typer.Option(
@@ -452,6 +453,7 @@ eval_app.command("history")(history_command)
 
 
 @eval_app.callback(invoke_without_command=True)
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public bare-``t3 eval`` flag. The arg list IS the CLI contract.
     ctx: typer.Context,
     backend: str = typer.Option(

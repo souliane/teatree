@@ -24,6 +24,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.loop.mechanical import todo_completion
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

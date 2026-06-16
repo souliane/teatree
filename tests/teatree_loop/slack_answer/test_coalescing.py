@@ -17,6 +17,7 @@ from teatree.core.models import PendingChatInjection
 from teatree.loop.slack_answer.cycle import _COALESCE_WINDOW_SECONDS, _coalesce, run_slack_answer_cycle
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

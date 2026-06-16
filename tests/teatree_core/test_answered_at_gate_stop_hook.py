@@ -27,6 +27,7 @@ from django.utils import timezone
 from hooks.scripts.hook_router import _HANDLERS, handle_enforce_answered_questions
 from teatree.core.models import PendingChatInjection
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

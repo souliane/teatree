@@ -37,6 +37,7 @@ from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScann
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

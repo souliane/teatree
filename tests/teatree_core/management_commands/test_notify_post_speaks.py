@@ -33,6 +33,7 @@ from django.core.management import call_command
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.types import LocalPlayback, SpeakConfig
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _DM_CHANNEL = "D_ME"

@@ -31,6 +31,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40
@@ -57,6 +58,7 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
 class _GlabStub:
     """Scripted ``glab`` responses keyed by URL substring; records argv per call."""
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def __init__(  # noqa: PLR0913 — test stub mirrors the response surface; each field models one wire-API field.
         self,
         *,

@@ -197,6 +197,7 @@ ban_close_trailers_on_namespaces = "not-a-list"
         assert config.user.ban_close_trailers_on_namespaces == []
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestShipExecutorIntegration:
     """``ShipExecutor._build_pr_spec`` applies the scanner before opening the PR."""

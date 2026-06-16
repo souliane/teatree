@@ -25,6 +25,7 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_inject_pending_chat
 from teatree.core.models import PendingChatInjection
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

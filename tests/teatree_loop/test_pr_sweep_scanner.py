@@ -35,6 +35,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     _decode_pr,
 )
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
@@ -75,6 +76,7 @@ def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSummary field the cases vary.
     *,
     pr_id: int = 6230,
@@ -162,6 +164,7 @@ class FakeReviewDispatcher:
         return self.returns
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweepScanner constructor flag the cases vary.
     *,
     api: FakePrApiClient,

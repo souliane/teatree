@@ -82,6 +82,7 @@ class PlaywrightOptions:
 
 class Command(TyperCommand):
     @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def run(  # noqa: PLR0913
         self,
         work_item: Annotated[
@@ -332,6 +333,7 @@ class Command(TyperCommand):
         return "dev" if os.environ.get("BASE_URL") else "local"
 
     @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def external(  # noqa: PLR0913
         self,
         test_path: str = "",
@@ -499,6 +501,7 @@ class Command(TyperCommand):
         raise SystemExit(rc)
 
     @command(name="post-test-plan")
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post_test_plan(  # noqa: PLR0913 — CLI entrypoint; each flag is a distinct user-facing option
         self,
         *,
@@ -552,6 +555,7 @@ class Command(TyperCommand):
         )
 
     @command(name="post-evidence", hidden=True, deprecated=True)
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post_evidence(  # noqa: PLR0913 — CLI entrypoint, each flag is a distinct user-facing option
         self,
         *,

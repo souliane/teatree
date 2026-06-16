@@ -20,6 +20,7 @@ from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 _ROOT_TS = "1700000000.0001"

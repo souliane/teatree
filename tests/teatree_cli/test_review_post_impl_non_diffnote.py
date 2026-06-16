@@ -25,6 +25,7 @@ import pytest
 from teatree.cli.review.post_impl import post_comment_impl
 from teatree.core.models import OutboundClaim
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

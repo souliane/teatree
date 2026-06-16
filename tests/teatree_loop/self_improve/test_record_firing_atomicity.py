@@ -20,6 +20,7 @@ from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.self_improve.detectors.base import DetectorReport
 from teatree.loop.self_improve.persistence import record_firing
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

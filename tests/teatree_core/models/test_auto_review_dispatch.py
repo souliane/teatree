@@ -5,6 +5,7 @@ import pytest
 from teatree.core.models import AutoReviewDispatch, Task, Ticket
 from teatree.core.models.auto_review_dispatch import build_review_contract
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 SLUG = "souliane/teatree"
