@@ -22,6 +22,7 @@ from teatree.config.discovery import (
     discover_overlays,
 )
 from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.homes import DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
     CONFIG_PATH,
     _load_toml,
@@ -66,8 +67,10 @@ __all__ = [
     "BOOTSTRAP_FILE_ONLY_SETTINGS",
     "CONFIG_PATH",
     "DATA_DIR",
+    "DERIVED_FIELDS",
     "ENV_SETTING_OVERRIDES",
     "OVERLAY_OVERRIDABLE_SETTINGS",
+    "SETTING_HOMES",
     "Autonomy",
     "E2ERepo",
     "MissingIssuePolicy",
@@ -75,6 +78,7 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "SettingHome",
     "Speed",
     "TeaTreeConfig",
     "TeamsDisplay",

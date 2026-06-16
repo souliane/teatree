@@ -109,6 +109,21 @@ The env var `T3_MODE` overrides the toml setting. Unknown values raise
 
 ### 10.1.1 Per-Overlay Setting Overrides
 
+**Setting-home partition ([#1775](https://github.com/souliane/teatree/issues/1775)).**
+Every non-derived `UserSettings` field has EXACTLY ONE home, declared in the
+typed registry `config/homes.py` (`SettingHome` ∈ {`DB`, `TOML`}, `SETTING_HOMES`):
+a field that CAN live in the DB is **DB-home**, and only the irreducible carve-out
+stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
+setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
+(global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
+`[overlays.<name>]` + env only. The TOML carve-out is the ten fields a pre-Django
+reader needs (`orchestrator_bash_gate_enabled`, `speak`, `handover_mirror_path`,
+`check_updates`), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
+`redis_db_count`, `timezone`, `privacy`), and the nested structured `mr_reminder`
+table. The two DERIVED fields (`notify_on_behalf`, `ask_before_post_on_behalf`) are
+computed by the resolver and have no home. The resolution-tier wiring below details
+each home's chain.
+
 A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
