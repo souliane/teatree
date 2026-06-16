@@ -239,7 +239,10 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 - `[!5657](https://example.com/org/repo/-/merge_requests/5657)` — not `!5657`
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
-This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user. When you are handed the id **and** its URL, emit the markdown link — do X, never Y:
+
+- **do:** `MR [!7551](https://git.example.com/acme/app/-/merge_requests/7551) is ready for review.`
+- **never:** `MR !7551 is ready for review.` (a bare id the reader cannot click)
 
 ## Render the Title Inline, Never a Bare/Link-Only Id (Non-Negotiable)
 
@@ -659,6 +662,8 @@ Background it instead:
 - Arm a **Monitor** to watch a long-running command/pipeline — its events arrive as notifications and wake you, so the foreground stays free. This is the canonical teatree mechanism for watching a long op without blocking (the loop uses it), and the preferred choice for a CI/pipeline or test-suite watch.
 - Dispatch a **background sub-agent** (Task tool) for the long unit of work, then keep handling new input while it runs. A multi-file investigation or a cross-cutting refactor **is** a "long unit of work" — dispatch it to a `Task` sub-agent, not to a backgrounded one-line `run_in_background` grep (that flag is reserved for a single shell command). You can dispatch a `Task` **even when the exact shell command is unknown** — describe the work in plain language in the Task prompt (e.g. "Replay all migrations against the large database dump"); do not block by asking the user for the precise command, since the Task path needs no shell invocation up front.
 - For a single shell command, pass `run_in_background: true` to Bash rather than waiting on it inline.
+
+Concretely, to watch a running CI/pipeline (which blocks for minutes) while staying free for new messages, your single next action is one of: arm a `Monitor` on the pipeline (`gh run watch` / `glab ci status`), dispatch a `Task` sub-agent to watch it and report back, or run the watch as a single `Bash` call with `run_in_background: true` — **never** a blocking foreground `gh run watch` / `glab ci status --watch`. The same disjunction covers a full test suite: background the `pytest` run, never block the foreground on it.
 
 The main agent's job during a long operation is to stay responsive — collect the result when the background unit reports back, not to sit blocked on it. This rule is pinned by the `background_long_operations_*` behavioral evals (`evals/scenarios/background_long_operations.yaml`).
 

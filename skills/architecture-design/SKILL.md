@@ -68,7 +68,7 @@ Read the auto-generated dependency graph in [docs/dependency-graph.md](../../doc
 
 A lower-level module (e.g. `teatree.utils`, `teatree.config`) MUST NOT import from a higher-level one (e.g. `teatree.cli`, `teatree.core.management`). A backwards edge is a refactor first, an implementation second — surface it on the PR and propose the inversion (callback, registration, Protocol) that breaks the edge.
 
-`uv run tach check` reproduces the gate locally.
+After adding any new cross-module import, **verify the boundary DAG with `tach`, never by eyeballing it** — run `uv run tach check` to confirm the import introduced no backwards edge. `uv run tach check` reproduces the enforced gate locally; do not substitute an `echo "looks fine"` for the real check.
 
 ### 6. Test surface
 
