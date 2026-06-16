@@ -268,14 +268,14 @@ def _resolved_identities() -> tuple[str, ...]:
     under any alias surface in the statusline (#976). Empty list keeps the
     legacy behaviour: scanners scan only ``host.current_user()``.
 
-    Source of truth: ``UserSettings.user_identity_aliases`` parsed from
-    ``[teatree] user_identity_aliases`` in ``~/.teatree.toml``. Reading
-    through ``UserSettings`` (rather than ``raw[...]`` directly) means
-    every consumer in the codebase agrees on the parsed shape.
+    Source of truth: ``UserSettings.user_identity_aliases`` — DB-home (#1775),
+    resolved via the effective-settings tier (``config_setting set
+    user_identity_aliases '[...]'``). Reading through ``get_effective_settings``
+    means every consumer agrees on the parsed shape and sees the DB value.
     """
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415
 
-    return tuple(load_config().user.user_identity_aliases)
+    return tuple(get_effective_settings().user_identity_aliases)
 
 
 def _backends_from_toml(

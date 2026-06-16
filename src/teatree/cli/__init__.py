@@ -259,9 +259,13 @@ def _ensure_editable_if_contributing() -> None:
     This check runs on every CLI invocation and re-installs if needed.
     """
     try:
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415
 
-        if not load_config().user.contribute:
+        # ``contribute`` is DB-home (#1775); resolved via the effective-settings
+        # tier. This runs before django.setup(), so the DB read fails safe to the
+        # conservative default (False = skip auto-editable) when the DB is not yet
+        # available — the user can still run ``t3 doctor`` to fix editability.
+        if not get_effective_settings().contribute:
             return
 
         if not IntrospectionHelpers.editable_info("teatree")[0]:

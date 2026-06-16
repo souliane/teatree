@@ -271,24 +271,22 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
     return list(dict.fromkeys(str(s) for s in raw if isinstance(s, str) and s))
 
 
-# Registry of UserSettings fields that can be overridden per-overlay in
-# ``[overlays.<name>]``. To make another setting overridable, add an entry
-# here with a parser that coerces the raw toml value to the UserSettings
-# field type. The getter `get_effective_settings()` applies overrides
-# generically via ``dataclasses.replace`` — no per-setting wiring needed.
-#
-# This registry is ALSO the scope of the DB override tier (#1775,
-# ``ConfigSetting``): the resolver's ``_db_setting_overrides`` consults it to
-# decide which ``ConfigSetting`` rows may override a setting and reuses each
-# entry's parser to coerce the stored JSON value. A row for a key absent here is
-# ignored, so the DB tier can never override a setting that is not opted into
-# overriding. Precedence: env -> DB -> per-overlay TOML -> global -> default.
+# The DB-home parser registry (#1775 hard partition). Every DB-home
+# ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser
+# coerces a stored ``ConfigSetting`` JSON value to the field's type. This registry
+# is the SOLE source for a DB-home field — its ``[teatree]`` / ``[overlays.<name>]``
+# TOML tables are NOT read on resolution; a DB-home key in TOML is a load-time
+# error (``load_config`` refuses it). ``_db_setting_overrides`` consults this to
+# decide which ``ConfigSetting`` rows supply a value and reuses each entry's
+# parser; a row for a key absent here is ignored. Per DB-home field the chain is
+# ``env -> ConfigSetting (overlay then global) -> dataclass default``. A
+# fitness test asserts this registry covers exactly the DB-home set (no TOML-home
+# key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
     "branch_prefix": _parse_strict_str,
-    "privacy": _parse_strict_str,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -299,7 +297,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
-    "ask_before_post_on_behalf": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
     "missing_issue_ref_policy": MissingIssuePolicy.parse,
     "on_behalf_auto_actions": _parse_str_list,
@@ -363,7 +360,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "pull_main_clone_disabled": _parse_strict_bool,
     "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_enabled": _parse_strict_bool,
-    "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
@@ -372,6 +368,26 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
+    # #1775 newly-DB-home (file-only today): these now resolve from the DB store.
+    "agent_signature": _parse_strict_bool,
+    "claude_chrome": _parse_strict_bool,
+    "statusline_chain": _parse_str_list,
+    "repo_mode": _parse_strict_str,
+    "ban_close_trailers_on_namespaces": _parse_str_list,
+    "billing_cycle_anchor_day": _parse_strict_int,
+    "sdk_monthly_credit_usd": _parse_strict_float,
+}
+
+# TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
+# A TOML-home field's authoritative tier is the TOML tables + env (never the DB),
+# but a subset of them is per-overlay overridable in TOML. ``speak`` is omitted —
+# its sub-table merges bespoke (see ``_overlay_speak_override``); the others in the
+# carve-out are global-only. Discovery parses the union of this and the DB-home
+# registry so a ``[overlays.<name>]`` value for either is read off the table; the
+# resolver then keeps only TOML-home override keys.
+TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    "orchestrator_bash_gate_enabled": _parse_strict_bool,
+    "privacy": _parse_strict_str,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the

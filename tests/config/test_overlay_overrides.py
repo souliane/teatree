@@ -1,44 +1,40 @@
-"""Per-overlay override machinery.
+# test-path: cross-cutting
+"""Per-overlay override machinery under the #1775 DB/TOML hard partition.
 
-Split verbatim from the former monolithic ``tests/test_config.py``
-(souliane/teatree#443). Covers the ``OVERLAY_OVERRIDABLE_SETTINGS``
-resolution chain (env → active overlay override → global → dataclass
-default), the active-overlay selection via ``T3_OVERLAY_NAME``, and
-per-overlay mode parsing/validation.
+A DB-home setting is per-overlay overridable via a ``ConfigSetting`` row scoped
+to the overlay (``scope=<overlay name>``); a TOML-home setting via
+``[overlays.<name>]``. The resolution chain (later wins): env →
+overlay-scoped DB / per-overlay TOML → global DB / global TOML → dataclass
+default. A ``[overlays.<name>]`` value for a DB-home key is ignored on read.
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures
-under ``tmp_path`` with ``teatree.config.CONFIG_PATH`` monkeypatched.
+Integration-first per the Test-Writing Doctrine: real TOML under ``tmp_path``
+with ``teatree.config.CONFIG_PATH`` monkeypatched, DB-home overrides via the real
+``ConfigSetting`` store, asserted through the real ``get_effective_settings``.
 """
 
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
+import teatree.config as config_facade
 from teatree.config import Mode, discover_overlays, get_effective_settings
+from teatree.core.models import ConfigSetting
 
 from ._shared import _write_toml
 
 
-class TestOverlayOverrides:
-    """Per-overlay overrides for any key in ``OVERLAY_OVERRIDABLE_SETTINGS``.
+class TestOverlayTomlOverrides:
+    """TOML-home per-overlay overrides via ``[overlays.<name>]``."""
 
-    The resolution chain is env (where applicable) → active overlay override
-    → global → dataclass default. The active overlay is picked via
-    ``T3_OVERLAY_NAME`` when set, else cwd-based discovery.
-    """
-
-    def test_overlay_toml_mode_parsed(self, tmp_path: Path) -> None:
+    def test_overlay_toml_mode_parsed_into_entry(self, tmp_path: Path) -> None:
+        # ``mode`` is DB-home, so discovery parses it from [overlays.<name>] into
+        # the entry overrides dict (the union parse), but the resolver drops it on
+        # read — discovery itself still coerces the value.
         config_path = tmp_path / ".teatree.toml"
         _write_toml(
             config_path,
-            """
-[teatree]
-mode = "interactive"
-
-[overlays.my-overlay]
-class = "x.y:Z"
-mode = "auto"
-""",
+            '[overlays.my-overlay]\nclass = "x.y:Z"\nmode = "auto"\n',
         )
         entries = discover_overlays(config_path=config_path)
         by_name = {e.name: e for e in entries}
@@ -46,809 +42,232 @@ mode = "auto"
 
     def test_overlay_invalid_mode_raises(self, tmp_path: Path) -> None:
         config_path = tmp_path / ".teatree.toml"
-        _write_toml(
-            config_path,
-            """
-[overlays.my-overlay]
-class = "x.y:Z"
-mode = "nope"
-""",
-        )
+        _write_toml(config_path, '[overlays.my-overlay]\nclass = "x.y:Z"\nmode = "nope"\n')
         with pytest.raises(ValueError, match="Invalid t3 mode"):
             discover_overlays(config_path=config_path)
 
-    def test_overlay_override_wins_over_global(
+    def test_orchestrator_bash_gate_overlay_toml_override(
         self,
         config_file: Path,
         elsewhere: Path,
         no_installed_overlays: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # orchestrator_bash_gate_enabled is TOML-home: a [overlays.<name>] value
+        # wins over the global [teatree] value.
         del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-mode = "interactive"
-branch_prefix = "ac"
-
-[overlays.my-overlay]
-class = "x.y:Z"
-mode = "auto"
-branch_prefix = "xp"
-""",
-        )
-
-        effective = get_effective_settings()
-        assert effective.mode is Mode.AUTO
-        assert effective.branch_prefix == "xp"
-
-    def test_overlay_without_override_inherits_global(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "x")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-mode = "auto"
-
-[overlays.x]
-class = "x.y:Z"
-""",
-        )
-
-        assert get_effective_settings().mode is Mode.AUTO
-
-    def test_env_var_beats_overlay_override(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_MODE", "interactive")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "x")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-mode = "interactive"
-
-[overlays.x]
-class = "x.y:Z"
-mode = "auto"
-""",
-        )
-
-        assert get_effective_settings().mode is Mode.INTERACTIVE
-
-    def test_t3_overlay_name_selects_entry(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "b")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-mode = "interactive"
-
-[overlays.a]
-class = "x"
-mode = "interactive"
-
-[overlays.b]
-class = "y"
-mode = "auto"
-""",
-        )
-
-        assert get_effective_settings().mode is Mode.AUTO
-
-    def test_overlay_can_override_user_identity_aliases(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A per-overlay alias list wins over the global setting.
-
-        Different platforms may use different handle conventions, so an
-        overlay scoped to one tracker can carry a tracker-specific alias
-        list without flipping the global default.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-user_identity_aliases = ["souliane"]
-
-[overlays.scoped]
-class = "x.y:Z"
-user_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]
-""",
-        )
-
-        assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
-
-    def test_overlay_can_override_clean_ignore(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A per-overlay clean_ignore glob list wins over the global default (#1940)."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-clean_ignore = ["global-*"]
-
-[overlays.scoped]
-class = "x.y:Z"
-clean_ignore = ["spike/*", "dev-override"]
-""",
-        )
-
-        assert get_effective_settings().clean_ignore == ["spike/*", "dev-override"]
-
-    def test_overlay_can_override_require_human_approval_to_answer(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Answerer-autonomy is per-overlay overridable.
-
-        It flows through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
-        registry — a trusted overlay can opt into direct posting without
-        flipping the global.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-require_human_approval_to_answer = true
-
-[overlays.trusted]
-class = "x.y:Z"
-require_human_approval_to_answer = false
-""",
-        )
-
-        assert get_effective_settings().require_human_approval_to_answer is False
-
-    def test_overlay_can_override_notify_user_via_bot(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Bot→user notification toggle is per-overlay overridable (#963).
-
-        A noisy overlay can opt out of the bot DM channel while leaving the
-        global default on — runs through the same generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "quiet")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-notify_user_via_bot = true
-
-[overlays.quiet]
-class = "x.y:Z"
-notify_user_via_bot = false
-""",
-        )
-
-        assert get_effective_settings().notify_user_via_bot is False
-
-    def test_overlay_can_override_notify_on_post_on_behalf(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """After-receipt DM toggle is per-overlay overridable (#949).
-
-        SKILL.md:277 requires an independent per-overlay notify lifetime —
-        an overlay can flip the after-receipt DM off while the global
-        default stays on. Runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "foo")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-notify_on_post_on_behalf = true
-
-[overlays.foo]
-class = "x.y:Z"
-notify_on_post_on_behalf = false
-""",
-        )
-
-        assert get_effective_settings().notify_on_post_on_behalf is False
-
-    def test_overlay_can_override_require_review_context(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Deep-retrieval gate is per-overlay overridable.
-
-        A spec-heavy overlay can require deep retrieval before any review
-        verdict while the global default stays off — runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "specheavy")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-require_review_context = false
-
-[overlays.specheavy]
-class = "x.y:Z"
-require_review_context = true
-""",
-        )
-
-        assert get_effective_settings().require_review_context is True
-
-    def test_overlay_can_override_require_rubric_verification(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Rubric done-gate is per-overlay overridable (#2241).
-
-        An overlay can dogfood the rubric->verifier done-gate while the global
-        default stays off — runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
-        registry, the R1 "default OFF, opt in per-overlay" decision.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-require_rubric_verification = false
-
-[overlays.dogfood]
-class = "x.y:Z"
-require_rubric_verification = true
-""",
-        )
-
-        assert get_effective_settings().require_rubric_verification is True
-
-    def test_overlay_can_override_require_spec_coverage(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#2232: spec-coverage DoD gate is per-overlay overridable.
-
-        A spec-heavy overlay can require every acceptance criterion to carry a
-        backing test before a ticket reaches DELIVERED while the global default
-        stays off — runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
-        registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "specheavy")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-require_spec_coverage = false
-
-[overlays.specheavy]
-class = "x.y:Z"
-require_spec_coverage = true
-""",
-        )
-
-        assert get_effective_settings().require_spec_coverage is True
-
-    def test_overlay_can_override_orchestrator_bash_gate_enabled(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#115: per-overlay kill-switch for the orchestrator-Bash gate.
-
-        An overlay can disable the heavy-Bash boundary gate while the
-        global default stays on. Runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
         monkeypatch.setenv("T3_OVERLAY_NAME", "looseshell")
-
         _write_toml(
             config_file,
-            """
-[teatree]
-orchestrator_bash_gate_enabled = true
-
-[overlays.looseshell]
-class = "x.y:Z"
-orchestrator_bash_gate_enabled = false
-""",
+            "[teatree]\norchestrator_bash_gate_enabled = true\n\n"
+            '[overlays.looseshell]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
         )
-
         assert get_effective_settings().orchestrator_bash_gate_enabled is False
 
-    def test_overlay_can_override_max_concurrent_local_stacks(
+    def test_privacy_overlay_toml_override(
         self,
         config_file: Path,
         elsewhere: Path,
         no_installed_overlays: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """#1397: per-overlay cap on concurrent local stacks.
-
-        A heavy overlay caps to ``1`` while the global default stays
-        unbounded (``0``). Runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry so the gate (which
-        reads ``get_effective_settings().max_concurrent_local_stacks``)
-        picks up the per-overlay value when ``T3_OVERLAY_NAME`` is set.
-        """
         del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "heavy")
-
+        monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         _write_toml(
             config_file,
-            """
-[teatree]
-max_concurrent_local_stacks = 0
-
-[overlays.heavy]
-class = "x.y:Z"
-max_concurrent_local_stacks = 1
-""",
+            '[teatree]\nprivacy = "loose"\n\n[overlays.client]\nclass = "x.y:Z"\nprivacy = "strict"\n',
         )
+        assert get_effective_settings().privacy == "strict"
 
+
+class TestOverlayDbHomeOverrides(TestCase):
+    """DB-home per-overlay overrides via an overlay-scoped ``ConfigSetting`` row.
+
+    The DB twin of the old ``[overlays.<name>]`` TOML override: a row scoped to
+    the active overlay beats the global DB row, and a ``[overlays.<name>]`` TOML
+    value for the same DB-home key is ignored on read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        for env in (
+            "T3_MODE",
+            "T3_OVERLAY_NAME",
+            "T3_ISSUE_IMPLEMENTER_ENABLED",
+            "T3_ORCHESTRATE_CLAIM_ENABLED",
+            "T3_DEDICATED_LOOPS",
+            "T3_TEAMS_ENABLED",
+            "T3_TEAMS_MAX_PANES",
+            "T3_TEAMS_IDLE_MINUTES",
+        ):
+            monkeypatch.delenv(env, raising=False)
+        _write_toml(self.config_path, '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n')
+        self.monkeypatch = monkeypatch
+
+    def _activate(self) -> None:
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+
+    def test_overlay_scoped_mode_wins_over_global(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive")
+        ConfigSetting.objects.set_value("mode", "auto", scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().mode is Mode.AUTO
+
+    def test_overlay_scoped_branch_prefix_wins_over_global(self) -> None:
+        ConfigSetting.objects.set_value("branch_prefix", "ac")
+        ConfigSetting.objects.set_value("branch_prefix", "xp", scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().branch_prefix == "xp"
+
+    def test_env_var_beats_overlay_scoped_db_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto", scope="my-overlay")
+        self.monkeypatch.setenv("T3_MODE", "interactive")
+        self._activate()
+        assert get_effective_settings().mode is Mode.INTERACTIVE
+
+    def test_overlay_inherits_global_db_when_no_scoped_row(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        self._activate()
+        assert get_effective_settings().mode is Mode.AUTO
+
+    def test_overlay_can_override_user_identity_aliases(self) -> None:
+        ConfigSetting.objects.set_value("user_identity_aliases", ["souliane"])
+        ConfigSetting.objects.set_value(
+            "user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"], scope="my-overlay"
+        )
+        self._activate()
+        assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
+
+    def test_overlay_can_override_clean_ignore(self) -> None:
+        ConfigSetting.objects.set_value("clean_ignore", ["global-*"])
+        ConfigSetting.objects.set_value("clean_ignore", ["spike/*", "dev-override"], scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().clean_ignore == ["spike/*", "dev-override"]
+
+    def test_overlay_can_override_require_human_approval_to_answer(self) -> None:
+        ConfigSetting.objects.set_value("require_human_approval_to_answer", value=True)
+        ConfigSetting.objects.set_value("require_human_approval_to_answer", value=False, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().require_human_approval_to_answer is False
+
+    def test_overlay_can_override_notify_user_via_bot(self) -> None:
+        ConfigSetting.objects.set_value("notify_user_via_bot", value=False, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().notify_user_via_bot is False
+
+    def test_overlay_can_override_notify_on_post_on_behalf(self) -> None:
+        ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().notify_on_post_on_behalf is False
+
+    def test_overlay_can_override_require_review_context(self) -> None:
+        ConfigSetting.objects.set_value("require_review_context", value=True, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().require_review_context is True
+
+    def test_overlay_can_override_require_rubric_verification(self) -> None:
+        ConfigSetting.objects.set_value("require_rubric_verification", value=True, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().require_rubric_verification is True
+
+    def test_overlay_can_override_require_spec_coverage(self) -> None:
+        ConfigSetting.objects.set_value("require_spec_coverage", value=True, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().require_spec_coverage is True
+
+    def test_overlay_can_override_max_concurrent_local_stacks(self) -> None:
+        ConfigSetting.objects.set_value("max_concurrent_local_stacks", value=1, scope="my-overlay")
+        self._activate()
         assert get_effective_settings().max_concurrent_local_stacks == 1
 
-    def test_overlay_can_override_orchestrate_claim_enabled(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1796: the orchestrate-claim arm is per-overlay overridable.
-
-        A trusted overlay can arm the orchestrate-phase claim while the global
-        default stays OFF. Runs through the generic ``OVERLAY_OVERRIDABLE_SETTINGS``
-        registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.delenv("T3_ORCHESTRATE_CLAIM_ENABLED", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-orchestrate_claim_enabled = false
-
-[overlays.trusted]
-class = "x.y:Z"
-orchestrate_claim_enabled = true
-""",
-        )
-
+    def test_overlay_can_override_orchestrate_claim_enabled(self) -> None:
+        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
+        self._activate()
         assert get_effective_settings().orchestrate_claim_enabled is True
 
-    def test_overlay_can_override_issue_implementer_settings(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1548: issue-implementer knobs are per-overlay overridable.
-
-        A trusted overlay can enable the loop and raise its concurrency
-        cap while the global default stays OFF. Runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-issue_implementer_enabled = false
-issue_implementer_max_concurrent = 1
-
-[overlays.trusted]
-class = "x.y:Z"
-issue_implementer_enabled = true
-issue_implementer_label = "auto-implement"
-issue_implementer_max_concurrent = 3
-""",
-        )
-
+    def test_overlay_can_override_issue_implementer_settings(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("issue_implementer_label", "auto-implement", scope="my-overlay")
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=3, scope="my-overlay")
+        self._activate()
         effective = get_effective_settings()
         assert effective.issue_implementer_enabled is True
         assert effective.issue_implementer_label == "auto-implement"
         assert effective.issue_implementer_max_concurrent == 3
 
-    def test_env_kill_switch_beats_overlay_override(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1548: the env kill-switch wins over a per-overlay enable.
-
-        Operational fast-disable must beat an overlay that opted the loop
-        on, mirroring ``T3_MODE`` beating the overlay ``mode`` override.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-issue_implementer_enabled = false
-
-[overlays.trusted]
-class = "x.y:Z"
-issue_implementer_enabled = true
-""",
-        )
-
+    def test_env_kill_switch_beats_overlay_db_override(self) -> None:
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
+        self._activate()
         assert get_effective_settings().issue_implementer_enabled is False
 
-    def test_dedicated_loops_defaults_off(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838: ``dedicated_loops`` is default-OFF (fail OFF, byte-identical)."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_toml(config_file, "[teatree]\n")
-        assert get_effective_settings().dedicated_loops is False
-
-    def test_overlay_can_override_dedicated_loops(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838: ``dedicated_loops`` is per-overlay overridable.
-
-        A dogfooding overlay opts into the dedicated-loop split while the
-        global default stays OFF. Runs through the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-dedicated_loops = false
-
-[overlays.dogfood]
-class = "x.y:Z"
-dedicated_loops = true
-""",
-        )
-
+    def test_overlay_can_override_dedicated_loops(self) -> None:
+        ConfigSetting.objects.set_value("dedicated_loops", value=True, scope="my-overlay")
+        self._activate()
         assert get_effective_settings().dedicated_loops is True
 
-    def test_env_dedicated_loops_beats_overlay_override(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838: ``T3_DEDICATED_LOOPS`` env wins over a per-overlay enable."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[teatree]
-dedicated_loops = false
-
-[overlays.dogfood]
-class = "x.y:Z"
-dedicated_loops = true
-""",
-        )
-
+    def test_env_dedicated_loops_beats_overlay_db_override(self) -> None:
+        ConfigSetting.objects.set_value("dedicated_loops", value=True, scope="my-overlay")
+        self.monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
+        self._activate()
         assert get_effective_settings().dedicated_loops is False
 
-    def test_teams_enabled_defaults_off(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838 PR#6: ``teams_enabled`` is default-OFF (ships dark)."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_toml(config_file, "[teatree]\n")
-        assert get_effective_settings().teams_enabled is False
-
-    def test_overlay_can_override_teams_enabled(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838 PR#6: ``teams_enabled`` is per-overlay overridable.
-
-        The override key is the field name ``teams_enabled`` (the generic
-        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry), while the global value reads
-        from the top-level ``[teams] enabled`` table.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_TEAMS_ENABLED", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[teams]
-enabled = false
-
-[overlays.dogfood]
-class = "x.y:Z"
-teams_enabled = true
-""",
-        )
-
+    def test_overlay_can_override_teams_enabled(self) -> None:
+        ConfigSetting.objects.set_value("teams_enabled", value=True, scope="my-overlay")
+        self._activate()
         assert get_effective_settings().teams_enabled is True
 
-    def test_env_teams_enabled_beats_overlay_override(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838 PR#6: ``T3_TEAMS_ENABLED`` env wins over a per-overlay enable."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_TEAMS_ENABLED", "false")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[overlays.dogfood]
-class = "x.y:Z"
-teams_enabled = true
-""",
-        )
-
+    def test_env_teams_enabled_beats_overlay_db_override(self) -> None:
+        ConfigSetting.objects.set_value("teams_enabled", value=True, scope="my-overlay")
+        self.monkeypatch.setenv("T3_TEAMS_ENABLED", "false")
+        self._activate()
         assert get_effective_settings().teams_enabled is False
 
-    def test_overlay_can_override_pane_budget(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838 PR#7a: ``teams_max_panes`` / ``teams_idle_minutes`` per-overlay overridable."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_TEAMS_MAX_PANES", raising=False)
-        monkeypatch.delenv("T3_TEAMS_IDLE_MINUTES", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[teams]
-max_panes = 1
-idle_minutes = 30
-
-[overlays.dogfood]
-class = "x.y:Z"
-teams_max_panes = 4
-teams_idle_minutes = 60
-""",
-        )
-
+    def test_overlay_can_override_pane_budget(self) -> None:
+        ConfigSetting.objects.set_value("teams_max_panes", value=4, scope="my-overlay")
+        ConfigSetting.objects.set_value("teams_idle_minutes", value=60, scope="my-overlay")
+        self._activate()
         settings = get_effective_settings()
         assert settings.teams_max_panes == 4
         assert settings.teams_idle_minutes == 60
 
-    def test_env_pane_budget_beats_overlay_override(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1838 PR#7a: ``T3_TEAMS_MAX_PANES`` / ``T3_TEAMS_IDLE_MINUTES`` env wins."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_TEAMS_MAX_PANES", "2")
-        monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "15")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "dogfood")
-
-        _write_toml(
-            config_file,
-            """
-[overlays.dogfood]
-class = "x.y:Z"
-teams_max_panes = 9
-teams_idle_minutes = 90
-""",
-        )
-
+    def test_env_pane_budget_beats_overlay_db_override(self) -> None:
+        ConfigSetting.objects.set_value("teams_max_panes", value=9, scope="my-overlay")
+        ConfigSetting.objects.set_value("teams_idle_minutes", value=90, scope="my-overlay")
+        self.monkeypatch.setenv("T3_TEAMS_MAX_PANES", "2")
+        self.monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "15")
+        self._activate()
         settings = get_effective_settings()
         assert settings.teams_max_panes == 2
         assert settings.teams_idle_minutes == 15
 
-    def test_env_pane_budget_non_positive_fails_safe(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A non-positive / non-int env value degrades to the dataclass default."""
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_TEAMS_MAX_PANES", "0")
-        monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "garbage")
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+    def test_overlay_can_override_mr_title_regex(self) -> None:
+        ConfigSetting.objects.set_value("mr_title_regex", r"^JIRA-\d+: .+", scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
 
-        _write_toml(config_file, "[teatree]\n")
+    def test_e2e_mandatory_gate_default_on_and_overlay_can_disable(self) -> None:
+        # Default ON with no rows.
+        assert get_effective_settings().e2e_mandatory_gate_enabled is True
+        ConfigSetting.objects.set_value("e2e_mandatory_gate_enabled", value=False, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().e2e_mandatory_gate_enabled is False
 
+    def test_db_home_overlay_toml_value_is_ignored(self) -> None:
+        # A [overlays.<name>] DB-home value is parsed by discovery but ignored on
+        # read — the dataclass default stands without a DB row.
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nissue_implementer_enabled = true\n',
+        )
+        self._activate()
+        assert get_effective_settings().issue_implementer_enabled is False
+
+    def test_pane_budget_env_non_positive_fails_safe(self) -> None:
+        self.monkeypatch.setenv("T3_TEAMS_MAX_PANES", "0")
+        self.monkeypatch.setenv("T3_TEAMS_IDLE_MINUTES", "garbage")
         settings = get_effective_settings()
         assert settings.teams_max_panes == 1
         assert settings.teams_idle_minutes == 30
-
-    def test_overlay_can_override_mr_title_regex(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1540: per-overlay MR title pattern wins over the global.
-
-        An overlay whose title grammar differs declares its own
-        ``mr_title_regex`` without flipping the global default. The
-        ``pr create`` gate reads it via ``get_effective_settings()`` so the
-        per-overlay value applies when ``T3_OVERLAY_NAME`` is set.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
-
-        _write_toml(
-            config_file,
-            r"""
-[teatree]
-mr_title_regex = "^(feat|fix): .+"
-
-[overlays.scoped]
-class = "x.y:Z"
-mr_title_regex = "^JIRA-\\d+: .+"
-""",
-        )
-
-        assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
-
-    def test_e2e_mandatory_gate_default_on_and_overlay_can_disable(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """#1967: the mandatory-E2E gate defaults ON and is per-overlay disablable.
-
-        Its OWN kill-switch ``e2e_mandatory_gate_enabled`` (never a reuse of
-        another gate's switch) defaults to ``True`` and an overlay can disable
-        it via ``[overlays.<name>]`` without flipping the global.
-        """
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_MODE", raising=False)
-
-        _write_toml(config_file, "[teatree]\n")
-        assert get_effective_settings().e2e_mandatory_gate_enabled is True
-
-        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
-        _write_toml(
-            config_file,
-            """
-[teatree]
-
-[overlays.scoped]
-class = "x.y:Z"
-e2e_mandatory_gate_enabled = false
-""",
-        )
-        assert get_effective_settings().e2e_mandatory_gate_enabled is False

@@ -12,7 +12,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from teatree.config import discover_overlays, load_config
+from teatree.config import get_effective_settings
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +55,13 @@ def _user_slack_id_for_overlay(overlay_name: str) -> str:
 def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
     """Resolve ``user_identity_aliases`` honouring any per-overlay override.
 
-    The active overlay's ``[overlays.<name>]`` table wins over the global
-    ``[teatree]`` value; with no setting anywhere we return the empty
-    tuple so the disposition scanner keeps its legacy behaviour.
+    DB-home (#1775): resolved via the effective-settings tier for the named
+    overlay — an overlay-scoped ``ConfigSetting`` row wins over the global one;
+    with no row anywhere we return the empty tuple so the disposition scanner
+    keeps its legacy behaviour.
     """
     try:
-        global_value = tuple(load_config().user.user_identity_aliases)
-        if overlay_name:
-            for entry in discover_overlays():
-                if entry.name == overlay_name:
-                    override = entry.overrides.get("user_identity_aliases")
-                    if override is not None:
-                        return tuple(str(s) for s in override)
-                    break
+        return tuple(get_effective_settings(overlay_name or None).user_identity_aliases)
     except Exception:  # noqa: BLE001 — never break a tick on a config read.
         logger.warning("Failed to resolve user_identity_aliases for %r; defaulting to empty", overlay_name)
         return ()
-    return global_value

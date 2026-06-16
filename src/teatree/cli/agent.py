@@ -71,11 +71,11 @@ def _launch_claude(
     if task:
         context_lines.extend(("", f"Task: {task}"))
 
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415
 
     context = "\n".join(context_lines)
     cmd = [claude_bin]
-    if load_config().user.claude_chrome:
+    if get_effective_settings().claude_chrome:
         cmd.append("--chrome")
     cmd.extend(["--append-system-prompt", context])
 

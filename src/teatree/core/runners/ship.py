@@ -3,7 +3,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
-from teatree.config import load_config
+from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
 from teatree.core.branch_currency import sha_conflicts_with_target
@@ -44,13 +44,13 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
 
 
 def get_overlay_publish_gates() -> list[str]:
-    """Return ``ban_close_trailers_on_namespaces`` from ``~/.teatree.toml``.
+    """Return ``ban_close_trailers_on_namespaces`` — DB-home (#1775).
 
-    Empty list when the setting is absent. Read fresh on each ``pr create``
-    so a user edit to the config takes effect on the next invocation
-    without restarting the process.
+    Empty list when no row exists. Resolved fresh on each ``pr create`` via the
+    effective-settings tier so a ``config_setting set`` takes effect on the next
+    invocation without restarting the process.
     """
-    return list(load_config().user.ban_close_trailers_on_namespaces)
+    return list(get_effective_settings().ban_close_trailers_on_namespaces)
 
 
 def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:

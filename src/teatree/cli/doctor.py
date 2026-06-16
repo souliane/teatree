@@ -292,9 +292,9 @@ class DoctorService:
         """
         problems: list[str] = []
 
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415
 
-        contribute = load_config().user.contribute
+        contribute = get_effective_settings().contribute
 
         # Teatree core
         teatree_is_editable, _ = IntrospectionHelpers.editable_info("teatree")
