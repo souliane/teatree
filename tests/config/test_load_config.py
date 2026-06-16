@@ -77,6 +77,51 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
     assert load_config(config_path).user.agent_signature is False
 
 
+def test_db_home_key_in_teatree_table_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # A DB-home key left in [teatree] is IGNORED on read (its home is the DB),
+    # but the drop must be VISIBLE — a loud WARN naming the key + the migration
+    # path, never a silent no-op (#1775 in-PR add C).
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\nmode = "auto"\nrepo_mode = "solo"\n')
+    with caplog.at_level("WARNING", logger="teatree.config"):
+        load_config(config_path)
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "mode" in warnings
+    assert "repo_mode" in warnings
+    assert "config_setting import" in warnings
+
+
+def test_db_home_key_in_overlay_table_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # A DB-home key under [overlays.<name>] is ignored on read just like the
+    # global table — the WARN must name the overlay-scoped key too.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nrequire_human_approval_to_merge = false\n',
+    )
+    with caplog.at_level("WARNING", logger="teatree.config"):
+        load_config(config_path)
+    warnings = "\n".join(r.getMessage() for r in caplog.records)
+    assert "require_human_approval_to_merge" in warnings
+    assert "myproj" in warnings
+
+
+def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
+    # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n'
+        'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
+        '[overlays.myproj]\npath = "~/p"\n',
+    )
+    with caplog.at_level("WARNING", logger="teatree.config"):
+        load_config(config_path)
+    warnings = "\n".join(r.getMessage() for r in caplog.records if "ignored on read" in r.getMessage().lower())
+    assert warnings == ""
+
+
 class TestDbHomeGlobalResolution(TestCase):
     """DB-home settings resolve from a GLOBAL-scope ``ConfigSetting`` row.
 

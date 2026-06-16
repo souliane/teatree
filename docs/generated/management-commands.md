@@ -30,7 +30,7 @@ Edit the source command, not this file.
 | `clear` | Delete the DB override row for *key* in *overlay*'s scope (or global) |
 | `get` | Print the resolved value for *key* and name its source (DB vs file/env) |
 | `list` | List every DB config override row, naming each row's scope (read-only) |
-| `import` | Seed the DB store from the operational ``[teatree]`` toml keys (one-time migration) |
+| `import` | Seed the DB store from the operational toml keys (one-time migration) |
 
 ## `cost`
 

@@ -205,15 +205,22 @@ backwards edge on the `core` domain layer (tach-clean). Admin path:
 for the global scope). `get` is the read side of the dual-read store — it prints a
 setting's resolved value and names its source (`db` when a row exists, else `file/env`). `import` is
 the one-time partition migration ([#938](https://github.com/souliane/teatree/issues/938)):
-it seeds the store from every operational `[teatree]` toml key that is a registered
+it seeds the store from every operational toml key that is a registered
 `OVERLAY_OVERRIDABLE_SETTINGS` field (coerced through that registry's parser,
 upserted so a re-run is idempotent), skipping bootstrap-file-only and unknown keys.
-Run it once after upgrading to the partition so an existing install's DB-home
-`[teatree]` keys keep applying (they are otherwise ignored on read). **Known limitation:**
-`import` currently migrates only the GLOBAL `[teatree]` table — a per-overlay
-`[overlays.<name>]` value for a DB-home key is not auto-migrated; re-set those with
-`t3 <overlay> config_setting set <key> <json> --overlay <name>` (tracked as a
-follow-up to extend `import` to walk overlay tables).
+It walks BOTH tiers — every operational `[teatree]` key into the GLOBAL scope and
+every operational `[overlays.<name>]` key into THAT overlay's scope (the DB twin of
+the per-overlay TOML override), so an install with both a global and a per-overlay
+value for a DB-home key migrates both in one pass. The overlay's own `path` / `url`
+discovery keys are not settings and are skipped. Run it once after upgrading to the
+partition so an existing install's DB-home keys keep applying (they are otherwise
+ignored on read).
+
+A DB-home key left in `[teatree]` / `[overlays.<name>]` after the migration is
+ignored on read, but no longer silently: `load_config` emits one `WARNING`
+(logger `teatree.config`) per offending key naming the key, its TOML location, and
+the `config_setting set` / `import` path — so the dropped value is visible rather
+than a confusing no-op.
 
 Bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE`
 / the offline `private_repos` allowlist) are explicitly out of scope — they must

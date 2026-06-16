@@ -21,6 +21,7 @@ need effective values must use ``get_effective_settings``, not the bare
 ``load_config().user`` (which sees neither env, the DB store, nor per-overlay).
 """
 
+import logging
 import tomllib
 from pathlib import Path
 
@@ -32,6 +33,8 @@ from teatree.paths import DATA_DIR, get_data_dir
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
+
+_logger = logging.getLogger("teatree.config")
 
 
 def default_logging(namespace: str) -> dict:
@@ -94,6 +97,54 @@ def _load_toml(path: Path) -> dict:
             raise ValueError(msg) from exc
 
 
+def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
+    """Emit a loud WARN for any DB-home key left in ``[teatree]`` / ``[overlays.<name>]``.
+
+    Under the #1775 hard partition a DB-home key in the TOML file is IGNORED on
+    read (its home is the ``ConfigSetting`` store), so silently dropping it would
+    leave the operator wondering why ``mode = "auto"`` in their file did nothing.
+    This makes the drop VISIBLE — one WARNING per offending key, naming the key,
+    its TOML location, and the one-time ``config_setting import`` migration path.
+
+    The home registry is imported lazily (the same deferral ``homes`` uses) to
+    avoid a ``settings -> loader -> homes -> settings`` import cycle at module load.
+    """
+    from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
+
+    db_home_keys = {name for name, home in SETTING_HOMES.items() if home is SettingHome.DB}
+
+    teatree = raw.get("teatree")
+    if isinstance(teatree, dict):
+        for key in teatree:
+            if key in db_home_keys:
+                _logger.warning(
+                    "Config key '[teatree] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
+                    "set it with `t3 <overlay> config_setting set %s ...` or migrate once with "
+                    "`t3 <overlay> config_setting import`.",
+                    key,
+                    path,
+                    key,
+                )
+
+    overlays = raw.get("overlays")
+    if isinstance(overlays, dict):
+        for overlay_name, overlay_cfg in overlays.items():
+            if not isinstance(overlay_cfg, dict):
+                continue
+            for key in overlay_cfg:
+                if key in db_home_keys:
+                    _logger.warning(
+                        "Config key '[overlays.%s] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
+                        "set it with `t3 <overlay> config_setting set %s ... --overlay %s` or migrate once with "
+                        "`t3 <overlay> config_setting import`.",
+                        overlay_name,
+                        key,
+                        path,
+                        key,
+                        overlay_name,
+                    )
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
@@ -101,6 +152,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         return TeaTreeConfig()
 
     raw = _load_toml(path)
+    _warn_db_home_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
     workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
