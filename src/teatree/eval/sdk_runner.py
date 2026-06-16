@@ -6,9 +6,10 @@ achieved with ``--bare`` / ``isolated_claude_env`` and a wall of explicit flags:
 
 *   ``setting_sources=[]`` — no ``user`` / ``project`` / ``local`` settings, so
     the developer's ``~/.claude``/project settings never bias a result;
-*   ``system_prompt=<plain spec system prompt str>`` — the scenario's agent
+*   ``system_prompt=<spilled to a --system-prompt-file>`` — the scenario's agent
     definition is the WHOLE system prompt (not the ``claude_code`` preset), so no
-    built-in system prompt leaks in;
+    built-in system prompt leaks in; it is passed by FILE, not argv, so a
+    whole-skill prompt never blows ``ARG_MAX`` (E2BIG) at the spawn;
 *   ``settings='{"hooks":{}}'`` and ``strict_mcp_config`` — no hooks, no MCP;
 *   ``cwd=<isolated temp>`` + ``env`` from :func:`isolated_claude_env` — ``HOME``
     and the config-dir vars point at a ``.claude``-free temp directory so
@@ -57,8 +58,10 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import AnyOf, EvalRun, EvalSpec, Matcher, canonicalize_tool
+from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
+from teatree.eval.system_prompt_file import spill_system_prompt
+from teatree.eval.toolset import compute_available_tools, compute_disallowed_tools
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
@@ -159,104 +162,6 @@ def resolve_metered_effort() -> EffortLevel:
     return raw if raw in EFFORT_LEVELS else METERED_DEFAULT_EFFORT  # type: ignore[return-value]
 
 
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (24,
-#: from ``strings`` on the binary). A metered run will SPIRAL into any built-in a
-#: scenario did not declare — tool-hunting (``ToolSearch``), punting
-#: (``AskUserQuestion``), notifying (``PushNotification``) — burning ``max_turns``
-#: on exploration the matchers never asked for (a false fail). The toolset is
-#: restricted by TWO belt-and-suspenders mechanisms that always agree:
-#:
-#: 1. the PRIMARY ``--tools`` allowlist (``ClaudeAgentOptions.tools``) =
-#:    :func:`compute_available_tools` — the model SEES only the listed tools,
-#:    independent of ``permission_mode``;
-#: 2. DEFENSE-IN-DEPTH: the ``--disallowedTools`` complement
-#:    (:func:`compute_disallowed_tools`) = this complete set MINUS the available
-#:    set — exhaustive even if a CLI build ignored ``--tools``. Because the set is
-#:    complete, no built-in (PushNotification etc.) can leak past the denylist.
-#:
-#: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
-#: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
-KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
-    "Agent",
-    "AskUserQuestion",
-    "Bash",
-    "BashOutput",
-    "Edit",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "Glob",
-    "Grep",
-    "KillBash",
-    "KillShell",
-    "ListMcpResources",
-    "Monitor",
-    "MultiEdit",
-    "NotebookEdit",
-    "PushNotification",
-    "Read",
-    "ReadMcpResource",
-    "Task",
-    "TodoWrite",
-    "ToolSearch",
-    "WebFetch",
-    "WebSearch",
-    "Write",
-)
-
-
-def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
-    """The canonical tool names every MATCHER in *spec* references.
-
-    Collects ``Matcher.tool`` (positive AND negative) and each
-    ``AnyOf.alternatives`` entry's tool; ``FinalStateMatcher`` references no tool.
-    A negative matcher's tool is included on PURPOSE: removing the tool a
-    ``no_tool_call_matching`` assertion guards would make that assertion pass
-    vacuously, hiding the misbehaviour it tests — so it must stay available.
-    """
-    referenced: set[str] = set()
-    for matcher in spec.matchers:
-        if isinstance(matcher, Matcher):
-            referenced.add(canonicalize_tool(matcher.tool))
-        elif isinstance(matcher, AnyOf):
-            referenced.update(canonicalize_tool(alt.tool) for alt in matcher.alternatives)
-    return referenced
-
-
-def _available_tool_set(spec: EvalSpec) -> set[str]:
-    """The canonical set of tools the model is ALLOWED to see for *spec*.
-
-    The union of the scenario's declared ``spec.tools`` (canonicalized the SAME
-    way the grader canonicalizes, so the lowercase ``bash`` alias matches ``Bash``)
-    and every matcher-referenced tool. A matcher-referenced tool is always
-    available so a negative assertion can still observe the misbehaviour it tests.
-    The single source of truth for BOTH the allowlist and the denylist-complement.
-    """
-    return {canonicalize_tool(tool) for tool in spec.tools} | _matcher_referenced_tools(spec)
-
-
-def compute_available_tools(spec: EvalSpec) -> tuple[str, ...]:
-    """The ``--tools`` ALLOWLIST for *spec* — the model sees ONLY these tools.
-
-    The PRIMARY toolset restriction: ``canonicalize(spec.tools)`` unioned with
-    every matcher-referenced tool, sorted and deterministic. Independent of
-    ``permission_mode``. Empty when a scenario declares no tools and references
-    none — :func:`build_sdk_options` renders that as ``tools=None`` (the CLI
-    default toolset), never an empty ``--tools ""`` (no tools).
-    """
-    return tuple(sorted(_available_tool_set(spec)))
-
-
-def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
-    """The built-in tools to REMOVE from the model's toolset for *spec* (denylist).
-
-    DEFENSE-IN-DEPTH complement of :func:`compute_available_tools` within the
-    complete :data:`KNOWN_BUILTIN_TOOLS`: a built-in is disallowed unless it is in
-    the available set. Because the set is complete, this is exhaustive even if a
-    CLI build ignored ``--tools``. Sorted for a deterministic, idempotent set.
-    """
-    return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - _available_tool_set(spec)))
-
-
 #: Resolved at import so the existing ``patch("…WATCHDOG_SECONDS", 0.01)`` test seam
 #: keeps working; the env override is read here once, generous by default.
 WATCHDOG_SECONDS = resolve_watchdog_seconds()
@@ -288,6 +193,14 @@ _TERMINAL_MARKERS: tuple[tuple[str, str], ...] = (
     ("maximum budget", BUDGET_EXCEEDED_REASON),
     ("maximum number of turns", MAX_TURNS_REASON),
 )
+#: The SDK wraps the CLI's non-zero exit as ``"Claude Code returned an error
+#: result: <subtype-or-errors>"`` (``claude_agent_sdk/_internal/query.py`` L342)
+#: whenever a ``result`` event carried ``is_error=True`` — but the descriptive
+#: field it falls back to is the ``subtype``, which the CLI sometimes reports as
+#: ``"success"`` even while exiting non-zero. That is a SUCCESSFUL terminus
+#: mislabeled, NOT a cap and NOT a crash: the captured trajectory already holds
+#: the success ``result`` event, so the run is graded normally instead of raised.
+_SUCCESS_RESULT_MARKER = "returned an error result: success"
 #: The cap the SDK reports in the budget message — ``Reached maximum budget
 #: ($0.1)`` — is the partial-cost floor when no metered ``result`` event was
 #: produced. (max-turns carries no ``($X)``; its cost comes from a captured
@@ -313,6 +226,18 @@ def classify_terminal_error(message: str) -> str | None:
         if marker in message:
             return reason
     return None
+
+
+def is_success_result_error(message: str) -> bool:
+    """``True`` when the SDK's error-result *message* actually describes a SUCCESS.
+
+    The CLI can exit non-zero while its ``result`` event subtype reads
+    ``"success"``; the SDK then raises ``"...returned an error result: success"``.
+    Treating that as a genuine error would crash a finished run, so the runner
+    recognizes it and grades the captured trajectory normally (the success
+    ``result`` event is already in the captured messages).
+    """
+    return _SUCCESS_RESULT_MARKER in message
 
 
 def _budget_amount_from_message(message: str) -> float | None:
@@ -399,11 +324,17 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     """Build the clean-room :class:`ClaudeAgentOptions` shared by runner and judge.
 
     Reproduces the deleted runner's virgin configuration: empty
-    ``setting_sources`` (no personal context), a plain-string ``system_prompt``
-    (the scenario's own definition, never the ``claude_code`` preset), empty
-    hooks via ``settings``, ``strict_mcp_config``, ``bypassPermissions``, and the
+    ``setting_sources`` (no personal context), the scenario's own definition as
+    the WHOLE system prompt (never the ``claude_code`` preset), empty hooks via
+    ``settings``, ``strict_mcp_config``, ``bypassPermissions``, and the
     ``max_budget_usd`` circuit breaker. ``cwd``/``env`` come from
     :func:`isolated_claude_env`; ``add_dirs`` grants the scenario its workspace.
+
+    The system prompt is spilled to a file under ``cwd`` and passed as a
+    :class:`SystemPromptFile` (``--system-prompt-file``), NOT as a plain string
+    (``--system-prompt <text>``): a whole-skill system prompt sent via argv blows
+    ``ARG_MAX`` (E2BIG) at spawn, failing the run before any scenario executes.
+    The file path keeps the argv bounded regardless of skill size.
 
     The ``--tools`` allowlist is the PRIMARY toolset restriction: an empty
     ``available_tools`` is passed as ``tools=None`` (the CLI default toolset), NOT
@@ -414,7 +345,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     available = list(config.available_tools) if config.available_tools else None
     return ClaudeAgentOptions(
         setting_sources=[],
-        system_prompt=config.system_prompt,
+        system_prompt=spill_system_prompt(config.system_prompt, config.cwd),
         settings=EMPTY_SETTINGS,
         strict_mcp_config=True,
         cwd=config.cwd,
@@ -590,8 +521,10 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
     as they arrive — instead of an all-or-nothing comprehension — keeps every
     ``AssistantMessage`` (with its tool calls) the agent produced before hitting
     the cap. On a KNOWN terminal cap the partial list is re-raised inside a
-    :class:`_TerminalResultError` for the runner to grade; any other error
-    re-raises unchanged so a genuine crash is never swallowed.
+    :class:`_TerminalResultError` for the runner to grade; a SUCCESS mislabeled as
+    an error result (the CLI exited non-zero on a ``"success"`` subtype) is graded
+    from the captured messages, not raised; any other error re-raises unchanged so
+    a genuine crash is never swallowed.
     """
     messages: list[Message] = []
     try:
@@ -601,6 +534,8 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             # mid-stream terminal raise, which is the exact bug this fixes.
             messages.append(message)  # noqa: PERF401 — partial list must survive a mid-iteration Exception
     except Exception as exc:
+        if is_success_result_error(str(exc)):
+            return messages
         reason = classify_terminal_error(str(exc))
         if reason is None:
             raise

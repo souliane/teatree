@@ -31,6 +31,7 @@ from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 from teatree.eval.sdk_runner import SdkInProcessRunner
+from teatree.eval.system_prompt_file import resolve_system_prompt
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -95,6 +96,10 @@ def _capturing_query(messages: list[Any]) -> tuple[Any, dict[str, Any]]:
         await asyncio.sleep(0)
         captured["prompt"] = prompt
         captured["options"] = options
+        # The clean-room options spill the system prompt to a --system-prompt-file
+        # under the isolated cwd (deleted on context exit); resolve it to text HERE
+        # while the file still exists so post-hoc assertions see the actual content.
+        captured["system_prompt_text"] = resolve_system_prompt(options.system_prompt) if options else ""
         for message in messages:
             yield message
 
@@ -157,8 +162,12 @@ class TestRunnerIsolation:
     def test_options_use_plain_system_prompt_not_preset(self, tmp_path: Path) -> None:
         captured = self._run(_runner_spec(tmp_path), tmp_path)
         system_prompt = captured["options"].system_prompt
-        assert isinstance(system_prompt, str)
-        assert system_prompt.startswith("# fake skill")
+        # The clean-room prompt is spilled to a --system-prompt-file ref (so a
+        # whole-skill prompt never blows ARG_MAX via argv), NOT the claude_code
+        # preset — its resolved content is the scenario's own definition.
+        assert isinstance(system_prompt, dict)
+        assert system_prompt["type"] == "file"
+        assert captured["system_prompt_text"].startswith("# fake skill")
         assert captured["options"].settings == '{"hooks":{}}'
 
     def test_options_carry_sanitized_env_and_neutral_cwd(self, tmp_path: Path) -> None:
@@ -253,7 +262,7 @@ class TestCanaryNeverReachesChild:
         assert Path(options.env["HOME"]) != fake_home
         assert not (Path(options.env["HOME"]) / ".claude" / "CLAUDE.md").exists()
         assert Path(options.cwd) != project
-        assert CANARY not in options.system_prompt
+        assert CANARY not in captured["system_prompt_text"]
 
     @pytest.mark.skipif(
         shutil.which("claude") is None or not os.environ.get("ANTHROPIC_API_KEY"),
