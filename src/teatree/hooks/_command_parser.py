@@ -385,7 +385,7 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
     payloads.extend(_json_body_fields(content))
 
 
-def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
+def _walk_api_fields(words: list[str], payloads: list[str], base: "Path | None") -> None:
     """Extract ``-f``/``-F``/``--field``/``--raw-field`` ``body=`` assignments.
 
     Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
@@ -398,7 +398,7 @@ def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
     while i < n:
         word = words[i]
         if word in field_flags and i + 1 < n:
-            _handle_field_assignment(words[i + 1], payloads)
+            _handle_field_assignment(words[i + 1], payloads, base)
             i += 2
             continue
         if word == "--input" and i + 1 < n:
@@ -411,17 +411,25 @@ def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _handle_field_assignment(arg: str, payloads: list[str]) -> None:
-    """Parse a ``-F body=value`` style argument and append the value.
+def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None") -> None:
+    """Parse a ``-F body=value`` style argument and append the resolved value.
 
     The ``body=`` prefix is required — other field names (``title=``,
-    etc.) are not body-bearing and are ignored.
+    etc.) are not body-bearing and are ignored. The value is resolved through
+    :func:`_body_file_resolution.resolve_inline_body_value` — the SAME path the
+    ``--body``/``-m``/positional-NOTE handling uses — so a ``-f body=$(cat
+    <path>)`` / ``-f body=$VAR`` field is scanned against the resolved file/var
+    content rather than the literal ``$(cat …)`` / ``$VAR`` token (a leak inside
+    the referenced file would otherwise slip onto a public repo). An
+    unresolvable indirection yields the fail-closed sentinel.
     """
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
     if name == "body":
-        payloads.append(value)
+        payloads.append(resolve_inline_body_value(value, base))
 
 
 # ── Command-segment walking ─────────────────────────────────────────
@@ -463,7 +471,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
-        _walk_api_fields(words, payloads)
+        _walk_api_fields(words, payloads, ctx.base)
     if first == "curl":
         _walk_curl_args(words, payloads)
 

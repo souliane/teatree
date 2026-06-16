@@ -297,6 +297,14 @@ class TestBypassClosures:
         assert payload is not None
         assert "User mandate" in payload
 
+    def test_gh_api_field_body_cat_substitution_file_is_scanned(self, tmp_path: Path) -> None:
+        body_path = tmp_path / "note.md"
+        body_path.write_text("## User mandate\nship it", encoding="utf-8")
+        cmd = f'gh api repos/x/y/issues/1/comments -f body="$(cat {body_path})"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
     # --- CRITICAL #5: curl data-flag JSON parsing ---
 
     def test_curl_data_flag_json_text_field_is_parsed(self) -> None:
