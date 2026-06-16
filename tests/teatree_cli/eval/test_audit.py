@@ -38,6 +38,7 @@ _VIOLATING = _assistant_tool("Bash", {"command": "git push --force origin main"}
 _CLEAN = _assistant_tool("Bash", {"command": "ls"})
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalAudit:
     def test_audits_recent_sessions_and_persists(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

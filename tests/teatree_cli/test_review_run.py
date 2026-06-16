@@ -28,6 +28,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.review import review_app
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 type JSONObject = dict[str, object]

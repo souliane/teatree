@@ -40,6 +40,7 @@ from teatree.config import OnBehalfPostMode
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _runner = CliRunner()

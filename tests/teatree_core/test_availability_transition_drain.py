@@ -23,6 +23,7 @@ from teatree.core.availability import MODE_AWAY, MODE_PRESENT, load_override, wr
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

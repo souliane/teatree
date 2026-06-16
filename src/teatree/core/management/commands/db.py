@@ -139,6 +139,7 @@ class Command(TyperCommand):
         self.stdout.write(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
 
     @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def refresh(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public `db refresh` surface (path/dslr/dump/force/fresh-dump/user-authorized); the arg list IS the CLI contract, not an internal design smell (same rationale as ticket.py:clear).
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),

@@ -27,6 +27,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

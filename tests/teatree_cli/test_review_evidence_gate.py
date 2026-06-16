@@ -31,6 +31,7 @@ from teatree.cli.review import ReviewService
 from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence, looks_like_evidence_claim
 from teatree.config import OnBehalfPostMode
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

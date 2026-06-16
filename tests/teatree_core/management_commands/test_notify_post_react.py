@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

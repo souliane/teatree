@@ -99,6 +99,7 @@ class TestPerLoopChunkScoping:
         assert scoped == failopen, (scoped, failopen)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestOwnedPerLoopSlotsQuery:
     """``owned_per_loop_slots`` reads the real ``loop:<name>`` ownership from the DB."""

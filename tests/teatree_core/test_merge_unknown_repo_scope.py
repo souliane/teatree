@@ -22,6 +22,7 @@ from django.test import TestCase
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

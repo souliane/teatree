@@ -177,6 +177,7 @@ class Command(TyperCommand):
     # introspecting these kwargs; bundling them into a dataclass would delete
     # the flags. Same targeted-noqa-for-framework-reality pattern as the
     # repo's PLC0415 (import-in-function) and SLF001 (framework internals).
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def create(  # noqa: PLR0913
         self,
         ticket_id: str,

@@ -131,6 +131,7 @@ class EvalRunManager(models.Manager["EvalRunRecord"]):
     def latest_baseline(self) -> "EvalRunRecord | None":
         return self.get_queryset().latest_baseline()
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — run-ledger create API; each kwarg is a documented run attribute.
         self,
         *,
@@ -206,6 +207,7 @@ class EvalRunRecord(models.Model):
         self.is_baseline = True
         self.save(update_fields=["is_baseline"])
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record_scenario(  # noqa: PLR0913 — per-scenario ledger record API; each kwarg is a documented field.
         self,
         *,

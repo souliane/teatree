@@ -16,6 +16,7 @@ from django.core.management import call_command
 
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _DM_CHANNEL = "D_SELF"

@@ -29,6 +29,7 @@ from teatree.loop.queue_drain import (
     stale_threshold_hours,
 )
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 DB_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks_db.backend.DatabaseBackend"}}}
@@ -87,6 +88,7 @@ class TestExpireStaleReadyJobs:
         assert DBTaskResult.objects.get().status == TaskResultStatus.RUNNING
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestDrainReadyBatch:
     def test_drains_and_runs_a_ready_job(self) -> None:
@@ -134,6 +136,7 @@ class TestDrainReadyBatch:
         assert a_worker_is_running() is False
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestExpireThenDrain:
     def test_stale_heavy_job_is_expired_before_it_can_run(self) -> None:
@@ -174,6 +177,7 @@ class TestThresholdConfig:
         assert stale_threshold_hours() == 1
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestPiggybackWiring:
     def test_piggyback_runs_expire_then_drain_behind_the_lease(self) -> None:

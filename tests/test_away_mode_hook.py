@@ -23,6 +23,7 @@ from teatree.core import availability
 from teatree.core.availability import LIVE_TURN_FRESHNESS, PresenceHeartbeat
 from teatree.core.models.deferred_question import DeferredQuestion
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

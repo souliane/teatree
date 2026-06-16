@@ -27,6 +27,7 @@ from teatree.core.merge import merge_ticket_pr, restore_caller_branch
 from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

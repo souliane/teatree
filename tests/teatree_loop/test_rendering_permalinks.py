@@ -93,6 +93,7 @@ def test_enrich_pr_refs_with_permalinks_replaces_only_matching_urls() -> None:
     assert refs[1].review_permalink == ""
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestBuildReviewPostPermalinksDB:
     def test_resolves_row_into_canonical_permalink(self) -> None:

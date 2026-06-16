@@ -22,6 +22,7 @@ from django.test import TestCase
 
 from teatree.loop.scanners.pr_sweep import MergeAttempt
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SLUG = "souliane/teatree"

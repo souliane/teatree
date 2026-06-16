@@ -25,6 +25,7 @@ from teatree.loop.scanners.codex_review import _decode_pr
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 # ---------------------------------------------------------------------------

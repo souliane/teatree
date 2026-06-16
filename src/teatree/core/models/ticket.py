@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method count reflects the lifecycle state graph, not poor encapsulation.
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"

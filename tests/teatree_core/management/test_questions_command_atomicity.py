@@ -24,6 +24,7 @@ from django.core.management import call_command
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db(transaction=True)
 
 

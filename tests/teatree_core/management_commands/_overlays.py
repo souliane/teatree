@@ -118,6 +118,7 @@ class FullOverlay(OverlayBase):
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return {"kind": "test", "source_database": "test_db"}
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,
@@ -241,6 +242,7 @@ class PostDbStepsOverlay(FullOverlay):
 class FailingImportOverlay(FullOverlay):
     """Overlay where db_import always fails — tests error reporting."""
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,
@@ -276,6 +278,7 @@ class RemotePathRecordingOverlay(FullOverlay):
         super().__init__()
         self.calls: dict[str, object] = {}
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,

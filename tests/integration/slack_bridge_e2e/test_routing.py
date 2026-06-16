@@ -11,6 +11,7 @@ from teatree.core import backend_factory
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 

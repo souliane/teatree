@@ -5,6 +5,7 @@ from django.test import TestCase
 
 from teatree.core.models.pending_reinstall import PendingReinstall
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

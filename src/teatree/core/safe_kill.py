@@ -197,6 +197,7 @@ def _refusal(detail: str, pid: int, identity: TargetIdentity, liveness: Liveness
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def safe_kill(  # noqa: PLR0913 — single safe-kill egress; each kwarg is a documented boundary injection / test override, kwargs-only.
     pid: int,
     *,

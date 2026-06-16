@@ -17,6 +17,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "d" * 40

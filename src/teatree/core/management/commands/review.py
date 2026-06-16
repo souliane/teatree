@@ -74,6 +74,7 @@ class Command(TyperCommand):
         """``t3 <overlay> review`` group root."""
 
     @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a ReviewVerdict field, the arg list IS the public CLI surface (same rationale as `ticket clear`).
         self,
         pr_id: int,

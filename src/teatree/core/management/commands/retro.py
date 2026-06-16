@@ -90,6 +90,7 @@ class Command(TyperCommand):
         return json.dumps(self._run(pr_url, classification=classification, repo=repo, label=label))
 
     @command(name="gate-failures")
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def gate_failures(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public --file/--session/--escalate/--repo/--pr-url/--label surface (same rationale as `ticket clear`), not an internal design smell.
         self,
         *,

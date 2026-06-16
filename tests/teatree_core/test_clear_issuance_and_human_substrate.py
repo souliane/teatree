@@ -37,6 +37,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "c" * 40

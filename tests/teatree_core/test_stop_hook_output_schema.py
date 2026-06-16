@@ -28,6 +28,7 @@ import pytest
 from hooks.scripts.hook_router import handle_consideration_gate, handle_enforce_answered_questions
 from teatree.core.models import PendingChatInjection
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

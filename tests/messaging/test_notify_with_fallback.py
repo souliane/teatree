@@ -18,6 +18,7 @@ import pytest
 from teatree.core.models import BotPing
 from teatree.messaging.notify_with_fallback import NotifyTransport, notify_with_fallback
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _FALLBACK_TARGET = "teatree.messaging.notify_with_fallback.messaging_from_overlay"

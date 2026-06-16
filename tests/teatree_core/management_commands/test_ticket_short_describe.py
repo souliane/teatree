@@ -148,6 +148,7 @@ class TestClaudeSummarizer:
         assert spawn_calls == []
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestDescribeOne(TestCase):
     def test_missing_ticket_emits_noop_and_exits_one(self) -> None:
@@ -180,6 +181,7 @@ class TestDescribeOne(TestCase):
         assert ticket.short_description == "dogfood smoke scanner"
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestDescribeAllMissing(TestCase):
     def test_skips_tickets_without_title(self) -> None:
@@ -211,6 +213,7 @@ class TestDescribeAllMissing(TestCase):
         assert any("DONE  described 2 ticket(s)" in line for line in captured)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestCommandDescribeMethod(TestCase):
     """Cover the ``Command.describe`` argument-validation branches directly."""

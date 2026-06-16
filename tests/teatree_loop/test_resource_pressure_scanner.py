@@ -28,6 +28,7 @@ from teatree.loop.scanners.resource_pressure import (
     read_ram_avail_gb,
 )
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _GIB = 1024 * 1024 * 1024

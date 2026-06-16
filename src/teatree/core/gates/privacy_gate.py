@@ -62,6 +62,7 @@ _DEFAULT_QUOTE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def scan_for_publication(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented input.
     *,
     text: str,

@@ -110,6 +110,7 @@ def _judge_rationale(result: ScenarioResult) -> str:
     return result.judge.rationale
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def persist_run(  # noqa: PLR0913 — run-ledger boundary; each kwarg is a documented run attribute.
     results: list[ScenarioResult],
     *,

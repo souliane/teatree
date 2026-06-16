@@ -795,6 +795,7 @@ class TestEvalBackend:
         assert "metered in-process Agent-SDK runner" in result.output
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalPersistAndHistory:
     def test_persists_and_history_lists_it(self) -> None:
@@ -889,6 +890,7 @@ def _per_scenario_cost_runner(costs: dict[str, float]) -> type:
     return _PerScenarioCostRunner
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalCostRegressionGate:
     def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
@@ -958,6 +960,7 @@ class TestEvalCostRegressionGate:
         assert "no cost baseline" in result.output
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalCostBoundsGate:
     """`--gate-cost-bounds` — the declarative absolute-ceiling gate.
@@ -1047,6 +1050,7 @@ class TestEvalCostBoundsGate:
         assert "ephemeral container" in result.output
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalModelMatrix:
     def test_matrix_runs_each_model_and_renders_columns(self) -> None:
@@ -1137,6 +1141,7 @@ class TestEvalModelMatrix:
         assert "executed 0" in result.output
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalModelVariantMatrix:
     """`--models` accepts `model@effort` variants; the tag is the identity string."""
@@ -1248,6 +1253,7 @@ class _EffortCapturingRunner:
         return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.20)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalBenchmark:
     def _invoke(self, args: list[str], *, specs: list[EvalSpec], runner: type = _BenchmarkRunner):
@@ -1488,6 +1494,7 @@ class _CostRunner:
         return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=type(self).cost)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestMatrixCostRegressionGate:
     """`--gate-cost-regression` must NOT be silently inert for `--models`/`--trials`."""
@@ -1641,6 +1648,7 @@ def _prose_report(*, weakest: str = "beta") -> ProseJudgeReport:
 
 
 @contextmanager
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval all` run patches; the list IS the lane set.
     specs: list[EvalSpec],
     *,

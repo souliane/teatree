@@ -28,6 +28,7 @@ from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _RIGHT_SHA = "a" * 40  # the reviewed SHA on the cross-repo PR

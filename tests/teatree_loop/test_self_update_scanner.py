@@ -34,6 +34,7 @@ from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.loop.scanners.self_update import SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

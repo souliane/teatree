@@ -102,6 +102,7 @@ class TestTeamRoleEnum:
         assert TeamRole.REVIEWER.claim_filter is None
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestClaimFilterPartition:
     """The maker claim filters partition the backlog along the overlay seam."""
@@ -143,6 +144,7 @@ class TestTaskClaimFilter:
     def test_reviewer_has_no_task_claim_filter(self) -> None:
         assert TeamRole.REVIEWER.task_claim_filter is None
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_task_filter_partitions_tasks_along_the_overlay_seam(self) -> None:
         from teatree.core.models import Session, Task  # noqa: PLC0415

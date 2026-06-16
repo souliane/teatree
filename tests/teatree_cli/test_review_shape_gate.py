@@ -27,6 +27,7 @@ import pytest
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _AUTHOR_CAROL = "carol"

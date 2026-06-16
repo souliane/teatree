@@ -178,6 +178,7 @@ class _FixedWithExplicitParam(OverlayBase):
     def get_provision_steps(self, worktree):
         return []
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — deliberately mirrors the 6-arg core OverlayBase.db_import contract.
         self,
         worktree,

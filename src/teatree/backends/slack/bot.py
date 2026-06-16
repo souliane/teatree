@@ -151,6 +151,7 @@ class _SlackInbound:
         return self._reactions.snapshot()
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingBackend Protocol surface, not poor encapsulation.
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
@@ -173,6 +174,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     setup/provision path leaves it ``False`` so a wrong paste errors loudly.
     """
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def __init__(  # noqa: PLR0913 — Slack credential facade; each kwarg is a distinct documented token/identity/config slot, not an internal design smell.
         self,
         *,

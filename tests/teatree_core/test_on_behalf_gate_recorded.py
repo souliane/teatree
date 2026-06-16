@@ -31,6 +31,7 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

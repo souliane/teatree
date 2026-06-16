@@ -160,6 +160,7 @@ class ReviewVerdict(models.Model):
         return f"review-verdict<{self.slug}#{self.pr_id}@{self.reviewed_sha[:8]} {self.verdict}>"
 
     @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — the §17.4.2-mirroring field set IS the public record contract, same rationale as MergeClear.issue's ClearRequest.
         cls,
         *,

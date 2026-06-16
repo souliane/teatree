@@ -31,6 +31,7 @@ _PR_URL_RE = re.compile(r"^https?://(?:[^/]+/)+(?P<slug>[^/]+/[^/]+)/pulls?/(?P<
 
 
 @codex_app.command("review")
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def review(  # noqa: PLR0913, PLR0917 — typer command: every param is a CLI flag mapped 1:1 to the public ``codex review`` surface (pr_url/head-sha/path/overlay/force/json). The arg list IS the CLI contract.
     pr_url: str = typer.Argument(..., help="PR URL, e.g. https://github.com/owner/repo/pull/123"),
     head_sha: str = typer.Option(..., "--head-sha", help="Current head SHA of the PR."),

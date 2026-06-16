@@ -101,6 +101,7 @@ class SessionAuditRecord(models.Model):
         return f"session-audit<{self.pk}:{self.session_id}:{self.corpus_entry_id}={self.verdict}>"
 
     @classmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def record(  # noqa: PLR0913 — audit-ledger create API; each kwarg is a documented field.
         cls,
         *,

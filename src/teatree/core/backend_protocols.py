@@ -166,6 +166,7 @@ class UploadVerification:
     detail: str = ""
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 @runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
     """Pull/merge requests + issue fetch — the canonical code-host concern.

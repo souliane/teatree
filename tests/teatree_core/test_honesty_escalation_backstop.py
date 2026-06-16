@@ -24,6 +24,7 @@ from teatree.config import UserSettings
 from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.models import HonestyEscalation, Rubric, Session, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

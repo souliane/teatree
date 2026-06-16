@@ -24,6 +24,7 @@ from teatree.core.models import LoopLease, PendingChatInjection, SelfImproveFiri
 from teatree.core.models.pull_request import PullRequest
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

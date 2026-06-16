@@ -17,6 +17,7 @@ import pytest
 
 from teatree.core.models import Session, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

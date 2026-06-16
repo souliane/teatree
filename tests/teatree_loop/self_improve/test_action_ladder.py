@@ -25,6 +25,7 @@ from teatree.loop.self_improve.detectors import (
 )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _report(  # noqa: PLR0913  # test helper: each kwarg maps 1:1 to a DetectorReport field.
     *,
     detector: str = "dispatch_gap",

@@ -11,6 +11,7 @@ from django.utils import timezone
 from teatree.core.models import Session, Task, TaskAttempt
 from tests.factories import TicketFactory
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

@@ -295,6 +295,7 @@ def _record_fallback_failure(
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _upsert_botping(  # noqa: PLR0913 — one typed write site for the BotPing audit row; each field is explicit.
     *,
     idempotency_key: str,

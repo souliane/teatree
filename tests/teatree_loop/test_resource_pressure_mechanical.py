@@ -29,6 +29,7 @@ from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop import mechanical_resources
 from teatree.loop.mechanical_resources import free_resources
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _GIB = 1024 * 1024 * 1024

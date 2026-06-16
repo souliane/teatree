@@ -6,6 +6,7 @@ import pytest
 
 from teatree.core.models import ReviewAssignment, ReviewIntent
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

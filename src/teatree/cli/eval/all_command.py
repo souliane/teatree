@@ -16,6 +16,7 @@ from teatree.eval.backends import SUBSCRIPTION_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def all_lanes(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public `t3 eval all` flag. The arg list IS the CLI contract.
     backend: str = typer.Option(
         SUBSCRIPTION_BACKEND,

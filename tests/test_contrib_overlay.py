@@ -245,6 +245,7 @@ class TestGetProvisionSteps(TestCase):
         assert overlay.get_provision_steps(bare_worktree) == []
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestInstallOverlaysEditableStep:
     """Integration tests for the install-overlays-editable provision step."""

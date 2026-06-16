@@ -35,6 +35,7 @@ from django.utils import timezone
 from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker
 from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

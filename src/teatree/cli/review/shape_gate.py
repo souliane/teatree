@@ -114,6 +114,7 @@ def _count_words(body: str) -> int:
     return len(body.split())
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + inline flag + the #126 override).
     *,
     api: "GitLabHTTPClient",

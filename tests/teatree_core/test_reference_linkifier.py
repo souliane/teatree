@@ -128,6 +128,7 @@ class TestReferenceResolverConstruction:
         assert resolver.resolve_issue_for_slug("other/repo", 9) == "https://github.com/other/repo/issues/9"
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReferenceResolverDbHit:
     def test_pull_request_url_wins_over_construction(self) -> None:

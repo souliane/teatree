@@ -30,6 +30,7 @@ def _spec(matchers: tuple[Matcher | AnyOf | FinalStateMatcher, ...]) -> EvalSpec
     )
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def _run(  # noqa: PLR0913 — test-data builder mirroring the EvalRun dataclass fields.
     tool_calls: tuple[EvalToolCall, ...],
     *,

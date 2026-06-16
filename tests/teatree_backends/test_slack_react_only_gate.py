@@ -125,6 +125,7 @@ class TestAddReactionRaisesOnSlackError:
         assert slack_reactions.add_reactions_for_transition(ticket, "mark_merged") == 0
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReactCommandSurfaceMissingScope:
     """``t3 slack react`` exits non-zero on a Slack ``ok:false`` (e.g. ``missing_scope``).

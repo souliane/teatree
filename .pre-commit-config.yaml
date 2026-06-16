@@ -179,6 +179,28 @@ repos:
         files: '^(src/teatree|docs)/'
         pass_filenames: true
 
+  # Phase 6b - ac-django testing conventions (ast-grep; grandfathered INLINE via
+  # rule-scoped `# ast-grep-ignore: <rule-id>` comments — no baseline file, no
+  # count cap. The colon form is used over the bracket form so it coexists with
+  # ruff's ERA001 preview rule.) ast-grep is pinned to 0.42.3 by the hook wrapper
+  # (resolved via `uvx --from ast-grep-cli==0.42.3`). The pyproject hook
+  # grandfathers the three existing complexity-ignore entries via --grandfather.
+  - repo: https://github.com/souliane/skills
+    rev: 29c0a2c62e95203783e860536ce38cec4375de39
+    hooks:
+      - id: ac-django-no-pytest-django-db
+        files: ^tests/.*\.py$
+      - id: ac-django-testcase-no-pytest-parametrize
+        files: ^tests/.*\.py$
+      - id: ac-django-no-complexity-suppressions
+        files: ^(src/teatree/.*\.py|tests/.*\.py)$
+      - id: ac-django-no-pyproject-complexity
+        files: ^pyproject\.toml$
+        args:
+          - --grandfather=C901@lint.per-file-ignores.scripts/**/*.py
+          - --grandfather=PLR0912@lint.per-file-ignores.scripts/**/*.py
+          - --grandfather=PLR0904@lint.per-file-ignores.tests/**/*.py
+
   # Phase 7 - Project-specific
   - repo: local
     hooks:

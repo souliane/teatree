@@ -21,6 +21,7 @@ def _pending_task() -> Task:
     return Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestClaimedByAcceptsTeamSlot:
     def test_claim_next_pending_accepts_a_team_role_slot(self) -> None:

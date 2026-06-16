@@ -16,6 +16,7 @@ from django.core.management import call_command
 
 from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, Ticket, Worktree
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

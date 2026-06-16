@@ -22,6 +22,7 @@ import pytest
 from teatree.cli.review import ReviewService
 from teatree.core.models import OnBehalfApproval
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

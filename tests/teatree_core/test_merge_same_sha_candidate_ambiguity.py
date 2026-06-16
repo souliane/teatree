@@ -27,6 +27,7 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, pr_slug_resolution
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _REVIEWED_SHA = "a" * 40  # the reviewed SHA carried by the CLEAR

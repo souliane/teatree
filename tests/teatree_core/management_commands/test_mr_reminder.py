@@ -22,6 +22,7 @@ from teatree.config_mr_reminder import MrReminderConfig
 from teatree.core.management.commands import mr_reminder as command_module
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _CONFIG = MrReminderConfig(

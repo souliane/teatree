@@ -399,6 +399,7 @@ class TestSessionTodoRendering(TestCase):
     """The session-scoped renderer prints two labeled sections, never merged."""
 
     @staticmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def _row(  # noqa: PLR0913 — test-data builder mirroring the TaskRow TypedDict fields.
         task_id: int,
         *,
@@ -589,6 +590,7 @@ class DbOverlay(CommandOverlay):
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return DbImportStrategy(kind="dslr", source_database="development-acme")
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
         worktree: Worktree,

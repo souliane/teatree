@@ -22,6 +22,7 @@ from teatree.types import RawAPIDict
 
 runner = CliRunner()
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

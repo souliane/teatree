@@ -137,6 +137,7 @@ class TestStatusCommand:
         assert "running" in result.stdout
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestCheckCommand:
     def test_exits_1_when_queue_empty(self) -> None:
@@ -329,6 +330,7 @@ class TestListenCommand:
             assert held == pid_file
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReactCommand:
     """``t3 slack react`` routes through the on-behalf egress (#960/#1750)."""

@@ -67,6 +67,7 @@ def _label_yaml(entry_id: str, *, labelled_by: str = "human:rev", rule_author: s
     )
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestLabelNominate:
     def test_lists_nominated_records_with_slugs(self) -> None:
@@ -86,6 +87,7 @@ class TestLabelNominate:
         assert "(no records nominated for labelling)" in result.output
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestLabelAdd:
     def test_scaffolds_session_copy_and_label_template(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,6 +17,7 @@ from teatree.core.models import LoopState
 from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.loop.review_claim import review_loop_enabled
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

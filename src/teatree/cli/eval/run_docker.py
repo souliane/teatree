@@ -88,6 +88,7 @@ def run_in_docker_or_exit(
     args.dispatch()
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-history flag forwarded with the run args.
     args: RunDockerArgs,
     *,

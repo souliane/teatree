@@ -320,6 +320,7 @@ def _accumulate_overlays(
     return merged_items, in_flight_items, failed_items, earliest_since
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each kwarg is a documented window/scope input.
     *,
     since: datetime,

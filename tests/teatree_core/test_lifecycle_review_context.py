@@ -30,6 +30,7 @@ from teatree.core.management.commands.lifecycle import ReviewContextError
 from teatree.core.models import Session, Ticket
 from teatree.core.models.task import Task
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

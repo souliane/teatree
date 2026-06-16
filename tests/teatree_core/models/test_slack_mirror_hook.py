@@ -16,6 +16,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from teatree.core.models.deferred_question import DeferredQuestion
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

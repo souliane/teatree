@@ -136,6 +136,7 @@ def _emit_heartbeats(
         heartbeat(f"still running `{step}`… ({elapsed_min:.1f}m elapsed)")
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def run_timeboxed_step(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
     name: str,
     cmd: Sequence[str],

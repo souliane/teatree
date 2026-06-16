@@ -18,6 +18,7 @@ from teatree.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 

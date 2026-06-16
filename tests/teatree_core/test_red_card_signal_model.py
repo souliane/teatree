@@ -14,6 +14,7 @@ import pytest
 
 from teatree.core.models import RedCardIntent, RedCardSignal
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

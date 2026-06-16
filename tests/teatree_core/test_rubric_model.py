@@ -12,6 +12,7 @@ from django.test import TestCase
 
 from teatree.core.models import Rubric, RubricCriterion, RubricError, Ticket
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40

@@ -51,6 +51,7 @@ class NotifyKind(enum.StrEnum):
     INFO = "info"
 
 
+# ast-grep-ignore: ac-django-no-complexity-suppressions
 def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is a documented opt-in / test override.
     text: str,
     *,

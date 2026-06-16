@@ -10,6 +10,7 @@ from django.core.management import call_command
 
 from teatree.core.models import LoopLease, SessionHandover
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

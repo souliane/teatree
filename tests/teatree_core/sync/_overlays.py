@@ -19,6 +19,7 @@ from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 class SyncConfig(OverlayConfig):
     """Configurable overlay config for sync tests."""
 
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
     def __init__(  # noqa: PLR0913
         self,
         *,

@@ -21,6 +21,7 @@ from teatree.core.models import RedCardSignal
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.types import RawAPIDict
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

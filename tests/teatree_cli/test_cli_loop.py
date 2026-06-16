@@ -442,6 +442,7 @@ class TestSlackAnswerStartCommand:
         call.assert_called_once_with("loop_slack_answer", json_output=True)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestLoopOwnerCli:
     """``t3 loop claim/owner/release`` end-to-end through the mgmt command (#1073)."""

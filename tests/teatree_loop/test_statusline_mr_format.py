@@ -85,6 +85,7 @@ class TestMrChipIsBare:
         assert "(1 notes)" not in blob, repr(blob)
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestMergedMrsNotShown:
     """``build_review_post_permalinks`` filters out MERGED PullRequests (Culprit A)."""
@@ -126,6 +127,7 @@ class TestMergedMrsNotShown:
         assert merged_pr_url not in permalinks, permalinks
 
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestTracker404StripsClickableUrl:
     """A tracker_404 ticket renders without a clickable URL (Culprit B)."""
