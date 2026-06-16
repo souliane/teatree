@@ -19,6 +19,18 @@ Fetch all "Not started" issues assigned to the current user, then implement each
 
 When invoked with `--periodic` (e.g., from a cron job or scheduler), run in **non-interactive mode**:
 
+- **Report status — never start work.** Periodic mode reads ticket status and posts reminders; it does **not** create a worktree, check out a branch, provision an environment, or write code. The one command to read in-flight status — copy-paste, no narration:
+
+  ```bash
+  # Periodic status read — refresh the followup cache (PRs, pipelines, approvals, merges) in one pass.
+  t3 <overlay> followup sync
+
+  # Or the one-shot variant that also processes due PR reminders:
+  t3 <overlay> daily
+  ```
+
+  Never follow a status read with `git worktree add`, `git checkout -b`, or `t3 <overlay> worktree provision`/`start` in periodic mode — those start work, which periodic mode must not do.
+
 - **Skip ticket implementation** (§3–§8) — periodic mode only checks status, it never starts new work.
 - **Automatic steps:** § 9 (ticket transitions), § 10 (status check), § 11 (PR review reminders).
 - **No user confirmation** — execute safe actions (status checks, cache updates) silently. For actions that modify external state (transitions, chat posts), respect existing safeguards:

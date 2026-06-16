@@ -201,6 +201,46 @@ When a `t3` command fails, **fix the CLI code first** — never manually run the
 3. **Fix** the code, add a test, and commit.
 4. **Re-run** the `t3` command to verify the fix.
 
+#### Investigating t3 Failures (the ONLY debug path)
+
+When a `t3` command fails, diagnose **through `t3` itself** — do **not** drop to raw `docker`, `psql`, or `manage.py`. These are the sanctioned diagnostic surfaces, in order:
+
+```bash
+# 1. Re-run the failing command with the subcommand's --verbose / -v flag
+#    (shows matched patterns, resolved paths, and the underlying invocation)
+t3 <overlay> worktree provision --verbose
+
+# 2. Structured per-worktree health checklist (what provisioned, what didn't)
+t3 <overlay> worktree diagnose
+t3 <overlay> worktree status        # FSM state, branch, allocated host ports
+
+# 3. Cross-store drift across every worktree in the ticket (optionally --fix)
+t3 <overlay> workspace doctor
+
+# 4. Global install health — clone path, .pth, tools, MCP connectors
+t3 doctor check
+
+# 5. Installation report — versions, registered overlays, config resolution
+t3 info
+```
+
+Read the diagnostic output, find the root cause in the overlay or core code, fix it, add a test, then re-run the original `t3` command. Never reach for a raw workaround to "get unblocked" — a manual `docker compose up` or `createdb` produces a half-provisioned environment that hides the real bug.
+
+#### Worked example: fix the CLI, never the workaround
+
+```bash
+# WRONG — agent sees `t3 <overlay> worktree provision` fail on a DB import,
+# then hand-rolls the underlying steps and ends up with a broken env:
+createdb my_wt_db
+pg_restore -d my_wt_db dump.sql        # misses env cache, direnv, prek, symlinks
+
+# RIGHT — diagnose through t3, fix the code, re-run the canonical command:
+t3 <overlay> worktree provision --verbose   # surfaces the failing step
+t3 <overlay> worktree diagnose              # confirm which invariant is red
+# ...locate + fix the failing provision step in the overlay/core code, add a test...
+t3 <overlay> worktree provision             # re-run; now green end-to-end
+```
+
 ### Never Hand-Edit Generated Files
 
 Setup tools (`t3 <overlay> worktree provision`, etc.) generate configuration files (`.t3-cache/.t3-env.cache`, docker overrides, port allocations). The env cache is regenerated on every `t3 <overlay> worktree start`; **manual edits create drift** and the next env-dependent command refuses with "env cache stale". Mutate it only via `t3 <overlay> env set KEY=VALUE`.
@@ -218,9 +258,25 @@ Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
 
-### Never Edit Files in the Main Clone
+### Never Edit Files in the Main Clone (Non-Negotiable)
 
 Canonical rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Worktree-First Work". Covers the pre-edit path check and collision detection.
+
+The main clone (default branch) is for `git worktree` to branch from — it is **never** an edit target, not even for a "quick one-line hotfix". A live edit on the main clone's working tree pollutes the base every worktree shares and is invisible to the FSM. Do **not** open or patch a file under the main clone. Instead, always branch a worktree first:
+
+```bash
+# WRONG — never hot-fix in the main clone's working tree:
+cd ~/workspace/<overlay>/<overlay-repo>      # this is the MAIN clone
+$EDITOR src/app/thing.py                     # FORBIDDEN — pollutes the shared base
+
+# RIGHT — create the ticket workspace, provision it, then edit IN the worktree:
+t3 <overlay> workspace ticket <issue-url-or-id>   # creates the worktree(s) on a branch
+t3 <overlay> worktree provision                   # DB import + env cache + direnv + prek + overlay setup
+cd <printed-worktree-path>                         # the per-ticket worktree, NOT the main clone
+$EDITOR src/app/thing.py                            # edit here — isolated branch + env
+```
+
+Before any edit, confirm you are not in the main clone: `git rev-parse --show-toplevel` must resolve to a ticket worktree path, never the main clone root.
 
 ### Full Worktree Isolation (Non-Negotiable)
 
@@ -230,7 +286,26 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 - Never use the main repo's database for worktree work
 - Never manually set ports — let `t3 <overlay> worktree provision` allocate them via `find_free_ports()`
 
-When testing a PR, create a full worktree (`t3 <overlay> workspace ticket` + `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`).
+#### Canonical provisioning command (always overlay-scoped)
+
+Provisioning a worktree's database, env, and setup steps goes through exactly **one** command. It is `worktree`-scoped (one worktree) or `workspace`-scoped (every worktree in the ticket), and the `<overlay>` token is **mandatory** — a bare `t3 worktree provision` (no overlay) does not resolve the overlay's repos, ports, or DB import strategy and is the recorded failure mode:
+
+```bash
+# Provision ONE worktree — "Run DB import + env cache + direnv + prek + overlay setup steps":
+t3 <overlay> worktree provision
+
+# Provision EVERY worktree in a multi-repo ticket workspace:
+t3 <overlay> workspace provision
+```
+
+Do **not** drop the `<overlay>`, and do **not** hand-roll the underlying steps (`createdb` / `pg_restore` / `direnv allow` / `prek install`) — the single command sequences them in the right order and records FSM state. When testing a PR, run the full sequence:
+
+```bash
+t3 <overlay> workspace ticket <issue-url-or-id>   # create the worktree(s) on a branch
+t3 <overlay> worktree provision                   # DB import + env cache + direnv + prek + overlay setup
+t3 <overlay> worktree start                        # boot docker compose + allocate ports
+t3 <overlay> worktree ready                        # readiness probes — the truth-teller
+```
 
 ### Validate After Provisioning (Non-Negotiable)
 

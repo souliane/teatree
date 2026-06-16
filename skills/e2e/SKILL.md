@@ -70,11 +70,25 @@ A single spec should run against either the deployed **dev** environment or the 
 
 **Target selection.** `t3 <overlay> e2e [run|external|project] --target dev|local`:
 
+```bash
+# Run the suite against the deployed dev environment (do NOT export/edit BASE_URL by hand):
+t3 <overlay> e2e run <work-item> --target dev
+
+# Run the same spec against the local stack (always discovers the local frontend):
+t3 <overlay> e2e run <work-item> --target local
+```
+
 - `dev` — keep the pre-set `BASE_URL` (deployed env); no local port scan.
 - `local` — always discover the local frontend, even if a stray `BASE_URL` is exported (so `--target local` can never silently hit a deployed env).
 - omitted — back-compat: infer `dev` if `BASE_URL` is set, else `local`.
 
-The resolved value is exported as **`T3_E2E_TARGET`**. The spec branches on it — `const IS_DEV = process.env.T3_E2E_TARGET === 'dev'` — and must not re-derive the target from a `BASE_URL` host regex. Prefer testing a deployed/merged change against `dev`; an unmerged change must still pass on `local`.
+**Set the target with `--target`, never by hand-editing `BASE_URL` (Non-Negotiable).** Do this:
+
+1. Select the environment with the `--target dev|local` flag — that is the ONE knob.
+2. Let the runner resolve and export **`T3_E2E_TARGET`** for you; the spec branches on it — `const IS_DEV = process.env.T3_E2E_TARGET === 'dev'`.
+3. Never re-derive the target from a `BASE_URL` host regex, and never export or rewrite `BASE_URL` to point at a different env — a stray `BASE_URL` is exactly what `--target local` overrides so a local run can't silently hit deployed code.
+
+Test a deployed/merged change against `dev`; an unmerged change must still pass on `local` (the DoD gate below requires a green `local` run regardless).
 
 **Specs branch selection (`external` runner).** `t3 <overlay> e2e [run|external] --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` applies only to a `--repo` clone; a `T3_PRIVATE_TESTS` directory is one you check out yourself, so the flag is rejected there.)
 
@@ -172,6 +186,23 @@ This gate is **not a replacement for E2E evidence** — it only catches silent-r
 
 ## DoD Local-E2E Gate (UI-visible tickets)
 
+**E2E evidence is part of "done", not an optional extra — record it BEFORE ship (Non-Negotiable).** A UI-visible ticket is not done until it has a green local E2E artifact, and the deployed-env proof follows once the change is live. The canonical sequence:
+
+```bash
+# 1. BEFORE ship — green local E2E run is mandatory; this records the gating artifact:
+t3 <overlay> e2e run <work-item> --target local
+
+# 2. Ship only after step 1 is green (Ticket.ship() refuses otherwise):
+t3 <overlay> pr create
+
+# 3. After merge + deploy — run E2E against the dev environment and post the test plan
+#    (the deployed-env run is the completing half of "done", not a nice-to-have):
+t3 <overlay> e2e run <work-item> --target dev
+t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
+```
+
+Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run plus a posted test plan is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven.
+
 `Ticket.ship()` refuses to ship a **UI-visible** ticket — one whose scope includes a repo in the active overlay's `frontend_repos` — until a **green local-stack E2E artifact** exists. The durable `Ticket.extra['e2e_recipe'].last_run` must be `result == "green"` AND `env == "local"`; a `dev` run records provenance but does NOT satisfy the gate. A dev-after-merge run is deliberately not enough — the whole point is to catch missing scope *before* the merge, not after. A green local run is recorded automatically by `t3 <overlay> e2e run <work-item>` (which resolves an on-disk workspace, so `env` defaults to `local`).
 
 The gate raises `DodLocalE2EError` (a transition refusal, like the dirty-worktree preflight) and the FSM stays put. Escape hatch for a genuinely non-UI or exempt ticket the heuristic mis-flags:
@@ -207,6 +238,37 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 **Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
 
 The deterministic primitive for this rule is `teatree.core.doc_evidence` (#2296) — route doc-export evidence checks through it rather than hand-rolling a substring scan. Parse the document into a `StructuredDoc` (named `fields` + labelled table `rows`) and verify with `check_doc_evidence(doc, FieldClaim(term=…, field_label=…))` or `ColumnClaim(term=…, column_label=…)`. The probe binds the assertion to the field/column the AC constrains and **fails loud** (`DocEvidenceError`) when that anchor is absent — never falling back to an incidental free-text match. A bare page-wide substring is rejected outright (`reject_page_wide_substring`); it is not evidence. It is an available primitive, not a globally-enforced gate yet — wiring a specific call site (e.g. an overlay's doc-export verification step) into it is the follow-up.
+
+## Posting a Test Plan
+
+There is ONE canonical command for posting a test plan — do not hand-craft a GitLab/GitHub note, do not paste screenshots into a comment by hand, and do not explore for an alternative path:
+
+```bash
+t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
+```
+
+The manifest is the single input. Build it once, then run that command — re-running is always safe (each run merges its env over the prior note state, § "Post Testing Evidence on the Ticket").
+
+**The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's `Dev | Local` evidence table, so the test plan is steps-plus-evidence, not bare images. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
+
+```jsonc
+{
+  "ticket": "<TICKET>",
+  "workflows": [
+    {
+      "workflow": "<plain-language workflow name>",
+      "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
+      "dev":   {"video": null, "images": []},
+      "local": {"video": "artifacts/<TICKET>/local/run.webm",
+                "images": ["artifacts/<TICKET>/local/step1.png"]}
+    }
+  ]
+}
+```
+
+**Set the environment with `--target`, never by hand-editing `BASE_URL`.** The env a manifest fills is decided by the `--target dev|local` flag on the `t3 <overlay> e2e run` invocation that produced the captures (§ "Dual-Env Testing" → "Target selection"), and recorded in the manifest's `dev`/`local` blocks. Do not export or rewrite `BASE_URL` to redirect the run — `--target` is the one knob; the runner exports `T3_E2E_TARGET` for you.
+
+**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots that go into the manifest) runs **locally behind the `--target` flag** — there is no CI parity for capturing/posting the test-plan note. CI runs the suite for pass/fail, but it does **not** assemble or post a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|local`, then post them with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
 
 ## Post Testing Evidence on the Ticket
 

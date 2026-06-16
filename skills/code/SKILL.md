@@ -46,6 +46,46 @@ Misleading names are bugs — rename the symbol instead of explaining it with a 
 
 ## Workflow
 
+### 0b. Worktree-First — Never Edit a Main Clone (Non-Negotiable)
+
+The path you were handed may be the **canonical clone** (the repo's primary working copy that tracks the default branch). Editing it directly corrupts the shared working tree, blocks other sessions, and ships unreviewed commits onto the wrong branch. Before the **first** edit of any coding task, do X — never Y:
+
+1. **Do** create a dedicated worktree on a fresh branch and `cd` into it — every edit, test run, and commit happens **inside the worktree**, never in the clone you were pointed at.
+2. **Never** run an `Edit`/`Write` against a file under the canonical clone path (e.g. `.../<repo>/<repo>/...`) until a worktree exists.
+
+The overlay owns worktree creation (it wires ports, DB, env, and the branch name). Use it when a ticket context exists:
+
+```bash
+t3 <overlay> workspace ticket <ticket-url-or-id>   # creates the worktree + branch, provisions it
+cd <printed-worktree-path>                          # all edits happen here, not in the main clone
+```
+
+For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), create the worktree by hand from the default branch first — the edit comes **after** the worktree exists, never before:
+
+```bash
+git fetch origin main -q
+git worktree add -b <short-branch> ../<repo>-wt-<slug> origin/main
+cd ../<repo>-wt-<slug>
+# only now: Edit / Write the file
+```
+
+A session-less branch still gets a session at ship time (see [`../ship/SKILL.md`](../ship/SKILL.md) § 4b) — but the worktree comes first regardless.
+
+### 0c. Overlay-Repo Code — Load the Overlay Playbook Skill First (Non-Negotiable)
+
+When the repo you are about to code in is **managed by an overlay** (a product/service repo the overlay's workspace wiring owns, not teatree core itself), the overlay's playbook skill carries this repo's worktree/run/test/lint commands, tenant rules, and conventions. The generic dev skill is **not** enough on its own. Per `/t3:rules` § "Invoke Skills Before ANY Response", do X — never Y:
+
+1. **Do** self-load the overlay's playbook skill **before touching any code** — unconditionally, before asking for the ticket URL, before reading any diff. If the `UserPromptSubmit` loader did not fire, load it yourself: `/t3-<overlay>` (the overlay's named playbook skill).
+2. **Never** issue the first `Edit`/`Write` against an overlay-repo source file until that skill is loaded alongside this one.
+
+```text
+# overlay repo `<overlay>-product` detected, loader did not fire → load the playbook FIRST
+Skill: t3-<overlay>      # overlay playbook (worktree/run/test wiring, tenant rules)
+# then proceed with the dev skill already loaded — only now edit source
+```
+
+Loading is unconditional and comes **before** any clarifying question — do not wait to be told the skill name; derive it from the active overlay.
+
 ### 0a. Scoping Gate — Warn When Skipped
 
 Features benefit from a scoping pass (intent discovery, acceptance-criteria framing) BEFORE coding. The teatree session FSM carries a `scoping` phase (`Ticket.State.SCOPED`) for exactly this — feature tickets are expected to transition `not_started → scoped → started` before coding starts.
@@ -136,6 +176,18 @@ t3 <overlay> lifecycle record-e2e-run <ticket-id> \
 
 A green run recorded **without** `--posted-url` does NOT satisfy the gate — the posted evidence URL is the part that clears it. Do not invent an `e2e attest` subcommand; the command is `lifecycle record-e2e-run`.
 
+**The gate only fires for display-impacting changes — never force a spurious bypass on a change that can't reach the customer.** When the diff touches **only** a test file (`tests/...`, `*/test_*.py`), a fixture, a doc, or other code that cannot change what the customer sees — no serializer, view, template, or frontend — the E2E gate does **not** apply, so there is nothing to attest and nothing to bypass. Do X, never Y:
+
+1. **Do** delegate PR creation to the overlay — it evaluates the gate against the actual diff and lets a non-display change through cleanly:
+
+   ```bash
+   t3 <overlay> pr create <ticket-id>
+   ```
+
+2. **Never** run `t3 <overlay> ticket e2e-bypass ...` (or `--skip-e2e`-style flags) for a test-only / non-display change. A bypass is a recorded exception that exists **only** for a genuinely display-impacting change you cannot run E2E for — inventing one where the gate never fires fabricates a waiver for a guard that was never triggered.
+
+`t3 <overlay> pr create` is the mandatory PR path on **every** ticket (display-impacting or not) — raw `gh pr create` / `glab mr create` is forbidden whenever the overlay exposes `pr create`, because only the overlay command runs the shipping gate, the E2E/visual-QA evaluation, the title/description validator, and the ticket-URL injection (see [`../ship/SKILL.md`](../ship/SKILL.md) § "pr create is mandatory").
+
 ### 5b. When to Switch Skills
 
 - Stay in `t3:code` for TDD, implementation-time tests, and feature-building.
@@ -193,8 +245,25 @@ When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — 
 - Run linting after each significant change.
 - Run type checking if the project uses it.
 - Run the relevant test suite frequently — don't batch test runs.
+- **Regression suite is GREEN locally before any push (mandatory).** A narrow node run proves your new test; the regression suite proves you broke nothing else. The discipline is do-X-not-Y: do run the suite and confirm it passes in this same response *before* `pr create` / `git push`; do not push to let CI tell you whether you regressed something.
+
+  ```bash
+  uv run pytest --no-cov -x -q          # teatree core: full regression suite
+  # overlay repo: use the overlay's wired runner from its playbook skill, e.g.
+  t3 <overlay> test run                 # runs the repo's regression suite under its config
+  ```
+
 - **Run the language convention skill's review checklist** (if loaded) before declaring implementation complete.
 - **100% test coverage is part of the implementation (Non-Negotiable).** New code ships with tests in the same commit. Never lower coverage thresholds, add files to coverage omit lists, or exclude code from coverage measurement without **explicit user approval**. If you can't reach 100% coverage, the implementation scope is too large — break it into smaller pieces.
+
+  The test file **mirrors the production module's path** under `tests/` with a `test_` prefix (a helper at `src/<pkg>/util/money.py` gets `tests/<pkg>/util/test_money.py`). When you add a new production file, create its test file in the same change — do X, never Y: **do** write the mirroring `tests/.../test_*.py` now; **never** declare the helper done with no test file on disk.
+
+  ```bash
+  # new production file: src/teatree/util/money.py  →  create its mirror test now
+  touch tests/teatree/util/test_money.py
+  # write the failing test (RED), then run only that node so feedback is seconds:
+  uv run pytest tests/teatree/util/test_money.py -q --no-migrations --reuse-db
+  ```
 
 - **Don't create an uncoverable/unreachable defensive guard — restructure so the type is precise.** A "shared core returning `T | None` + a thin wrapper that re-asserts non-`None`" shape forces an unreachable branch: the wrapper's `if x is None: raise` (or `assert x is not None`) can never execute when the core's contract guarantees non-`None` for that call, so it is both uncoverable (the 100%-new-line rule can't be met without breaking the contract) and a lint violation (`assert` is banned in `src/`; `# noqa` is not an option). The fix is at the design level, not a suppression: split into **two purpose-typed methods** — one that always produces and returns `T` (the create/attestation path), one that returns `T | None` (the read-only path) — sharing the *policy/logic*, not a `T | None` return. Each call site then gets a precisely-typed value with no narrowing, no defensive guard, no `assert`, and full coverage falls out naturally. When you find yourself adding an "unreachable / defensive, should never happen" guard purely to satisfy the type checker, that is the signal the return type is too loose — tighten it by splitting, don't guard it.
 

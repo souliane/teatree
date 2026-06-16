@@ -103,7 +103,33 @@ Skill prose does not propagate into a spawned agent's context — include the in
 
 The fan-out above spawns an ephemeral worker per ticket only in **solo** mode (the main agent owns the Agent/Task tool). When the session is an **Agent Team**, the roster is **fixed up front**: the team's makers and reviewer are created once. A new task is then routed to an **existing idle teammate** via the shared task list — `TaskUpdate` the task's `owner` to that teammate (or the teammate claims it), then a `SendMessage` hands off context. Never spawn a **fresh teammate per task**: teammates cannot spawn teammates, the lead's roster is sized once, and minting a new mate per unit of work fragments ownership and breaks the claim model. Reuse the roster; the task list is the work queue, not a reason to grow the team.
 
-**Team mates are spawned `model=opus`, never `sonnet` (Non-Negotiable).** When you do spawn an Agent-Team teammate (the boot-time roster, or a genuinely new standing role), the `Agent` spawn carries `model=opus`. A teammate is long-lived — it claims a unit, works it across many turns, waits on CI, picks up the next unit — so a `sonnet` teammate hits its compaction threshold mid-task and silently loses the context it was carrying (the diff, the plan, the half-written test). `sonnet` is for explicit one-off **non-team** sub-agents (a quick read-only fetch, a throwaway grep), never a standing teammate; `fable` stays banned for team mates (too token-expensive, reserved for honesty-critical verification). The tier is a required, fixed parameter of a teammate spawn, not a budget knob — downgrading a mate to save tokens is a false economy, because the compacted mate re-reads everything and redoes work. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`).
+Worked example — a new task arrives mid-run and `core-maker` is idle. Route it to the existing mate; do **not** `Agent`-spawn a new one:
+
+```python
+# DO — assign the unit to an existing idle teammate via the shared task list, then hand off context:
+TaskUpdate(id="<task-id>", owner="core-maker")
+SendMessage(to="core-maker", body="<task-id> is yours: <one-line context + acceptance>")
+
+# NEVER — minting a fresh per-task teammate (any Agent spawn) for a task the fixed roster can take:
+# Agent(team_name="<team>", name="ship-flag-maker", model="opus", prompt="...")   # banned: roster is fixed
+```
+
+In team mode the correct response to "also handle this" is a `TaskUpdate`/`SendMessage` to an idle roster member, never a new `Agent` spawn.
+
+**Team mates are spawned `model=opus`, never `sonnet` (Non-Negotiable).** When you do spawn an Agent-Team teammate (the boot-time roster, or a genuinely new standing role), the `Agent` spawn carries `model=opus`.
+
+Worked example — spawning a standing teammate. The `model="opus"` argument is required and fixed; do this, never the cheaper variant:
+
+```python
+# DO — every Agent-Team teammate (boot roster or a new standing role) is opus:
+Agent(team_name="<team>", name="core-maker", model="opus", prompt="<role brief>")
+
+# NEVER — a sonnet (or omitted-model) teammate auto-compacts mid-task and drops its context:
+# Agent(team_name="<team>", name="core-maker", model="sonnet", prompt="...")   # banned
+# Agent(team_name="<team>", name="core-maker", prompt="...")                   # banned: model omitted
+```
+
+`model="opus"` is a required parameter of every teammate spawn, not a budget knob — omitting it or downgrading to `sonnet`/`haiku` is the banned path. A teammate is long-lived — it claims a unit, works it across many turns, waits on CI, picks up the next unit — so a `sonnet` teammate hits its compaction threshold mid-task and silently loses the context it was carrying (the diff, the plan, the half-written test). `sonnet` is for explicit one-off **non-team** sub-agents (a quick read-only fetch, a throwaway grep), never a standing teammate; `fable` stays banned for team mates (too token-expensive, reserved for honesty-critical verification). The tier is a required, fixed parameter of a teammate spawn, not a budget knob — downgrading a mate to save tokens is a false economy, because the compacted mate re-reads everything and redoes work. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`).
 
 ### Hard rails parallelization must not break
 

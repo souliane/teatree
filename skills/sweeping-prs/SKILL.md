@@ -20,7 +20,9 @@ Walk every open MR/PR you authored, sequentially, and bring each up to date with
 2. If conflicts are mechanical, resolve and continue. If not, prompt the user.
 3. Push.
 4. Watch CI. On red, hand off to the existing `/t3:debug` + `/t3:ship` fix-push-monitor loop.
-5. Depending on the per-repo policy (see § Per-Repo Policy below), either merge the PR via the §17.4 keystone (`ticket clear` → `ticket merge`, Step 8) before moving on, or stop at "green and up to date".
+5. Re-read the PR's live merge state (Step 7.5) and **skip it if it is already merged** — the user may be merging in parallel.
+6. Depending on the per-repo policy (see § Per-Repo Policy below), either merge the PR via the §17.4 keystone — `t3 <overlay> ticket merge <clear_id>`, Step 8 — before moving on, or stop at "green and up to date".
+7. After the burst, **health-check `origin/main`** (`makemigrations --check --dry-run`, Step 9) before declaring done.
 
 The goal is to keep stale PRs mergeable without burying review feedback under a force-push, and — for repos the user fully owns — actually drain the queue rather than just refresh it.
 
@@ -37,7 +39,7 @@ Same regex+semicolon shape as the other knobs in that file. Two policies are rec
 | Policy | What it does | When to pick it |
 |---|---|---|
 | **`bulk-update`** (default) | For each open PR: update from `<default>` → push → watch CI → next PR. The PR itself is **not** merged. | Repos where merging requires human approval, or where the user only wants stale branches refreshed. |
-| **`serial-merge`** | For each open PR: update from `<default>` → push → wait for CI **green** → merge via the §17.4 keystone (`ticket clear` → `ticket merge`, Step 8) → fetch the next PR (next iteration sees the just-landed commit as part of `main`). | Repos the user fully owns and wants drained (e.g. `souliane/teatree`, `souliane/skills`) without piling conflict cascades onto the next PR. |
+| **`serial-merge`** | For each open PR: update from `<default>` → push → wait for CI **green** → re-read live merge state and skip if already merged (Step 7.5) → merge via the §17.4 keystone (`ticket clear` → `t3 <overlay> ticket merge <clear_id>`, Step 8) → fetch the next PR (next iteration sees the just-landed commit as part of `main`) → after the burst, health-check `main` (Step 9). | Repos the user fully owns and wants drained (e.g. `souliane/teatree`, `souliane/skills`) without piling conflict cascades onto the next PR. |
 
 Repos absent from `SWEEP_POLICY` default to `bulk-update` so existing behavior is unchanged for unconfigured repos.
 
@@ -135,18 +137,72 @@ Subject to mode (canonical rule: [`../rules/SKILL.md`](../rules/SKILL.md) § "Pu
 After push, watch the pipeline. On red, delegate to the existing fix-push-monitor loop (see [`../ship/SKILL.md`](../ship/SKILL.md) § "Monitor Pipeline" and [`../debug/SKILL.md`](../debug/SKILL.md)). When it goes green:
 
 - **`bulk-update`** policy: mark the PR done and move to the next.
-- **`serial-merge`** policy: continue to Step 8.
+- **`serial-merge`** policy: continue to Step 7.5, then Step 8.
+
+### Step 7.5 — Re-read live merge state (before every merge, non-negotiable)
+
+A sweep often runs while the user is *also* merging PRs by hand. Before you act on any PR — and especially before Step 8 — **re-read that PR's live merge state and skip it if it is already merged.** Do — never assume the discovery snapshot is still current:
+
+```bash
+# GitHub: re-read live state for THIS PR right before acting on it
+gh pr view <pr-number> --repo <org/repo> --json state,mergedAt,mergeStateStatus,reviewDecision
+
+# GitLab: same live re-read
+glab mr view <iid> --repo <org/repo> --output json   # inspect "state" / "merged_at"
+```
+
+Do:
+
+1. Run the live re-read above for the PR you are about to touch.
+2. If `state` is `MERGED`/`merged` (or `mergedAt`/`merged_at` is non-null), **skip it** — mark it "already merged (by hand)" in the summary and move to the next PR. Never re-merge.
+3. Only if it is still open do you proceed to Step 8.
+
+Never call `gh pr merge` / `glab mr merge` here — this step only *reads*. The actual merge is the keystone in Step 8. This is the merge-burst reconcile rule: see [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Post PR Comments from Parallel Agents" for why two actors on one PR must never both merge it.
 
 ### Step 8 — Merge (serial-merge only)
 
-Merge through the §17.4 keystone, not raw `gh` (raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` are mechanically refused — they bypass `MergeClear` validation / `expected_head_oid` / audit / `mark_merged()`). Two `t3` steps, maker != checker:
+Merge through the §17.4 keystone. Do — never reach for a raw forge merge (raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` are mechanically refused — they bypass `MergeClear` validation / `expected_head_oid` / audit / `mark_merged()`). Two `t3` steps, maker != checker:
 
-1. The orchestrator (coordinator) issues the per-diff CLEAR after its independent cold review of this PR's exact head: `t3 <overlay> ticket clear <pr> <slug> --reviewed-sha <sha> --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs>` → prints a `clear_id` it passes to the loop.
-2. The durable loop runs `t3 <overlay> ticket merge <clear_id>`: re-verifies live head SHA == `reviewed_sha`, live checks green, not-draft, binds the merge to `expected_head_oid`. The #764 noreply-author guarantee is preserved by the server-side squash. The loop NEVER self-issues its own CLEAR (§17.8 clause 3); raw `gh pr merge` / `glab mr merge` stay mechanically prohibited (#863).
+1. The orchestrator (coordinator) issues the per-diff CLEAR after its independent cold review of this PR's exact head, and captures the printed `clear_id` to hand to the loop:
+
+   ```bash
+   t3 <overlay> ticket clear <pr> <slug> \
+     --reviewed-sha <sha> \
+     --reviewer-identity <independent-reviewer> \
+     --blast-class <substrate|logic|docs>
+   # → prints CLEAR_ID=<clear_id>  (pass it to the loop's merge step below)
+   ```
+
+2. The durable loop runs the keystone merge with that `clear_id` — **this is the only sanctioned merge command in the sweep**:
+
+   ```bash
+   t3 <overlay> ticket merge <clear_id>
+   # substrate change → carry the recorded human approval:
+   t3 <overlay> ticket merge <clear_id> --human-authorized <id>
+   ```
+
+   It re-verifies live head SHA == `reviewed_sha`, live checks green, not-draft, and binds the merge to `expected_head_oid`. The #764 noreply-author guarantee is preserved by the server-side squash. The loop NEVER self-issues its own CLEAR (§17.8 clause 3).
+
+**Do — never:** the merge MUST be `t3 <overlay> ticket merge <clear_id>`. NEVER run `gh pr merge`, `glab mr merge`, or `t3 <overlay> pr merge` — they stay mechanically prohibited (#863) precisely because they skip the keystone's live re-verification.
 
 Substrate CLEARs are never swept-merged — they require an explicit recorded human approval (`--human-authorize <id>` at issue); the agent then executes the merge with `--human-authorized <id>`. The human approves; the agent merges. On any pre-condition failure or `escalated` result (review required, branch protection block, head moved, conflict that snuck in between Step 5 and now) **stop the sweep and surface the failure** — do not silently skip to the next PR, because the next PR's update step would still be racing against the unmerged predecessor.
 
-After a successful merge, **re-run the discovery CLI** (`t3 <overlay> pr sweep`) to refresh the "open PRs" list before picking the next entry. The list shrinks by one and any sibling PR may now be conflict-free where it wasn't before.
+After a successful merge, **re-run the discovery CLI** to refresh the "open PRs" list before picking the next entry. The list shrinks by one and any sibling PR may now be conflict-free where it wasn't before:
+
+```bash
+t3 <overlay> pr sweep
+```
+
+### Step 9 — Health-check `main` after the burst (non-negotiable)
+
+A burst of merges — yours plus any the user landed by hand in parallel — can fork the migration graph: two PRs each add a migration off the *same* parent, so each is fine alone but together `main` has two leaf migrations and `migrate` fails on a fresh DB. Before declaring the sweep done, **confirm `origin/main`'s migration graph is still linear.** Do — never declare done on an unverified `main`:
+
+```bash
+git fetch origin <default> && git checkout origin/<default>
+uv run python manage.py makemigrations --check --dry-run   # exit 0 = no fork / no missing migration
+```
+
+A non-zero exit (or "Merge multiple leaf nodes" / "would create migrations") means the burst forked the graph — **stop and reconcile** with `makemigrations --merge` in a worktree before calling the sweep finished.
 
 ## Summary Table
 

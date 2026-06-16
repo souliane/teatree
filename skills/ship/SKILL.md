@@ -78,6 +78,19 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
 - **Before committing to a branch you did not create this session, check its PR isn't already merged/closed.** A squash-merge leaves the local and remote branch present, so the "refuse commits on a merged-PR branch" pre-commit guard does not fire (it only catches a *deleted* remote). Committing onto a long-lived branch from a prior session then pushes an orphan commit that rides no open PR and never reaches the default branch. `gh pr list --head <branch> --state all` (or `glab mr list --source-branch <branch>`) before staging; if the PR is merged, branch off the freshly-fetched default branch for the follow-up work and open a new PR.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
+
+**Quick commit recipe (the canonical HOW).** Stage and commit with a bare `git commit -m` so the hooks run normally — never `--no-verify`, and never a `Co-Authored-By` trailer (the user's global config forbids it; see § Rules):
+
+```bash
+# Single staged change, clean message, no trailer:
+git commit -m "type(scope): description"
+
+# Touching files the linter may reformat? stage everything in one shot:
+git commit -a -m "type(scope): description"
+```
+
+Do X — never Y: DO compose the message with a bare `git commit -m`. NEVER pass `--no-verify`. NEVER append a `Co-Authored-By:` line. Body content (Open questions & assumptions, the `Closes/Fixes #N` keyword) goes in additional `-m` blocks or via a `git commit` editor session, never as a trailer.
+
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
@@ -92,6 +105,15 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
 **Squash rules:**
 
 - **Use `git reset --soft`, not interactive rebase.** `git rebase -i` with custom editors is fragile when pre-commit hooks run on each commit. Use `git reset --soft $(git merge-base origin/<default-branch> HEAD) && git commit` to squash, or cherry-pick for non-adjacent commits.
+
+  **Quick squash recipe (the canonical HOW).** To collapse several `wip` commits into one clean commit before the PR merge — do this, never `git rebase -i` and never a raw `gh`/`glab` merge of the noisy history:
+
+  ```bash
+  # Squash all local-only commits on this branch into one staged set, then re-commit:
+  git reset --soft $(git merge-base origin/main HEAD) && git commit -m "type(scope): description"
+  ```
+
+  Swap `origin/main` for the repo's actual default branch (`origin/master`, `origin/development`). `t3 <overlay> workspace finalize "type(scope): description"` does exactly this and resolves the merge-base correctly — prefer it when available.
 - **Never rewrite pushed history** — see § Rules below for the full statement. Before any squash, check `git log origin/<branch>..HEAD` to confirm which commits are local-only.
 - Group by topic, keep human-sized commits.
 - Squash integrity check: save `OLD_TIP=$(git rev-parse HEAD)`, verify `git diff $OLD_TIP..HEAD` is empty after rewrite.
@@ -125,12 +147,30 @@ Common triggers (not exhaustive):
 - User-observable behaviour change (default flips, UI flow, error message shape, response payload)
 - New feature flag
 
-**If YES:** the same MR includes the doc update — README for user-facing changes, BLUEPRINT for architectural ones, the relevant `SKILL.md` for skill behaviour changes.
+**If YES:** the same MR includes the doc update — pick the file by the trigger, then start editing it before `pr create`:
 
-**If NO:** the MR description carries this line on its own:
+| Trigger | Doc to update |
+|---|---|
+| New `t3` command / flag / env var | `README.md` (user-facing usage) |
+| New `Ticket.State` / FSM phase / `LoopLease` / `MiniLoopMarker` name | `BLUEPRINT.md` |
+| New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
+| Skill behaviour change | the relevant `SKILL.md` |
+
+```bash
+# YES path — open the matching doc to add the entry (canonical HOW; e.g. a new SKILL.md):
+$EDITOR README.md          # skills catalogue, or the user-facing command doc
+$EDITOR BLUEPRINT.md       # for a new FSM state / lifecycle concept
+```
+
+**If NO:** the MR description carries this attestation line on its own — record it directly, do NOT touch README/BLUEPRINT:
 
 ```text
 docs: n/a — <one-line reason>
+```
+
+```bash
+# NO path — append the attestation to the PR body draft (canonical HOW):
+echo "docs: n/a — <one-line reason>" >> .git/PR_BODY.md
 ```
 
 Examples:
@@ -350,6 +390,17 @@ When fixing review comments on an already-existing PR:
 5. **Reply to the review comments on the PR.**
 6. **Do NOT send a review request notification** — reviewers are already watching.
 
+### Merge-only update: push then verify, no fresh re-review (the canonical HOW)
+
+When an already-reviewed PR's ONLY new commit is the origin merge that brought it up to date (no new logic), a fresh independent re-review is NOT required — CI green on the merge result is the gate. Do X — never Y: DO push the merge result and let CI gate it. NEVER re-dispatch the reviewer, re-fetch the diff for review, or spawn a `t3:reviewer` for a merge-only delta (that re-review is the bottleneck this rule removes).
+
+```bash
+# The reviewed branch already has the origin merge committed. Push and let CI verify:
+git push
+```
+
+Then watch CI (§ 6 Monitor Pipeline). Re-reviewing already-reviewed work just because the default branch advanced is the exact waste this rule cuts; the spawn boundary is only earned by NEW logic, not by a clean merge.
+
 ## Merging the Default Branch into a PR (Non-Negotiable)
 
 Before touching the PR branch to "prepare" it for a merge, reason through what a clean 3-way merge would produce on its own:
@@ -452,8 +503,41 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 - **Merging is the §17.4 keystone transition, not raw `gh`.** Raw `gh pr merge` / `glab mr merge` and the old `t3 <overlay> pr merge` helper are FSM-incoherent (they skip `MergeClear` validation, `expected_head_oid` SHA-binding, the atomic CLEAR-consume + `MergeAudit` + attestation binding + `mark_merged()`) and are **mechanically refused** — `hook_router._BLOCKED_COMMANDS` denies the raw commands and `pr merge` returns a redirect error. The sanctioned path is two `t3` steps, maker != checker throughout:
   1. **The orchestrator (coordinator) issues the per-diff CLEAR** after an independent cold review: `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs> [--ticket-id N] [--human-authorize <id>]`. The reviewer identity must not be a maker/coding-agent/loop role and must differ from the executing loop (§17.8 clause 3). This prints a `clear_id`, which the orchestrator passes to the loop.
   2. **The durable review-loop executes it**: `t3 <overlay> ticket merge <clear_id>`. The transition re-reads the CLEAR from the DB, re-verifies the live head SHA == `reviewed_sha`, live required-checks green, not-draft, and binds the GitHub merge to `expected_head_oid` (fail-closed on head drift). The #764 noreply-author guarantee is unchanged — the server-side squash author is the merging account's `users.noreply.github.com` address.
+
+  **Keystone merge recipe (the canonical HOW).** The two `t3` steps, copy-pasteable — do X, never the raw `gh pr merge` / `glab mr merge` (mechanically refused, #863):
+
+  ```bash
+  # Step 1 (orchestrator): issue the CLEAR after an independent cold review.
+  # --reviewer-identity MUST be the independent reviewer (e.g. codex, claude-cold-review),
+  # NEVER self/maker/me — that defeats maker!=checker:
+  t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> \
+      --reviewer-identity <independent-reviewer> --blast-class <substrate|logic|docs> [--ticket-id N]
+  # → prints a clear_id
+
+  # Step 2 (durable review-loop): execute the merge with the printed clear_id.
+  t3 <overlay> ticket merge <clear_id>
+
+  # Substrate class only: the CLEAR was issued with --human-authorize <owner-id>;
+  # the agent then executes the merge presenting that recorded authorization:
+  t3 <overlay> ticket merge <clear_id> --human-authorized <owner-id>
+  ```
+
+  Do X — never Y: DO issue the CLEAR with `--reviewer-identity <independent-reviewer>`. NEVER cite `--reviewer-identity self` / `maker` / `me`. DO complete a substrate merge with `--human-authorized <owner-id>`; NEVER auto-merge a `blast_class=substrate` CLEAR without it. NEVER reach for `gh pr merge` / `glab mr merge` / `t3 <overlay> pr merge` — all three are blocked.
+
   **The loop NEVER self-issues its own CLEAR** (§17.8 clause 3 — the reviewer identity must differ from the executing loop); it only ever runs step 2 with a `clear_id` the orchestrator handed it. Raw `gh pr merge` / `glab mr merge` are mechanically prohibited (#863) — only this sanctioned two-step path is valid. On any pre-condition failure the FSM is left untouched and the result is flagged `escalated` (the loop re-escalates to the durable backlog; it never self-issues a replacement CLEAR). Substrate-class CLEARs are never auto-merged — see the substrate approval path below.
 - **Substrate PRs require an explicit recorded human approval (`MergeClear.human_authorizer`); the agent then executes the merge — and it still goes through `t3`, never raw `gh` (invariant 8).** A `blast_class=substrate` CLEAR is refused by the loop unconditionally. The sanctioned path: the orchestrator/owner issues the CLEAR with `--human-authorize <owner-id>` (only valid with `--blast-class substrate`) — that recorded approval is the gate — then **the agent executes** `t3 <overlay> ticket merge <clear_id> --human-authorized <owner-id>`. The human approves; the agent merges (the user operates write-only and never performs the merge action). The presented id must match the recorded `human_authorizer`; the merge then runs through the SAME SHA-bound, audited transition (the approval decision is recorded durably on the CLEAR + `MergeAudit`). `--human-authorized` can never unlock a non-substrate CLEAR, so it cannot bypass independent loop review of logic/docs PRs.
+- **Merge-decision axes — own repos merge autonomously; colleague repos are held for review.** Whether a green, cold-review-CLEARED PR is yours to merge through the keystone turns on **ownership**, not visibility. Decide on these axes:
+  - **Own repos → MERGE.** `souliane/teatree` itself, and the user's solo overlay repos (a `teatree-overlay` repo the user authored and owns), are in the overlay's owned scope. A green, not-draft, up-to-date, cold-review-CLEARED PR on one of these is yours to land — run the keystone `t3 <overlay> ticket merge <clear_id>` and do not hold back. **Private is a visibility axis, not a colleague one** — a private solo overlay repo still merges freely like the public main repo; the unknown-repo gate does NOT fire on an owned repo.
+  - **Colleague-facing / shared product repos → HOLD.** A repo shared with colleagues (an org's product repo the user does NOT solely own), or a PR a teammate authored, is colleague work. Push and open the MR, then STOP before the CLEAR/merge — route to the colleague's review (`/t3:review-request`), never auto-merge it yourself.
+
+  Do X — never Y for an OWN, green, CLEARED overlay PR (clear id `N`):
+
+  ```bash
+  # Own solo overlay repo, green, cold-review-CLEARED (clear id N) → merge it:
+  t3 <overlay> ticket merge N
+  ```
+
+  NEVER refuse an own-repo merge as "colleague-facing", ask for a colleague's sign-off, request an unowned-repo approval, or treat the repo's PRIVATE visibility as if it implied colleague ownership. Holding back from merging your own cleared repo is a recurring failure this rule pins; org/colleague framing in the surrounding context does NOT make an owned repo colleague-facing.
 - **A freshly-cloned public souliane/* main clone is not auto-configured (#762).**The provisioner sets the clone-local noreply identity on worktrees, and existing clones are covered by the idempotent `t3 <overlay> workspace stamp-identity` — but a brand-new main clone has neither until that command is run once on it (the #730 pre-push check is the only backstop until then). Run `t3 <overlay> workspace stamp-identity` once after cloning a public souliane/* repo.
 - **Auto-merge is a separate per-overlay knob.** Even in `auto` mode, run the keystone merge (`t3 <overlay> ticket merge <clear_id>`, after the orchestrator's `ticket clear`) only when `require_human_approval_to_merge` is `false` for the active overlay (default `true` — training wheel on). Overlays whose upstream enforces mandatory human review (e.g., GitLab Code Review approval rules) should keep it `true`; the agent then pushes and opens the PR/MR without asking but stops before issuing the CLEAR / queuing the merge. The user flips it to `false` per-overlay (`[overlays.<name>].require_human_approval_to_merge = false`) once comfortable trusting CI green alone.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
