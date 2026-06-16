@@ -15,9 +15,8 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
 from teatree.eval.sdk_runner import (
-    DEFAULT_MAX_TURNS,
     DEFAULT_WATCHDOG_SECONDS,
     KNOWN_BUILTIN_TOOLS,
     MAX_BUDGET_USD,
@@ -610,17 +609,29 @@ class TestCapsAreEnvConfigurable:
         monkeypatch.delenv("T3_EVAL_WATCHDOG_SECONDS", raising=False)
         assert resolve_watchdog_seconds() == pytest.approx(float(DEFAULT_WATCHDOG_SECONDS))
 
-    def test_max_turns_resolves_the_env_override(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_default_max_turns  # noqa: PLC0415
+    def test_max_turns_override_resolves_the_env_value(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.setenv("T3_EVAL_MAX_TURNS", "50")
-        assert resolve_default_max_turns() == 50
+        assert resolve_max_turns_override() == 50
 
-    def test_max_turns_falls_back_to_the_generous_default(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_default_max_turns  # noqa: PLC0415
+    def test_max_turns_override_defers_to_per_scenario_when_unset(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.delenv("T3_EVAL_MAX_TURNS", raising=False)
-        assert resolve_default_max_turns() == DEFAULT_MAX_TURNS
+        assert resolve_max_turns_override() is None
+
+    def test_max_turns_override_ignores_a_non_positive_value(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_EVAL_MAX_TURNS", "0")
+        assert resolve_max_turns_override() is None
+
+    def test_max_turns_override_prefers_an_explicit_value_over_the_env(self, monkeypatch) -> None:
+        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+
+        monkeypatch.setenv("T3_EVAL_MAX_TURNS", "9")
+        assert resolve_max_turns_override(explicit=4) == 4
 
 
 def _budget_raising_query(message: str):

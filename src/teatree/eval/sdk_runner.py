@@ -57,7 +57,7 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalSpec, Matcher, canonicalize_tool
+from teatree.eval.models import AnyOf, EvalRun, EvalSpec, Matcher, canonicalize_tool
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.transcript import (
     extract_billed_model,
@@ -118,26 +118,28 @@ def env_float(name: str, *, default: float) -> float:
     return value if value > 0 else default
 
 
-def _env_int(name: str, *, default: int) -> int:
-    """Resolve a positive ``int`` from env *name*, falling back to *default* (see :func:`env_float`)."""
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
 def resolve_watchdog_seconds() -> float:
     """The generous per-scenario watchdog, ``T3_EVAL_WATCHDOG_SECONDS`` overriding the default."""
     return env_float(_WATCHDOG_ENV_VAR, default=float(DEFAULT_WATCHDOG_SECONDS))
 
 
-def resolve_default_max_turns() -> int:
-    """The generous default turn budget, ``T3_EVAL_MAX_TURNS`` overriding the default."""
-    return _env_int(_MAX_TURNS_ENV_VAR, default=DEFAULT_MAX_TURNS)
+def resolve_max_turns_override(explicit: int | None = None) -> int | None:
+    """An *explicit* override wins; else the ``T3_EVAL_MAX_TURNS`` knob; else ``None`` to defer to spec.
+
+    Defers to each scenario's own ``max_turns`` (the per-scenario turn budget, mirroring
+    per-scenario cost) when neither is set; a missing/empty/unparsable/non-positive env value
+    yields ``None`` — never a silent global turn cap.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get(_MAX_TURNS_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def resolve_metered_budget_usd() -> float:

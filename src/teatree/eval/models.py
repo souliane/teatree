@@ -19,9 +19,9 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: ``max_turns`` of its own. The old default of ``4`` force-FAILed multi-step /
 #: sub-agent-spawning scenarios (delegate/spawn trajectories need many turns), so
 #: a truncated run measured the cap, not behaviour. Raised generously; a scenario
-#: still declares its own lower value, and the lane reads an env override
-#: (:func:`teatree.eval.sdk_runner.resolve_default_max_turns`,
-#: ``T3_EVAL_MAX_TURNS``).
+#: still declares its own lower value, and the lane reads an optional global
+#: override (:func:`teatree.eval.sdk_runner.resolve_max_turns_override`,
+#: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
 
 #: The default eval lane. A clean-room scenario loads ONE skill into an empty
