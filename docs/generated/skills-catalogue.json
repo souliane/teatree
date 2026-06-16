@@ -13,6 +13,10 @@
       "summary": "24/7 dual question-mode \u2014 switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away)"
     },
     {
+      "name": "backlog-sweep",
+      "summary": "Periodic evidence-gated triage of the issue backlog \u2014 for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence \"superseded by merged PR #X\" class), posting a one-line reason on every close"
+    },
+    {
       "name": "checking",
       "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable; then answer the pending deferred questions in-band"
     },

@@ -7,6 +7,7 @@ Source: `skills/*/SKILL.md` frontmatter
 | `answerer` | Draft a reply to an inbound question, DM the user for approval, post on confirmation |
 | `architecture-design` | Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants — BEFORE any code is written |
 | `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
+| `backlog-sweep` | Periodic evidence-gated triage of the issue backlog — for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "superseded by merged PR #X" class), posting a one-line reason on every close |
 | `checking` | A SHORT "what did I miss" report when the user checks in mid-loop — terse, grouped, clickable; then answer the pending deferred questions in-band |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
