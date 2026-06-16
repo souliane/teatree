@@ -8,8 +8,6 @@ test can pin or stub the seam without touching the routing tables, and so the
 dispatcher module stays focused on the consult order.
 """
 
-import logging
-
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.loop.dispatch_reducer import slack_pr_url, task_pr_url
@@ -17,39 +15,17 @@ from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload,
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loop.scanners.base import ScanSignal
 
-logger = logging.getLogger(__name__)
-
 
 def review_target_is_dead(pr_url: str) -> bool:
-    """Whether the MR/PR at *pr_url* is provably MERGED or CLOSED (#2081).
+    """Whether the loop must skip dispatching a reviewer for *pr_url* (#2081).
 
-    GitLab is the source of truth: a review note can never land on a merged or
-    closed MR, so the loop must not dispatch a reviewer for one. Resolves the
-    per-URL code host with the active overlay's credentials and reads the live
-    state via :meth:`CodeHostBackend.get_pr_open_state`.
-
-    Fail-OPEN doctrine (mirrors ``get_pr_open_state``'s own contract): only a
-    *definite* MERGED/CLOSED suppresses. UNKNOWN (any auth error, network
-    failure, unparsable URL), an unresolvable host, or any exception returns
-    ``False`` so a transient API hiccup never silently drops a legitimate
-    review.
+    A review note can never land on a merged or closed MR, so a provably
+    MERGED/CLOSED target is dead. Fail-OPEN: anything indefinite still
+    dispatches — see :func:`teatree.backends.loader.pr_is_merged_or_closed`.
     """
-    if not pr_url:
-        return False
-    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
+    from teatree.backends.loader import pr_is_merged_or_closed  # noqa: PLC0415
 
-    try:
-        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay_for_url  # noqa: PLC0415
-
-        host = get_code_host_for_url(get_overlay_for_url(pr_url), pr_url)
-        if host is None:
-            return False
-        state = host.get_pr_open_state(pr_url=pr_url)
-    except Exception:
-        logger.exception("Live-state check failed for %s — failing open (still dispatch)", pr_url)
-        return False
-    return state in {PrOpenState.MERGED, PrOpenState.CLOSED}
+    return pr_is_merged_or_closed(pr_url)
 
 
 def dispatch_answering(signal: ScanSignal) -> list[DispatchAction]:
