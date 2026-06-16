@@ -271,24 +271,22 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
     return list(dict.fromkeys(str(s) for s in raw if isinstance(s, str) and s))
 
 
-# Registry of UserSettings fields that can be overridden per-overlay in
-# ``[overlays.<name>]``. To make another setting overridable, add an entry
-# here with a parser that coerces the raw toml value to the UserSettings
-# field type. The getter `get_effective_settings()` applies overrides
-# generically via ``dataclasses.replace`` — no per-setting wiring needed.
-#
-# This registry is ALSO the scope of the DB override tier (#1775,
-# ``ConfigSetting``): the resolver's ``_db_setting_overrides`` consults it to
-# decide which ``ConfigSetting`` rows may override a setting and reuses each
-# entry's parser to coerce the stored JSON value. A row for a key absent here is
-# ignored, so the DB tier can never override a setting that is not opted into
-# overriding. Precedence: env -> DB -> per-overlay TOML -> global -> default.
+# The DB-home parser registry (#1775 hard partition). Every DB-home
+# ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser
+# coerces a stored ``ConfigSetting`` JSON value to the field's type. This registry
+# is the SOLE source for a DB-home field — its ``[teatree]`` / ``[overlays.<name>]``
+# TOML tables are NOT read on resolution; a DB-home key left in TOML is ignored on
+# read (migrate it with ``config_setting import``). ``_db_setting_overrides`` consults this to
+# decide which ``ConfigSetting`` rows supply a value and reuses each entry's
+# parser; a row for a key absent here is ignored. Per DB-home field the chain is
+# ``env -> ConfigSetting (overlay then global) -> dataclass default``. A
+# fitness test asserts this registry covers exactly the DB-home set (no TOML-home
+# key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
     "branch_prefix": _parse_strict_str,
-    "privacy": _parse_strict_str,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -299,7 +297,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
     "require_human_approval_to_answer": _parse_strict_bool,
-    "ask_before_post_on_behalf": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
     "missing_issue_ref_policy": MissingIssuePolicy.parse,
     "on_behalf_auto_actions": _parse_str_list,
@@ -363,7 +360,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "pull_main_clone_disabled": _parse_strict_bool,
     "pull_main_clone_cadence_hours": _parse_strict_int,
     "review_nag_enabled": _parse_strict_bool,
-    "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "mr_title_regex": _parse_strict_str,
     "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
@@ -372,6 +368,25 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
+    # #1775 newly-DB-home (file-only today): these now resolve from the DB store.
+    "agent_signature": _parse_strict_bool,
+    "claude_chrome": _parse_strict_bool,
+    "repo_mode": _parse_strict_str,
+    "ban_close_trailers_on_namespaces": _parse_str_list,
+    "billing_cycle_anchor_day": _parse_strict_int,
+    "sdk_monthly_credit_usd": _parse_strict_float,
+}
+
+# TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
+# A TOML-home field's authoritative tier is the TOML tables + env (never the DB),
+# but a subset of them is per-overlay overridable in TOML. ``speak`` is omitted —
+# its sub-table merges bespoke (see ``_overlay_speak_override``); the others in the
+# carve-out are global-only. Discovery parses the union of this and the DB-home
+# registry so a ``[overlays.<name>]`` value for either is read off the table; the
+# resolver then keeps only TOML-home override keys.
+TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    "orchestrator_bash_gate_enabled": _parse_strict_bool,
+    "privacy": _parse_strict_str,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -493,21 +508,21 @@ class UserSettings:
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
     # WORK-team ships DARK. When flipped on, a LATER PR wires the
     # `team:<role>` claim namespace + the overlay-seam claim filters into a
-    # pane-backed teammate; this PR adds only the config surface. Global value
-    # reads from the top-level `[teams] enabled` table; per-overlay overridable
-    # via `[overlays.<name>].teams_enabled`; `T3_TEAMS_ENABLED` env wins.
+    # pane-backed teammate; this PR adds only the config surface. DB-home
+    # (#1775): resolved from the `ConfigSetting` store (global + overlay rows) +
+    # `T3_TEAMS_ENABLED` env; a `[teams]`/`[overlays.<name>]` TOML value is ignored
+    # on read. Set via `t3 teams on|off` (the DB-row write path).
     teams_enabled: bool = False
     # #1838 Track-B PR#7a — the inert maker-only pane budget. `teams_max_panes`
     # caps how many concurrent maker panes a lead may run; `teams_idle_minutes`
     # is the idle-pane reaper threshold (a pane with no live Session/Task past
     # this many minutes is demoted to stopped). Both ship inert with the rest of
     # the pane layer (referenced by nothing until `teams_enabled` flips on and a
-    # consumer lands). Global values read from the top-level `[teams] max_panes`
-    # / `[teams] idle_minutes` table (the feature namespace, alongside
-    # `enabled`); per-overlay overridable via `[overlays.<name>].teams_max_panes`
-    # / `teams_idle_minutes`; `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES` env
-    # win. A non-positive or non-int value FAILS SAFE to the default at every
-    # tier — the safety bound cannot be configured away by a typo.
+    # consumer lands). DB-home (#1775): resolved from the `ConfigSetting` store
+    # (global + overlay rows) + `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`
+    # env; a `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A
+    # non-positive or non-int value FAILS SAFE to the default at every tier — the
+    # safety bound cannot be configured away by a typo.
     teams_max_panes: int = 1
     teams_idle_minutes: int = 30
     # #1838 Track-B WI-5 — the PRESENTATION-only pane-display mode. Governs
@@ -516,10 +531,10 @@ class UserSettings:
     # The SDK session is the source of truth; this never replaces it. Default
     # `none` (ships dark, byte-identical to today); `auto`/`tmux` opt into the
     # display with graceful degradation (no tmux / no TTY / spawn failure falls
-    # back to the in-process path). Global value reads from the top-level
-    # `[teams] display` table (the feature namespace, alongside `enabled`);
-    # per-overlay overridable via `[overlays.<name>].teams_display`;
-    # `T3_TEAMS_DISPLAY` env wins. A bad value fails SAFE to `none` at every tier.
+    # back to the in-process path). DB-home (#1775): resolved from the
+    # `ConfigSetting` store (global + overlay rows) + `T3_TEAMS_DISPLAY` env; a
+    # `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A bad value
+    # fails SAFE to `none` at every tier.
     teams_display: TeamsDisplay = TeamsDisplay.NONE
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a
@@ -542,12 +557,12 @@ class UserSettings:
     # someone else's message).
     #
     # **Deprecated** in favour of the tri-state ``on_behalf_post_mode``
-    # below. Kept on ``UserSettings`` for one release as a derived
-    # computed value: ``True`` when the resolved mode is ``ASK`` or
-    # ``DRAFT_OR_ASK``, ``False`` when ``IMMEDIATE``. The toml loader
-    # still accepts ``[teatree] ask_before_post_on_behalf = true/false``
-    # and translates it into the new mode (see ``load_config``) so
-    # existing user configs keep working.
+    # below, and now a DERIVED value (#1775): the resolver computes it
+    # (``True`` when the resolved mode is ``ASK`` or ``DRAFT_OR_ASK``,
+    # ``False`` when ``IMMEDIATE``) rather than reading it. Under the hard
+    # partition a legacy ``[teatree] ask_before_post_on_behalf`` TOML key is
+    # ignored on read; set the successor ``on_behalf_post_mode`` (DB-home)
+    # via ``config_setting set`` / migrate it with ``config_setting import``.
     ask_before_post_on_behalf: bool = True
     # Tri-state pre-gate over on-behalf colleague/customer posts (#960):
     #
@@ -560,10 +575,11 @@ class UserSettings:
     # * ``IMMEDIATE`` — the gate is off; gated actions publish directly
     #   (subject to the always-gated list in ``Mode``).
     #
-    # Backward-compat shim: if ``on_behalf_post_mode`` is absent but the
-    # legacy ``ask_before_post_on_behalf`` is set, the loader resolves
-    # the mode as ``ASK`` (true) / ``IMMEDIATE`` (false). The default
-    # when neither is set is ``DRAFT_OR_ASK``.
+    # DB-home (#1775): resolves from the ``ConfigSetting`` store + env only.
+    # The pre-partition shim that translated a legacy ``[teatree]
+    # ask_before_post_on_behalf`` TOML key into this mode is retired — that
+    # TOML key is ignored on read now; migrate it with ``config_setting import``.
+    # The default when no row is set is ``DRAFT_OR_ASK``.
     on_behalf_post_mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK
     # Carve-out from the on-behalf pre-gate: actions in this allowlist resolve
     # to PROCEED even under ASK / DRAFT_OR_ASK, because they are the user's

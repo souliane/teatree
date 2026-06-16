@@ -24,19 +24,23 @@ import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, ConfigSetting
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: str) -> None:
+    # ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
+    # ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
+    # ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "{mode}"\n',
+        '[teatree]\nslack_user_id = "U-OPERATOR"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
 
 
 def _http_404() -> httpx.HTTPStatusError:

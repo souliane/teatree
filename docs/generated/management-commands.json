@@ -53,7 +53,7 @@
           "name": "list"
         },
         {
-          "help": "Seed the DB store from the operational ``[teatree]`` toml keys (one-time migration)",
+          "help": "Seed the DB store from the operational toml keys (one-time migration)",
           "name": "import"
         }
       ]

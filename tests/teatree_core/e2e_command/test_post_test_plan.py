@@ -957,13 +957,16 @@ class TestOnBehalfGateConsulted(TestCase):
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # ``on_behalf_post_mode`` and ``on_behalf_auto_actions`` are DB-home
+        # (#1775): a ``[teatree]`` TOML value is ignored on read. Stage both via
+        # their ``T3_*`` env tier (the highest, DB-home-compatible layer): ASK
+        # mode plus an empty auto-actions allowlist so the gate actually blocks.
         self._monkeypatch = monkeypatch
         cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            '[teatree]\non_behalf_post_mode = "ask"\non_behalf_auto_actions = []\n',
-            encoding="utf-8",
-        )
+        cfg.write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
+        monkeypatch.setenv("T3_ON_BEHALF_AUTO_ACTIONS", "")
 
     def _post(self, *, comments: list[dict[str, object]]) -> MagicMock:
         host = MagicMock()
@@ -1003,9 +1006,13 @@ class TestOnBehalfEvidenceAutoProceeds(TestCase):
 
     @pytest.fixture(autouse=True)
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # ``on_behalf_post_mode`` is DB-home (#1775): a TOML value is ignored on
+        # read, so ASK mode is staged via its ``T3_*`` env tier. The default
+        # ``on_behalf_auto_actions`` carve-out is left intact (evidence proceeds).
         cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
+        cfg.write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
 
     def test_post_proceeds_without_approval_under_ask(self) -> None:
         host = MagicMock()

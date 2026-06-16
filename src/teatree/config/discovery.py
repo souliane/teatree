@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry
+from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS, TOML_OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry
 
 
 def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
@@ -43,7 +43,7 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
         path_str = overlay_cfg.get("path", "")
         project_path = Path(path_str).expanduser() if path_str else None
         overrides: dict[str, Any] = {}
-        for key, parser in OVERLAY_OVERRIDABLE_SETTINGS.items():
+        for key, parser in (OVERLAY_OVERRIDABLE_SETTINGS | TOML_OVERLAY_OVERRIDABLE_SETTINGS).items():
             if key in overlay_cfg:
                 overrides[key] = parser(overlay_cfg[key])
         if not overlay_class and project_path is None and name not in ep_names:

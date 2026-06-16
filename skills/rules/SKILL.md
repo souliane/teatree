@@ -340,7 +340,7 @@ When fixing a broken UX mechanism (web terminal, browser launch, notification me
 
 Every artifact you publish under the user's identity — git commits, MR/PR descriptions, MR/PR comments and discussions, issue bodies, Slack/Teams messages, email drafts, release notes — must read as if the user wrote it. **Never append AI/agent signatures or footers**.
 
-**Canonical setting:** `[teatree] agent_signature` in `~/.teatree.toml` (default `false`). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
+**Canonical setting:** `agent_signature` (DB-home, default `false`) — set with `t3 <overlay> config_setting set agent_signature <true|false>` (add `--overlay <name>` for the per-overlay scope). Programmatic teatree code paths that post on the user's behalf consult `teatree.identity.agent_signature_enabled()` (or wrap their suffix in `agent_signature_suffix(...)`). When you publish through an external tool (MCP Slack send, `gh` comment, `glab` discussion, raw `httpx`), apply the same policy by hand: omit the signature unless the setting is `true`.
 
 **Banned trailers and footers in any user-on-behalf artifact:**
 
@@ -358,7 +358,7 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-**Canonical setting:** `[teatree] on_behalf_post_mode` in `~/.teatree.toml` (default `"draft_or_ask"`, per-overlay overridable). Three values:
+**Canonical setting:** `on_behalf_post_mode` (DB-home, default `"draft_or_ask"`, per-overlay overridable) — set with `t3 <overlay> config_setting set on_behalf_post_mode <value>` (add `--overlay <name>` for the per-overlay scope). Three values:
 
 The gate covers colleague-**VISIBLE** posts only. A **draft** (`post_draft_note`) is colleague-invisible — only the user can submit it — so it is **exempt under every mode** and never needs approval; that exemption is the whole point of the setting.
 
@@ -373,8 +373,8 @@ When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent
 The gate is **satisfiable, not pure suppression**. The teatree code paths consult `teatree.core.on_behalf_gate_recorded.require_on_behalf_approval`, which mirrors the #953 `DbApproval` / §17.4 `MergeClear` shape: BLOCK verdict + a recorded, unconsumed, exactly-scoped `OnBehalfApproval` row → the post proceeds and the row is consumed single-use (an `OnBehalfAudit` row is written); BLOCK verdict + no recorded approval → the helper raises `OnBehalfPostBlockedError` and the caller surfaces the blocked post to the user — never silently dropped, never posted unattended. **No TTY is required** to satisfy it: a chat-only operator records the approval via `t3 review approve-on-behalf <target> <action> --approver <user-id>` and the next on-behalf attempt publishes. The factory refuses a maker/coding-agent/loop approver id (maker≠checker), so the executing agent can never self-authorize the post it is about to make.
 
 - **Out of scope** (no pre-ask needed): DMs _to the user themselves_ (`Replier.post_dm`), the DailyDigest user thread, the `AskUserQuestion` Slack mirror, the bot→user notify path, and internal-only orchestration writes — our own teatree backlog issues, durable memory, task bookkeeping, the sanctioned `t3 <overlay> ticket clear` / `ticket merge` keystone. The CLI for a bot→user self-DM is **`t3 <overlay> notify send <body> --idempotency-key <key>`** — not `notify post` (which is the gated colleague/channel path that routes via `OnBehalfSlackEgress` and requires `--channel` + `--text`).
-- **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification is the _after_ receipt, now a real default-ON `UserSettings` field `notify_on_post_on_behalf` (`[teatree] notify_on_post_on_behalf = true`, per-overlay overridable via `[overlays.<name>].notify_on_post_on_behalf`, **no env var**). After every colleague-visible on-behalf publish, `teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post` DMs the user the destination, a clickable artifact link, and a one-line summary (recorded in the `BotPing` ledger; record-and-proceed — it never blocks or rolls back the post). This durable enforcement **retires** the per-session memory `notify-user-on-every-post-on-behalf` (souliane/teatree#949). Both ship on. The user widens `on_behalf_post_mode` per-overlay (`"draft_or_ask"` → `"immediate"`) once confident the system posts well; flip `notify_on_post_on_behalf = false` per-overlay independently — the notify stays on longer.
-- **Backward compatibility:** legacy `[teatree] ask_before_post_on_behalf = true` resolves to `"ask"`, `false` to `"immediate"`. The legacy key emits a `DeprecationWarning` and will be removed; prefer `on_behalf_post_mode` in new configs.
+- **Relationship to the notify-_after_ rule:** this is the _pre_-gate; the post-on-behalf notification is the _after_ receipt, now a real default-ON DB-home `UserSettings` field `notify_on_post_on_behalf` (default `true`, per-overlay overridable, **no env var**) — set with `t3 <overlay> config_setting set notify_on_post_on_behalf <true|false>` (`--overlay <name>` for the per-overlay scope). After every colleague-visible on-behalf publish, `teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post` DMs the user the destination, a clickable artifact link, and a one-line summary (recorded in the `BotPing` ledger; record-and-proceed — it never blocks or rolls back the post). This durable enforcement **retires** the per-session memory `notify-user-on-every-post-on-behalf` (souliane/teatree#949). Both ship on. The user widens `on_behalf_post_mode` per-overlay (`"draft_or_ask"` → `"immediate"`) once confident the system posts well via `config_setting set on_behalf_post_mode immediate --overlay <name>`; set `notify_on_post_on_behalf` to `false` per-overlay independently — the notify stays on longer.
+- **Backward compatibility:** the legacy `ask_before_post_on_behalf` boolean is retired — under the #1775 partition its old `[teatree]` TOML key is ignored on read. Use `on_behalf_post_mode` (DB-home): `t3 <overlay> config_setting set on_behalf_post_mode <value>`, or migrate an existing `~/.teatree.toml` once with `t3 <overlay> config_setting import`.
 
 **Failure mode this prevents:** the agent posts a poorly-worded reply or an approval the user did not intend under the user's name to a colleague, and the user only learns of it after the fact (or via the notify receipt). The pre-gate keeps the user in control of their own voice until they choose to delegate it.
 
@@ -584,7 +584,7 @@ Decision rubric (apply silently — don't narrate to the user):
 
 This rule reinforces "Do Work Now" — the bundling decision is part of doing the work, not a separate question to ask.
 
-**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; `[teatree] repo_mode` in `~/.teatree.toml` overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment / follow-up issue) rather than touching code another contributor owns; still fix anything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric.
+**Repo mode governs proactive-fix latitude (one source of truth).** Whether the agent fixes unrelated rough edges proactively or only flags them depends on who owns the repo. Instead of every skill re-deciding, run `t3 tool repo-mode` (cached 7 days; `--json` for machine reads; the DB-home `repo_mode` setting — `t3 <overlay> config_setting set repo_mode <solo|collaborative>` — overrides the `git shortlog` heuristic). `solo` → the bundling rubric above applies as written (fix proactively). `collaborative` → bias toward _flagging_ unrelated findings (PR comment / follow-up issue) rather than touching code another contributor owns; still fix anything inside the current ticket's own scope. The `auto`-mode bundling rubric is the `solo` behavior; `collaborative` is the conservative variant of the same rubric.
 
 **When genuinely unsure, ASK — never silently defer.** If the fix is borderline (small but truly orthogonal, or medium-sized but the current PR is already large), present three explicit options to the user via `AskUserQuestion`:
 
@@ -596,11 +596,11 @@ Use options 2 and 3 only when there is a concrete reason against option 1. Askin
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
-When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting rules **must land in teatree skill files**, not in the agent's personal memory/config. Personal memory is the fallback for user-specific facts — paths, credentials, editor preferences, one-machine workflow choices. For anything that would help another user of these skills, write to the skill.
+When `contribute` is `true` (a DB-home setting — `t3 <overlay> config_setting set contribute true`), retro findings and cross-cutting rules **must land in teatree skill files**, not in the agent's personal memory/config. Personal memory is the fallback for user-specific facts — paths, credentials, editor preferences, one-machine workflow choices. For anything that would help another user of these skills, write to the skill.
 
 **Before writing a feedback/guardrail to personal memory, check:**
 
-1. `contribute = true` in `~/.teatree.toml`? → yes almost always makes this a skill edit.
+1. `contribute` set to `true` (`config_setting set contribute true`)? → yes almost always makes this a skill edit.
 2. Does the rule encode a guardrail, pattern, or "do this not that"? → skill.
 3. Would another user benefit? → skill.
 4. Is it a user preference (tone, formatting) or environment fact (path, credential)? → personal memory is legitimate.
@@ -611,7 +611,7 @@ When `contribute = true` in `~/.teatree.toml`, retro findings and cross-cutting 
 
 This is the meta-policy that gives the "promote findings" rule above its trigger. It has no clean code home — it describes how to read the user's intent, which is methodology, not a deterministic gate — so it lives here as prose.
 
-In contribute mode (`contribute = true` in `~/.teatree.toml`), a user statement of the form "it should…" / "you should…" / "the agent shouldn't…" about agent behaviour is read as a request to adopt that behaviour into teatree itself — a skill edit where the behaviour is methodology, a code change (hook deny, FSM condition, CLI rejection) where a deterministic home exists. It is not a one-off instruction to satisfy for the current task and forget. The expected response is to make the teatree change in the same session, the same way change 1 of any retro finding lands: act on it, rather than asking "should I make a ticket or just fix it?".
+In contribute mode (`contribute` set to `true` via `config_setting set contribute true`), a user statement of the form "it should…" / "you should…" / "the agent shouldn't…" about agent behaviour is read as a request to adopt that behaviour into teatree itself — a skill edit where the behaviour is methodology, a code change (hook deny, FSM condition, CLI rejection) where a deterministic home exists. It is not a one-off instruction to satisfy for the current task and forget. The expected response is to make the teatree change in the same session, the same way change 1 of any retro finding lands: act on it, rather than asking "should I make a ticket or just fix it?".
 
 The session default in contribute mode is full autonomy. The agent carries the work to completion — implement, test, commit — without pausing to ask permission for in-scope work that the "Do Work Now" rule already covers. A clarifying question via `AskUserQuestion` is reserved for the case where the agent is genuinely unsure: a debatable architectural choice with several equally reasonable options, an ambiguous destination, or a directive whose scope the agent cannot infer from context. Uncertainty is the signal to interrupt; the absence of uncertainty is the signal to proceed. Treating every "should" as a question to bounce back is the failure this policy names — it converts a standing behaviour change into conversational acknowledgement that evaporates with the session.
 
@@ -727,15 +727,15 @@ The failure mode this prevents: flipping a deploy target / region mid-action bec
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
-The setting `teatree.mode` in `~/.teatree.toml` (or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
+The DB-home `mode` setting (`t3 <overlay> config_setting set mode <interactive|auto>`, or the `T3_MODE` env var) picks between two doctrines for publishing actions — push, PR create, PR merge, PR approve/unapprove, remote branch deletion, Slack posts, any write that leaves the local machine. The default is `interactive` (security-conservative). `auto` opts into full autonomy.
 
 ### Resolve the effective mode before every publishing decision
 
 Do not assume interactive mode. Before saying "not pushed, your call", before asking "push?", and before prompting for any publishing confirmation, **actively resolve the effective mode in this order** (first match wins):
 
 1. `T3_MODE` environment variable (`auto` or `interactive`).
-2. Active overlay config: `[overlays.<active>]` table in `~/.teatree.toml` where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay.
-3. Global `[teatree]` table in `~/.teatree.toml`.
+2. Active overlay's per-overlay `mode` value in the `ConfigSetting` DB store (`config_setting set mode … --overlay <active>`, where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay). The `[overlays.<active>] mode` TOML key is ignored on read.
+3. Global `mode` value in the `ConfigSetting` DB store (`config_setting set mode …`). The `[teatree] mode` TOML key is ignored on read.
 4. Per-repo overrides from agent memory / personal config (e.g. "this repo is auto — don't ask"). These supplement the config.
 5. If nothing matched: default to `interactive`.
 
@@ -758,9 +758,9 @@ The user has opted into end-to-end autonomy. The agent ships complete features w
 - Open the PR, watch the pipeline, then **merge via the §17.4 keystone** (orchestrator `t3 <overlay> ticket clear …` → loop `t3 <overlay> ticket merge <clear_id>`; never raw `gh pr merge`) **when green unless `require_human_approval_to_merge` is `true` for the active overlay**, delete the remote branch.
 - Post the overlay-approved Slack messages (review request, release note) as part of the normal flow.
 
-**`require_human_approval_to_merge` is the merge-only carve-out.** Some overlays opt into auto-push but keep auto-merge gated because the upstream enforces a human-review gate (e.g., GitLab Code Review approval rules where CI green is necessary but not sufficient). The setting lives on `UserSettings` and is overridable per-overlay via `[overlays.<name>].require_human_approval_to_merge = true`. When `true`, the agent pushes and opens the PR/MR without asking but stops before issuing the per-diff CLEAR (`t3 <overlay> ticket clear …`) or running the keystone merge (`t3 <overlay> ticket merge <clear_id>`) — raw `gh pr merge` / `glab mr merge` are mechanically blocked regardless. The user flips it to `false` once they're comfortable trusting CI green alone. Default is `true` (training wheel on). The setting is intentionally orthogonal to `mode`: `mode = "auto"` everywhere is fine while `require_human_approval_to_merge` stays `true` on client/team overlays.
+**`require_human_approval_to_merge` is the merge-only carve-out.** Some overlays opt into auto-push but keep auto-merge gated because the upstream enforces a human-review gate (e.g., GitLab Code Review approval rules where CI green is necessary but not sufficient). The setting lives on `UserSettings` (DB-home) and is overridable per-overlay via `t3 <overlay> config_setting set require_human_approval_to_merge true --overlay <name>`. When `true`, the agent pushes and opens the PR/MR without asking but stops before issuing the per-diff CLEAR (`t3 <overlay> ticket clear …`) or running the keystone merge (`t3 <overlay> ticket merge <clear_id>`) — raw `gh pr merge` / `glab mr merge` are mechanically blocked regardless. The user flips it to `false` once they're comfortable trusting CI green alone. Default is `true` (training wheel on). The setting is intentionally orthogonal to `mode`: `mode = "auto"` everywhere is fine while `require_human_approval_to_merge` stays `true` on client/team overlays.
 
-**Mode is per-overlay.** The setting can live under `[overlays.<name>]` and override the global `[teatree].mode`. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
+**Mode is per-overlay.** A per-overlay `mode` value (`config_setting set mode … --overlay <name>`) overrides the global `mode` value. A user can run `auto` mode on a personal dogfooding overlay while keeping `interactive` on a client overlay — the active overlay (resolved via `T3_OVERLAY_NAME`) determines which doctrine applies. See `BLUEPRINT.md` § 11.1.1.
 
 **Quality gates still run — they just don't depend on user confirmation.** The objection auto mode answers is "stop gating on _confirmation_," not "skip quality checks."
 

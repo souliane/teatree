@@ -34,41 +34,38 @@ _SHA_B = "b" * 40
 
 @contextmanager
 def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
-    """Run the block with a hermetic config pinning *overlay_name* to *autonomy*.
+    """Run the block with *overlay_name*'s effective autonomy pinned to *autonomy*.
 
     An eval-isolation helper for assertions whose outcome depends on the
-    overlay's effective autonomy (the substrate-merge carve-out). It pins all
-    three tiers ``get_effective_settings`` layers so the resolved autonomy is the
-    staged value regardless of the developer's live config: it swaps
-    ``teatree.config.CONFIG_PATH`` to a hermetic ``~/.teatree.toml`` holding only
-    the staged autonomy, and neutralises the DB override tier (#1775) and the env
-    tier to ``{}`` for the block so a live ``ConfigSetting`` row on the host (an
-    overlay such as ``t3-teatree`` pinned to ``full``) or a ``T3_*`` env var
-    cannot win over the staged TOML.
+    overlay's effective autonomy (the substrate-merge carve-out). ``autonomy`` is
+    DB-home under the #1775 partition — it resolves SOLELY from the
+    ``ConfigSetting`` store, not from ``[overlays.<name>]`` TOML — so this stages
+    it through that store's resolver seam rather than a hermetic ``~/.teatree.toml``
+    (a ``[overlays.<name>]`` / ``[teatree]`` ``autonomy`` key is ignored on read
+    now — its home is the DB).
 
-    Without the DB-tier pin the hermetic file is silently overridden by the host
-    database (the DB tier wins over the file tier), so the substrate floor check
-    read the host's live autonomy instead of the staged ``babysit`` and failed on
-    any host carrying a per-overlay autonomy override. All seams are restored on
-    exit.
+    It pins the per-overlay DB scope for *overlay_name* (alias-tolerant) to the
+    staged raw value — exercising the real ``_coerce_db_rows`` parser path — and
+    neutralises the global DB scope and the env tier to ``{}`` for the block so a
+    live ``ConfigSetting`` row on the host (an overlay such as ``t3-teatree``
+    pinned to ``full``) or a ``T3_*`` env var cannot win over the staged value.
+    All seams are restored on exit.
     """
     from unittest.mock import patch  # noqa: PLC0415
 
-    from teatree import config as config_module  # noqa: PLC0415
+    from teatree.config.settings import OverlayEntry  # noqa: PLC0415
 
-    with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text(f'[teatree]\n[overlays.{overlay_name}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
-        original_path = config_module.CONFIG_PATH
-        config_module.CONFIG_PATH = cfg
-        try:
-            with (
-                patch("teatree.config.resolution._db_setting_overrides", return_value={}),
-                patch("teatree.config.resolution._env_setting_overrides", return_value={}),
-            ):
-                yield
-        finally:
-            config_module.CONFIG_PATH = original_path
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+
+    def _staged_overlay_rows(name: str = "") -> dict[str, str]:
+        return {"autonomy": autonomy} if OverlayEntry.canonical_overlay_name(name) == canonical else {}
+
+    with (
+        patch("teatree.config.resolution._load_global_rows", return_value={}),
+        patch("teatree.config.resolution._load_overlay_rows", side_effect=_staged_overlay_rows),
+        patch("teatree.config.resolution._env_setting_overrides", return_value={}),
+    ):
+        yield
 
 
 def _check_branch_currency_conflict_only() -> bool:
@@ -100,8 +97,8 @@ def _check_merge_precondition_substrate_human_authorize() -> bool:
     * presenting the recorded authorizer must NOT raise on that guard.
 
     The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
-    via a hermetic ``~/.teatree.toml`` so the check is deterministic regardless
-    of the developer's live config. The ``autonomy = full`` carve-out is a
+    via the DB-home autonomy seam (#1775) so the check is deterministic
+    regardless of the developer's live config. The ``autonomy = full`` carve-out is a
     distinct must-allow path verified by
     :func:`_check_merge_precondition_substrate_full_autonomy`; this check is the
     must-block direction for a below-full overlay.

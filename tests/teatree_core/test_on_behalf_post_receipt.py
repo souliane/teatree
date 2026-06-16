@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, ConfigSetting
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -33,13 +33,16 @@ pytestmark = pytest.mark.django_db
 
 
 def _cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, enabled: bool = True) -> None:
+    # ``slack_user_id`` is a RAW key (TOML-home); ``notify_on_post_on_behalf``
+    # is DB-home (#1775, no ``T3_*`` env var) so a TOML value for it is ignored
+    # on read — stage it in the ``ConfigSetting`` store (global scope).
     cfg = tmp_path / ".teatree.toml"
-    toggle = "true" if enabled else "false"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "U-OPERATOR"\nnotify_on_post_on_behalf = {toggle}\n',
+        '[teatree]\nslack_user_id = "U-OPERATOR"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("notify_on_post_on_behalf", enabled)
 
 
 def _stub_backend() -> MagicMock:

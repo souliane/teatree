@@ -40,12 +40,13 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
+    # ``on_behalf_post_mode`` is DB-home (#1775) so a TOML value for it is
+    # ignored on read — stage it via the ``T3_*`` env tier, which wins for a
+    # DB-home key and needs no DB.
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\non_behalf_post_mode = "{mode.value}"\n',
-        encoding="utf-8",
-    )
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
 
 
 _BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
@@ -182,12 +183,16 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``slack_user_id`` is a RAW key (TOML-home); ``on_behalf_post_mode``
+        # is DB-home (#1775) so a TOML value for it is ignored on read — stage
+        # it via the ``T3_*`` env tier.
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text(
-            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "immediate"\n',
+            '[teatree]\nslack_user_id = "U-OPERATOR"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
         self.monkeypatch = monkeypatch
 
     @_patch_overlays(FULL_OVERLAY)
@@ -212,10 +217,9 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
         """Gate refusal (DRAFT_OR_ASK, no approval) → no post, no after-receipt DM."""
         notify_backend = _notify_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
-        self.monkeypatch.setattr(
-            "teatree.config.CONFIG_PATH",
-            self._write_blocking_cfg(),
-        )
+        # ``on_behalf_post_mode`` is DB-home (#1775) — flip to a blocking mode
+        # via the ``T3_*`` env tier (overrides the ``immediate`` set in _ctx).
+        self.monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "draft_or_ask")
         mock_host = MagicMock()
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
@@ -226,14 +230,3 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
 
         assert "error" in result
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
-
-    def _write_blocking_cfg(self) -> Path:
-        import tempfile  # noqa: PLC0415
-
-        d = Path(tempfile.mkdtemp())
-        cfg = d / ".teatree.toml"
-        cfg.write_text(
-            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "draft_or_ask"\n',
-            encoding="utf-8",
-        )
-        return cfg

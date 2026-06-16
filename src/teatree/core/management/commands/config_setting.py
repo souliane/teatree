@@ -144,32 +144,56 @@ class Command(TyperCommand):
         fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]")
 
-    @command(name="import")
-    def import_toml(self) -> None:
-        """Seed the DB store from the operational ``[teatree]`` toml keys (one-time migration).
+    def _import_table(self, table: dict, scope: str) -> int:
+        """Upsert every operational key in *table* into *scope*; return the count moved.
 
-        The dual-read migration step (#938): every ``[teatree]`` key that is a
-        registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
-        registry's parser and upserted into the store, so existing installs move
-        their operational config into the DB. Bootstrap-file-only keys
-        (``private_repos`` / ``DATABASE_URL`` / …) and unknown keys are skipped —
-        only operational settings move. The upsert makes a re-run idempotent.
+        A key registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) is coerced
+        through its registry parser and upserted into *scope* (``""`` = global, a
+        name = that overlay's scope). Bootstrap-file-only keys, the overlay's own
+        ``path`` / ``url`` discovery keys, and unknown keys are skipped — only
+        operational settings move. The upsert makes a re-run idempotent.
         """
-        teatree_table = load_config().raw.get("teatree", {})
-        if not isinstance(teatree_table, dict):
-            self.stdout.write("  (no [teatree] table to import)")
-            return
+        scope_label = "global" if not scope else f"overlay {scope!r}"
         imported = 0
-        for key, raw_value in teatree_table.items():
+        for key, raw_value in table.items():
             parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
             if parser is None:
                 continue
             try:
                 canonical = parser(raw_value)
             except (ValueError, TypeError, AttributeError) as exc:
-                self.stderr.write(f"  skipping {key!r}: invalid value {raw_value!r}: {exc}")
+                self.stderr.write(f"  skipping {key!r} [{scope_label}]: invalid value {raw_value!r}: {exc}")
                 continue
-            ConfigSetting.objects.set_value(key, canonical)
+            ConfigSetting.objects.set_value(key, canonical, scope=scope)
             imported += 1
-            self.stdout.write(f"  imported {key} = {ConfigSetting.objects.get_effective(key)!r}")
+            self.stdout.write(
+                f"  imported {key} = {ConfigSetting.objects.get_effective(key, scope=scope)!r}  [{scope_label}]"
+            )
+        return imported
+
+    @command(name="import")
+    def import_toml(self) -> None:
+        """Seed the DB store from the operational toml keys (one-time migration).
+
+        The dual-read migration step (#938): every ``[teatree]`` key that is a
+        registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
+        registry's parser and upserted into the GLOBAL store, and every operational
+        key under an ``[overlays.<name>]`` table is upserted into THAT overlay's
+        scope — the DB twin of the per-overlay TOML override (#1775). So an install
+        with both a global ``mode`` and a per-overlay ``mode = "auto"`` migrates both
+        tiers in one pass. Bootstrap-file-only keys (``private_repos`` /
+        ``DATABASE_URL`` / …), the overlay's own ``path`` / ``url`` discovery keys,
+        and unknown keys are skipped — only operational settings move. The upsert
+        makes a re-run idempotent.
+        """
+        raw = load_config().raw
+        teatree_table = raw.get("teatree", {})
+        imported = 0
+        if isinstance(teatree_table, dict):
+            imported += self._import_table(teatree_table, scope="")
+        overlays = raw.get("overlays", {})
+        if isinstance(overlays, dict):
+            for overlay_name, overlay_cfg in overlays.items():
+                if isinstance(overlay_cfg, dict):
+                    imported += self._import_table(overlay_cfg, scope=overlay_name)
         self.stdout.write(f"  imported {imported} operational setting(s) into the DB store")

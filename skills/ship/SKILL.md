@@ -50,7 +50,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 
 ### 0a. Missing Issue Reference Policy (Non-Negotiable)
 
-When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the `[teatree] missing_issue_ref_policy` setting (`T3_MISSING_ISSUE_POLICY` env var, per-overlay overridable) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
+When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the DB-home `missing_issue_ref_policy` setting (`t3 <overlay> config_setting set missing_issue_ref_policy <value>`, `--overlay <name>` for the per-overlay scope; `T3_MISSING_ISSUE_POLICY` env var) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
 
 1. **Find the ORIGINAL existing issue first (always, every policy tier).** Before anything else, look for the issue that already covers this work — the one that introduced the bug, or the one that left the scope unimplemented. Search the repo's issues (open **and** closed) and the introducing commit's linked issue:
 
@@ -68,7 +68,7 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
    - **Colleague-facing / external repos** (a shared product repo of an org — one the user does **not** own): under the default policy you must **ASK the user** for the reference (via `AskUserQuestion`). NEVER auto-create an issue and NEVER use a dummy/placeholder reference on a tracker the user does not control.
    - **The user's own repos** (teatree itself, the user's solo overlay repos): creating an issue is allowed without asking — the user owns the tracker, so a created issue is self-bookkeeping, not noise on a colleague's surface.
 
-**Default (`find_existing_then_ask`):** find-existing-first, then ask on colleague repos / create on own repos, never a dummy. `create` and `dummy` are **opt-in only** (`[teatree] missing_issue_ref_policy = "create"` / `"dummy"`, or per-overlay) — they authorise auto-create / a placeholder reference even on a colleague-facing repo, and are OFF by default. When the resolver returns `ASK_USER`, surface the blocker and wait — do not fill the gap yourself.
+**Default (`find_existing_then_ask`):** find-existing-first, then ask on colleague repos / create on own repos, never a dummy. `create` and `dummy` are **opt-in only** (`config_setting set missing_issue_ref_policy create` / `dummy`, or with `--overlay <name>`) — they authorise auto-create / a placeholder reference even on a colleague-facing repo, and are OFF by default. When the resolver returns `ASK_USER`, surface the blocker and wait — do not fill the gap yourself.
 
 ### 1. Commit
 
@@ -304,13 +304,12 @@ The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by 
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 
-#### Per-Namespace Close-Trailer Gate (`[teatree.publish_gates]`)
+#### Per-Namespace Close-Trailer Gate (`ban_close_trailers_on_namespaces`)
 
-Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. Configure those namespaces in `~/.teatree.toml`:
+Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. `ban_close_trailers_on_namespaces` is a DB-home setting — configure those namespaces in the `ConfigSetting` store:
 
-```toml
-[teatree.publish_gates]
-ban_close_trailers_on_namespaces = ["my-group/*"]
+```bash
+t3 <overlay> config_setting set ban_close_trailers_on_namespaces '["my-group/*"]'
 ```
 
 When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
@@ -539,7 +538,7 @@ When a session uncovers a small unique commit on a now-stale branch (typical dur
 
   NEVER refuse an own-repo merge as "colleague-facing", ask for a colleague's sign-off, request an unowned-repo approval, or treat the repo's PRIVATE visibility as if it implied colleague ownership. Holding back from merging your own cleared repo is a recurring failure this rule pins; org/colleague framing in the surrounding context does NOT make an owned repo colleague-facing.
 - **A freshly-cloned public souliane/* main clone is not auto-configured (#762).**The provisioner sets the clone-local noreply identity on worktrees, and existing clones are covered by the idempotent `t3 <overlay> workspace stamp-identity` — but a brand-new main clone has neither until that command is run once on it (the #730 pre-push check is the only backstop until then). Run `t3 <overlay> workspace stamp-identity` once after cloning a public souliane/* repo.
-- **Auto-merge is a separate per-overlay knob.** Even in `auto` mode, run the keystone merge (`t3 <overlay> ticket merge <clear_id>`, after the orchestrator's `ticket clear`) only when `require_human_approval_to_merge` is `false` for the active overlay (default `true` — training wheel on). Overlays whose upstream enforces mandatory human review (e.g., GitLab Code Review approval rules) should keep it `true`; the agent then pushes and opens the PR/MR without asking but stops before issuing the CLEAR / queuing the merge. The user flips it to `false` per-overlay (`[overlays.<name>].require_human_approval_to_merge = false`) once comfortable trusting CI green alone.
+- **Auto-merge is a separate per-overlay knob.** Even in `auto` mode, run the keystone merge (`t3 <overlay> ticket merge <clear_id>`, after the orchestrator's `ticket clear`) only when `require_human_approval_to_merge` is `false` for the active overlay (default `true` — training wheel on). Overlays whose upstream enforces mandatory human review (e.g., GitLab Code Review approval rules) should keep it `true`; the agent then pushes and opens the PR/MR without asking but stops before issuing the CLEAR / queuing the merge. The user flips it to `false` per-overlay (`t3 <overlay> config_setting set require_human_approval_to_merge false --overlay <name>`) once comfortable trusting CI green alone.
 - **Commit trailer preferences** (`Co-Authored-By`) live in the user's global agent config — check it before committing; when in doubt, omit the trailer.
 
 ### Git History Rewriting

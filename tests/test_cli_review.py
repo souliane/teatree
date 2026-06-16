@@ -909,9 +909,13 @@ class TestApprove:
     def test_approve_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → approve refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # The autouse ``_no_on_behalf_gate`` fixture sets the gate to immediate
+        # via ``T3_ON_BEHALF_POST_MODE`` (``on_behalf_post_mode`` is DB-home,
+        # #1775). This test needs the gate ON, so undo that override and let the
+        # mode resolve to its blocking ``DRAFT_OR_ASK`` default. (The old
+        # ``ask_before_post_on_behalf`` TOML staging is inert — that field is
+        # derived from ``on_behalf_post_mode`` and ignored on read.)
+        monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
         mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
@@ -956,9 +960,10 @@ class TestApprove:
     def test_unapprove_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
         """Gate ON + no recorded approval → unapprove refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # See ``test_approve_blocked_by_on_behalf_gate``: undo the autouse
+        # gate-off (DB-home ``on_behalf_post_mode`` via env, #1775) so the mode
+        # resolves to its blocking ``DRAFT_OR_ASK`` default.
+        monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
         mock_api = MagicMock()
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])

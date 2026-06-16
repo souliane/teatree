@@ -9,8 +9,9 @@ don't fix — someone else owns that code). An empty window is treated as
 license to rewrite a stranger's repo.
 
 ``resolve_repo_mode`` is what skills/hooks consume. It honours an explicit
-``[teatree] repo_mode`` override, else returns a 7-day-cached detection
-(same cache shape as ``config.check_for_updates``) keyed by repo path.
+``repo_mode`` override (DB-home #1775 — resolved via
+:func:`teatree.config.get_effective_settings`), else returns a 7-day-cached
+detection (same cache shape as ``config.check_for_updates``) keyed by repo path.
 """
 
 import hashlib
@@ -72,9 +73,9 @@ def detect_repo_mode(
 
 
 def _config_override() -> RepoMode | None:
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415
 
-    raw = load_config().user.repo_mode
+    raw = get_effective_settings().repo_mode
     if not raw:
         return None
     return RepoMode.parse(raw)

@@ -9,40 +9,32 @@ per-setting resolvers live in ``resolution`` and are reached through the package
 facade at call-time (the partition's loader -> resolution edge, deferred to avoid
 the loader/resolution/discovery import cycle).
 
-``load_config`` builds only the **file tier** (the global ``[teatree]`` table
-merged onto the dataclass defaults). The higher tiers — env, the #1775 DB
-override tier (``ConfigSetting`` rows), and the per-overlay ``[overlays.<name>]``
-table — are layered on top by ``resolution.get_effective_settings``; consult its
-docstring for the full ``env -> DB -> per-overlay -> global -> default``
-precedence. Callers that need effective values must use ``get_effective_settings``,
-not the bare ``load_config().user`` (which sees neither env, DB, nor per-overlay).
+``load_config`` builds only the **TOML file tier**, and under the #1775 hard
+partition only the TOML-home carve-out reads off it — the global ``[teatree]``
+table merged onto the dataclass defaults. Every DB-home field keeps its dataclass
+default here; its authoritative value comes from the ``ConfigSetting`` store. The
+remaining tiers — env, the DB store (``ConfigSetting`` rows, for DB-home fields),
+and the per-overlay ``[overlays.<name>]`` table (for TOML-home fields) — are
+layered on top per-field by ``resolution.get_effective_settings`` according to
+each field's home; consult its docstring for the per-home precedence. Callers that
+need effective values must use ``get_effective_settings``, not the bare
+``load_config().user`` (which sees neither env, the DB store, nor per-overlay).
 """
 
+import logging
 import tomllib
 from pathlib import Path
 
 import teatree.config as _facade
-from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, Speed, TeamsDisplay
-from teatree.config.resolution import (
-    _resolve_enum_setting,
-    _resolve_on_behalf_post_mode,
-    _resolve_slack_voice_classifier_mode,
-)
-from teatree.config.settings import (
-    E2ERepo,
-    TeaTreeConfig,
-    UserSettings,
-    _default_handover_mirror_path,
-    _parse_disk_cache_allowlist,
-    _parse_on_behalf_auto_actions,
-)
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
-from teatree.types import DEFAULT_MR_TITLE_REGEX
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
+
+_logger = logging.getLogger("teatree.config")
 
 
 def default_logging(namespace: str) -> dict:
@@ -105,72 +97,52 @@ def _load_toml(path: Path) -> dict:
             raise ValueError(msg) from exc
 
 
-def _file_str_list(raw: object) -> list[str]:
-    """Lenient list coercion for the FILE tier (``load_config``).
+def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
+    """Emit a loud WARN for any DB-home key left in ``[teatree]`` / ``[overlays.<name>]``.
 
-    A real TOML/JSON array coerces each element to ``str``; a malformed scalar
-    degrades to an empty list rather than raising — the global ``~/.teatree.toml``
-    has always been tolerant of a stray scalar here (the file tier never hard-
-    fails the whole config on one malformed key). The OVERRIDE tier (per-overlay
-    / DB) is the strict one: it routes through ``settings._parse_str_list`` which
-    RAISES on a non-list scalar (#258), so a bad override is rejected loud while
-    a bad global file still loads.
+    Under the #1775 hard partition a DB-home key in the TOML file is IGNORED on
+    read (its home is the ``ConfigSetting`` store), so silently dropping it would
+    leave the operator wondering why ``mode = "auto"`` in their file did nothing.
+    This makes the drop VISIBLE — one WARNING per offending key, naming the key,
+    its TOML location, and the one-time ``config_setting import`` migration path.
+
+    The home registry is imported lazily (the same deferral ``homes`` uses) to
+    avoid a ``settings -> loader -> homes -> settings`` import cycle at module load.
     """
-    return [str(s) for s in raw] if isinstance(raw, list) else []
+    from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
 
+    db_home_keys = {name for name, home in SETTING_HOMES.items() if home is SettingHome.DB}
 
-def _resolve_teams_enabled(raw: dict) -> bool:
-    """Resolve the global ``teams_enabled`` value from the top-level ``[teams]`` table.
+    teatree = raw.get("teatree")
+    if isinstance(teatree, dict):
+        for key in teatree:
+            if key in db_home_keys:
+                _logger.warning(
+                    "Config key '[teatree] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
+                    "set it with `t3 <overlay> config_setting set %s ...` or migrate once with "
+                    "`t3 <overlay> config_setting import`.",
+                    key,
+                    path,
+                    key,
+                )
 
-    The inert agent-teams WORK layer reads its enable flag from
-    ``[teams] enabled`` — the natural namespace for the feature, mirroring how
-    ``[mr_reminder]`` / ``[teatree.speak]`` read a dedicated table into a
-    ``UserSettings`` field. An absent ``[teams]`` table or an absent ``enabled``
-    key resolves to ``False`` (ships dark). The per-overlay / env tiers key on
-    the ``teams_enabled`` field name and are layered by
-    ``get_effective_settings``.
-    """
-    table = raw.get("teams")
-    if isinstance(table, dict):
-        return bool(table.get("enabled", False))
-    return False
-
-
-def _resolve_teams_int(raw: dict, key: str, default: int) -> int:
-    """Resolve a positive-int value from the top-level ``[teams]`` table, fail-safe.
-
-    The pane-budget settings (``[teams] max_panes`` / ``[teams] idle_minutes``,
-    #1838 PR#7a) live in the ``[teams]`` namespace alongside ``enabled``. An
-    absent table/key, a non-int, a ``bool``, or a non-positive value all degrade
-    to *default* — the safety bound the setting encodes can never be disabled by
-    a mistyped config value. The per-overlay / env tiers key on the matching
-    ``teams_*`` field name and are layered by ``get_effective_settings``.
-    """
-    table = raw.get("teams")
-    if not isinstance(table, dict):
-        return default
-    value = table.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        return default
-    return value if value > 0 else default
-
-
-def _resolve_teams_display(raw: dict) -> TeamsDisplay:
-    """Resolve the global ``teams_display`` value from ``[teams] display`` (#1838 WI-5).
-
-    The PRESENTATION-only pane-display mode lives in the ``[teams]`` namespace
-    alongside ``enabled`` / ``max_panes`` / ``idle_minutes``. An absent ``[teams]``
-    table or an absent ``display`` key resolves to the conservative
-    :attr:`TeamsDisplay.NONE` (ships dark). An explicit but invalid value raises
-    via :meth:`TeamsDisplay.parse` — a typo in the global file is loud, never a
-    silent escalation. The per-overlay / env tiers key on the ``teams_display``
-    field name and are layered by ``get_effective_settings``.
-    """
-    table = raw.get("teams")
-    if not isinstance(table, dict):
-        return TeamsDisplay.NONE
-    value = table.get("display")
-    return TeamsDisplay.parse(value) if value is not None else TeamsDisplay.NONE
+    overlays = raw.get("overlays")
+    if isinstance(overlays, dict):
+        for overlay_name, overlay_cfg in overlays.items():
+            if not isinstance(overlay_cfg, dict):
+                continue
+            for key in overlay_cfg:
+                if key in db_home_keys:
+                    _logger.warning(
+                        "Config key '[overlays.%s] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
+                        "set it with `t3 <overlay> config_setting set %s ... --overlay %s` or migrate once with "
+                        "`t3 <overlay> config_setting import`.",
+                        overlay_name,
+                        key,
+                        path,
+                        key,
+                        overlay_name,
+                    )
 
 
 def load_config(path: Path | None = None) -> TeaTreeConfig:
@@ -180,140 +152,38 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         return TeaTreeConfig()
 
     raw = _load_toml(path)
+    _warn_db_home_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
     workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
     worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
 
-    raw_excluded = teatree.get("excluded_skills", [])
-    excluded_skills = [str(s) for s in raw_excluded] if isinstance(raw_excluded, list) else []
-
-    toml_mode = teatree.get("mode")
-    mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
-
-    on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
-
-    publish_gates = teatree.get("publish_gates", {}) if isinstance(teatree, dict) else {}
-    raw_ban = publish_gates.get("ban_close_trailers_on_namespaces", []) if isinstance(publish_gates, dict) else []
-    ban_close_trailers_on_namespaces = (
-        [str(p) for p in raw_ban if isinstance(p, str) and p] if isinstance(raw_ban, list) else []
-    )
-
+    # The hard partition (#1775): ``load_config`` builds ONLY the TOML-home fields
+    # (the irreducible carve-out — pre-Django readers, path/infra bootstrap,
+    # nested structured tables). Every DB-home field keeps its dataclass default
+    # at the file tier; its value comes from the ``ConfigSetting`` store via
+    # ``get_effective_settings``. ``on_behalf_post_mode`` is DB-home (so it keeps
+    # its default here), and ``ask_before_post_on_behalf`` is DERIVED from the
+    # mode — derived from the file-tier default mode here, re-derived from the
+    # resolved DB-home mode by ``get_effective_settings``. A DB-home key left in
+    # ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
+    # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
-        branch_prefix=teatree.get("branch_prefix", ""),
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
         timezone=teatree.get("timezone", ""),
-        contribute=bool(teatree.get("contribute", False)),
-        excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
-        mode=mode,
-        autonomy=_resolve_enum_setting(teatree, "autonomy", Autonomy, Autonomy.BABYSIT),
-        speed=_resolve_enum_setting(teatree, "speed", Speed, Speed.MEDIUM),
-        loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
-        dedicated_loops=bool(teatree.get("dedicated_loops", False)),
-        teams_enabled=_resolve_teams_enabled(raw),
-        teams_max_panes=_resolve_teams_int(raw, "max_panes", 1),
-        teams_idle_minutes=_resolve_teams_int(raw, "idle_minutes", 30),
-        teams_display=_resolve_teams_display(raw),
-        require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
-        require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
-        ask_before_post_on_behalf=ask_before_post_on_behalf,
-        on_behalf_post_mode=on_behalf_post_mode,
-        on_behalf_auto_actions=_parse_on_behalf_auto_actions(teatree.get("on_behalf_auto_actions")),
-        notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
-        notify_on_post_on_behalf=bool(teatree.get("notify_on_post_on_behalf", True)),
-        claude_chrome=bool(teatree.get("claude_chrome", True)),
-        agent_signature=bool(teatree.get("agent_signature", False)),
-        statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
-        user_identity_aliases=_file_str_list(teatree.get("user_identity_aliases", [])),
-        repo_mode=str(teatree.get("repo_mode", "")),
-        colleague_repo_url_pattern=str(teatree.get("colleague_repo_url_pattern", "")),
-        solo_repo_url_pattern=str(teatree.get("solo_repo_url_pattern", "")),
-        missing_issue_ref_policy=_resolve_enum_setting(
-            teatree,
-            "missing_issue_ref_policy",
-            MissingIssuePolicy,
-            MissingIssuePolicy.FIND_EXISTING_THEN_ASK,
-        ),
-        architectural_review_disabled=bool(teatree.get("architectural_review_disabled", False)),
-        architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
-        architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
-        architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
-        review_skill=str(teatree.get("review_skill", "")),
-        require_review_context=bool(teatree.get("require_review_context", False)),
-        require_anti_vacuity_attestation=bool(teatree.get("require_anti_vacuity_attestation", False)),
-        require_rubric_verification=bool(teatree.get("require_rubric_verification", False)),
-        require_spec_coverage=bool(teatree.get("require_spec_coverage", False)),
-        e2e_confidence_threshold=int(teatree.get("e2e_confidence_threshold", 90)),
-        scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
-        scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
-        scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
-        ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
-        eval_local_disabled=bool(teatree.get("eval_local_disabled", False)),
-        eval_local_skill=str(teatree.get("eval_local_skill", "eval")),
-        eval_local_cadence_hours=int(teatree.get("eval_local_cadence_hours", 168)),
-        dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
-        dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
-        dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),
-        dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
-        self_update_disabled=bool(teatree.get("self_update_disabled", False)),
-        self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
-        auto_update_reinstall=bool(teatree.get("auto_update_reinstall", False)),
-        auto_update_require_green_main=bool(teatree.get("auto_update_require_green_main", True)),
-        resource_pressure_disabled=bool(teatree.get("resource_pressure_disabled", False)),
-        resource_pressure_cadence_minutes=int(teatree.get("resource_pressure_cadence_minutes", 5)),
-        resource_pressure_min_free_interval_minutes=int(
-            teatree.get("resource_pressure_min_free_interval_minutes", 30),
-        ),
-        disk_warn_free_gb=float(teatree.get("disk_warn_free_gb", 25.0)),
-        disk_crit_free_gb=float(teatree.get("disk_crit_free_gb", 10.0)),
-        ram_warn_avail_gb=float(teatree.get("ram_warn_avail_gb", 3.0)),
-        ram_crit_avail_gb=float(teatree.get("ram_crit_avail_gb", 1.5)),
-        disk_cache_allowlist=_parse_disk_cache_allowlist(teatree.get("disk_cache_allowlist")),
-        allow_destructive_disk=bool(teatree.get("allow_destructive_disk", False)),
-        worktree_stale_days=int(teatree.get("worktree_stale_days", 30)),
-        max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
-        allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
-        ram_kill_allowlist=_file_str_list(teatree.get("ram_kill_allowlist", [])),
-        todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
-        todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
-        max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
-        provision_step_timeout_seconds=int(teatree.get("provision_step_timeout_seconds", 1800)),
-        idle_stack_reaper_disabled=bool(teatree.get("idle_stack_reaper_disabled", False)),
-        idle_stack_idle_minutes=int(teatree.get("idle_stack_idle_minutes", 30)),
-        idle_stack_reaper_cadence_minutes=int(teatree.get("idle_stack_reaper_cadence_minutes", 5)),
-        idle_stack_e2e_recent_minutes=int(teatree.get("idle_stack_e2e_recent_minutes", 60)),
-        stale_stack_min_age_minutes=int(teatree.get("stale_stack_min_age_minutes", 0)),
-        local_stack_queue_disabled=bool(teatree.get("local_stack_queue_disabled", False)),
-        local_stack_queue_max_attempts=int(teatree.get("local_stack_queue_max_attempts", 13)),
-        clean_ignore=_file_str_list(teatree.get("clean_ignore", [])),
-        slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
-        ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
-        pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
-        pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
-        review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
         orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
-        e2e_mandatory_gate_enabled=bool(teatree.get("e2e_mandatory_gate_enabled", True)),
-        mr_title_regex=str(teatree.get("mr_title_regex", DEFAULT_MR_TITLE_REGEX)),
-        issue_implementer_enabled=bool(teatree.get("issue_implementer_enabled", False)),
-        issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
-        issue_implementer_max_concurrent=int(teatree.get("issue_implementer_max_concurrent", 1)),
-        issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
-        auto_disposition_enabled=bool(teatree.get("auto_disposition_enabled", False)),
-        auto_disposition_max_closes_per_tick=int(teatree.get("auto_disposition_max_closes_per_tick", 5)),
-        orchestrate_claim_enabled=bool(teatree.get("orchestrate_claim_enabled", False)),
+        statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
         handover_mirror_path=(
             Path(str(teatree["handover_mirror_path"])).expanduser()
             if teatree.get("handover_mirror_path")
             else _default_handover_mirror_path()
         ),
-        billing_cycle_anchor_day=int(teatree.get("billing_cycle_anchor_day", 0)),
-        sdk_monthly_credit_usd=float(teatree.get("sdk_monthly_credit_usd", 200.0)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)

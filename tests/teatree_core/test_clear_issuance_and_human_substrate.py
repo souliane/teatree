@@ -35,7 +35,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
-from teatree.core.models import MergeAudit, MergeClear, Ticket
+from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, Ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -46,12 +46,22 @@ _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
 
 @contextmanager
 def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
-    """Stage a ``~/.teatree.toml`` setting ``overlay`` to ``autonomy`` and wire it in."""
+    """Stage ``overlay``'s ``autonomy`` and wire it in.
+
+    ``autonomy`` is DB-home (#1775, no ``T3_*`` env var) so a ``[overlays.<n>]``
+    TOML value for it is ignored on read — stage it in the ``ConfigSetting``
+    store scoped to the overlay. ``CONFIG_PATH`` is still pinned at an empty
+    TOML so the developer's real config is never read.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Path(tmp) / ".teatree.toml"
-        cfg.write_text(f'[teatree]\n[overlays.{overlay}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", cfg):
-            yield
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+        try:
+            with patch("teatree.config.CONFIG_PATH", cfg):
+                yield
+        finally:
+            row.delete()
 
 
 def _gh_stub(argv: list[str]) -> tuple[int, str, str]:

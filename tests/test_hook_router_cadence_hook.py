@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _tick_meta_stale, handle_enforce_loop_on_prompt, handle_enforce_loop_registration
@@ -33,82 +34,105 @@ def _teatree_engaged(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
 
 
-def test_loop_cadence_seconds_honors_toml_when_env_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # #1036: with no T3_LOOP_CADENCE env, the hook cadence must fall back
-    # to ~/.teatree.toml loop_cadence_seconds, not the hardcoded 720.
-    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    from hooks.scripts.hook_router import _loop_cadence_seconds  # noqa: PLC0415
+class TestCadenceResolvesFromDb(TestCase):
+    """The hook cadence readers resolve ``loop_cadence_seconds`` from the DB (#1775).
 
-    assert _loop_cadence_seconds() == 60
+    ``loop_cadence_seconds`` is DB-home: its authoritative value is a GLOBAL-scope
+    ``ConfigSetting`` row, so each hook_router reader must read it through the
+    shared ``teatree.config.cadence_seconds`` resolver — never the hardcoded 720.
+    Grouped into a TestCase class per souliane/teatree#98 (the standalone
+    ``@pytest.mark.django_db`` function pattern is disallowed).
+    """
 
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        self.capsys = capsys
 
-def test_tick_meta_stale_uses_toml_cadence_window(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # #1036: staleness window is cadence*2. With toml cadence 60s (env
-    # unset), a 200s-old tick-meta is stale (200 > 120). Pre-fix this read
-    # env-only -> default 720 -> window 1440s -> 200 < 1440 -> NOT stale,
-    # so this asserts the toml-aware behavior (RED pre-fix, GREEN after).
-    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    def test_loop_cadence_seconds_honors_db_when_env_unset(self) -> None:
+        # #1036 + #1775: with no T3_LOOP_CADENCE env, the hook cadence must fall back
+        # to the DB-home loop_cadence_seconds ConfigSetting row, not the hardcoded 720.
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-    data_home = tmp_path / "xdg"
-    meta_dir = data_home / "teatree"
-    meta_dir.mkdir(parents=True)
-    meta = meta_dir / "tick-meta.json"
-    meta.write_text('{"next_epoch": 0, "cadence": 60}\n', encoding="utf-8")
-    old = time.time() - 200
-    import os  # noqa: PLC0415
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
+        from hooks.scripts.hook_router import _loop_cadence_seconds  # noqa: PLC0415
 
-    os.utime(meta, (old, old))
-    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        assert _loop_cadence_seconds() == 60
 
-    assert _tick_meta_stale() is True
+    def test_tick_meta_stale_uses_db_cadence_window(self) -> None:
+        # #1036 + #1775: staleness window is cadence*2. With the DB-home cadence 60s
+        # (env unset), a 200s-old tick-meta is stale (200 > 120). Pre-fix this read
+        # env-only -> default 720 -> window 1440s -> 200 < 1440 -> NOT stale,
+        # so this asserts the cadence-aware behavior (RED pre-fix, GREEN after).
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
 
-def test_enforce_loop_on_prompt_emits_toml_cron_minutes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # #1036: the loop-registration cron minutes must match the toml
-    # cadence (1800s -> */30). Pre-fix env-only -> 720 -> */12.
-    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nloop_cadence_seconds = 1800\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        data_home = self.tmp_path / "xdg"
+        meta_dir = data_home / "teatree"
+        meta_dir.mkdir(parents=True)
+        meta = meta_dir / "tick-meta.json"
+        meta.write_text('{"next_epoch": 0, "cadence": 60}\n', encoding="utf-8")
+        old = time.time() - 200
+        os.utime(meta, (old, old))
+        self.monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
-    data_home = tmp_path / "xdg"
-    (data_home / "teatree").mkdir(parents=True)
-    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
-    state = tmp_path / "state"
-    state.mkdir()
-    monkeypatch.setattr(router, "STATE_DIR", state)
+        assert _tick_meta_stale() is True
 
-    handle_enforce_loop_on_prompt({"session_id": "s-1036"})
-    out = capsys.readouterr().out
-    assert "*/30 * * * *" in out
+    def test_enforce_loop_on_prompt_emits_db_cron_minutes(self) -> None:
+        # #1036 + #1775: the loop-registration cron minutes must match the DB-home
+        # cadence (1800s -> */30). Pre-fix env-only -> 720 -> */12.
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 1800)
 
-def test_enforce_loop_registration_uses_toml_cron_minutes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # #1036: the PreToolUse deny reason's cron minutes must also match the
-    # toml cadence (1800s -> */30). Covers the third hook_router reader.
-    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nloop_cadence_seconds = 1800\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        data_home = self.tmp_path / "xdg"
+        (data_home / "teatree").mkdir(parents=True)
+        self.monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+        state = self.tmp_path / "state"
+        state.mkdir()
+        self.monkeypatch.setattr(router, "STATE_DIR", state)
 
-    state = tmp_path / "state"
-    state.mkdir()
-    monkeypatch.setattr(router, "STATE_DIR", state)
-    (state / "s-1036.loop-pending").write_text("1", encoding="utf-8")
+        handle_enforce_loop_on_prompt({"session_id": "s-1036"})
+        out = self.capsys.readouterr().out
+        assert "*/30 * * * *" in out
 
-    blocked = handle_enforce_loop_registration({"session_id": "s-1036", "tool_name": "Bash"})
-    assert blocked is True
-    assert "*/30 * * * *" in capsys.readouterr().out
+    def test_enforce_loop_registration_uses_db_cron_minutes(self) -> None:
+        # #1036 + #1775: the PreToolUse deny reason's cron minutes must also match the
+        # DB-home cadence (1800s -> */30). Covers the third hook_router reader.
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 1800)
+
+        state = self.tmp_path / "state"
+        state.mkdir()
+        self.monkeypatch.setattr(router, "STATE_DIR", state)
+        (state / "s-1036.loop-pending").write_text("1", encoding="utf-8")
+
+        blocked = handle_enforce_loop_registration({"session_id": "s-1036", "tool_name": "Bash"})
+        assert blocked is True
+        assert "*/30 * * * *" in self.capsys.readouterr().out
+
+    def test_loop_cadence_seconds_inserts_src_on_path_when_absent(self) -> None:
+        # #1036: covers the sys.path-insert + finally-cleanup branch taken
+        # when the hook process does not already have teatree's src on path.
+        import sys  # noqa: PLC0415
+
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 120)
+        src_dir = str(Path(router.__file__).resolve().parents[2] / "src")
+        self.monkeypatch.setattr(sys, "path", [p for p in sys.path if p != src_dir])
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        from hooks.scripts.hook_router import _loop_cadence_seconds  # noqa: PLC0415
+
+        assert _loop_cadence_seconds() == 120
+        assert src_dir not in sys.path
 
 
 def test_loop_registration_exempts_subagents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,23 +214,6 @@ def test_loop_cadence_seconds_falls_back_to_env_when_teatree_unimportable(
     from hooks.scripts.hook_router import _loop_cadence_seconds  # noqa: PLC0415
 
     assert _loop_cadence_seconds() == 240
-
-
-def test_loop_cadence_seconds_inserts_src_on_path_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # #1036: covers the sys.path-insert + finally-cleanup branch taken
-    # when the hook process does not already have teatree's src on path.
-    import sys  # noqa: PLC0415
-
-    src_dir = str(Path(router.__file__).resolve().parents[2] / "src")
-    monkeypatch.setattr(sys, "path", [p for p in sys.path if p != src_dir])
-    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nloop_cadence_seconds = 120\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    from hooks.scripts.hook_router import _loop_cadence_seconds  # noqa: PLC0415
-
-    assert _loop_cadence_seconds() == 120
-    assert src_dir not in sys.path
 
 
 class TestLoopRegistrationGateIsOwnerAware:

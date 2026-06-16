@@ -94,9 +94,9 @@ class ReviewNagScanner:
     name: str = "review_nag"
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415
 
-        if not load_config().user.review_nag_enabled:
+        if not get_effective_settings().review_nag_enabled:
             return []
         messaging = self.messaging
         if messaging is None:

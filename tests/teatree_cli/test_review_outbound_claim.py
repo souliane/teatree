@@ -12,16 +12,20 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import OnBehalfApproval, OutboundClaim
+from teatree.core.models import ConfigSetting, OnBehalfApproval, OutboundClaim
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``on_behalf_post_mode`` is DB-home (#1775): IMMEDIATE turns the gate off
+    # (the derived ``ask_before_post_on_behalf`` follows). A TOML key would be
+    # ignored on read.
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
 
 
 class _StubAPI:

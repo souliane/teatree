@@ -26,6 +26,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
+from teatree.core.models import ConfigSetting
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -41,13 +42,15 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     publishing method, but only the shape gate is under test here. IMMEDIATE
     keeps the on-behalf gate silent so any blocking comes from the shape gate
     we are testing.
+
+    ``on_behalf_post_mode`` is DB-home (#1775): it resolves only from the
+    ``ConfigSetting`` store, so staging it via TOML would be a no-op on read.
+    An empty config file keeps the active-config path pinned to ``tmp_path``.
     """
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n',
-        encoding="utf-8",
-    )
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
 class _StubAPI:

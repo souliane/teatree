@@ -1,30 +1,29 @@
-"""Effective-settings resolution — env + DB + per-overlay overrides + the autonomy collapse.
+"""Effective-settings resolution — the DB/TOML hard partition + env + the autonomy collapse.
 
 ``get_effective_settings`` (the single resolver both the active-overlay and
-named-overlay paths share), ``cadence_seconds``, the autonomy-collapse
-(``_apply_autonomy``), and the per-setting toml resolvers ``load_config`` uses.
-Split out of the package module for the module-health LOC cap; re-exported from
-``teatree.config``.
+named-overlay paths share), ``cadence_seconds``, and the autonomy-collapse
+(``_apply_autonomy``). Split out of the package module for the module-health LOC
+cap; re-exported from ``teatree.config``.
 
-The override tiers it layers on the file-tier ``UserSettings`` (later wins):
-per-overlay ``[overlays.<name>]`` TOML, then the #1775 DB tier
-(``_db_setting_overrides`` reading ``ConfigSetting`` rows), then ``T3_*`` env.
-The DB read is fail-safe (an absent/empty table or unconfigured Django yields no
-overrides) so an empty table is a provable no-op.
-
-``_resolve_autonomy`` / ``_resolve_speed`` are collapsed into the generic
-``_resolve_enum_setting`` registry — both are plain enum-or-default reads.
-``_resolve_on_behalf_post_mode`` (returns a tuple) and
-``_resolve_slack_voice_classifier_mode`` (reads a nested table) stay bespoke.
+The #1775 hard partition: every ``UserSettings`` field has exactly one home (see
+``config/homes.py``). A DB-home field resolves from the ``ConfigSetting`` store
+(``_db_setting_overrides``: global rows then the active overlay's rows on top) +
+``T3_*`` env ONLY — its ``[teatree]`` / ``[overlays.<name>]`` TOML tables are not
+read. A TOML-home field resolves from ``[teatree]`` / ``[overlays.<name>]`` (the
+per-overlay layer, filtered to TOML-home keys) + env ONLY — a ``ConfigSetting``
+row for it is ignored. The DB read is fail-safe (an absent/empty table or
+unconfigured Django yields no overrides) so an empty table resolves every DB-home
+field to its dataclass default.
 """
 
 import os
-from dataclasses import replace
-from typing import Any, Protocol
+from dataclasses import is_dataclass, replace
+from typing import Any
 
 import teatree.config as _facade
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
+from teatree.config.homes import SETTING_HOMES, SettingHome
 from teatree.config.settings import (
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
@@ -33,107 +32,40 @@ from teatree.config.settings import (
     UserSettings,
 )
 from teatree.config_speak import speak_from_subtable
-from teatree.types import SlackVoiceClassifierMode, SpeakConfig
-
-
-class _ParsableEnum(Protocol):
-    """A config enum that validates an explicit value through a ``parse`` classmethod."""
-
-    @classmethod
-    def parse(cls, value: str) -> "_ParsableEnum": ...
-
-
-def _resolve_enum_setting[E: _ParsableEnum](teatree: dict[str, Any], key: str, enum: type[E], default: E) -> E:
-    """Resolve a plain enum-or-default ``[teatree]`` setting.
-
-    Absent → the conservative *default*; a typo raises via ``enum.parse`` (never
-    a silent downgrade). The per-overlay override and any env var are applied
-    later in :func:`get_effective_settings`. Collapses the former
-    ``_resolve_autonomy`` / ``_resolve_speed`` — both are plain enum-or-default
-    reads — into one generic resolver.
-    """
-    raw = teatree.get(key)
-    return enum.parse(raw) if raw is not None else default
-
-
-def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceClassifierMode:
-    """Resolve ``slack_voice_classifier_mode`` from ``[teatree]`` (#1395).
-
-    Accepts either a flat key ``[teatree] slack_voice_classifier_mode``
-    or a nested ``[teatree.publish_gates] slack_voice_classifier_mode``
-    (the table the issue brief sketches for grouping future
-    pre-publish gates). The flat key wins when both are present;
-    falling back through the nested table then to the conservative
-    default keeps the backward-compat upgrade path clean — existing
-    configs that don't know about the gate inherit ``WARN`` (log the
-    mismatch, allow the post) rather than ``STRICT`` (refuse).
-    """
-    flat = teatree.get("slack_voice_classifier_mode")
-    if flat is not None:
-        return SlackVoiceClassifierMode.parse(flat)
-    nested = teatree.get("publish_gates")
-    if isinstance(nested, dict):
-        scoped = nested.get("slack_voice_classifier_mode")
-        if scoped is not None:
-            return SlackVoiceClassifierMode.parse(scoped)
-    return SlackVoiceClassifierMode.WARN
-
-
-def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:
-    """Resolve ``on_behalf_post_mode`` from a ``[teatree]`` toml table.
-
-    Precedence:
-
-    1.  Explicit ``on_behalf_post_mode = "..."`` always wins.
-    2.  Legacy ``ask_before_post_on_behalf = true/false`` maps to
-        :attr:`OnBehalfPostMode.ASK` / :attr:`OnBehalfPostMode.IMMEDIATE`.
-    3.  Neither set → :attr:`OnBehalfPostMode.DRAFT_OR_ASK` (new default).
-
-    Returns ``(mode, derived_ask_bool)`` so the legacy boolean field on
-    ``UserSettings`` stays consistent with the resolved mode for the one
-    deprecation release we keep it around.
-    """
-    raw_mode = teatree.get("on_behalf_post_mode")
-    if raw_mode is not None:
-        mode = OnBehalfPostMode.parse(raw_mode)
-    elif "ask_before_post_on_behalf" in teatree:
-        # Backward-compat alias: explicit legacy boolean → matching mode.
-        legacy = bool(teatree["ask_before_post_on_behalf"])
-        mode = OnBehalfPostMode.ASK if legacy else OnBehalfPostMode.IMMEDIATE
-    else:
-        mode = OnBehalfPostMode.DRAFT_OR_ASK
-    # Derived legacy boolean: ASK/DRAFT_OR_ASK both block colleague-visible
-    # publishing (only the draft-form variant publishes autonomously under
-    # DRAFT_OR_ASK), so they map to "ask before post" = True.
-    derived_ask = mode is not OnBehalfPostMode.IMMEDIATE
-    return mode, derived_ask
+from teatree.types import SpeakConfig
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
-    """Return the user settings with env, DB, and per-overlay overrides applied.
+    """Return the user settings under the #1775 DB/TOML hard partition + env.
 
-    Resolution per field (first match wins): ``T3_*`` env var (see
-    ``ENV_SETTING_OVERRIDES``), the DB override tier (``ConfigSetting`` rows,
-    #1775), the active overlay's override from ``[overlays.<name>]``, the global
-    ``[teatree]`` value, the ``UserSettings`` dataclass default — i.e.
+    Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``),
+    so resolution per field depends on that home (first match wins):
 
-        env -> DB -> per-overlay TOML -> global [teatree] -> dataclass default.
+    *   DB-home field — ``T3_*`` env var, then the ``ConfigSetting`` store
+        (overlay-scope row, then global-scope row), then the dataclass default:
 
-    The DB tier is the first slice of "move config to the database" (#1775): a
-    ``ConfigSetting`` row for a key in ``OVERLAY_OVERRIDABLE_SETTINGS`` overrides
-    the file value but is still beaten by an explicit env var. An EMPTY table is a
-    provable no-op — :func:`_db_setting_overrides` returns ``{}`` — so nothing
-    regresses during the migration window. The read fails safe to ``{}`` whenever
-    Django is not configured or the table does not exist yet.
+            env -> DB(overlay scope) -> DB(global scope) -> default.
 
-    The DB tier itself has TWO scopes, mirroring the TOML two-tier shape: a
-    GLOBAL ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
+        Its ``[teatree]`` / ``[overlays.<name>]`` TOML value is NOT read.
+    *   TOML-home field — ``T3_*`` env var, then the active overlay's
+        ``[overlays.<name>]`` override, then the global ``[teatree]`` value, then
+        the dataclass default:
+
+            env -> per-overlay TOML -> global [teatree] -> default.
+
+        A ``ConfigSetting`` row for it is ignored on read.
+
+    The per-overlay TOML layer is filtered to TOML-home keys (``_toml_home``) so a
+    ``[overlays.<name>]`` value for a DB-home key never leaks in. The DB read fails
+    safe to ``{}`` whenever Django is not configured or the table does not exist
+    yet, so an empty table resolves every DB-home field to its dataclass default.
+
+    The DB tier has TWO scopes, mirroring the TOML two-tier shape: a GLOBAL
+    ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
     OVERLAY-scoped row (``scope=<overlay name>``) applies to that overlay alone.
-    :func:`_db_setting_overrides` layers global rows first, then the active
-    overlay's rows on top — so an overlay-scoped DB row beats a global DB row,
-    exactly as a per-overlay ``[overlays.<name>]`` TOML value beats the global
-    ``[teatree]`` value. The active overlay is the explicit ``overlay_name`` on
-    the named path, else ``T3_OVERLAY_NAME`` / discovery on the active path.
+    The resolver layers global rows first, then the active overlay's rows on top —
+    so an overlay-scoped DB row beats a global DB row, exactly as a per-overlay
+    ``[overlays.<name>]`` TOML value beats the global ``[teatree]`` value.
 
     The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
     ``get_overlay()``), then cwd-based discovery, then the single
@@ -145,12 +77,13 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
     collapse run identically. This is the single resolver both paths share.
 
-    To make an additional setting overridable, add it to
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay + DB) or ``ENV_SETTING_OVERRIDES``
-    (env); the resolver picks it up generically via ``dataclasses.replace``.
-    The one non-generic override is ``speak``: its ``[overlays.<name>.speak]``
-    sub-table MERGES onto the base (see :func:`_overlay_speak_override`) rather
-    than flat-replacing, so a partial table overrides only the keys it sets.
+    To make an additional setting DB-overridable, add it to
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
+    ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
+    ``dataclasses.replace``. The one non-generic override is ``speak`` (a
+    TOML-home field): its ``[overlays.<name>.speak]`` sub-table MERGES onto the
+    base (see :func:`_overlay_speak_override`) rather than flat-replacing, so a
+    partial table overrides only the keys it sets.
 
     As a final step the single ``autonomy`` switch is applied: under
     :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates
@@ -164,18 +97,47 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     else:
         active = _active_overlay_entry()
         overrides = dict(active.overrides) if active is not None else {}
-    # Precedence (later wins): per-overlay TOML -> DB tier -> env. The DB tier
-    # itself layers global rows then the active overlay's rows on top, so an
-    # overlay-scoped DB row beats a global DB row beats per-overlay TOML.
-    overrides.update(_db_setting_overrides(_resolved_overlay_name(overlay_name)))
+    # The hard partition (#1775): the per-overlay TOML layer applies ONLY to
+    # TOML-home keys. A ``[overlays.<name>]`` value for a DB-home key is ignored
+    # on read — that field's authoritative tier is the DB store below.
+    overrides = {k: v for k, v in overrides.items() if _toml_home(k)}
+    # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
+    # including for ``mode``) is the per-overlay TOML layer so far. DB-home fields
+    # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
+    # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
+    # pin), env beats both.
+    resolved_overlay = _resolved_overlay_name(overlay_name)
+    global_db = _db_global_overrides()
+    overlay_db = _db_overlay_overrides(resolved_overlay)
+    hard_pinned = set(overrides) | set(overlay_db)
+    overrides.update(global_db)
+    overrides.update(overlay_db)
     if overlay_name is None:
-        overrides.update(_env_setting_overrides())
+        env_overrides = _env_setting_overrides()
+        overrides.update(env_overrides)
+        hard_pinned |= set(env_overrides)
     settings = base if not overrides else replace(base, **overrides)
     speak_override = _overlay_speak_override(config, overlay_name, base.speak)
     if speak_override is not None:
         settings = replace(settings, speak=speak_override)
-        overrides = {**overrides, "speak": speak_override}
-    return _apply_autonomy(settings, hard_pinned=set(overrides), global_pinned=_global_pinned_fields(config))
+    settings = _apply_autonomy(
+        settings,
+        hard_pinned=hard_pinned,
+        global_pinned=_global_pinned_fields(config),
+    )
+    # ``ask_before_post_on_behalf`` is DERIVED (#1775) from the resolved DB-home
+    # ``on_behalf_post_mode``: True unless the mode is IMMEDIATE. Re-derived here
+    # so the deprecated legacy field stays consistent with the effective mode.
+    # Guarded on a real dataclass so a test that patches ``load_config`` to return
+    # a bare mock (``config.user`` is not a ``UserSettings``) gets the same
+    # untouched passthrough it got before the partition — the derivation is only
+    # meaningful on a real settings dataclass anyway.
+    if not is_dataclass(settings):
+        return settings
+    return replace(
+        settings,
+        ask_before_post_on_behalf=settings.on_behalf_post_mode is not OnBehalfPostMode.IMMEDIATE,
+    )
 
 
 def _overlay_speak_override(
@@ -213,6 +175,7 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
+    overrides = {k: v for k, v in overrides.items() if _toml_home(k)}
     overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
     overrides.update(_env_setting_overrides())
     return overrides
@@ -248,44 +211,55 @@ def _resolved_overlay_name(overlay_name: str | None) -> str:
 
 
 def _db_setting_overrides(overlay_name: str = "") -> dict[str, Any]:
-    """The ``ConfigSetting`` DB override tier (#1775) — global then per-overlay.
+    """The ``ConfigSetting`` DB-home tier (#1775) — global then per-overlay, layered.
 
-    Returns ``{field_name: coerced_value}`` for every ``ConfigSetting`` row whose
-    ``key`` is a registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field, coercing the
-    stored JSON value with that registry's parser so the resolved field keeps its
-    declared type. Rows for unknown / non-overridable keys are ignored, so a
-    stray row can never silently mutate the resolved settings.
-
-    Two scopes are layered (later wins): the GLOBAL scope (``scope=""``, applies
-    to every overlay) first, then — when *overlay_name* is a resolvable overlay —
-    that overlay's scope on top. So an overlay-scoped DB row beats a global DB
-    row, mirroring the way a per-overlay ``[overlays.<name>]`` TOML value beats
-    the global ``[teatree]`` value. The overlay scope is matched
-    canonical-alias-tolerantly (a request for ``teatree`` also reads the
-    ``t3-teatree`` entry-point overlay's rows and vice versa) so a row written
-    under either spelling resolves.
-
-    Fails safe to ``{}`` for INFRASTRUCTURE failures — an empty/absent table, an
-    unconfigured Django, or a pre-migration database (the table does not exist
-    yet) all yield no overrides, so the file/env source is unchanged. This is the
-    #1775 no-regression-during-migration invariant: the table read is on every
-    config resolution and must never raise into it (handled in
-    :func:`_load_config_setting_rows`).
-
-    A per-row parser failure is a DIFFERENT class: it means a stored value is
-    invalid for its setting's type (an out-of-enum ``mode``, a quoted ``"false"``
-    for a bool-typed setting). With write-time validation in place
-    (``config_setting set`` runs the same registry parser, #258) such a row can
-    only exist if the DB was corrupted out of band — so it is raised LOUD with
-    the offending key named, not swallowed: a silently-dropped invalid override
-    would resolve back to the file/env value with no signal, exactly the kind of
-    quiet wrong answer the strict parsing change is meant to foreclose.
+    The composed reader (global then *overlay_name* on top, later wins). Kept for
+    callers that want the merged value without distinguishing the pin scope;
+    :func:`get_effective_settings` instead reads the two scopes separately (so a
+    global-scope ``mode`` is a workspace default while an overlay-scope ``mode``
+    is a hard pin). See :func:`_db_global_overrides` / :func:`_db_overlay_overrides`.
     """
-    rows = _load_config_setting_rows(overlay_name)
-    if not rows:
-        return {}
+    return {**_db_global_overrides(), **_db_overlay_overrides(overlay_name)}
+
+
+def _db_global_overrides() -> dict[str, Any]:
+    """Coerced ``{field: value}`` for every GLOBAL-scope (``scope=""``) DB-home row.
+
+    The DB twin of the global ``[teatree]`` table: applies to every overlay. A
+    global ``mode`` row is a workspace default that does NOT pin ``mode`` against
+    the autonomy collapse (mirroring the old global-``[teatree] mode`` rule). See
+    :func:`_coerce_db_rows` for the type coercion and the loud-on-corruption rule.
+    """
+    return _coerce_db_rows(_load_global_rows())
+
+
+def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
+    """Coerced ``{field: value}`` for the active overlay's DB-home rows.
+
+    The DB twin of a per-overlay ``[overlays.<name>]`` override: a deliberate
+    per-overlay opinion that beats the global DB row AND the autonomy collapse
+    (it is a hard pin). The overlay scope is matched canonical-alias-tolerantly (a
+    request for ``teatree`` also reads the ``t3-teatree`` entry-point overlay's
+    rows and vice versa) so a row written under either spelling resolves.
+    """
+    return _coerce_db_rows(_load_overlay_rows(overlay_name))
+
+
+def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
+    """Coerce stored ``ConfigSetting`` values via the DB-home parser registry.
+
+    Returns ``{field: coerced}`` for every row whose key is a registered
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; rows for unknown / non-DB
+    keys are dropped so a stray row never mutates the resolved settings.
+
+    A per-row parser failure means a stored value is invalid for its setting's
+    type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
+    validation (``config_setting set``, #258) means such a row can only exist via
+    out-of-band corruption — so it is raised LOUD with the offending key named,
+    never swallowed back to the default with no signal.
+    """
     overrides: dict[str, Any] = {}
-    for key, value in rows:
+    for key, value in rows.items():
         parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
         if parser is None:
             continue
@@ -297,39 +271,46 @@ def _db_setting_overrides(overlay_name: str = "") -> dict[str, Any]:
     return overrides
 
 
-def _load_config_setting_rows(overlay_name: str = "") -> list[tuple[str, Any]]:
-    """Read the layered ``(key, value)`` pairs (global then *overlay_name*), or ``[]``.
+def _load_global_rows() -> dict[str, Any]:
+    """Read the GLOBAL-scope (``scope=""``) ``{key: value}`` rows, or ``{}``.
 
     Reaches the model via Django's app registry (no static ``teatree.core``
-    import — that would be a backwards ``platform -> domain`` tach edge). The
-    global scope (``scope=""``) is read first, then the active overlay's scope is
-    merged on top (overlay wins per key), so the returned ordering already
-    encodes the global<overlay precedence. The overlay match is
-    canonical-alias-tolerant: a row under either the short alias or the
-    ``t3-``-prefixed entry-point name resolves for the active overlay.
-
-    Every failure mode of an early/unconfigured read — Django apps not ready, no
-    settings, the table missing pre-migration, the DB unreachable — degrades to
-    an empty list so the DB tier is a strict no-op rather than an exception in the
-    hot config path.
+    import — that would be a backwards ``platform -> domain`` tach edge). Fails
+    safe to ``{}`` for any early/unconfigured read (apps not ready, no settings,
+    pre-migration table, DB unreachable) so the DB tier is a strict no-op rather
+    than an exception in the hot config path.
     """
     try:
         from django.apps import apps  # noqa: PLC0415
 
         model = apps.get_model("core", "ConfigSetting")
-        merged: dict[str, Any] = model.objects.overrides_for_scope("")
-        if overlay_name:
-            canonical = OverlayEntry.canonical_overlay_name(overlay_name)
-            scope_values: dict[str, dict[str, Any]] = {}
-            for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
-                if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
-                    scope_values.setdefault(scope, {})[key] = value
-            # An exact-name match wins over an alias match when both rows exist.
-            overlay_rows = scope_values.get(overlay_name) or next(iter(scope_values.values()), {})
-            merged.update(overlay_rows)
-        return list(merged.items())
+        return dict(model.objects.overrides_for_scope(""))
     except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
-        return []
+        return {}
+
+
+def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
+    """Read the active overlay's ``{key: value}`` rows, alias-tolerant, or ``{}``.
+
+    Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
+    under either the short alias or the ``t3-``-prefixed entry-point name resolves
+    for the active overlay). An exact-name match wins over an alias match. Same
+    fail-safe-to-``{}`` posture as :func:`_load_global_rows`.
+    """
+    if not overlay_name:
+        return {}
+    try:
+        from django.apps import apps  # noqa: PLC0415
+
+        model = apps.get_model("core", "ConfigSetting")
+        canonical = OverlayEntry.canonical_overlay_name(overlay_name)
+        scope_values: dict[str, dict[str, Any]] = {}
+        for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
+            if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
+                scope_values.setdefault(scope, {})[key] = value
+        return scope_values.get(overlay_name) or next(iter(scope_values.values()), {})
+    except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
+        return {}
 
 
 def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
@@ -362,21 +343,41 @@ _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
 _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
 
 
+def _toml_home(key: str) -> bool:
+    """Whether *key* is a TOML-home ``UserSettings`` field (#1775 partition).
+
+    A DB-home key (or an unknown one) returns ``False`` so the per-overlay TOML
+    override layer drops it — its authoritative tier is the ``ConfigSetting``
+    store, never the ``[overlays.<name>]`` table.
+    """
+    return SETTING_HOMES.get(key) is SettingHome.TOML
+
+
 def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:
-    """Names of settings explicitly set in the global ``[teatree]`` toml table.
+    """Names of settings the user explicitly pinned at the GLOBAL scope (#1775).
 
     A *global* explicit value is a deliberate per-gate opinion for the three
     approval gates and still wins over the autonomy collapse — except for
-    ``mode``: a global ``[teatree] mode`` is a workspace-wide default, not a
-    statement about an autonomous overlay, so it must NOT defeat the autonomy
-    ``mode = auto`` pin (a common ``mode = "interactive"`` global would
-    otherwise leave a ``full``/``notify`` overlay half-autonomous — gates
-    relaxed but the merge path still gated on ``mode == AUTO``). A *per-overlay*
-    ``[overlays.<name>].mode`` arrives via the override layer (``hard_pinned``)
-    and DOES win — see :func:`_apply_autonomy`.
+    ``mode``: a global ``mode`` is a workspace-wide default, not a statement
+    about an autonomous overlay, so it must NOT defeat the autonomy ``mode =
+    auto`` pin (a common ``mode = "interactive"`` global would otherwise leave a
+    ``full``/``notify`` overlay half-autonomous — gates relaxed but the merge
+    path still gated on ``mode == AUTO``). ``_apply_autonomy`` only checks
+    ``hard_pinned`` for ``mode``, so a global ``mode`` here is harmless. A
+    *per-overlay*/env ``mode`` arrives via the override layer (``hard_pinned``)
+    and DOES win.
+
+    The three approval gates are now DB-home (#1775), so a *global* pin for them
+    is a GLOBAL-scope (``scope=""``) ``ConfigSetting`` row, NOT a ``[teatree]``
+    TOML key (a DB-home key left in ``[teatree]`` is ignored on read). A TOML-home
+    global key still counts via the ``[teatree]`` table.
     """
+    pinned: set[str] = set()
     teatree = config.raw.get("teatree", {})
-    return set(teatree) if isinstance(teatree, dict) else set()
+    if isinstance(teatree, dict):
+        pinned |= set(teatree)
+    pinned |= set(_load_global_rows())
+    return pinned
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:

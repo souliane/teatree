@@ -22,6 +22,7 @@ from teatree.config.discovery import (
     discover_overlays,
 )
 from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.homes import DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
     CONFIG_PATH,
     _load_toml,
@@ -38,9 +39,6 @@ from teatree.config.resolution import (
     _global_pinned_fields,
     _overlay_overrides_by_name,
     _overlay_speak_override,
-    _resolve_enum_setting,
-    _resolve_on_behalf_post_mode,
-    _resolve_slack_voice_classifier_mode,
     cadence_seconds,
     get_effective_settings,
 )
@@ -48,6 +46,7 @@ from teatree.config.settings import (
     BOOTSTRAP_FILE_ONLY_SETTINGS,
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
+    TOML_OVERLAY_OVERRIDABLE_SETTINGS,
     E2ERepo,
     OverlayEntry,
     TeaTreeConfig,
@@ -66,8 +65,11 @@ __all__ = [
     "BOOTSTRAP_FILE_ONLY_SETTINGS",
     "CONFIG_PATH",
     "DATA_DIR",
+    "DERIVED_FIELDS",
     "ENV_SETTING_OVERRIDES",
     "OVERLAY_OVERRIDABLE_SETTINGS",
+    "SETTING_HOMES",
+    "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "Autonomy",
     "E2ERepo",
     "MissingIssuePolicy",
@@ -75,6 +77,7 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
+    "SettingHome",
     "Speed",
     "TeaTreeConfig",
     "TeamsDisplay",
@@ -95,10 +98,7 @@ __all__ = [
     "_parse_env_bool",
     "_parse_str_list",
     "_parse_user_identity_aliases",
-    "_resolve_enum_setting",
     "_resolve_ep_project_path",
-    "_resolve_on_behalf_post_mode",
-    "_resolve_slack_voice_classifier_mode",
     "cadence_seconds",
     "check_for_updates",
     "default_logging",

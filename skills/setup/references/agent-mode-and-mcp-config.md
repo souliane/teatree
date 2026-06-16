@@ -13,14 +13,14 @@ documented separately in
 [`recommended-automode-authorizations.md`](recommended-automode-authorizations.md).
 This page is the map; that page is the paste-ready list.
 
-## 1. Operating mode (`[teatree] mode`)
+## 1. Operating mode (`mode`)
 
 The auto-vs-interactive choice is a single teatree config knob, **not** an
-agent-runtime setting the user hand-edits. It lives in `~/.teatree.toml`:
+agent-runtime setting the user hand-edits. `mode` is a DB-home setting — set
+it in the `ConfigSetting` store (or via the `T3_MODE` env var), not in TOML:
 
-```toml
-[teatree]
-mode = "interactive"   # or "auto"
+```bash
+t3 <overlay> config_setting set mode interactive   # or "auto"; add --overlay <name> for a per-overlay value
 ```
 
 | Value | Behaviour |
@@ -29,25 +29,30 @@ mode = "interactive"   # or "auto"
 | `auto` | Full autonomy end-to-end; falls back to interactive only for the always-gated non-negotiables (force-push to default branches, destructive shared-state ops). |
 
 Resolution (first match wins): the `T3_MODE` env var, then the active
-overlay's `[overlays.<name>] mode` override, then global `[teatree] mode`,
-then the dataclass default `interactive`. Source of truth:
+overlay's per-overlay `mode` value, then the global `mode` value, then the
+dataclass default `interactive`. Both per-overlay and global values come from
+the `ConfigSetting` DB store (`config_setting set mode … [--overlay <name>]`);
+the `[teatree] mode` / `[overlays.<name>] mode` TOML keys are ignored on read.
+Source of truth:
 `teatree.config` — the `Mode` enum, `UserSettings.mode`,
 `OVERLAY_OVERRIDABLE_SETTINGS`, `ENV_SETTING_OVERRIDES`, and
 `get_effective_settings()`. Invalid values raise rather than silently
 downgrading to a less-safe mode (`Mode.parse`).
 
 There is intentionally no `[agent] defaultMode` key: per-installation
-auto-vs-interactive is `[teatree] mode`, and per-overlay (e.g. a headless
-overlay running auto while another stays interactive) is the
-`[overlays.<name>] mode` override. The loop honours the active overlay's
-resolved mode (BLUEPRINT.md § 5.6.2).
+auto-vs-interactive is the global `mode` value, and per-overlay (e.g. a
+headless overlay running auto while another stays interactive) is the
+per-overlay `mode` value — both set via `config_setting set mode`
+(`--overlay <name>` for the per-overlay scope). The loop honours the active
+overlay's resolved mode (BLUEPRINT.md § 5.6.2).
 
 ### Training wheels for `auto`
 
 `auto` mode has two opt-out gates so a freshly-autonomous installation does
-not publish irreversibly without a human in the loop. Both are
-`[teatree]`-level booleans, per-overlay overridable, defaulting to `true`
-(source: `teatree.config.UserSettings`):
+not publish irreversibly without a human in the loop. Both are DB-home
+booleans, per-overlay overridable, defaulting to `true` (source:
+`teatree.config.UserSettings`) — set each with `t3 <overlay> config_setting
+set <key> false` (add `--overlay <name>` for a per-overlay value):
 
 | Key | Effect when `true` |
 |-----|--------------------|
@@ -179,8 +184,8 @@ duplicates the other.
 
 | Config surface | Where the user sets it | Code owner |
 |----------------|------------------------|------------|
-| Operating mode | `[teatree] mode` / `[overlays.<name>] mode` / `T3_MODE` | `teatree.config` (`Mode`, `get_effective_settings`) |
-| Auto-mode training wheels | `[teatree] require_human_approval_to_*` | `teatree.config.UserSettings` |
+| Operating mode | `config_setting set mode …` (global) / `--overlay <name>` / `T3_MODE` | `teatree.config` (`Mode`, `get_effective_settings`) |
+| Auto-mode training wheels | `config_setting set require_human_approval_to_* …` (global / `--overlay <name>`) | `teatree.config.UserSettings` |
 | Overlay messaging integration | `[overlays.<name>]` keys / `overlay_settings` module | `teatree.core.overlay.OverlayConfig` |
 | Bash standing permissions | plugin `settings.json` (broad allow / narrow deny) | `settings.json` (BLUEPRINT.md § 11.4) |
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |

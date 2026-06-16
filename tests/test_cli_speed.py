@@ -1,19 +1,20 @@
 """``t3 <overlay> speed`` — show / set the throughput dial.
 
-Integration-first: a real ``~/.teatree.toml`` fixture under ``tmp_path`` with
-``teatree.config.CONFIG_PATH`` monkeypatched, exercised through the typer
-``CliRunner`` against the same ``speed`` subgroup the overlay app builder
-attaches via :func:`teatree.cli.speed.register_speed_commands`.
+``speed`` is DB-home (#1775): its sole authoritative tier is the
+``ConfigSetting`` store, so ``set`` writes a GLOBAL-scope DB ROW — a value in
+``[teatree]`` TOML is ignored on read. Integration-first: the ``set`` write is
+asserted on the persisted ``ConfigSetting`` row / the resolver, exercised
+through the typer ``CliRunner`` against the same ``speed`` subgroup the overlay
+app builder attaches via :func:`teatree.cli.speed.register_speed_commands`.
 """
 
-from pathlib import Path
-from unittest.mock import patch
-
 import typer
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.speed import register_speed_commands
-from teatree.config import Speed
+from teatree.config import Speed, get_effective_settings
+from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
 
@@ -24,75 +25,50 @@ def _app() -> typer.Typer:
     return app
 
 
-class TestSpeedSet:
-    def test_set_writes_global_speed_key(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "set", "full"])
+class TestSpeedSet(TestCase):
+    def test_set_writes_global_speed_row(self) -> None:
+        result = runner.invoke(_app(), ["speed", "set", "full"])
         assert result.exit_code == 0
-        assert 'speed = "full"' in config_path.read_text(encoding="utf-8")
+        assert ConfigSetting.objects.get_effective("speed") == Speed.FULL.value
         assert "full" in result.stdout
 
-    def test_set_creates_config_when_absent(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "set", "boost"])
+    def test_set_upserts_over_existing_row(self) -> None:
+        ConfigSetting.objects.set_value("speed", Speed.MEDIUM.value)
+        result = runner.invoke(_app(), ["speed", "set", "boost"])
         assert result.exit_code == 0
-        assert config_path.is_file()
-        assert 'speed = "boost"' in config_path.read_text(encoding="utf-8")
+        assert ConfigSetting.objects.get_effective("speed") == Speed.BOOST.value
 
-    def test_set_alias_is_normalised_to_canonical(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "set", "high"])
+    def test_set_alias_is_normalised_to_canonical(self) -> None:
+        result = runner.invoke(_app(), ["speed", "set", "high"])
         assert result.exit_code == 0
         # The canonical value is persisted, not the alias.
-        assert 'speed = "full"' in config_path.read_text(encoding="utf-8")
-        assert "high" not in config_path.read_text(encoding="utf-8")
+        assert ConfigSetting.objects.get_effective("speed") == Speed.FULL.value
 
-    def test_set_preserves_other_keys(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nmode = "auto"\nbranch_prefix = "ac-"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            runner.invoke(_app(), ["speed", "set", "slow"])
-        body = config_path.read_text(encoding="utf-8")
-        assert 'mode = "auto"' in body
-        assert 'branch_prefix = "ac-"' in body
-        assert 'speed = "slow"' in body
+    def test_set_round_trips_through_resolver(self) -> None:
+        runner.invoke(_app(), ["speed", "set", "slow"])
+        assert get_effective_settings().speed is Speed.SLOW
 
-    def test_set_typo_is_rejected_and_writes_nothing(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        before = config_path.read_text(encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "set", "ludicrous"])
+    def test_set_typo_is_rejected_and_writes_nothing(self) -> None:
+        result = runner.invoke(_app(), ["speed", "set", "ludicrous"])
         assert result.exit_code == 1
-        assert config_path.read_text(encoding="utf-8") == before
+        assert ConfigSetting.objects.count() == 0
 
 
-class TestSpeedShow:
-    def test_show_reports_effective_value(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nspeed = "full"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "show"])
+class TestSpeedShow(TestCase):
+    def test_show_reports_effective_value(self) -> None:
+        ConfigSetting.objects.set_value("speed", Speed.FULL.value)
+        result = runner.invoke(_app(), ["speed", "show"])
         assert result.exit_code == 0
         assert result.stdout.strip() == Speed.FULL.value
 
-    def test_show_defaults_to_medium_when_unset(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            result = runner.invoke(_app(), ["speed", "show"])
+    def test_show_defaults_to_medium_when_unset(self) -> None:
+        result = runner.invoke(_app(), ["speed", "show"])
         assert result.exit_code == 0
         assert result.stdout.strip() == Speed.MEDIUM.value
 
-    def test_show_is_read_only(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nspeed = "slow"\n', encoding="utf-8")
-        before = config_path.read_text(encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            runner.invoke(_app(), ["speed", "show"])
-        assert config_path.read_text(encoding="utf-8") == before
+    def test_show_is_read_only(self) -> None:
+        ConfigSetting.objects.set_value("speed", Speed.SLOW.value)
+        runner.invoke(_app(), ["speed", "show"])
+        # ``show`` is a pure resolver read — no row is written or cleared.
+        assert ConfigSetting.objects.count() == 1
+        assert ConfigSetting.objects.get_effective("speed") == Speed.SLOW.value

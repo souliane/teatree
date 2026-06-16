@@ -5,7 +5,6 @@ the config knobs + their defaults, and the ``build_default_jobs`` global
 registration + kill-switch.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -91,44 +90,39 @@ class ConfigDefaultsTests(TestCase):
 
 
 class ConfigParsingTests(TestCase):
-    """``load_config`` parses the knobs from ``[teatree]`` and applies overrides."""
+    """The DB-home knobs (#1775) resolve from the ``ConfigSetting`` store.
 
-    def _write_config(self, body: str) -> Path:
-        import tempfile  # noqa: PLC0415
+    The resource-pressure thresholds / flags / allowlists are DB-home, so the
+    resolver reads them from the ``ConfigSetting`` store (+ ``T3_*`` env), NOT
+    the ``[teatree]`` TOML table (which is ignored on read for a DB-home key).
+    """
 
-        path = Path(tempfile.mkdtemp(prefix="rp_cfg_")) / ".teatree.toml"
-        path.write_text(body, encoding="utf-8")
-        self.addCleanup(path.unlink, missing_ok=True)
-        return path
+    def test_db_overrides_resolve_thresholds_and_flags(self) -> None:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-    def test_parses_thresholds_and_flags(self) -> None:
-        from teatree.config import load_config  # noqa: PLC0415
-
-        path = self._write_config(
-            "[teatree]\n"
-            "disk_crit_free_gb = 5.0\n"
-            "ram_crit_avail_gb = 0.5\n"
-            "allow_destructive_disk = true\n"
-            "ram_kill_allowlist = ['Brave.*Renderer', 'Slack Helper']\n",
-        )
-        settings = load_config(path).user
+        ConfigSetting.objects.set_value("disk_crit_free_gb", 5.0)
+        ConfigSetting.objects.set_value("ram_crit_avail_gb", 0.5)
+        ConfigSetting.objects.set_value("allow_destructive_disk", value=True)
+        ConfigSetting.objects.set_value("ram_kill_allowlist", ["Brave.*Renderer", "Slack Helper"])
+        settings = get_effective_settings()
         assert settings.disk_crit_free_gb == pytest.approx(5.0)
         assert settings.ram_crit_avail_gb == pytest.approx(0.5)
         assert settings.allow_destructive_disk is True
         assert settings.ram_kill_allowlist == ["Brave.*Renderer", "Slack Helper"]
 
     def test_explicit_empty_allowlist_is_honoured(self) -> None:
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-        path = self._write_config("[teatree]\ndisk_cache_allowlist = []\n")
-        settings = load_config(path).user
+        ConfigSetting.objects.set_value("disk_cache_allowlist", [])
+        settings = get_effective_settings()
         assert settings.disk_cache_allowlist == []
 
     def test_missing_allowlist_uses_regenerable_default(self) -> None:
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import get_effective_settings  # noqa: PLC0415
 
-        path = self._write_config("[teatree]\nloop_cadence_seconds = 60\n")
-        settings = load_config(path).user
+        settings = get_effective_settings()
         assert "~/.cache/pre-commit" in settings.disk_cache_allowlist
 
     def test_kill_switch_is_overlay_overridable(self) -> None:

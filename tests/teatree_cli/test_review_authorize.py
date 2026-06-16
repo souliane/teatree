@@ -37,6 +37,7 @@ from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.authorize import resolve_live_authorization
 from teatree.config import OnBehalfPostMode
+from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
 
@@ -53,12 +54,16 @@ def _write_cfg(
     mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK,
     user_id: str = "U-OPERATOR",
 ) -> None:
+    # ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
+    # ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
+    # ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f'[teatree]\nslack_user_id = "{user_id}"\non_behalf_post_mode = "{mode.value}"\n',
+        f'[teatree]\nslack_user_id = "{user_id}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
 
 
 class TestAuthorizeCommand:

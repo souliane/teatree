@@ -23,16 +23,21 @@ import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import OutboundClaim
+from teatree.config import OnBehalfPostMode
+from teatree.core.models import ConfigSetting, OutboundClaim
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The on-behalf gate is OFF when ``ask_before_post_on_behalf`` is False —
+    # derived (#1775) from the DB-home ``on_behalf_post_mode`` being IMMEDIATE.
+    # Staging it via TOML is a no-op on read, so the mode is set in the DB store.
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
 def _http_404() -> httpx.HTTPStatusError:

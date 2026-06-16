@@ -8,10 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.loop import _cadence_for_loop_slot, loop_app
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
+from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
 
@@ -87,22 +89,25 @@ class TestCadenceParser:
         monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
         assert _cadence_for_loop_slot() == "12m"
 
-    def test_uses_toml_cadence_when_env_unset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # #1036: with no T3_LOOP_CADENCE env, the slot cadence must fall
-        # back to ~/.teatree.toml [teatree] loop_cadence_seconds, not the
-        # hardcoded 720 default.
-        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+
+class TestCadenceParserDbHome(TestCase):
+    """``loop_cadence_seconds`` is DB-home (#1775): the slot cadence reads the store."""
+
+    @pytest.fixture(autouse=True)
+    def _monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
+    def test_uses_db_cadence_when_env_unset(self) -> None:
+        # #1036: with no T3_LOOP_CADENCE env, the slot cadence falls back to
+        # the resolved ``loop_cadence_seconds``, not the hardcoded 720 default.
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
         assert _cadence_for_loop_slot() == "1m"
 
-    def test_env_overrides_toml_cadence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # #1036: env wins over toml (established sibling precedence).
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
+    def test_env_overrides_db_cadence(self) -> None:
+        # #1036: env wins over the resolved DB value (established precedence).
+        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
+        self.monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         assert _cadence_for_loop_slot() == "10m"
 
 

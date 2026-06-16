@@ -14,7 +14,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
+from teatree.core.models import ConfigSetting
 from teatree.repo_mode import RepoMode, detect_repo_mode, resolve_repo_mode
 
 _GIT = shutil.which("git") or "/usr/bin/git"
@@ -81,22 +83,39 @@ class TestDetectRepoMode:
         assert detect_repo_mode(str(repo), solo_threshold=0.8) is RepoMode.COLLABORATIVE
 
 
+class TestRepoModeConfigOverride(TestCase):
+    """The ``repo_mode`` override is DB-home (#1775).
+
+    A stored ``ConfigSetting`` row wins over auto-detection. A ``[teatree]
+    repo_mode`` TOML value is ignored on read, so the override is staged in the
+    ``ConfigSetting`` store, not the TOML file.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No active overlay → the override resolves from the GLOBAL-scope row.
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        root = tmp_path / "repo"
+        root.mkdir()
+        _git("init", "-q", "-b", "main", cwd=root)
+        _git("config", "user.email", "seed@example.com", cwd=root)
+        _git("config", "user.name", "seed", cwd=root)
+        _git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main", cwd=root)
+        self.repo = root
+
+    def test_config_override_solo_wins_over_detection(self) -> None:
+        _commit(self.repo, "alice", n=5)
+        _commit(self.repo, "bob", n=5)  # detection would say COLLABORATIVE
+        ConfigSetting.objects.set_value("repo_mode", "solo")
+        assert resolve_repo_mode(str(self.repo)) is RepoMode.SOLO
+
+    def test_config_override_collaborative_wins_over_detection(self) -> None:
+        _commit(self.repo, "alice", n=10)  # detection would say SOLO
+        ConfigSetting.objects.set_value("repo_mode", "collaborative")
+        assert resolve_repo_mode(str(self.repo)) is RepoMode.COLLABORATIVE
+
+
 class TestResolveRepoMode:
-    def test_config_override_solo_wins_over_detection(self, repo: Path, tmp_path: Path) -> None:
-        _commit(repo, "alice", n=5)
-        _commit(repo, "bob", n=5)  # detection would say COLLABORATIVE
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nrepo_mode = "solo"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            assert resolve_repo_mode(str(repo)) is RepoMode.SOLO
-
-    def test_config_override_collaborative_wins_over_detection(self, repo: Path, tmp_path: Path) -> None:
-        _commit(repo, "alice", n=10)  # detection would say SOLO
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text('[teatree]\nrepo_mode = "collaborative"\n', encoding="utf-8")
-        with patch("teatree.config.CONFIG_PATH", config_path):
-            assert resolve_repo_mode(str(repo)) is RepoMode.COLLABORATIVE
-
     def test_result_is_cached_and_reused(self, repo: Path, tmp_path: Path) -> None:
         _commit(repo, "alice", n=10)
         cache_dir = tmp_path / "cache"

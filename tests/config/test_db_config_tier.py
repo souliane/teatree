@@ -1,14 +1,15 @@
 # test-path: cross-cutting
-"""DB override tier in the effective-settings resolution chain (#1775).
+"""DB-home settings in the effective-settings resolution chain (#1775 partition).
 
-The DB tier sits between the env layer (which still wins) and the per-overlay
-TOML layer in the documented precedence:
+A DB-home field's SOLE source is the ``ConfigSetting`` store (global + overlay
+rows) plus the ``T3_*`` env layer (which still wins). The ``[teatree]`` /
+``[overlays.<name>]`` TOML tables are NOT read for it — so an empty table
+resolves the dataclass default. Per DB-home field:
 
-    env -> DB -> per-overlay TOML -> global [teatree] -> dataclass default
+    env -> ConfigSetting (overlay then global) -> dataclass default
 
 Pilot setting: ``issue_implementer_enabled`` (a boolean kill-switch, default
-``False``, already env- and overlay-overridable) so an EMPTY table is a provable
-no-op and the three-way precedence is observable.
+``False``) so an EMPTY table is a provable no-op and the precedence is observable.
 
 Integration-first: real TOML fixtures under ``tmp_path`` with
 ``teatree.config.CONFIG_PATH`` monkeypatched, against the real DB.
@@ -45,33 +46,29 @@ class TestDbConfigTier(TestCase):
         assert ConfigSetting.objects.count() == 0
         assert get_effective_settings().issue_implementer_enabled is False
 
-    def test_db_row_wins_over_global_toml(self) -> None:
-        _write_toml(self.config_path, "[teatree]\nissue_implementer_enabled = false\n")
-        # Sanity: without a DB row the global TOML (false) is the resolved value.
+    def test_db_is_the_sole_source_for_a_db_home_field(self) -> None:
+        # No DB row -> the dataclass default (false). A DB row is the sole source
+        # of the resolved value; there is no [teatree] tier beneath it.
+        _write_toml(self.config_path, "[teatree]\n")
         assert get_effective_settings().issue_implementer_enabled is False
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
         assert get_effective_settings().issue_implementer_enabled is True
 
-    def test_db_row_wins_over_per_overlay_toml(self) -> None:
+    def test_overlay_db_row_is_the_sole_overlay_source(self) -> None:
+        # An [overlays.<name>] DB-home TOML value is ignored on read; the
+        # overlay-scoped ConfigSetting row is the sole per-overlay source.
         _write_toml(
             self.config_path,
-            """
-[teatree]
-mode = "interactive"
-
-[overlays.my-overlay]
-class = "x.y:Z"
-issue_implementer_enabled = false
-""",
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nissue_implementer_enabled = true\n',
         )
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        # Per-overlay TOML resolves false without a DB row.
+        # The [overlays.<name>] TOML value is ignored -> dataclass default.
         assert get_effective_settings().issue_implementer_enabled is False
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
         assert get_effective_settings().issue_implementer_enabled is True
 
     def test_env_wins_over_db_row(self) -> None:
-        _write_toml(self.config_path, "[teatree]\nissue_implementer_enabled = false\n")
+        _write_toml(self.config_path, "[teatree]\n")
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
         # DB says false; env says true -> env wins (highest tier).
         self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
@@ -92,11 +89,12 @@ issue_implementer_enabled = false
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", "5")
         assert get_effective_settings().issue_implementer_max_concurrent == 5
 
-    def test_clear_restores_fall_through(self) -> None:
-        _write_toml(self.config_path, "[teatree]\nissue_implementer_enabled = false\n")
+    def test_clear_restores_dataclass_default(self) -> None:
+        _write_toml(self.config_path, "[teatree]\n")
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
         assert get_effective_settings().issue_implementer_enabled is True
         ConfigSetting.objects.clear("issue_implementer_enabled")
+        # Cleared -> dataclass default (no [teatree] tier for a DB-home field).
         assert get_effective_settings().issue_implementer_enabled is False
 
     def test_bool_row_false_resolves_false(self) -> None:
@@ -164,7 +162,7 @@ class TestPerOverlayDbScope(TestCase):
         # A registered overlay so T3_OVERLAY_NAME resolves to an active overlay.
         _write_toml(
             self.config_path,
-            '[teatree]\nissue_implementer_enabled = false\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
         )
         self.monkeypatch = monkeypatch
 

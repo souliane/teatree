@@ -210,6 +210,38 @@ class TestConfigSettingImport(TestCase):
         call_command("config_setting", "import", stdout=StringIO())
         assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1
 
+    def test_import_walks_per_overlay_tables_into_overlay_scope(self) -> None:
+        # An operational DB-home key under [overlays.<name>] migrates into that
+        # overlay's DB scope, not the global scope (#1775 in-PR add).
+        self.config_path.write_text(
+            '[teatree]\nmode = "interactive"\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
+            encoding="utf-8",
+        )
+        call_command("config_setting", "import", stdout=StringIO())
+        # The global row carries the [teatree] value; the overlay scope carries
+        # the [overlays.myproj] override.
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
+        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
+
+    def test_import_skips_non_setting_overlay_keys(self) -> None:
+        # Overlay-table bootstrap keys (path/url/…) are not settings and must NOT
+        # become ConfigSetting rows.
+        self.config_path.write_text(
+            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nurl = "git@x"\n',
+            encoding="utf-8",
+        )
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.filter(scope="myproj").exists() is False
+
+    def test_import_per_overlay_is_idempotent(self) -> None:
+        self.config_path.write_text(
+            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
+            encoding="utf-8",
+        )
+        call_command("config_setting", "import", stdout=StringIO())
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.filter(key="mode", scope="myproj").count() == 1
+
 
 class TestConfigSettingOverlayScope(TestCase):
     """``--overlay`` scoping on set / clear / get / list (per-overlay + global)."""

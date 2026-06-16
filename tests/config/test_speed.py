@@ -15,8 +15,11 @@ Integration-first per the Test-Writing Doctrine: real TOML fixtures under
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
+import teatree.config as config_facade
 from teatree.config import Speed, get_effective_settings, load_config
+from teatree.core.models import ConfigSetting
 
 from ._shared import _write_toml
 
@@ -69,85 +72,60 @@ class TestSpeedDefault:
         assert load_config(tmp_path / "nonexistent.toml").user.speed is Speed.MEDIUM
 
 
-class TestSpeedGlobalResolution:
-    def test_global_speed_full(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[teatree]\nspeed = "full"\n')
-        assert load_config(config_path).user.speed is Speed.FULL
+class TestSpeedDbResolution(TestCase):
+    """``speed`` is DB-home (#1775): it resolves from a ``ConfigSetting`` row.
 
-    def test_global_alias_high_is_full(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[teatree]\nspeed = "high"\n')
-        assert load_config(config_path).user.speed is Speed.FULL
+    The DB twin of the old ``[teatree] speed`` / ``[overlays.<name>] speed``.
+    """
 
-    def test_global_typo_raises(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[teatree]\nspeed = "ludicrous"\n')
-        with pytest.raises(ValueError, match="Invalid speed"):
-            load_config(config_path)
-
-
-class TestSpeedEffectiveResolution:
-    def test_per_overlay_override_wins_over_global(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
         monkeypatch.delenv("T3_SPEED", raising=False)
-        monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         _write_toml(
-            config_file,
-            '[teatree]\nspeed = "slow"\n[overlays.fast]\nspeed = "boost"\n',
+            self.config_path,
+            '[teatree]\n\n[overlays.fast]\nclass = "x:Y"\n\n[overlays.careful]\nclass = "x:Y"\n',
         )
-        assert get_effective_settings().speed is Speed.BOOST
+        self.monkeypatch = monkeypatch
 
-    def test_env_wins_over_per_overlay_and_global(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
-        monkeypatch.setenv("T3_SPEED", "slow")
-        _write_toml(
-            config_file,
-            '[teatree]\nspeed = "full"\n[overlays.fast]\nspeed = "boost"\n',
-        )
-        assert get_effective_settings().speed is Speed.SLOW
-
-    def test_env_alias_resolves(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.setenv("T3_SPEED", "high")
-        _write_toml(config_file, "[teatree]\n")
+    def test_global_db_row_full(self) -> None:
+        ConfigSetting.objects.set_value("speed", "full")
         assert get_effective_settings().speed is Speed.FULL
 
-    def test_one_overlay_speed_does_not_leak_to_another(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        del elsewhere, no_installed_overlays
-        monkeypatch.delenv("T3_SPEED", raising=False)
-        _write_toml(
-            config_file,
-            '[teatree]\n[overlays.fast]\nspeed = "boost"\n[overlays.careful]\nspeed = "slow"\n',
-        )
+    def test_global_db_alias_high_is_full(self) -> None:
+        ConfigSetting.objects.set_value("speed", "high")
+        assert get_effective_settings().speed is Speed.FULL
 
-        monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
+    def test_corrupt_db_value_raises_loud_on_read(self) -> None:
+        # An out-of-band corrupt row (the write path validates, so this can only
+        # exist via a direct ORM write) raises LOUD on read, never silently.
+        ConfigSetting.objects.set_value("speed", "ludicrous")
+        with pytest.raises(ValueError, match="speed"):
+            get_effective_settings()
+
+    def test_overlay_scoped_db_row_wins_over_global(self) -> None:
+        ConfigSetting.objects.set_value("speed", "slow")
+        ConfigSetting.objects.set_value("speed", "boost", scope="fast")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
+        assert get_effective_settings().speed is Speed.BOOST
+
+    def test_env_wins_over_overlay_and_global_db(self) -> None:
+        ConfigSetting.objects.set_value("speed", "full")
+        ConfigSetting.objects.set_value("speed", "boost", scope="fast")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
+        self.monkeypatch.setenv("T3_SPEED", "slow")
         assert get_effective_settings().speed is Speed.SLOW
 
-        monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
+    def test_env_alias_resolves(self) -> None:
+        self.monkeypatch.setenv("T3_SPEED", "high")
+        assert get_effective_settings().speed is Speed.FULL
+
+    def test_one_overlay_speed_does_not_leak_to_another(self) -> None:
+        ConfigSetting.objects.set_value("speed", "boost", scope="fast")
+        ConfigSetting.objects.set_value("speed", "slow", scope="careful")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
+        assert get_effective_settings().speed is Speed.SLOW
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
         assert get_effective_settings().speed is Speed.BOOST

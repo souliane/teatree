@@ -62,16 +62,19 @@ class ConfigDefaultsTests(TestCase):
         assert "todo_sweep_disabled" in OVERLAY_OVERRIDABLE_SETTINGS
         assert "todo_sweep_recheck_interval_hours" in OVERLAY_OVERRIDABLE_SETTINGS
 
-    def test_config_parses_knobs(self) -> None:
-        import tempfile  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
+    def test_db_overrides_resolve_knobs(self) -> None:
+        """The knobs are DB-home (#1775): a global ``ConfigSetting`` row resolves them.
 
-        from teatree.config import load_config  # noqa: PLC0415
+        ``todo_sweep_disabled`` / ``todo_sweep_recheck_interval_hours`` resolve
+        from the ``ConfigSetting`` store, not the ``[teatree]`` TOML table (which
+        is ignored on read for a DB-home key).
+        """
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-        path = Path(tempfile.mkdtemp(prefix="todo_cfg_")) / ".teatree.toml"
-        path.write_text("[teatree]\ntodo_sweep_disabled = true\ntodo_sweep_recheck_interval_hours = 6\n")
-        self.addCleanup(path.unlink, missing_ok=True)
-        settings = load_config(path).user
+        ConfigSetting.objects.set_value("todo_sweep_disabled", value=True)
+        ConfigSetting.objects.set_value("todo_sweep_recheck_interval_hours", 6)
+        settings = get_effective_settings()
         assert settings.todo_sweep_disabled is True
         assert settings.todo_sweep_recheck_interval_hours == 6
 
