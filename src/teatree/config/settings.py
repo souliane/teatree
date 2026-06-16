@@ -508,21 +508,21 @@ class UserSettings:
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the
     # WORK-team ships DARK. When flipped on, a LATER PR wires the
     # `team:<role>` claim namespace + the overlay-seam claim filters into a
-    # pane-backed teammate; this PR adds only the config surface. Global value
-    # reads from the top-level `[teams] enabled` table; per-overlay overridable
-    # via `[overlays.<name>].teams_enabled`; `T3_TEAMS_ENABLED` env wins.
+    # pane-backed teammate; this PR adds only the config surface. DB-home
+    # (#1775): resolved from the `ConfigSetting` store (global + overlay rows) +
+    # `T3_TEAMS_ENABLED` env; a `[teams]`/`[overlays.<name>]` TOML value is ignored
+    # on read. Set via `t3 teams on|off` (the DB-row write path).
     teams_enabled: bool = False
     # #1838 Track-B PR#7a — the inert maker-only pane budget. `teams_max_panes`
     # caps how many concurrent maker panes a lead may run; `teams_idle_minutes`
     # is the idle-pane reaper threshold (a pane with no live Session/Task past
     # this many minutes is demoted to stopped). Both ship inert with the rest of
     # the pane layer (referenced by nothing until `teams_enabled` flips on and a
-    # consumer lands). Global values read from the top-level `[teams] max_panes`
-    # / `[teams] idle_minutes` table (the feature namespace, alongside
-    # `enabled`); per-overlay overridable via `[overlays.<name>].teams_max_panes`
-    # / `teams_idle_minutes`; `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES` env
-    # win. A non-positive or non-int value FAILS SAFE to the default at every
-    # tier — the safety bound cannot be configured away by a typo.
+    # consumer lands). DB-home (#1775): resolved from the `ConfigSetting` store
+    # (global + overlay rows) + `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`
+    # env; a `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A
+    # non-positive or non-int value FAILS SAFE to the default at every tier — the
+    # safety bound cannot be configured away by a typo.
     teams_max_panes: int = 1
     teams_idle_minutes: int = 30
     # #1838 Track-B WI-5 — the PRESENTATION-only pane-display mode. Governs
@@ -531,10 +531,10 @@ class UserSettings:
     # The SDK session is the source of truth; this never replaces it. Default
     # `none` (ships dark, byte-identical to today); `auto`/`tmux` opt into the
     # display with graceful degradation (no tmux / no TTY / spawn failure falls
-    # back to the in-process path). Global value reads from the top-level
-    # `[teams] display` table (the feature namespace, alongside `enabled`);
-    # per-overlay overridable via `[overlays.<name>].teams_display`;
-    # `T3_TEAMS_DISPLAY` env wins. A bad value fails SAFE to `none` at every tier.
+    # back to the in-process path). DB-home (#1775): resolved from the
+    # `ConfigSetting` store (global + overlay rows) + `T3_TEAMS_DISPLAY` env; a
+    # `[teams]`/`[overlays.<name>]` TOML value is ignored on read. A bad value
+    # fails SAFE to `none` at every tier.
     teams_display: TeamsDisplay = TeamsDisplay.NONE
     # Training-wheel for `auto` overlays: when true, the loop autonomously
     # pushes and creates PRs but stops short of merging — merge requires a

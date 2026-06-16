@@ -3638,8 +3638,10 @@ Usage: t3 teams [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ on      Enable agent teams — write teams.enabled = true to the config.       │
-│ off     Disable agent teams — write teams.enabled = false to the config.     │
+│ on      Enable agent teams — write the global teams_enabled = true config    │
+│         row.                                                                 │
+│ off     Disable agent teams — write the global teams_enabled = false config  │
+│         row.                                                                 │
 │ status  Show whether agent teams is on/off (effective value, read-only).     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3649,7 +3651,7 @@ Usage: t3 teams [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teams on [OPTIONS]
 
- Enable agent teams — write teams.enabled = true to the config.
+ Enable agent teams — write the global teams_enabled = true config row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3661,7 +3663,7 @@ Usage: t3 teams on [OPTIONS]
 ```
 Usage: t3 teams off [OPTIONS]
 
- Disable agent teams — write teams.enabled = false to the config.
+ Disable agent teams — write the global teams_enabled = false config row.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

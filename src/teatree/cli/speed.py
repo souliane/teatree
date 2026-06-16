@@ -1,20 +1,18 @@
 """``t3 <overlay> speed`` — show / set the parallel-work throughput dial.
 
 The ``speed`` dial (``slow`` < ``medium`` < ``full`` < ``boost``, default
-``medium``) is a global ``[teatree]`` setting governing how many threads of
-work the orchestrator drives at once — orthogonal to ``mode``/``autonomy``,
-which gate *whether* a publish proceeds. The ``/t3:speed`` skill calls
-``t3 <overlay> speed set <level>`` so the dial is persisted in one place
-(``~/.teatree.toml``) rather than hand-edited.
+``medium``) governs how many threads of work the orchestrator drives at once —
+orthogonal to ``mode``/``autonomy``, which gate *whether* a publish proceeds.
+The ``/t3:speed`` skill calls ``t3 <overlay> speed set <level>`` so the dial is
+persisted in one place rather than hand-edited.
 
-``show`` reports the effective value (env / per-overlay / global / default
-resolved via :func:`teatree.config.get_effective_settings`); ``set`` writes
-the global ``[teatree] speed`` key. This is a pure-Python local read of the
-resolver plus a ``tomlkit`` round-trip of ``~/.teatree.toml`` — it does NOT
-route through Django or an overlay ``manage.py`` subprocess.
+``speed`` is DB-home (#1775): its sole authoritative tier is the
+``ConfigSetting`` store, so ``set`` writes a GLOBAL-scope DB row (a value in
+``[teatree]`` TOML is ignored on read). ``show`` reports the effective value
+(env / overlay-row / global-row / default resolved via
+:func:`teatree.config.get_effective_settings`). ``set`` writes through the ORM,
+so it ensures Django is configured first.
 """
-
-from pathlib import Path
 
 import typer
 
@@ -23,29 +21,14 @@ from teatree.config import Speed
 SPEED_KEY = "speed"
 
 
-def _config_path() -> Path:
-    # Read at call time (not import) so a test monkeypatching
-    # ``teatree.config.CONFIG_PATH`` is honoured.
-    from teatree.config import CONFIG_PATH  # noqa: PLC0415
-
-    return CONFIG_PATH
-
-
 def _set_speed(level: Speed) -> None:
-    # ``tomlkit`` is imported inline (matching ``teatree_gate``) so loading this
-    # module — pulled when the overlay app is built — never eagerly imports the
-    # toml-preserving dep.
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
+    # Django/ORM imports are inline so building the overlay app (which loads this
+    # module) never eagerly imports the model layer before settings are configured.
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
 
-    config_path = _config_path()
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
-    teatree = document.get("teatree")
-    if not isinstance(teatree, tomlkit_items.Table):
-        teatree = tomlkit.table()
-        document["teatree"] = teatree
-    teatree[SPEED_KEY] = level.value
-    config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
+    ensure_django()
+    ConfigSetting.objects.set_value(SPEED_KEY, level.value)
 
 
 def register_speed_commands(overlay_app: typer.Typer) -> None:
@@ -68,6 +51,6 @@ def register_speed_commands(overlay_app: typer.Typer) -> None:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from exc
         _set_speed(parsed)
-        typer.echo(f'speed = {parsed.value} — wrote `{SPEED_KEY} = "{parsed.value}"` to {_config_path()}')
+        typer.echo(f"speed = {parsed.value} — wrote the {SPEED_KEY} row to the global config store")
 
     overlay_app.add_typer(speed_group, name="speed")
