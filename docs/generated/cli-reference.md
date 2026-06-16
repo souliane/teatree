@@ -22,6 +22,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 unless local = all).                                         │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
+│ admin           Run the Django admin for the teatree project on a local dev  │
+│                 server.                                                      │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -189,6 +191,22 @@ Usage: t3 ui [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 admin`
+
+```
+Usage: t3 admin [OPTIONS]
+
+ Run the Django admin for the teatree project on a local dev server.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --host              TEXT     Host interface for the admin dev server.        │
+│                              [default: 127.0.0.1]                            │
+│ --port              INTEGER  Port for the admin dev server. [default: 8000]  │
+│ --no-browser                 Do not open the browser at /admin/.             │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
