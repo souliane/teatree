@@ -17,7 +17,7 @@ field to its dataclass default.
 """
 
 import os
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from typing import Any
 
 import teatree.config as _facade
@@ -128,6 +128,12 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     # ``ask_before_post_on_behalf`` is DERIVED (#1775) from the resolved DB-home
     # ``on_behalf_post_mode``: True unless the mode is IMMEDIATE. Re-derived here
     # so the deprecated legacy field stays consistent with the effective mode.
+    # Guarded on a real dataclass so a test that patches ``load_config`` to return
+    # a bare mock (``config.user`` is not a ``UserSettings``) gets the same
+    # untouched passthrough it got before the partition — the derivation is only
+    # meaningful on a real settings dataclass anyway.
+    if not is_dataclass(settings):
+        return settings
     return replace(
         settings,
         ask_before_post_on_behalf=settings.on_behalf_post_mode is not OnBehalfPostMode.IMMEDIATE,

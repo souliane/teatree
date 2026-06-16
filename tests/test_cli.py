@@ -808,18 +808,17 @@ class TestUpdateNoticeDoesNotPolluteJsonStdout:
 
 
 class TestEnsureEditableIfContributing:
+    # ``contribute`` is DB-home (#1775): ``_ensure_editable_if_contributing``
+    # resolves it via ``get_effective_settings()``, so the patch targets that
+    # tier (not ``load_config``, whose ``.user.contribute`` is now ignored).
     def test_skips_when_contribute_false(self) -> None:
-        mock_config = MagicMock()
-        mock_config.user.contribute = False
-        with patch.object(config_mod, "load_config", return_value=mock_config):
+        with patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=False)):
             _ensure_editable_if_contributing()
         # Should return early without calling editable_info
 
     def test_makes_teatree_editable(self) -> None:
-        mock_config = MagicMock()
-        mock_config.user.contribute = True
         with (
-            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(DoctorService, "find_teatree_repo", return_value=Path("/fake/teatree")),
             patch.object(DoctorService, "make_editable") as mock_make,
@@ -829,10 +828,8 @@ class TestEnsureEditableIfContributing:
         mock_make.assert_called_once_with("teatree", Path("/fake/teatree"))
 
     def test_skips_teatree_when_already_editable(self) -> None:
-        mock_config = MagicMock()
-        mock_config.user.contribute = True
         with (
-            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "/fake")),
             patch.object(DoctorService, "find_teatree_repo") as mock_find,
             patch.object(overlay_loader_mod, "get_all_overlays", return_value={}),
@@ -841,14 +838,11 @@ class TestEnsureEditableIfContributing:
         mock_find.assert_not_called()
 
     def test_makes_overlay_editable(self) -> None:
-        mock_config = MagicMock()
-        mock_config.user.contribute = True
-
         mock_overlay = MagicMock()
         type(mock_overlay).__module__ = "myoverlay.overlay"
 
         with (
-            patch.object(config_mod, "load_config", return_value=mock_config),
+            patch.object(config_mod, "get_effective_settings", return_value=MagicMock(contribute=True)),
             patch.object(
                 IntrospectionHelpers,
                 "editable_info",
@@ -863,7 +857,7 @@ class TestEnsureEditableIfContributing:
         mock_make.assert_called_once_with("myoverlay-dist", Path("/fake/overlay"))
 
     def test_suppresses_exceptions(self) -> None:
-        with patch.object(config_mod, "load_config", side_effect=RuntimeError("boom")):
+        with patch.object(config_mod, "get_effective_settings", side_effect=RuntimeError("boom")):
             _ensure_editable_if_contributing()  # should not raise
 
 

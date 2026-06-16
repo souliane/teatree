@@ -20,19 +20,23 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import OnBehalfApproval
+from teatree.core.models import ConfigSetting, OnBehalfApproval
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
+    # ``on_behalf_post_mode`` is DB-home (#1775) and drives the gate; the derived
+    # ``ask_before_post_on_behalf`` follows it. Gate OFF = ``immediate`` (the
+    # store row), gate ON = ``draft_or_ask`` (the dataclass default — clear any row).
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f"[teatree]\nask_before_post_on_behalf = {'true' if on else 'false'}\n",
-        encoding="utf-8",
-    )
+    cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    if on:
+        ConfigSetting.objects.clear("on_behalf_post_mode")
+    else:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
 
 
 class _ApproveStubAPI:

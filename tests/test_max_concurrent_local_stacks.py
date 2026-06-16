@@ -22,10 +22,10 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import load_config
+from teatree.config import get_effective_settings, load_config
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import ConfigSetting, Ticket, Worktree
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +78,7 @@ def _make_worktree(
 
 
 class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
-    """``max_concurrent_local_stacks`` parses from ``[teatree]`` and overlay tables."""
+    """``max_concurrent_local_stacks`` is DB-home (#1775): default 0, set in the store."""
 
     def test_default_is_zero_unbounded(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -86,11 +86,11 @@ class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
             _write_toml(config_path, "[teatree]\n")
             assert load_config(config_path).user.max_concurrent_local_stacks == 0
 
-    def test_global_setting_parses(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            config_path = Path(td) / ".teatree.toml"
-            _write_toml(config_path, "[teatree]\nmax_concurrent_local_stacks = 1\n")
-            assert load_config(config_path).user.max_concurrent_local_stacks == 1
+    def test_global_setting_resolves_from_db_store(self) -> None:
+        # DB-home under the partition: a GLOBAL ``ConfigSetting`` row supplies the
+        # value (a ``[teatree]`` key would be ignored on read).
+        ConfigSetting.objects.set_value("max_concurrent_local_stacks", 1)
+        assert get_effective_settings().max_concurrent_local_stacks == 1
 
 
 class TestLocalStackGateUnbounded(TestCase):

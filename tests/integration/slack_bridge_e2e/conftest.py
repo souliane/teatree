@@ -43,7 +43,10 @@ import httpx
 import pytest
 
 from teatree.backends.slack import http as slack_http
+from teatree.config.enums import Autonomy as _Autonomy
+from teatree.config.enums import OnBehalfPostMode as _OnBehalfPostMode
 from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
+from teatree.types import SpeakConfig as _SpeakConfig
 
 # ── Fake Slack transport ──────────────────────────────────────────────
 
@@ -189,6 +192,15 @@ class _FakeUserSettings:
     # mirror the new attribute so the test fixture stays a structural
     # subset of the real ``UserSettings``.
     slack_voice_classifier_mode: _VoiceClassifierMode = _VoiceClassifierMode.WARN
+    # #1775 ``_resolved_identities()`` now routes through
+    # ``get_effective_settings()``, whose autonomy collapse + derived
+    # ``ask_before_post_on_behalf`` + per-overlay speak merge read these
+    # fields. Mirror them with the real ``UserSettings`` defaults so the
+    # fixture stays a structural subset.
+    autonomy: _Autonomy = _Autonomy.BABYSIT
+    on_behalf_post_mode: _OnBehalfPostMode = _OnBehalfPostMode.DRAFT_OR_ASK
+    ask_before_post_on_behalf: bool = True
+    speak: _SpeakConfig = field(default_factory=_SpeakConfig)
 
 
 @dataclass
