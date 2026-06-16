@@ -2043,3 +2043,90 @@ class TestSentinelRecognition:
     def test_clean_text_is_neither_sentinel(self) -> None:
         assert not _command_parser.is_fail_closed_sentinel("a normal clean body")
         assert not is_unavailable_body_source_sentinel("a normal clean body")
+
+
+class TestFieldBodyResolution:
+    """``-f``/``--field body=`` values are RESOLVED before scanning (#1415).
+
+    A ``gh api`` / ``glab api`` write whose ``-f body=`` value is a
+    ``$(cat <file>)`` substitution or a ``$VAR`` reference must be resolved to
+    the real content the scanner reads, not the unexpanded shell token. Before
+    the fix the literal token was scanned, so a banned term inside the
+    referenced file slipped through unscanned (a false negative); an
+    unresolvable indirection fails closed.
+    """
+
+    def test_field_body_cat_subst_banned_content_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MUST-BLOCK: the referenced file carries a banned term; resolving the
+        # `$(cat)` field body surfaces it for the scan on a PUBLIC surface.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        body = tmp_path / "note.md"
+        body.write_text("rolling out for acmecorp\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(
+            _bash(f'gh api repos/someorg/pub/issues/comments/5 -X PATCH -f body="$(cat {body})"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_field_body_cat_subst_clean_content_allows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MUST-NOT-BLOCK: a readable, leak-free `$(cat)` field body to a public
+        # repo scans clean and passes (the resolved content carries no term).
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        body = tmp_path / "note.md"
+        body.write_text("a perfectly clean release note\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(
+            _bash(f'gh api repos/someorg/pub/issues/comments/5 -X PATCH -f body="$(cat {body})"')
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_field_body_cat_subst_missing_file_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MUST-BLOCK: a `$(cat <missing>)` field body is unresolvable -> fail closed.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        blocked = handle_banned_terms_pretool(
+            _bash('gh api repos/someorg/pub/issues/comments/5 -X PATCH -f body="$(cat /no/such/note-xyz.md)"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+class TestT3ReviewTargetAwareGate:
+    """Sanctioned ``t3 review`` post/edit skips the scan to internal, scans to public (#1415)."""
+
+    def test_post_comment_overlay_term_to_internal_repo_allows(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # MUST-NOT-BLOCK: a sanctioned review comment carrying the overlay term to
+        # an internal repo is allowed -- the term belongs there.
+        blocked = handle_banned_terms_pretool(_bash('t3 review post-comment internalcorp/svc 1 "ship to acmecorp"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_post_comment_overlay_term_to_public_repo_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MUST-BLOCK (anti-vacuity): the SAME comment to a PUBLIC repo still scans
+        # and blocks -- the internal carve-out must not weaken the public gate.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        blocked = handle_banned_terms_pretool(_bash('t3 review post-comment someorg/pub 1 "ship to acmecorp"'))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_update_note_overlay_term_to_internal_repo_allows(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # MUST-NOT-BLOCK: editing a note on an internal repo via the sanctioned
+        # update-note verb is allowed (target resolved as internal).
+        blocked = handle_banned_terms_pretool(_bash('t3 review update-note internalcorp/svc 1 99 "ship to acmecorp"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+
+class TestReviewPostDenyMessageSurfacesEditDelete:
+    """The raw-api review-post deny names the sanctioned EDIT/DELETE path (#1415)."""
+
+    def test_message_points_to_update_note_and_delete_discussion(self) -> None:
+        assert "update-note" in router._REVIEW_POST_DENY_REASON
+        assert "delete-discussion" in router._REVIEW_POST_DENY_REASON

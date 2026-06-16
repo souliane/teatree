@@ -7221,12 +7221,12 @@ _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
 )
 _REVIEW_POST_DENY_REASON = (
-    "BLOCKED: raw `glab api`/`gh api` POST to a review discussion/notes/comments "
-    "endpoint bypasses the sanctioned review-post CLI. Use "
-    "`t3 <overlay> review post-comment` (draft by default, #1207) or "
-    "`t3 <overlay> review post-draft-note` — the CLI enforces draft-default, "
-    "dedup, and on-behalf approval, which a direct REST write skips entirely. "
-    "Read-only `glab api`/`gh api` GETs are unaffected."
+    "BLOCKED: raw `glab api`/`gh api` POST/PUT to a review discussion/notes/comments "
+    "endpoint bypasses the sanctioned review-post CLI. To POST, use `t3 <overlay> review "
+    "post-comment` (draft by default, #1207) / `post-draft-note`; to EDIT or DELETE an "
+    "existing note, use `t3 <overlay> review update-note` / `delete-discussion` — the CLI "
+    "enforces draft-default, dedup, and on-behalf approval, which a direct REST write skips "
+    "entirely. Read-only `glab api`/`gh api` GETs are unaffected."
 )
 
 

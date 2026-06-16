@@ -412,16 +412,22 @@ def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
 
 
 def _handle_field_assignment(arg: str, payloads: list[str]) -> None:
-    """Parse a ``-F body=value`` style argument and append the value.
+    """Parse a ``-F body=value`` style argument and append the RESOLVED value.
 
-    The ``body=`` prefix is required — other field names (``title=``,
-    etc.) are not body-bearing and are ignored.
+    The ``body=`` prefix is required — other field names (``title=``, etc.)
+    are not body-bearing and are ignored. The value is passed through
+    :func:`resolve_inline_body_value` so a ``-f body=$(cat <path>)`` /
+    ``-f body=$VAR`` posts the file content / env value the scanner must read,
+    not the unexpanded shell token (a leak inside the file would otherwise slip
+    unscanned); an unresolvable indirection fails closed (#1415).
     """
+    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
     if name == "body":
-        payloads.append(value)
+        payloads.append(resolve_inline_body_value(value, None))
 
 
 # ── Command-segment walking ─────────────────────────────────────────

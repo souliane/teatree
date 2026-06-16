@@ -30,6 +30,14 @@ from typing import Final
 # argument rather than a ``--body``/``--message`` flag.
 _T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
 
+# Every ``t3 review`` verb that names a target REPO as its first positional --
+# the body-bearing posts above PLUS the edit/delete verbs (``update-note``,
+# ``delete-discussion``). The banned-terms gate resolves that repo to a publish
+# DESTINATION so a sanctioned review post/edit to a provably-INTERNAL repo (an
+# overlay's own GitLab/GitHub project) skips the public-leak scan instead of
+# over-blocking on an overlay/customer term that is expected there (#1415).
+_T3_REVIEW_TARGET_VERBS: Final[frozenset[str]] = _T3_REVIEW_POST_VERBS | frozenset({"update-note", "delete-discussion"})
+
 # Positional count consumed before the ``NOTE`` body of a ``t3 ... review
 # <verb> REPO MR NOTE`` invocation: REPO and MR precede it.
 _T3_REVIEW_NOTE_POSITIONAL_INDEX: Final[int] = 2
@@ -64,24 +72,66 @@ def _t3_leader_index(words: list[str]) -> int | None:
     return None
 
 
-def _t3_review_post_verb_index(words: list[str]) -> int | None:
-    """Return the index of a ``t3 review`` posting verb word, or ``None``.
+def _t3_review_verb_index(words: list[str], verbs: frozenset[str]) -> int | None:
+    """Return the index of a ``t3 review`` verb word drawn from ``verbs``, or ``None``.
 
-    The segment is a ``t3 review`` post iff its leader is the ``t3`` executable
-    (env-prefixed and path-form leaders are canonicalised by
-    :func:`_t3_leader_index`) and a ``review`` word is immediately followed by
-    ``post-comment`` / ``post-draft-note``. The overlay word between ``t3`` and
-    ``review`` is arbitrary, so ``review`` is located by scan rather than fixed
-    position. Returns the index of the verb word
-    (``post-comment``/``post-draft-note``).
+    The segment is a ``t3 review`` invocation iff its leader is the ``t3``
+    executable (env-prefixed and path-form leaders are canonicalised by
+    :func:`_t3_leader_index`) and a ``review`` word is immediately followed by a
+    verb in ``verbs``. The overlay word between ``t3`` and ``review`` is
+    arbitrary, so ``review`` is located by scan rather than fixed position.
     """
     leader = _t3_leader_index(words)
     if leader is None:
         return None
     for i in range(leader + 1, len(words) - 1):
-        if words[i] == "review" and words[i + 1] in _T3_REVIEW_POST_VERBS:
+        if words[i] == "review" and words[i + 1] in verbs:
             return i + 1
     return None
+
+
+def _t3_review_post_verb_index(words: list[str]) -> int | None:
+    """Return the index of a body-bearing ``t3 review`` posting verb, or ``None``."""
+    return _t3_review_verb_index(words, _T3_REVIEW_POST_VERBS)
+
+
+def _first_positional_after(words: list[str], verb_index: int) -> str | None:
+    """Return the first positional argument after ``verb_index``, skipping flags.
+
+    A value-taking flag (``--file X``) consumes its value; a standalone ``--``
+    ends option parsing so a dash-leading positional is captured. ``None`` when
+    no positional follows the verb.
+    """
+    i = verb_index + 1
+    n = len(words)
+    end_of_options = False
+    while i < n:
+        word = words[i]
+        if not end_of_options and word == _END_OF_OPTIONS:
+            end_of_options = True
+            i += 1
+            continue
+        if not end_of_options and word.startswith("-"):
+            i += 2 if word in _T3_REVIEW_VALUE_FLAGS and "=" not in word else 1
+            continue
+        return word
+    return None
+
+
+def t3_review_target_slug(words: list[str]) -> str | None:
+    """Return the target REPO of a ``t3 review`` post/edit/delete segment, or ``None``.
+
+    Every ``t3 review`` verb names its target repo as the FIRST positional after
+    the verb (``t3 review <verb> REPO MR ...``). The banned-terms gate resolves
+    that slug to a publish destination (:func:`publish_destination`), so a
+    sanctioned post/edit to a provably-INTERNAL repo skips the public-leak scan
+    instead of over-blocking on an overlay/customer term that belongs there
+    (#1415). ``None`` for a non-review segment or one with no positional repo.
+    """
+    verb_index = _t3_review_verb_index(words, _T3_REVIEW_TARGET_VERBS)
+    if verb_index is None:
+        return None
+    return _first_positional_after(words, verb_index)
 
 
 def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:

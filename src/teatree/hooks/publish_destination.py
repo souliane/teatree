@@ -76,8 +76,9 @@ class Destination:
     (``owner/repo``, ``host/owner/repo``, or ``ns/sub/repo``). ``via``
     records how it was resolved (``flag`` for ``--repo``/``-R``, ``api`` for
     a ``gh``/``glab api`` URL path, ``url`` for a forge URL positional, ``env``
-    for ``GH_REPO``, ``cwd`` for the current-repo fallback) so a caller can log
-    the provenance without re-parsing.
+    for ``GH_REPO``, ``cwd`` for the current-repo fallback, ``t3-review`` for a
+    ``t3 review`` post/edit/delete target) so a caller can log the provenance
+    without re-parsing.
 
     ``forge`` records which forge the PUBLISH TOOL targets (``github`` for a
     ``gh`` command, ``gitlab`` for a ``glab`` command, ``""`` when unknown). A
@@ -280,8 +281,15 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
     The visibility-independent half of :func:`resolve_publish_destination`,
     factored out so :func:`gate_skips_destination` can resolve a destination
     PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
-    the first segment.
+    the first segment. A sanctioned ``t3 review`` post/edit/delete names its
+    target repo as a positional, resolved here so an internal-repo review post
+    skips the public-leak scan (#1415).
     """
+    from teatree.hooks._t3_review_post import t3_review_target_slug  # noqa: PLC0415
+
+    review_slug = t3_review_target_slug(words)
+    if review_slug is not None:
+        return Destination(slug=review_slug, via="t3-review")
     if not words or words[0] not in {"gh", "glab"}:
         return None
     explicit = _extract_repo_flag(words)
