@@ -39,7 +39,27 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 
 ### Backend Tests
 
-**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them via `t3 <overlay> worktree start` (see `/t3:workspace`) rather than raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
+**Run tests ONLY via `t3` — never raw `docker compose` (Absolute Rule).** The `t3` wrapper sets the correct env, project environment, DB name, and collection scope; a raw `docker compose up` + bare `pytest` reproduces neither and silently drifts from CI. Do this, in order — never the right-hand alternative:
+
+1. Bring services up with the overlay command — **never** `docker compose up` / `docker-compose up`:
+
+   ```bash
+   t3 <overlay> worktree start
+   ```
+
+2. Run the suite with the overlay command — **never** a bare `pytest` / `uv run pytest` against the raw containers:
+
+   ```bash
+   t3 <overlay> run tests --reuse-db
+   ```
+
+3. In CI, the single canonical entry point is:
+
+   ```bash
+   t3 <overlay> ci
+   ```
+
+**Prerequisites:** Docker services (Postgres, Redis) must be running. Start them with `t3 <overlay> worktree start` (see `/t3:workspace`) — never raw `docker compose`. Read the project's test reference (e.g. `references/running-tests-and-lint.md`) for the full setup steps.
 
 - `t3 <overlay> run tests` — run the project test suite.
 - Flags: `--reuse-db`, `--failed-first`, optional `--parallel`.
@@ -75,6 +95,16 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - Costs no tokens while waiting.
 
 **Not-green == red (Non-Negotiable).** A pipeline is only OK when every required job is `success`. Treat any non-`success` job as a failure to fix, re-trigger, and confirm green: `failed`/`error`, `canceled`, `skipped`, `manual` (not run), `blocked`, a failing `allow_failure: true` job, or any gray/unknown state. `allow_failure: true` keeps the *pipeline* green but the *job* still failed — investigate it, do not skip it. Never declare CI passing, and never end a monitoring loop, while any job is non-green; a still-running/pending job is not yet terminal — wait, then re-apply. Canonical statement: `/t3:ship` § 6 "Not-green == red"; enforced in code by `teatree.loop.scanners.my_prs._needs_attention`.
+
+#### Responding to Failed Jobs
+
+A job shows `failed` (or any non-`success` state). Do NOT echo "green"/"passing" — act on it. The canonical next command is:
+
+```bash
+t3 ci fetch-failed-tests
+```
+
+That extracts the failing node IDs so you can reproduce locally; pair it with `t3 ci fetch-errors` for the logs. Then reproduce (`t3 <overlay> run tests --failed-first -- <node_id>`), fix the root cause, push, and re-monitor until every job is `success`. Never run a command that asserts the pipeline is green (e.g. `echo "CI passing"`) while any job is non-green.
 
 ### Docker Coverage Before Push
 
