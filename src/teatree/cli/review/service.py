@@ -36,7 +36,13 @@ from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review.on_behalf import check_on_behalf, on_behalf_gate_active, publish_on_behalf
+from teatree.cli.review.on_behalf import (
+    check_on_behalf,
+    check_on_behalf_issue,
+    on_behalf_gate_active,
+    publish_on_behalf,
+    publish_on_behalf_issue,
+)
 from teatree.cli.review.on_behalf import register as _register_on_behalf
 from teatree.cli.review.shape_gate import check_review_shape
 from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor
@@ -112,11 +118,31 @@ class ReviewService:
         transport error on the read-back is NOT caught here: it propagates so a
         flaky GET surfaces as ``api_unavailable``, never a false post-failure.
         """
+        return ReviewService._surface(lambda: publish_on_behalf(repo, mr, action, body))
+
+    @staticmethod
+    def _publish_or_blocked_issue(
+        repo: str,
+        issue_iid: int,
+        action: str,
+        body: Callable[[], tuple[str, int]],
+    ) -> tuple[str, int]:
+        """Issue/work-item twin of :meth:`_publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
+
+        Routes *body* through :func:`publish_on_behalf_issue` so the recorded
+        approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
+        never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
+        """
+        return ReviewService._surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, body))
+
+    @staticmethod
+    def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
+        """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
         from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415
         from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415
 
         try:
-            return publish_on_behalf(repo, mr, action, body)
+            return run()
         except OnBehalfPostBlockedError as blocked:
             return str(blocked), 1
         except ReviewArtifactNotVerifiedError as unverified:
@@ -437,6 +463,35 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         return self._publish_or_blocked(
             repo, mr, "delete_discussion", lambda: delete_discussion_impl(self, repo, mr, note_id, encoded=encoded)
+        )
+
+    def delete_issue_note(self, repo: str, issue_iid: int, note_id: int) -> tuple[str, int]:
+        """Delete a *published* note from a GitLab ISSUE/work-item. Returns (message, exit_code).
+
+        The issue/work-item twin of :meth:`delete_discussion`: it removes a
+        published note that colleagues can already see, so the removal is a
+        colleague-visible on-behalf mutation and routes through the SAME
+        recorded-approval on-behalf gate — scoped to
+        ``(<repo>#<issue>, "delete_issue_note")`` (the ``#`` separator keeps it
+        distinct from the same-numbered MR's ``<repo>!<mr>`` scope).
+
+        This is the sanctioned path for removing an issue note: a raw
+        ``glab api --method DELETE projects/.../issues/<iid>/notes/<id>`` is
+        denied by the ``block-raw-review-post`` hook (#1164), which has no
+        bypass — only this CLI does, because it routes through the gate the
+        raw write skips.
+        """
+        blocked = check_on_behalf_issue(repo, issue_iid, "delete_issue_note")
+        if blocked:
+            return blocked, 1
+        from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415
+
+        encoded = repo.replace("/", "%2F")
+        return self._publish_or_blocked_issue(
+            repo,
+            issue_iid,
+            "delete_issue_note",
+            lambda: delete_issue_note_impl(self, repo, issue_iid, note_id, encoded=encoded),
         )
 
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:

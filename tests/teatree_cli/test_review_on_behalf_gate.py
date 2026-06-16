@@ -465,6 +465,91 @@ class TestReviewServiceDeleteDiscussionGated:
         assert any(c[0] == "delete" for c in stub.calls)
 
 
+class TestReviewServiceDeleteIssueNoteGated:
+    """Deleting a published ISSUE/work-item note is a colleague-visible mutation — gated.
+
+    The issue/work-item twin of :class:`TestReviewServiceDeleteDiscussionGated`.
+    The on-behalf scope is ``<repo>#<issue>`` (``#``, not ``!``), so an MR
+    approval can never satisfy an issue-note delete and vice versa.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_delete_issue_note_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note("org/repo", 8568, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_delete_issue_note_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        OnBehalfApproval.record(target="org/repo#8568", action="delete_issue_note", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note("org/repo", 8568, 99)
+
+        assert code == 0, msg
+        assert "OK" in msg
+        delete_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "delete"]
+        assert any("issues/8568/notes/99" in ep for ep in delete_endpoints), (
+            f"expected the issue-notes delete endpoint, got {delete_endpoints!r}"
+        )
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_mr_scoped_approval_does_not_satisfy_issue_note_delete(self, mode: OnBehalfPostMode) -> None:
+        """ANTI-VACUITY: a ``<repo>!<iid>`` MR approval must NOT unlock the issue-note delete.
+
+        Without the ``#`` scope separation an approval recorded for the
+        same-numbered MR would satisfy the issue-note delete — exactly the
+        confusion the distinct target prevents. The delete must still BLOCK.
+        """
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        OnBehalfApproval.record(target="org/repo!8568", action="delete_issue_note", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_issue_note("org/repo", 8568, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_delete_issue_note_proceeds_under_immediate(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_issue_note("org/repo", 8568, 99)
+
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
+
+    def test_recorded_issue_approval_via_cli_satisfies_delete(self) -> None:
+        """End-to-end: ``approve-on-behalf <repo>#<issue> delete_issue_note`` unlocks the delete."""
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
+        record = _runner.invoke(
+            app,
+            ["review", "approve-on-behalf", "org/repo#8568", "delete_issue_note", "--approver", "souliane"],
+        )
+        assert record.exit_code == 0, record.output
+
+        service, stub = _service_with_stub()
+        msg, code = service.delete_issue_note("org/repo", 8568, 99)
+
+        assert code == 0, msg
+        assert any(c[0] == "delete" for c in stub.calls)
+        # Single-use: a second delete blocks again.
+        _, code2 = service.delete_issue_note("org/repo", 8568, 99)
+        assert code2 == 1
+
+
 class TestReviewServiceReadMethodsNotGated:
     """Pure-read methods (no on-behalf publish) MUST NOT be gated."""
 

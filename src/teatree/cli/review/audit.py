@@ -57,6 +57,12 @@ def gitlab_mr_url(base_url: str, repo: str, mr: int) -> str:
     return f"{web_root}/{repo}/-/merge_requests/{mr}"
 
 
+def _gitlab_issue_url(base_url: str, repo: str, issue_iid: int) -> str:
+    """Web URL for the issue/work-item (receipt link; not the API endpoint)."""
+    web_root = base_url.rstrip("/").removesuffix("/api/v4")
+    return f"{web_root}/{repo}/-/issues/{issue_iid}"
+
+
 def verify_note_landed(api: object, encoded: str, mr: int, artifact_id: object, *, endpoint: str) -> None:
     """Read back one posted note/draft note by id; raise if GitLab says it is gone (#2081).
 
@@ -101,6 +107,26 @@ def verify_note_deleted(api: object, encoded: str, mr: int, note_id: object) -> 
             return
         raise
     msg = f"note {aid} still present on !{mr} after delete — not reporting as deleted"
+    raise ReviewArtifactNotVerifiedError(msg)
+
+
+def verify_issue_note_deleted(api: object, encoded: str, issue_iid: int, note_id: object) -> None:
+    """Confirm a deleted ISSUE/work-item note is actually gone — the issue twin of :func:`verify_note_deleted`.
+
+    GET the note: a 404 confirms the delete took. A 200 (note still present)
+    → :class:`ReviewArtifactNotVerifiedError`. Any other transport error
+    re-raises unchanged (transient, not a failed delete).
+    """
+    aid = str(note_id)
+    if not aid.isdigit():
+        return
+    try:
+        api.get_json(f"projects/{encoded}/issues/{issue_iid}/notes/{aid}")  # type: ignore[attr-defined]
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == HTTPStatus.NOT_FOUND:
+            return
+        raise
+    msg = f"note {aid} still present on issue #{issue_iid} after delete — not reporting as deleted"
     raise ReviewArtifactNotVerifiedError(msg)
 
 
@@ -205,6 +231,7 @@ def notify_review_after_receipt(
     mr: int,
     *,
     review_action: ReviewAfterReceipt,
+    issue_iid: int | None = None,
 ) -> None:
     """Fire the #949 after-receipt visibility DM for a published review action.
 
@@ -212,17 +239,24 @@ def notify_review_after_receipt(
     stays under the module-health LOC cap and each ``ReviewService``
     method adds a single call. ``review_action.note_web_url`` is the
     GitLab note's ``web_url`` from the API response when available;
-    otherwise the canonical MR URL is used so the post is always
-    reported. Never raises — ``notify_user_on_behalf_post`` records the
-    DM outcome durably.
+    otherwise the canonical URL is used so the post is always reported.
+    When ``issue_iid`` is given the receipt targets the issue/work-item
+    (``<repo>#<iid>`` + the issue web URL) instead of an MR — one path
+    serves both surfaces. Never raises — ``notify_user_on_behalf_post``
+    records the DM outcome durably.
     """
     from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post  # noqa: PLC0415
 
-    canonical = gitlab_mr_url(base_url_resolver(), repo, mr)
+    if issue_iid is not None:
+        target = f"{repo}#{issue_iid}"
+        canonical = _gitlab_issue_url(base_url_resolver(), repo, issue_iid)
+    else:
+        target = f"{repo}!{mr}"
+        canonical = gitlab_mr_url(base_url_resolver(), repo, mr)
     notify_user_on_behalf_post(
-        target=f"{repo}!{mr}",
+        target=target,
         action=review_action.action,
-        destination=f"{repo}!{mr}",
+        destination=target,
         artifact_url=review_action.note_web_url or canonical,
         summary=review_action.summary,
     )
@@ -237,6 +271,7 @@ __all__ = [
     "verify_approval_landed",
     "verify_bulk_publish",
     "verify_discussion_resolved",
+    "verify_issue_note_deleted",
     "verify_note_deleted",
     "verify_note_landed",
     "verify_unapproval_landed",

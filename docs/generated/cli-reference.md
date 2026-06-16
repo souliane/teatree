@@ -589,6 +589,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
 │ delete-discussion    Delete a *published* note (discussion) from a GitLab    │
 │                      MR.                                                     │
+│ delete-issue-note    Delete a *published* note from a GitLab ISSUE /         │
+│                      work-item.                                              │
 │ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
 │ list-draft-notes     List draft notes on a GitLab MR.                        │
 │ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
@@ -917,6 +919,35 @@ Usage: t3 review delete-discussion [OPTIONS] REPO MR NOTE_ID
 │ *    repo         TEXT     GitLab project path [required]                    │
 │ *    mr           INTEGER  Merge request IID [required]                      │
 │ *    note_id      INTEGER  Published note ID to delete [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review delete-issue-note`
+
+```
+Usage: t3 review delete-issue-note [OPTIONS] REPO ISSUE_IID NOTE_ID
+
+ Delete a *published* note from a GitLab ISSUE / work-item.
+
+ The issue/work-item twin of `delete-discussion` (which removes an MR
+ note). Use to clean up a published note on an issue/work-item under
+ the user's identity. This is the sanctioned path: a raw
+ `glab api --method DELETE projects/.../issues/<iid>/notes/<id>` is
+ denied by the `block-raw-review-post` hook (souliane/teatree#1164),
+ which has no bypass — only this command routes through the on-behalf
+ pre-gate the raw write skips. Respects the `on_behalf_post_mode`
+ pre-gate (#960), scoped to `<repo>#<issue>` (record an approval via
+ `t3 review approve-on-behalf <repo>#<issue> delete_issue_note
+ --approver <user-id>`).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo           TEXT     GitLab project path (e.g., my-org/my-repo)      │
+│                              [required]                                      │
+│ *    issue_iid      INTEGER  Issue / work-item IID [required]                │
+│ *    note_id        INTEGER  Published note ID to delete [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
