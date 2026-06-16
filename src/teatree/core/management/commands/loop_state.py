@@ -15,10 +15,10 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.models import LoopState
+
 
 def _report(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
-    from teatree.core.models import LoopState  # noqa: PLC0415
-
     status = LoopState.objects.status_of(name)
     if json_output:
         stdout_write(json.dumps({"name": name, "status": status.value}, indent=2))
@@ -37,8 +37,6 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Move *name* into the reversible PAUSED hold."""
-        from teatree.core.models import LoopState  # noqa: PLC0415
-
         LoopState.objects.pause(name)
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
@@ -50,8 +48,6 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Return *name* to ENABLED, clearing a pause OR a disable."""
-        from teatree.core.models import LoopState  # noqa: PLC0415
-
         LoopState.objects.resume(name)
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
@@ -63,8 +59,6 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Move *name* into the durable DISABLED kill-switch."""
-        from teatree.core.models import LoopState  # noqa: PLC0415
-
         LoopState.objects.disable(name)
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
@@ -76,8 +70,6 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Return *name* to ENABLED (alias of resume)."""
-        from teatree.core.models import LoopState  # noqa: PLC0415
-
         LoopState.objects.enable(name)
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
