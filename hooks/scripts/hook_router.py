@@ -1748,10 +1748,11 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 # sub-agent starts BLANK: it holds only its task prompt and lacks the
 # ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
 # The gate is therefore satisfied by the DISPATCH PROMPT instructing the
-# sub-agent to load the skill — not by the parent's loaded set. The demand
-# and the satisfaction test live in the ``subagent_skill_gate`` sibling
-# (``required_skills_for_task`` / ``filter_unreferenced`` /
-# ``build_load_first_reason``).
+# sub-agent to load the skill — not by the parent's loaded set. The whole
+# demand computation + never-lockout fail-open lives in the
+# ``subagent_skill_gate`` sibling behind ``unreferenced_demand_reason`` (over
+# ``required_skills_for_task`` / ``filter_unreferenced`` /
+# ``build_load_first_reason``); the router only calls that one entry point.
 #
 # The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
 # against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``

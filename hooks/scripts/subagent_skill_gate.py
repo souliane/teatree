@@ -76,32 +76,46 @@ def _skill_segment(name: str) -> str:
 # A trivial / ambiguous fan-out incidentally carries a lifecycle keyword
 # (``fix the typo`` → ``fix``; ``push the branch`` → ``push``) but is not the
 # substantive lifecycle dispatch the gate exists to govern. Forcing it to
-# slash-list skills over-blocks. ``_TRIVIAL_TASK_RE`` recognizes the common
-# trivial imperatives so the demand is suppressed for them — never-over-block.
-_TRIVIAL_TASK_RE = re.compile(
-    r"\b(?:typo|readme|comment|rename|whitespace|formatting|lint|"
-    r"one-?liner|trivial|bump|wording|investigate|look into|figure out|find out|check why|why\b)\b",
+# slash-list skills over-blocks.
+#
+# STRONG markers name a file/format edit that is trivial at ANY length.
+_STRONG_TRIVIAL_RE = re.compile(
+    r"\b(?:typo|readme|whitespace|formatting|lint|one-?liner|trivial|bump|wording)\b",
+    re.IGNORECASE,
+)
+# WEAK markers (``investigate``/``rename``/``why``…) are ambiguous: a long
+# substantive dispatch legitimately contains them (``rename the public API
+# across all consumers``), so they count as trivial ONLY in a short prompt.
+_WEAK_TRIVIAL_RE = re.compile(
+    r"\b(?:comment|rename|investigate|look into|figure out|find out|check why|why)\b",
     re.IGNORECASE,
 )
 # A substantive lifecycle dispatch reads like a real instruction, not a bare
 # 3-word imperative (``push the branch``). At or below this word count a lone
 # weak keyword is treated as trivial.
 _MAX_TRIVIAL_WORDS = 3
+# A weak marker only signals trivial within a short-enough prompt; above this
+# the prompt is substantive enough that the marker is incidental.
+_MAX_WEAK_MARKER_WORDS = 8
 
 
 def _task_is_trivial(description: str) -> bool:
     """Whether *description* is a trivial/ambiguous task the gate should not force.
 
-    True when the text matches a trivial marker (``typo``/``readme``/``investigate``
-    …) or is a bare short imperative (``push the branch``). A trivial task yields
-    no skill demand so ``fix the typo in the README`` / ``push the branch`` /
-    ``investigate why the build is broken`` are never forced to slash-list skills.
-    A substantive dispatch (``review the open PR``, ``fix the broken parser``)
-    still demands its lifecycle skill.
+    True when the text carries a STRONG trivial marker (a file/format edit:
+    ``typo``/``readme``/…), is a bare short imperative (``push the branch``), or
+    carries a WEAK marker (``investigate``/``rename``/``why``…) in a short prompt.
+    A trivial task yields no skill demand so ``fix the typo in the README`` /
+    ``push the branch`` / ``investigate why the build is broken`` are never forced
+    to slash-list skills, while a long substantive dispatch that merely contains a
+    weak marker (``rename the public API across all consumers``) still enforces.
     """
-    if _TRIVIAL_TASK_RE.search(description):
+    if _STRONG_TRIVIAL_RE.search(description):
         return True
-    return len(description.split()) <= _MAX_TRIVIAL_WORDS
+    word_count = len(description.split())
+    if word_count <= _MAX_TRIVIAL_WORDS:
+        return True
+    return word_count <= _MAX_WEAK_MARKER_WORDS and _WEAK_TRIVIAL_RE.search(description) is not None
 
 
 def required_skills_for_task(description: str, search_dirs: list[Path]) -> list[str]:
@@ -200,8 +214,14 @@ _NEGATION_RE = re.compile(
     re.IGNORECASE,
 )
 # Clause boundaries that RESET the negation scope: a negation in a PRIOR clause
-# (``Do not skip steps. Load /t3:review``) does not negate this reference.
-_CLAUSE_BOUNDARY_RE = re.compile(r"[.;\n]")
+# (``Do not skip steps. Load /t3:review``; ``This is not optional: load
+# /t3:review``) does not negate this reference. The colon resets only the scope
+# BEFORE it, so a negation AFTER it (``Note: do not load X``) still governs —
+# it fixes the emphatic-positive over-block without opening an under-block. The
+# comma is deliberately NOT a boundary: it appears WITHIN a single negated
+# imperative (``do not, under any circumstances, load X``), so resetting on it
+# would let that negation escape (under-block).
+_CLAUSE_BOUNDARY_RE = re.compile(r"[.;:\n]")
 
 
 def task_references_skill(task_text: str, skill_name: str) -> bool:
@@ -223,8 +243,9 @@ def _is_negated(text: str, match_start: int) -> bool:
     """Whether the reference at *match_start* sits in a negated clause.
 
     Scopes to the clause containing the match — the span after the last clause
-    boundary (``.``/``;``/newline) before it — so a negation in a prior sentence
-    does not falsely negate a genuine positive reference here.
+    boundary (``.``/``;``/``:``/newline; NOT the comma, which appears within a
+    single negated imperative) before it — so a negation in a prior clause does
+    not falsely negate a genuine positive reference here.
     """
     boundaries = list(_CLAUSE_BOUNDARY_RE.finditer(text, 0, match_start))
     clause_start = boundaries[-1].end() if boundaries else 0

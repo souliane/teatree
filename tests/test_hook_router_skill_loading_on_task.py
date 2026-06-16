@@ -350,6 +350,15 @@ class TestTrivialTasksAreNotForced:
         assert payload is not None
         assert "review/SKILL.md" in payload["stopReason"]
 
+    def test_long_dispatch_with_weak_marker_still_enforces(self, gate: Path) -> None:
+        # A weak marker (``review``/``why``) in a LONG substantive dispatch must
+        # NOT suppress the demand — the weak-marker triviality is short-only.
+        description = "review the open PR and explain why each change was made, then leave detailed feedback"
+        blocked, payload = _run(_task(description=description))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
 
 class TestNegatedReferenceDoesNotSatisfy:
     """A negated skill mention does not falsely satisfy the gate (#4)."""
@@ -378,6 +387,38 @@ class TestNegatedReferenceDoesNotSatisfy:
         blocked, payload = _run(_task(description=description))
         assert blocked is False
         assert payload is None
+
+    def test_emphatic_positive_after_colon_passes(self, gate: Path) -> None:
+        # A negation before a colon scopes to its own clause: an emphatic
+        # positive instruction after the boundary is NOT negated.
+        _write_pending("sess-task", ["review"])
+        for description in (
+            "This is not optional: load /t3:review then review the open PR thoroughly.",
+            "No shortcuts: load /t3:review via the Skill tool then review the open PR.",
+        ):
+            blocked, payload = _run(_task(description=description))
+            assert blocked is False, description
+            assert payload is None
+
+    def test_negation_after_colon_still_blocks(self, gate: Path) -> None:
+        # The colon boundary must not let a genuine negation AFTER it escape:
+        # ``Note: do not load …`` still negates the in-clause reference.
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(_task(description="Note: do not load the review skill. Just read the diff please."))
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
+
+    def test_comma_inside_negated_imperative_still_blocks(self, gate: Path) -> None:
+        # The comma is NOT a clause boundary: it appears WITHIN a single negated
+        # imperative, so a negation must not escape across it (under-block guard).
+        _write_pending("sess-task", ["review"])
+        blocked, payload = _run(
+            _task(description="Do not, under any circumstances, load the review skill; just read the diff.")
+        )
+        assert blocked is True
+        assert payload is not None
+        assert "review/SKILL.md" in payload["stopReason"]
 
 
 class TestPathologicalPendingNameFailsOpenSilently:
