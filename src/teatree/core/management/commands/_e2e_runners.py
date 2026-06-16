@@ -10,29 +10,77 @@ directory, and building the Playwright environment dict.
 import os
 from pathlib import Path
 
-from teatree.config import E2ERepo
+import typer
+
+from teatree.config import E2ERepo, load_e2e_repos
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file
 from teatree.paths import get_data_dir
-from teatree.utils.run import run_checked
+from teatree.utils.run import CommandFailedError, run_checked
+
+_BRANCH_HELP = "Specs git ref, overriding the [e2e_repos.<name>].branch default (e.g. an open MR's branch)."
+BRANCH_OPTION = typer.Option("", "--branch", "--ref", help=_BRANCH_HELP)
 
 
-def clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
+class E2eBranchNotFoundError(RuntimeError):
+    """The requested E2E specs ref does not exist on the remote."""
+
+    def __init__(self, *, name: str, ref: str, url: str) -> None:
+        super().__init__(
+            f"E2E specs branch '{ref}' not found on repo '{name}' ({url}). "
+            "Pass an existing --branch/--ref, or check the open MR's source branch name.",
+        )
+        self.ref = ref
+
+
+class E2eSpecsResolutionError(RuntimeError):
+    """The external specs working directory could not be resolved; carries the CLI exit code."""
+
+    def __init__(self, message: str, *, exit_code: int) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+    @classmethod
+    def repo_not_in_config(cls, repo: str) -> "E2eSpecsResolutionError":
+        return cls(f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos].", exit_code=1)
+
+    @classmethod
+    def branch_needs_repo(cls) -> "E2eSpecsResolutionError":
+        msg = "--branch/--ref applies only to a --repo clone; T3_PRIVATE_TESTS is checked out by you."
+        return cls(msg, exit_code=2)
+
+    @classmethod
+    def no_private_tests(cls) -> "E2eSpecsResolutionError":
+        msg = "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
+        return cls(msg, exit_code=1)
+
+
+def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
     """Clone or update an external E2E repo to the local cache and return the playwright root.
 
-    On first run: ``git clone --branch <branch> --depth 1 <url> <cache_path>``.
-    On subsequent runs: ``git fetch origin <branch>`` + ``git reset --hard FETCH_HEAD``.
+    The ref is *branch_override* when given, else ``repo.branch`` (the
+    ``[e2e_repos.<name>].branch`` config default). ``branch_override`` lets the
+    suite run from a working branch (e.g. an open MR) instead of the default.
+
+    On first run: ``git clone --branch <ref> --depth 1 <url> <cache_path>``.
+    On subsequent runs: ``git fetch origin <ref>`` + ``git reset --hard FETCH_HEAD``.
+
+    Raises :class:`E2eBranchNotFoundError` when the ref does not exist on the
+    remote, so a typo'd or stale branch fails with a clear message rather than
+    an opaque git error.
 
     Returns ``cache_path / repo.e2e_dir`` — the directory passed as ``cwd`` to Playwright.
     """
+    ref = branch_override or repo.branch
     cache_path = get_data_dir("e2e-repos") / repo.name
-    if not cache_path.exists():
-        run_checked(
-            ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_path)],
-        )
-    else:
-        run_checked(["git", "-C", str(cache_path), "fetch", "origin", repo.branch])
-        run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
+    try:
+        if not cache_path.exists():
+            run_checked(["git", "clone", "--branch", ref, "--depth", "1", repo.url, str(cache_path)])
+        else:
+            run_checked(["git", "-C", str(cache_path), "fetch", "origin", ref])
+            run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
+    except CommandFailedError as exc:
+        raise E2eBranchNotFoundError(name=repo.name, ref=ref, url=repo.url) from exc
     return cache_path / repo.e2e_dir
 
 
@@ -47,6 +95,33 @@ def resolve_private_tests_path() -> Path | None:
         return None
     path = Path(private_tests).expanduser()
     return path if path.is_dir() else None
+
+
+def resolve_external_specs_path(repo: str, branch: str) -> Path:
+    """Resolve the Playwright working directory for the ``external`` runner.
+
+    ``--repo <name>`` clones the configured ``[e2e_repos.<name>]`` at *branch*
+    (or its default); otherwise the ``T3_PRIVATE_TESTS`` directory is used.
+    *branch* is only meaningful for the clone path — a ``T3_PRIVATE_TESTS``
+    directory is checked out by the user, so a branch there is a misuse.
+
+    Raises :class:`E2eSpecsResolutionError` (carrying the CLI exit code) on any
+    misconfiguration so the caller maps one exception to one ``SystemExit``.
+    """
+    if repo:
+        repos_by_name = {r.name: r for r in load_e2e_repos()}
+        if repo not in repos_by_name:
+            raise E2eSpecsResolutionError.repo_not_in_config(repo)
+        try:
+            return clone_or_update_e2e_repo(repos_by_name[repo], branch)
+        except E2eBranchNotFoundError as exc:
+            raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
+    if branch:
+        raise E2eSpecsResolutionError.branch_needs_repo()
+    private_tests_path = resolve_private_tests_path()
+    if not private_tests_path:
+        raise E2eSpecsResolutionError.no_private_tests()
+    return private_tests_path
 
 
 def build_e2e_env(

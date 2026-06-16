@@ -8,7 +8,6 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import load_e2e_repos
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.management.commands import _test_plan
@@ -28,6 +27,7 @@ _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
 _resolve_private_tests_path = _runners.resolve_private_tests_path
 _build_e2e_env = _runners.build_e2e_env
+E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
 
 
 # Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
@@ -55,6 +55,7 @@ class DispatchOptions:
     update_snapshots: bool = False
     docker: bool = True
     linked_to: int = 0
+    branch: str = ""
 
 
 @dataclass
@@ -95,6 +96,7 @@ class Command(TyperCommand):
         update_snapshots: bool = False,
         docker: bool = True,
         linked_to: int = 0,
+        branch: str = _runners.BRANCH_OPTION,
     ) -> str:
         """Run E2E tests — the one command that works for every overlay.
 
@@ -116,6 +118,7 @@ class Command(TyperCommand):
 
         ``--target dev|local`` selects the dual-env target and is forwarded to
         whichever runner handles the overlay (see ``external`` for semantics).
+        ``--branch``/``--ref`` overrides the ``external`` runner's specs ref.
 
         ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo is not
         DB-linked to the backend worktree (a frequent shape for
@@ -134,6 +137,7 @@ class Command(TyperCommand):
             update_snapshots=update_snapshots,
             docker=docker,
             linked_to=linked_to,
+            branch=branch,
         )
         if work_item:
             return self._run_work_item(work_item, at=at, opts=opts)
@@ -214,6 +218,7 @@ class Command(TyperCommand):
                 headed=opts.headed,
                 update_snapshots=opts.update_snapshots,
                 linked_to=opts.linked_to,
+                branch=opts.branch,
             )
         self.stderr.write(
             f"Overlay e2e_config has no runner ({e2e_config}). "
@@ -337,6 +342,7 @@ class Command(TyperCommand):
         update_snapshots: bool = False,
         playwright_args: str = "",
         linked_to: int = 0,
+        branch: str = _runners.BRANCH_OPTION,
     ) -> str:
         """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
 
@@ -346,6 +352,9 @@ class Command(TyperCommand):
             ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
         - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``[teatree].private_tests``
             config key.
+
+        ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
+        ``[e2e_repos.<name>].branch`` default) to run from an open MR's branch.
 
         ``--target dev|local`` selects the dual-env target deterministically:
 
@@ -374,19 +383,11 @@ class Command(TyperCommand):
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
-        if repo:
-            repos_by_name = {r.name: r for r in load_e2e_repos()}
-            if repo not in repos_by_name:
-                self.stderr.write(f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos].")
-                raise SystemExit(1)
-            private_tests_path = _clone_or_update_e2e_repo(repos_by_name[repo])
-        else:
-            private_tests_path = _resolve_private_tests_path()
-            if not private_tests_path:
-                self.stderr.write(
-                    "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing.",
-                )
-                raise SystemExit(1)
+        try:
+            private_tests_path = _runners.resolve_external_specs_path(repo, branch)
+        except _runners.E2eSpecsResolutionError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(exc.exit_code) from exc
 
         linked_ticket = self._resolve_linked_ticket(linked_to)
         resolved_target = self._resolve_target(target)
