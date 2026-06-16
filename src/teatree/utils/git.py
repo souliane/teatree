@@ -28,6 +28,7 @@ from teatree.utils.git_branch import (
     head_sha,
 )
 from teatree.utils.git_commit import (
+    branch_diff,
     commit,
     commit_messages,
     first_commit_message,
@@ -54,6 +55,7 @@ __all__ = [
     "DETACHED_HEAD",
     "GitRepo",
     "branch_delete",
+    "branch_diff",
     "branch_merged",
     "bundle_create",
     "check",

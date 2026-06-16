@@ -2449,15 +2449,19 @@ Usage: t3 tool diff-coverage [OPTIONS]
 
  Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
 
- Measures coverage on the *diff's* added production lines (not the global
- ``fail_under``) and requires every new/changed production symbol to be
- imported by a changed test (the test-a-local-copy anti-vacuity check).
- Exits non-zero when a new line is uncovered or a symbol is unreferenced.
+ Measures coverage on the *branch's* added production lines — the committed
+ diff against its merge-base with ``--base`` (default ``origin/main``), NOT the
+ clone's working tree, so unrelated uncommitted edits never enter the gate.
+ Requires every new/changed production symbol to be imported by a changed test
+ (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
+ uncovered or a symbol is unreferenced.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo                 PATH  Repo root (default: cwd)                        │
 │                              [default: <bound method PathBase.cwd of <class  │
 │                              'pathlib._local.Path'>>]                        │
+│ --base                 TEXT  Ref to diff against (merge-base..HEAD)          │
+│                              [default: origin/main]                          │
 │ --coverage-file        PATH  Path to .coverage data file                     │
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
