@@ -397,6 +397,12 @@ jobs:
           tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Coverage lane: the lean global ``addopts`` (pyproject.toml) is fast and
+      # parallel but carries NO ``--cov*``/``--doctest-modules``, so this gate
+      # adds them explicitly. ``-n auto`` keeps the heavy run parallel;
+      # pytest-cov combines the per-worker ``.coverage.*`` files at the end and
+      # computes the floor over the whole suite. ``--doctest-modules`` keeps
+      # doctest coverage contributing so the 93% floor stays honest.
       # ``--cov-fail-under=93`` is also configured in ``[tool.coverage.report]
       # fail_under``; passing it on the CLI makes the gate explicit at the
       # invocation site so a future ``pyproject.toml`` edit can't silently
@@ -408,8 +414,9 @@ jobs:
           -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
           -e COVERAGE_FILE=/app/.coverage
           teatree-test-${{ matrix.python-version }}
-          uv run -p ${{ matrix.python-version }} pytest --no-header -q
+          uv run -p ${{ matrix.python-version }} pytest --no-header -q -n auto
           -o cache_dir=/tmp/.pytest_cache
+          --doctest-modules --cov --cov-branch
           --cov-report=xml:/app/coverage.xml
           --cov-fail-under=93
       - name: Enforce per-module coverage floors

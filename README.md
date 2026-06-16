@@ -652,10 +652,11 @@ before creating PRs.
 
 ```bash
 # Run tests locally
-uv run pytest               # >90% coverage required
+uv run pytest               # full suite, parallel (-n auto), no coverage — fast default
+bash dev/test-cov.sh        # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
 
 # Pre-commit checks
-prek run --all-files         # ruff, pytest, codespell, banned-terms
+prek run --all-files         # ruff, codespell, banned-terms
 ```
 
 ### E2E Tests

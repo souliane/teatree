@@ -219,10 +219,33 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Isolate process env so tests cannot touch host workspace/config."""
+    """Isolate process env so tests cannot touch host workspace/config.
+
+    ``$HOME`` alone is not enough: ``teatree.config.CONFIG_PATH`` is bound to
+    ``Path.home() / ".teatree.toml"`` ONCE at import (before any fixture runs),
+    so a later ``$HOME`` redirect leaves the suite reading the developer's real
+    ``~/.teatree.toml``. That host config leaked in two ways the previously
+    default ``--exitfirst`` masked under ``-n auto``: ``[loops.review] enabled =
+    false`` made ``filter_review_intent_signals`` drop every review-intent
+    signal, and a real ``check_updates`` flag let the ``[update] …`` banner
+    prepend non-JSON to a CLI's stdout. Redirecting the facade ``CONFIG_PATH``
+    at a hermetic per-test file (``check_updates = false``, no other keys → all
+    other settings default) closes both, deterministically and host-independent.
+    """
     home = tmp_path / "home"
     workspace = home / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+
+    # Keep the hermetic config OUT of ``home`` — several tests rebuild
+    # ``tmp_path / "home"`` themselves and assert on the presence/absence of
+    # their OWN ``home/.teatree.toml``, so a file planted there would collide.
+    config_dir = tmp_path / "t3-hermetic-config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    hermetic_config = config_dir / ".teatree.toml"
+    hermetic_config.write_text("[teatree]\ncheck_updates = false\n", encoding="utf-8")
+    import teatree.config as _config  # noqa: PLC0415 — patched per-test, import lazily
+
+    monkeypatch.setattr(_config, "CONFIG_PATH", hermetic_config)
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))

@@ -23,7 +23,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from teatree.config import CONFIG_PATH
+import teatree.config as _config
 
 
 def loop_enabled_by_name(name: str, *, always_on: bool = False, path: Path | None = None) -> bool:
@@ -54,7 +54,13 @@ def loop_enabled_by_name(name: str, *, always_on: bool = False, path: Path | Non
 
 def _loops_table(path: Path | None) -> dict:
     """Return the ``[loops]`` table from the config, or ``{}`` on any read error."""
-    toml_path = path if path is not None else CONFIG_PATH
+    # Resolve the config path through the ``teatree.config`` facade at call time
+    # (mirroring ``loader.load_config``'s ``_facade.CONFIG_PATH`` indirection)
+    # rather than a frozen module-level import — a frozen binding ignores a
+    # ``config.CONFIG_PATH`` redirect (e.g. the test-isolation fixture pointing
+    # at a hermetic ``~/.teatree.toml``), so the host's real ``[loops.review]
+    # enabled = false`` leaked into the suite and dropped review-intent signals.
+    toml_path = path if path is not None else _config.CONFIG_PATH
     try:
         if not toml_path.is_file():
             return {}

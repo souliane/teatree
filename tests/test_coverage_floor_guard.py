@@ -22,6 +22,8 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
+_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_COV_LANE_SCRIPT = _REPO_ROOT / "dev" / "test-cov.sh"
 
 # The agreed-on coverage floor. Decreases require explicit human approval and
 # an update to this constant in the same PR.
@@ -37,9 +39,22 @@ ALLOWED_OMIT_PATTERNS: frozenset[str] = frozenset(
 )
 ALLOWED_SOURCE_PATHS: frozenset[str] = frozenset({"src/teatree"})
 
-# Default pytest invocation must include coverage measurement. Adding
-# ``--no-cov`` to the default addopts would silently skip enforcement.
+# The default pytest addopts is lean and parallel (no coverage) so the inner
+# loop stays fast; coverage is enforced in the dedicated CI ``test`` lane and
+# ``dev/test-cov.sh`` (see CONTRIBUTING / tests/README.md). The guard below
+# locks that enforcement point. Adding ``--no-cov`` / ``--cov-fail-under=0`` to
+# the default addopts would silently disarm even an ad-hoc coverage run, so it
+# stays banned from the default.
 BANNED_PYTEST_FLAGS: frozenset[str] = frozenset({"--no-cov", "--cov-fail-under=0"})
+
+# Flags the coverage-enforcing invocations (CI heavy lane + ``dev/test-cov.sh``)
+# MUST carry. Dropping any of these silently weakens the gate: ``--cov`` /
+# ``--cov-branch`` stop measuring, ``--doctest-modules`` drops doctest coverage
+# (which contributes to the floor), ``--cov-fail-under=93`` stops failing below
+# the floor.
+REQUIRED_COVERAGE_LANE_FLAGS: frozenset[str] = frozenset(
+    {"--cov", "--cov-branch", "--doctest-modules", "--cov-fail-under=93"},
+)
 
 
 @pytest.fixture(scope="module")
@@ -105,10 +120,27 @@ class TestExcludeLinesAreNotClauseLevel:
         )
 
 
+def _addopts_str(pyproject: dict) -> str:
+    addopts = pyproject["tool"]["pytest"]["ini_options"].get("addopts", "")
+    return " ".join(addopts) if isinstance(addopts, list) else addopts
+
+
+def _ci_test_lane_command() -> str:
+    """The folded ``run: >`` block of the CI heavy lane that invokes pytest.
+
+    Each block spans several lines (folded YAML ``>``); the coverage gate is the
+    one whose body contains both ``pytest`` and ``--cov-fail-under``.
+    """
+    text = _CI_WORKFLOW.read_text(encoding="utf-8")
+    blocks = re.findall(r"- run: >\n((?:[ \t]+.*\n)+)", text)
+    coverage_blocks = [block for block in blocks if "pytest" in block and "--cov-fail-under" in block]
+    assert coverage_blocks, "No CI ``run`` block invokes pytest with --cov-fail-under — coverage gate missing."
+    return " ".join(coverage_blocks[0].split())
+
+
 class TestPytestConfigNotBypassed:
     def test_default_addopts_does_not_disable_coverage(self, pyproject: dict) -> None:
-        addopts = pyproject["tool"]["pytest"]["ini_options"].get("addopts", "")
-        addopts_str = " ".join(addopts) if isinstance(addopts, list) else addopts
+        addopts_str = _addopts_str(pyproject)
         for flag in BANNED_PYTEST_FLAGS:
             assert flag not in addopts_str, (
                 f"Default pytest addopts contains {flag!r}, which silently disables "
@@ -116,13 +148,29 @@ class TestPytestConfigNotBypassed:
                 f"iteration; never bake it into the default."
             )
 
-    def test_coverage_is_in_default_addopts(self, pyproject: dict) -> None:
-        addopts = pyproject["tool"]["pytest"]["ini_options"].get("addopts", "")
-        addopts_str = " ".join(addopts) if isinstance(addopts, list) else addopts
-        assert "--cov" in addopts_str, (
-            "Default pytest invocation no longer measures coverage. "
-            "Coverage must run by default so the gate fires on every test run."
+    def test_default_addopts_runs_in_parallel(self, pyproject: dict) -> None:
+        assert "-n auto" in _addopts_str(pyproject), (
+            "Default pytest addopts no longer engages pytest-xdist (``-n auto``). "
+            "The fast parallel default is the point of the test-speed config; "
+            "if you must serialize, pass ``-n0`` ad-hoc, never bake it in."
         )
+
+    def test_ci_lane_enforces_coverage_gate(self) -> None:
+        command = _ci_test_lane_command()
+        for flag in REQUIRED_COVERAGE_LANE_FLAGS:
+            assert flag in command, (
+                f"The CI heavy lane lost {flag!r}. Coverage moved off the default "
+                f"addopts INTO this lane (and dev/test-cov.sh); dropping a flag here "
+                f"silently disarms the 93% floor that gates every merge."
+            )
+
+    def test_local_coverage_lane_mirrors_ci(self) -> None:
+        script = _COV_LANE_SCRIPT.read_text(encoding="utf-8")
+        for flag in REQUIRED_COVERAGE_LANE_FLAGS:
+            assert flag in script, (
+                f"dev/test-cov.sh lost {flag!r}; it must stay CI-parity so a developer "
+                f"can reproduce the coverage gate locally."
+            )
 
 
 # Minimum acceptable per-module floor. Lowering this constant requires the

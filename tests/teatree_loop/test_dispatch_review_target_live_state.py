@@ -38,8 +38,10 @@ class _StubHost:
 @pytest.fixture(autouse=True)
 def _review_loop_on(monkeypatch: pytest.MonkeyPatch) -> None:
     # The #79 review-loop gate must be ON so the only suppression under test is
-    # the live-state skip.
-    monkeypatch.setattr("teatree.loop.review_claim.review_loop_enabled", lambda: True)
+    # the live-state skip. Patch the binding dispatch_gates actually reads (it
+    # imports review_loop_enabled by value) — not the dead re-export on
+    # teatree.loop.review_claim, which leaves the live call site untouched.
+    monkeypatch.setattr(dispatch_gates, "review_loop_enabled", lambda: True)
 
 
 def _bind_host(monkeypatch: pytest.MonkeyPatch, host: _StubHost | None) -> None:

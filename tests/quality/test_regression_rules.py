@@ -97,6 +97,11 @@ class TestManifestMatchesTree:
 
 
 class TestBlockingSetIsGreen:
+    # A full semgrep scan of the tree runs ~35s solo but is subprocess-bound, so
+    # it overruns the global 60s timeout under the parallel host load of ``-n
+    # auto`` even though it does the same fixed work. Give it headroom like the
+    # other subprocess-heavy integration tests rather than let load flake it.
+    @pytest.mark.timeout(300)
     @requires_semgrep
     def test_blocking_rules_have_zero_findings_on_the_current_tree(self, blocking_dir: Path) -> None:
         findings = scan_findings(blocking_dir)

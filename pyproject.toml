@@ -232,12 +232,18 @@ skip = "src/teatree/core/static/teatree/js/*"
 
 # --- Pytest ---
 
+# Lean, parallel default: a plain ``uv run pytest`` runs the whole suite across
+# all cores (``-n auto``, pytest-xdist) with no coverage. ``--reuse-db`` keeps
+# each xdist worker on its own ``gw<n>``-suffixed test DB (pytest-django) across
+# runs. The heavy flags (``--cov*``, ``--doctest-modules``) and the dev-loop
+# flags (``--exitfirst``, ``--failed-first``, ``--verbose``, ``--log-cli-level``)
+# are NOT defaults — the CI coverage lane and ``dev/test-cov.sh`` add ``--cov
+# --cov-branch --doctest-modules`` explicitly so the 93% floor (with doctest
+# contribution) is enforced where it belongs, off the fast inner loop.
+
 [tool.pytest.ini_options]
 addopts = """
---color=yes --doctest-modules --exitfirst --failed-first
---strict-config --strict-markers --verbose --log-cli-level=INFO
---cov --cov-report=term-missing:skip-covered --cov-branch
---reuse-db
+--color=yes --strict-config --strict-markers --reuse-db -n auto
 """
 timeout = 60
 DJANGO_SETTINGS_MODULE = "tests.django_settings"

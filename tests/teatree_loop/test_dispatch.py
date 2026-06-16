@@ -45,7 +45,7 @@ def _pin_review_intent_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     disabled review loop) makes the reviewer dispatch vanish and the routing
     assertions ``StopIteration`` — the #1927/#1961 order-dependence.
     """
-    monkeypatch.setattr("teatree.loop.review_claim.review_loop_enabled", lambda: True)
+    monkeypatch.setattr(dispatch_gates, "review_loop_enabled", lambda: True)
     monkeypatch.setattr(dispatch_gates, "review_target_is_dead", lambda _pr_url: False)
 
 

@@ -27,8 +27,9 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 ## Running things
 
 ```bash
-uv run pytest --no-cov -x -q   # run tests
-uv run ruff check               # lint
+uv run pytest                    # full suite, parallel (-n auto), no coverage — fast default
+bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
+uv run ruff check                # lint
 uv run ruff format               # format
 t3 --help                        # CLI (installed via `uv tool install --editable .`)
 ```
