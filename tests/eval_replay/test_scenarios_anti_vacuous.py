@@ -38,6 +38,19 @@ from teatree.eval.sdk_runner import load_agent_definition
 
 FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 
+#: A synthetic transcript with NO tool calls — an agent that only "thought" and
+#: stopped. A matcher set that stays GREEN against this is satisfied by a no-op
+#: agent and therefore guards nothing (the vacuity class the ``_noop`` fixtures
+#: catch one scenario at a time). The catalog-wide gate
+#: (:func:`test_no_scenario_is_satisfied_by_a_noop_transcript`) drives EVERY spec
+#: against this so a scenario can never ship no-op-satisfiable without a fixture.
+_NOOP_TRANSCRIPT = (
+    '{"type": "system", "subtype": "init", "session_id": "vac-probe", "model": "haiku"}\n'
+    '{"type": "assistant", "message": {"role": "assistant", '
+    '"content": [{"type": "text", "text": "thinking, no tool call yet."}]}}\n'
+    '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}'
+)
+
 
 def _is_behavioral(spec: EvalSpec) -> bool:
     """A behavioral scenario is graded by matchers (vs. judge-only).
@@ -94,6 +107,30 @@ def _specs_with_noop_fixtures() -> list[tuple[EvalSpec, Path]]:
         if noop.is_file():
             rows.append((spec, noop))
     return rows
+
+
+def _passes_noop_transcript(spec: EvalSpec, tmp_path: Path) -> bool:
+    """Whether ``spec`` stays GREEN against a no-tool-call transcript.
+
+    The general vacuity predicate: a scenario graded ONLY by negative matchers
+    (``no_tool_call_matching``) is vacuously satisfied by an agent that made no
+    tool call at all. A positive (``tool_call`` / ``any_of``) matcher or a
+    final-state matcher requiring content forces the agent to *do* something, so
+    a non-vacuous scenario reports RED here. This delegates to the real grader,
+    so it measures actual gradeability, not a structural proxy.
+    """
+    return _run_against_fixture(spec, _NOOP_TRANSCRIPT, tmp_path)
+
+
+def _noop_satisfiable_specs(tmp_path: Path) -> list[EvalSpec]:
+    """Behavioral scenarios a no-op transcript silently satisfies — the catch.
+
+    Every such scenario is vacuous: an agent doing nothing passes it. This is
+    the class the per-scenario ``_noop`` fixture catches one at a time; this
+    predicate sweeps the whole catalog so a new only-negative scenario can never
+    ship no-op-satisfiable without being flagged.
+    """
+    return [spec for spec in discover_specs() if _is_behavioral(spec) and _passes_noop_transcript(spec, tmp_path)]
 
 
 @pytest.mark.parametrize(
@@ -216,6 +253,59 @@ def test_fixtureless_behavioral_scenario_is_caught_by_the_gate(tmp_path: Path) -
         "the gate must NOT flag a judge-only (matcherless) scenario — it is exempt "
         "from the fixture requirement (graded by an LLM, no matcher to exercise)."
     )
+
+
+def test_no_scenario_is_satisfied_by_a_noop_transcript(tmp_path: Path) -> None:
+    """Catalog-wide gate: NO behavioral scenario may pass a no-op transcript.
+
+    The per-scenario ``_noop`` fixture catches the vacuity class one scenario at
+    a time — but only for scenarios that happen to ship a ``_noop`` fixture. A
+    scenario graded ONLY by negative matchers (``no_tool_call_matching``) that
+    ships no ``_noop`` fixture slips the net: a no-op agent (zero tool calls)
+    trivially satisfies "no forbidden tool call" and the scenario reads green
+    while guarding nothing. (Its companion LLM ``judge`` would catch the no-op,
+    but the judge runs only in the metered lane — the on-disk replay grades by
+    matchers alone, so the scenario is vacuous in the free lane.)
+
+    This gate sweeps EVERY behavioral spec against a synthetic no-op transcript
+    and fails loud on any that stay green, so the hole cannot recur: a new
+    only-negative scenario must add a positive (``tool_call`` / ``any_of``)
+    matcher that requires the expected action.
+    """
+    offenders = _noop_satisfiable_specs(tmp_path)
+    assert not offenders, (
+        "behavioral scenario(s) stay GREEN against a no-op transcript (zero tool calls), "
+        "so a do-nothing agent satisfies them — they are vacuous. Add a positive "
+        "`tool_call`/`any_of` matcher that requires the expected action for each:\n"
+        + "\n".join(f"  - {spec.name} ({spec.source_path.name})" for spec in offenders)
+    )
+
+
+def test_noop_gate_flags_an_only_negative_scenario(tmp_path: Path) -> None:
+    """Anti-vacuity proof for the catalog-wide no-op gate.
+
+    A synthetic scenario whose sole matcher is NEGATIVE is satisfied by the
+    no-op transcript, so the gate predicate must flag it. A scenario carrying a
+    positive matcher (which the no-op cannot satisfy) must NOT be flagged. If the
+    gate were weakened to ``return []`` or to a structural proxy that missed the
+    only-negative case, the first assertion would fail.
+    """
+    only_negative = _fake_spec(
+        name="__synthetic_only_negative__",
+        matchers=(Matcher(kind="negative", tool="Bash", arg_path="command", operator="~", value="forbidden"),),
+    )
+    requires_action = _fake_spec(name="__synthetic_requires_action__", matchers=(_TRIVIAL_MATCHER,))
+
+    with patch(f"{__name__}.discover_specs", return_value=[only_negative]):
+        assert only_negative in _noop_satisfiable_specs(tmp_path), (
+            "the no-op gate must FLAG an only-negative scenario (a no-op agent satisfies it); "
+            "it did not — the vacuity guard is weakened."
+        )
+    with patch(f"{__name__}.discover_specs", return_value=[requires_action]):
+        assert requires_action not in _noop_satisfiable_specs(tmp_path), (
+            "the no-op gate must NOT flag a scenario with a positive matcher — a no-op "
+            "transcript cannot satisfy a required tool call, so it is non-vacuous."
+        )
 
 
 def test_every_declared_agent_section_resolves_against_its_skill() -> None:
