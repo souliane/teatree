@@ -12,7 +12,6 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
-from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
@@ -22,6 +21,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     _die,
     _fix_drift,
     _raise_on_cleanup_failures,
+    clean_merged_worktrees,
     drop_orphan_databases,
     drop_orphaned_stashes,
     is_clean_ignored,
@@ -456,20 +456,7 @@ class Command(TyperCommand):
         cleanup silently failed and stale docker containers, branches, or
         databases linger. Errors are surfaced inline — no suppression.
         """
-        cleaned: list[str] = []
-        merged_tickets = Ticket.objects.filter(state=Ticket.State.MERGED)
-        for ticket in merged_tickets:
-            worktrees = list(Worktree.objects.filter(ticket=ticket))
-            if not worktrees:
-                continue
-            for wt in worktrees:
-                try:
-                    cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
-                except RuntimeError as exc:
-                    cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
-        if not cleaned:
-            return ["No merged tickets have lingering worktrees."]
-        return cleaned
+        return clean_merged_worktrees()
 
     @command()
     def doctor(

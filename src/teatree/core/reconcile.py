@@ -13,6 +13,8 @@ and refuses when drift is present.
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
@@ -78,6 +80,21 @@ class MissingDB:
 
 
 @dataclass(frozen=True, slots=True)
+class UnresolvableOverlay:
+    """Worktree row references an overlay not installed in this environment.
+
+    Surfacing-only: the overlay's docker/DB stores can't be reconciled without
+    the overlay, but recording the finding keeps the sweep from aborting on the
+    row — the overlay-independent checks still apply, and other tickets are
+    still reconciled.
+    """
+
+    worktree_pk: int
+    overlay: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class Drift:
     """Bundle of per-store findings for a ticket.
 
@@ -93,6 +110,7 @@ class Drift:
     missing_env_caches: list[MissingEnvCache] = field(default_factory=list)
     env_cache_drifts: list[EnvCacheDrift] = field(default_factory=list)
     missing_dbs: list[MissingDB] = field(default_factory=list)
+    unresolvable_overlays: list[UnresolvableOverlay] = field(default_factory=list)
 
     @property
     def has_drift(self) -> bool:
@@ -105,6 +123,7 @@ class Drift:
                 self.missing_env_caches,
                 self.env_cache_drifts,
                 self.missing_dbs,
+                self.unresolvable_overlays,
             ),
         )
 
@@ -118,6 +137,10 @@ class Drift:
             *(f"missing-env-cache: wt#{d.worktree_pk} {d.cache_path}" for d in self.missing_env_caches),
             *(f"env-cache-drift: wt#{d.worktree_pk} {d.cache_path}" for d in self.env_cache_drifts),
             *(f"missing-db: wt#{d.worktree_pk} {d.db_name}" for d in self.missing_dbs),
+            *(
+                f"unresolvable-overlay: wt#{u.worktree_pk} {u.overlay!r} ({u.reason})"
+                for u in self.unresolvable_overlays
+            ),
         ]
         return "\n".join(lines) or "(no drift)"
 
@@ -162,7 +185,13 @@ def _find_worktree_paths_on_disk(repo_main: Path) -> set[str]:
 
 
 def _reconcile_worktree_row(drift: Drift, wt: Worktree) -> None:
-    """Append findings for a single ``Worktree`` row to *drift*."""
+    """Append findings for a single ``Worktree`` row to *drift*.
+
+    The overlay-independent missing-dir check always runs. The overlay-dependent
+    stores (env cache, DB, containers) are isolated: a row whose overlay is not
+    installed in this environment degrades to an :class:`UnresolvableOverlay`
+    finding instead of aborting the whole sweep.
+    """
     extra = wt.extra or {}
     wt_path_str = extra.get("worktree_path", "")
     wt_path = Path(wt_path_str) if wt_path_str else None
@@ -170,6 +199,16 @@ def _reconcile_worktree_row(drift: Drift, wt: Worktree) -> None:
     if wt_path and not wt_path.is_dir():
         drift.missing_worktree_dirs.append(MissingWorktreeDir(worktree_pk=wt.pk, path=wt_path))
 
+    try:
+        _reconcile_overlay_dependent_stores(drift, wt)
+    except ImproperlyConfigured as exc:
+        drift.unresolvable_overlays.append(
+            UnresolvableOverlay(worktree_pk=wt.pk, overlay=wt.overlay or wt.ticket.overlay, reason=str(exc)),
+        )
+
+
+def _reconcile_overlay_dependent_stores(drift: Drift, wt: Worktree) -> None:
+    """Append findings whose detection needs the worktree's overlay (env cache, DB, containers)."""
     if render_env_cache(wt) is not None:
         drifted, cache_path = detect_drift(wt)
         if drifted and cache_path is not None:
