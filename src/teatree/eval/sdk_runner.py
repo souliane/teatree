@@ -101,7 +101,7 @@ METERED_DEFAULT_BUDGET_USD = 1.0
 METERED_DEFAULT_EFFORT: EffortLevel = "high"
 
 
-def _env_float(name: str, *, default: float) -> float:
+def env_float(name: str, *, default: float) -> float:
     """Resolve a positive ``float`` from env *name*, falling back to *default*.
 
     A missing, empty, unparsable, or non-positive value yields the generous
@@ -119,7 +119,7 @@ def _env_float(name: str, *, default: float) -> float:
 
 
 def _env_int(name: str, *, default: int) -> int:
-    """Resolve a positive ``int`` from env *name*, falling back to *default* (see :func:`_env_float`)."""
+    """Resolve a positive ``int`` from env *name*, falling back to *default* (see :func:`env_float`)."""
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
@@ -132,7 +132,7 @@ def _env_int(name: str, *, default: int) -> int:
 
 def resolve_watchdog_seconds() -> float:
     """The generous per-scenario watchdog, ``T3_EVAL_WATCHDOG_SECONDS`` overriding the default."""
-    return _env_float(_WATCHDOG_ENV_VAR, default=float(DEFAULT_WATCHDOG_SECONDS))
+    return env_float(_WATCHDOG_ENV_VAR, default=float(DEFAULT_WATCHDOG_SECONDS))
 
 
 def resolve_default_max_turns() -> int:
@@ -142,7 +142,7 @@ def resolve_default_max_turns() -> int:
 
 def resolve_metered_budget_usd() -> float:
     """The generous metered-lane budget, ``T3_EVAL_MAX_BUDGET_USD`` overriding the default."""
-    return _env_float(_METERED_BUDGET_ENV_VAR, default=METERED_DEFAULT_BUDGET_USD)
+    return env_float(_METERED_BUDGET_ENV_VAR, default=METERED_DEFAULT_BUDGET_USD)
 
 
 def resolve_metered_effort() -> EffortLevel:
