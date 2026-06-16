@@ -59,6 +59,9 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 **API & shell recipes**
 
+19a. [Read Secrets From the Secret Store](#read-secrets-from-the-secret-store-non-negotiable)
+19b. [Read the Canonical Source Before a Structural Action](#read-the-canonical-source-before-a-structural-action-non-negotiable)
+19c. [Overlay Skills Are Scoped to Overlay Repos](#overlay-skills-are-scoped-to-overlay-repos-non-negotiable)
 20. [Token Extraction](#token-extraction)
 21. [Temp File Safety](#temp-file-safety)
 22. [Complex API Payloads: Use curl or Python](#complex-api-payloads-use-curl-or-python)
@@ -256,6 +259,57 @@ Id references must be namespace-qualified — they are never bare. A harness/tea
 
 This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `evals/scenarios/id_namespace_disambiguation.yaml`.
 
+## Read Secrets From the Secret Store (Non-Negotiable)
+
+Every credential — API token, service password, signing key — is read **from the secret store at point of use**, never hard-coded in a command, a file, a commit, or echoed into the transcript. The canonical fetch is a secret-manager read into a variable, so the literal value never appears in your tool call or in shell history.
+
+Do X — read from the store:
+
+```bash
+TOKEN="$(pass show <service>/api-token)"     # password-store
+# or: TOKEN="$(op read 'op://<vault>/<item>/token')"   # 1Password CLI
+# or: TOKEN="$(vault kv get -field=token <path>)"        # HashiCorp Vault
+```
+
+Never Y — never inline or echo a literal secret (the `<...>` below stands in for the real value, which must never appear):
+
+```bash
+export SERVICE_TOKEN=<the-literal-token>        # FORBIDDEN — literal in history + transcript
+curl -H "Authorization: Bearer <the-literal-token>"   # FORBIDDEN — literal in the command
+```
+
+Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal. See `t3:platforms` § "Token Extraction" for the per-platform CLI recipe. Pinned by `evals/scenarios/privacy_and_safety.yaml` (`safety_secret_read_from_secret_store`).
+
+## Read the Canonical Source Before a Structural Action (Non-Negotiable)
+
+Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
+
+- Asked to "enable team mode": your single next action is to `Read` the canonical role split (the loops skill `skills/loops/`, BLUEPRINT's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+
+```bash
+# do X first — read the canonical role split before spawning any pane:
+#   Read(file_path="skills/loops/SKILL.md")   # or BLUEPRINT.md roles section / CLAUDE.md
+# never Y — do not dispatch panes from memory before that read:
+#   Agent(prompt="you are CORE_MAKER …")  ← FORBIDDEN as the first action
+```
+
+This is the structural-action sibling of § "Read the Canonical Source Before Fixing a Conformance Bug" (which governs conformance bugs); both say: the authority is the spec, read it before you act. Pinned by `read_canonical_before_structural_action_under_load` (`evals/scenarios/rules.yaml`).
+
+## Overlay Skills Are Scoped to Overlay Repos (Non-Negotiable)
+
+Load the overlay playbook skill (`/t3-<overlay>`) for **any** task in an overlay-managed repo — and ONLY for those. A non-overlay task needs no overlay skill.
+
+- **Overlay-repo task** (coding/reviewing in an overlay's product repo): self-load the overlay skill `/t3-<overlay>` alongside the dev + language skills **before** reading a diff or editing source — it carries the repo's run/test/review wiring (see `overlay_work_requires_overlay_skill.yaml`).
+- **Non-overlay task** (a change inside `souliane/teatree` itself, or any standalone repo with no active overlay): load only the skill(s) that actually apply — `ac-django` / `/t3:code` / `/t3:teatree` for a teatree Django change. Do NOT pull in a different project's overlay skill; teatree is its own Django project, not an overlay repo.
+
+```text
+# teatree-only change → load what applies, not an overlay skill:
+Skill(skill="ac-django")   # or t3:code / t3:teatree
+# do NOT: Skill(skill="t3-<overlay>")   ← wrong scope for a non-overlay task
+```
+
+Pinned by `non_overlay_task_does_not_require_overlay_skill` (`evals/scenarios/skill_routing.yaml`).
+
 ## Token Extraction
 
 When extracting an API token from a CLI tool, always extract to a variable first — never inline in curl. See your platform reference (`t3:platforms`) § "Token Extraction" for the platform-specific recipe.
@@ -416,6 +470,28 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 
 **A blocked sub-agent surfaces the block to the orchestrator — it never silently works around the gate (Non-Negotiable).** When a sub-agent hits a gate it cannot satisfy — a missing skill, an autonomy/on-behalf block, a missing token, a classifier denial, a missing approval — it must **stop and return a structured blocked result naming the reason**, not guess, retry with a different shape, partial-ship, or fabricate a workaround. The structured channel is the result envelope's `needs_user_input: true` + `user_input_reason: "<why>"` (`teatree.agents.result_schema`); a free-prose "I couldn't do X so I did Y instead" is not a surfaced block — it is a swallowed one. The orchestrator, on receiving a blocked result, **escalates** (AskUserQuestion when interactive, or a Slack DM / a `DeferredQuestion` when away) — it never records the sub-agent's run as done, never advances the FSM over it, and never re-dispatches the same blocked unit without resolving the block first. Silent work-around masks the problem and produces invisible partial work; the fix is satisfiable, not pure suppression — once the human supplies the missing skill/token/approval, the unit re-runs and proceeds. (Issue [#1915](https://github.com/souliane/teatree/issues/1915); the agent-facing side of the Classifier Denial Protocol above; pinned by `evals/scenarios/blocked_subagent_escalation.yaml`.)
 
+**Dispatch-prompt hygiene — match the target repo's conventions, don't drift to your own defaults (Non-Negotiable).** A sub-agent prompt that scaffolds a branch or opens a PR must carry the **target repo's** convention, not a habitual default carried over from another repo.
+
+- **Branch name = the repo's own scheme.** If the repo uses a flat `<number>-<type>-<short-description>` scheme with NO prefix, scaffold exactly that — never inject an `ac/` / `a-` / `ac-` prefix the repo doesn't use.
+
+```bash
+# do X — flat, repo-native, no prefix (ticket 42, feature add-dark-mode):
+git worktree add ../42-feature-add-dark-mode -b 42-feature-add-dark-mode origin/main
+# never Y — do not prefix a flat-scheme repo's branch:
+git worktree add ../ac/add-dark-mode -b ac/add-dark-mode origin/main   # FORBIDDEN
+```
+
+- **No reflexive `--draft`.** Opening a PR for your OWN finished, pushed feature branch (a non-e2e repo) is a real PR, not a draft. Issue `pr create` without `--draft` unless the user or the repo's policy asks for a draft.
+
+```bash
+# do X — open the real PR for your own finished branch:
+gh pr create --base main --head 42-fix-empty-owner --fill
+# never Y — do not default to draft for your own ready work:
+gh pr create --base main --head 42-fix-empty-owner --fill --draft   # FORBIDDEN by default
+```
+
+Pinned by `subagent_prompt_drift_branch_prefix` and `subagent_prompt_drift_no_draft_default` (`evals/scenarios/subagent_prompt_drift.yaml`).
+
 ## Prefer Native Tool APIs Over Filesystem Heuristics
 
 When integrating with tools (issue trackers, CI, chat), prefer their API or CLI over scraping files. File-based approaches break on layout changes, don't handle pagination, and miss metadata.
@@ -453,6 +529,17 @@ When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_port
 ## Do Work Now, Don't Defer to "Later" Tickets (Non-Negotiable)
 
 When the user asks for work that is actionable in the current session — a small skill edit, a one-file CLI addition, a test fix, a rule promotion — **do it in the current response**. Do not propose filing a ticket for "later", do not frame the work as a follow-up suggestion, do not ask for confirmation to proceed on obviously in-scope work. Deferring concrete work to a ticket queue is the single most common way an agent wastes the user's time — the ticket piles up, context evaporates, and work that could have shipped in the same PR now takes a fresh session.
+
+**Do it now means RUN the command — never hand the steps back (do X, never Y).** When the request maps to a sanctioned `t3` command, your single next action is to **issue that command as a tool call this turn**. Do NOT reply with a numbered how-to, and do NOT bounce a "should I / do you want me to / shall I" confirmation back when the action is obviously in scope.
+
+```bash
+# "help me create the worktree for this ticket" → RUN it, do not explain it:
+t3 <overlay> workspace ticket <id>           # or: t3 <overlay> worktree provision <id>
+# never: a prose list of "1. cd …  2. git worktree add …" handed back to the user
+# never: AskUserQuestion("should I create the worktree?") on obviously in-scope work
+```
+
+The same applies to any runnable ask — running tests, opening a PR, fetching a ticket: pick the canonical `t3` command and run it. Asking "should I?" on in-scope work reads as stalling. Pinned by `do_work_now_runs_command_not_hands_back_steps` (`evals/scenarios/rules.yaml`).
 
 **Banned patterns when the work is actionable in this turn:**
 
@@ -575,11 +662,47 @@ Background it instead:
 
 The main agent's job during a long operation is to stay responsive — collect the result when the background unit reports back, not to sit blocked on it. This rule is pinned by the `background_long_operations_*` behavioral evals (`evals/scenarios/background_long_operations.yaml`).
 
+**DISPATCH IMMEDIATELY — the orchestrate-only boundary (do X, never Y).** When you are the main/orchestrating agent and the work in front of you is a long unit (multi-file investigation, cross-cutting refactor, an extensive test suite, anything > ~15s), your single next action is to **dispatch it to a sub-agent**, NOT to start doing it yourself in the foreground. Run the dispatch tool call NOW — do not narrate what you would do, do not first grep `src/` yourself, do not open the file and start editing.
+
+1. **Dispatch the unit to a `Task` (or `Agent`) sub-agent in this same turn.** The prompt fully describes the bounded unit of work in plain language — the file/subsystem, the bug, the expected outcome. Do this even when you don't yet know the exact shell command (the `Task` path needs no shell invocation up front).
+2. **Never run the long unit yourself in the foreground.** Do NOT `grep -r … src`, `rg … src`, `find … -name`, open-and-`Edit` the `.py` file, or `Write` the `test_*.py` yourself when the unit is delegable — the orchestrator stays thin.
+3. **Keep moving while it runs** — pick up the next ticket, or arm a `Monitor` on it. Do NOT sit in a foreground `while/until … sleep … pgrep` poll loop waiting on the sub-agent's process.
+4. **Collect the result when the sub-agent reports back** — then re-read any files it modified (see § "Sub-Agent Limitations") before acting on its output.
+
+Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
+
+```text
+Task(
+  description="Fix get_active_session",
+  prompt="In a fresh worktree off origin/main of this repo, fix the one-line bug in "
+         "src/teatree/core/session.py: get_active_session() returns None instead of "
+         "raising SessionNotFound when no active session exists. Add a fail-before/"
+         "pass-after regression test, run the suite, commit, and report the branch + sha.",
+)
+```
+
+Worked dispatch — a long multi-file investigation, delegated rather than grepped in the foreground:
+
+```text
+Task(
+  description="Investigate the subsystem",
+  prompt="Run a deep multi-file investigation across the codebase: trace how the "
+         "overlay resolver is called from every call site, map the data flow, and "
+         "report findings with file:line citations. Do not change code.",
+)
+```
+
+Arm a Monitor to await a dispatched sub-agent instead of foreground-polling its process:
+
+```bash
+t3 monitor watch --label subagent-42 --until-exit   # wakes you on completion; foreground stays free
+```
+
 ## Always Use AskUserQuestion for Questions
 
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output.
 
-**One decision per question.** Every user-facing decision is one `AskUserQuestion` call per item, never a multi-item batch. A prompt like "approve A1, B3, C4, Z40?" is unevaluable — the user cannot assess opaque IDs, and one bad item contaminates a yes-to-all. Ask about one thing at a time; wait for the answer before asking the next.
+**One decision per question (do X — never Y).** Every user-facing decision is exactly one `AskUserQuestion` call carrying a single `question` item — **never** a multi-item batch. A prompt like "approve A1, B3, C4, Z40?" is unevaluable — the user cannot assess opaque IDs, and one bad item contaminates a yes-to-all. So: ask about ONE thing, wait for the answer, then ask the next — do NOT serialize two `"question":` keys into one call. Three PRs each needing a merge decision is three sequential single-item calls, never one omnibus.
 
 **Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
 
@@ -590,6 +713,17 @@ The main agent's job during a long operation is to stay responsive — collect t
 **This is hook-enforced, not a remembered preference (#807).** A `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, or a "let me know if/whether …" soft-ask; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it. **Scope:** the gate only enforces on a loop-driven turn (`_session_drives_loop`: this session owns the tick, or there is no live owner) — that is where an inline question is invisible (it reads as a log line, so the decision is lost). In an attended interactive session that a _different_ live owner is driving, a human is reading the prose, so the gate is skipped; an unknown/unreadable ownership signal fails safe and keeps it firing. See `BLUEPRINT.md` § "Structured-question Stop gate" for the full heuristic and rationale.
 
 **Away-mode (24/7 dual question-mode, #58).** When `t3 teatree availability show` resolves to `away`, the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:availability` for the configuration surface (`t3 teatree availability away`, `t3 teatree availability present`, `t3 teatree availability auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
+
+### Receiving a structured answer (apply X — never apply a stale Y)
+
+Asking is half the contract; **applying the right answer** is the other half. A structured answer arrives one of two ways: as `additionalContext` injected this turn ("Your AskUserQuestion (#N) was answered by the user on Slack: `<value>`. Apply it now.") or as the local TTY result of the call. When it arrives:
+
+1. **Apply ONLY the answer that cites the currently-live question** — match the cited `#N` to the question you actually have open this turn, then act on it directly (run the command with the chosen value). Do NOT re-ask a question that has already been answered.
+2. **Ignore a stale already-answered reply.** A raw Slack DM that arrives as ordinary chat ("User replied on Slack at `<ts>`: `1`") AFTER you already resolved that question locally found **no live row** — it is NOT the AskUserQuestion result. Do not switch course on the strength of it; continue the action you already started from the real answer.
+3. **Ignore a superseded-generation reply.** If you asked Q1, then replaced it with a newer Q2 (Q1 marked stale), a reply citing the OLD Q1 is dead — apply only the answer to the current Q2. The cited `#N` disambiguates which generation the answer belongs to.
+4. **One answer resolves one question.** A single injected answer applies to exactly the one question it cites — never fan it out across other open or already-closed questions.
+
+The failure mode this prevents: flipping a deploy target / region mid-action because a late or superseded "1"/"yes" landed in chat after the real decision was already made and acted on. Pinned by `evals/scenarios/askuserquestion_slack_resolution.yaml` (`applies_injected_askuserquestion_answer`, `does_not_apply_stale_locally_answered_reply`, `does_not_apply_superseded_generation_reply`).
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
