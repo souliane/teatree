@@ -19,6 +19,7 @@ import typer
 if TYPE_CHECKING:
     from teatree.config import OverlayEntry
 
+import teatree.cli.admin as _admin
 import teatree.cli.agent as _agent
 import teatree.cli.cost as _cost
 import teatree.cli.info as _info
@@ -140,6 +141,7 @@ app.command()(_cost.cost)
 app.command()(_speak.speak)
 app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
+app.command()(_admin.admin)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")
