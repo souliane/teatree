@@ -371,7 +371,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # #1775 newly-DB-home (file-only today): these now resolve from the DB store.
     "agent_signature": _parse_strict_bool,
     "claude_chrome": _parse_strict_bool,
-    "statusline_chain": _parse_str_list,
     "repo_mode": _parse_strict_str,
     "ban_close_trailers_on_namespaces": _parse_str_list,
     "billing_cycle_anchor_day": _parse_strict_int,

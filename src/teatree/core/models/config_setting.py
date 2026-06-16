@@ -7,11 +7,11 @@ established "canonical tier is the DB with file/env fallback" pattern
 
 The contract is intentionally narrow so an **empty table is a provable no-op**.
 :meth:`ConfigSettingManager.get_effective` returns the stored value when a row
-exists for *key*, else ``None`` — and ``None`` means "no DB override, fall
-through to the file/env source". The resolver
-(``teatree.config.resolution.get_effective_settings``) consults this between the
-env layer (which still wins) and the per-overlay TOML layer, so the documented
-precedence becomes env → DB → per-overlay TOML → global ``[teatree]`` →
+exists for *key*, else ``None`` — and ``None`` means "no row, fall through to the
+dataclass default". Under the #1775 hard partition this store is the SOLE
+authoritative tier for a DB-home field (plus the ``T3_*`` env layer, which still
+wins): ``[teatree]`` / ``[overlays.<name>]`` TOML is not read for a DB-home key,
+so the per-field precedence is env → DB(overlay scope) → DB(global scope) →
 dataclass default. The ``value`` is a ``JSONField`` so any TOML-shaped
 scalar/list/dict round-trips (bool kill-switch, label string, int budget, list).
 

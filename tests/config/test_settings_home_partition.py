@@ -22,6 +22,7 @@ _TOML_CARVE_OUT = frozenset(
         "mr_reminder",
         "handover_mirror_path",
         "check_updates",
+        "statusline_chain",
         "workspace_dir",
         "worktrees_dir",
         "redis_db_count",
@@ -59,9 +60,9 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_ten_fields() -> None:
-    # The irreducible carve-out — pre-Django readers, infra bootstrap, nested
-    # structured tables, dead fields — is exactly these ten and no more.
+def test_toml_carve_out_is_exactly_the_eleven_fields() -> None:
+    # The irreducible carve-out — non-Django / pre-Django readers, infra
+    # bootstrap, nested structured tables — is exactly these eleven and no more.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
 

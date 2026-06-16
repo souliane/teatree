@@ -13,13 +13,15 @@ than a silently-shadowed override.
 ``ConfigSetting`` row for a TOML-home key is ignored on read; ``config_setting
 set`` refuses to write one.
 
-The TOML-home set is the irreducible carve-out: settings a PRE-DJANGO reader
-needs (so the DB is unreachable — ``orchestrator_bash_gate_enabled``, ``speak``,
-``handover_mirror_path``, ``check_updates``), path/infra bootstrap that the
-settings module itself needs (``workspace_dir``, ``worktrees_dir``,
-``redis_db_count``, ``timezone``, ``privacy``), and nested structured tables
-that have no flat scalar shape for a ``ConfigSetting`` row (``mr_reminder``).
-Every other field is DB-home — including the ~33 that are file-only today.
+The TOML-home set is the irreducible carve-out: settings a NON-DJANGO or
+PRE-DJANGO reader needs (so the DB is unreachable — ``orchestrator_bash_gate_enabled``,
+``speak``, ``handover_mirror_path``, ``check_updates``, and ``statusline_chain``,
+which the bash statusline hook reads straight from ``~/.teatree.toml`` and can
+never reach the DB), path/infra bootstrap that the settings module itself needs
+(``workspace_dir``, ``worktrees_dir``, ``redis_db_count``, ``timezone``,
+``privacy``), and nested structured tables that have no flat scalar shape for a
+``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — including
+the ~32 that are file-only today.
 
 :data:`DERIVED_FIELDS` are the two values the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse,
@@ -46,10 +48,12 @@ class SettingHome(StrEnum):
 # ``ask_before_post_on_behalf`` is derived from the resolved ``on_behalf_post_mode``.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf", "ask_before_post_on_behalf"})
 
-# The irreducible TOML-home carve-out (exactly these ten):
-# - pre-Django readers (hook layer reads them via tomllib, no DB):
+# The irreducible TOML-home carve-out (exactly these eleven):
+# - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
 #   ``orchestrator_bash_gate_enabled``, ``speak``, ``handover_mirror_path``,
-#   ``check_updates``
+#   ``check_updates``, and ``statusline_chain`` (the bash statusline hook reads
+#   ``[teatree] statusline_chain`` straight from ``~/.teatree.toml`` — it has no
+#   path to the Django DB, so a DB row for it would be silently unread)
 # - path / infra bootstrap the settings module needs to even open the DB:
 #   ``workspace_dir``, ``worktrees_dir``, ``redis_db_count``, ``timezone``,
 #   ``privacy``
@@ -61,6 +65,7 @@ _TOML_HOME: frozenset[str] = frozenset(
         "mr_reminder",
         "handover_mirror_path",
         "check_updates",
+        "statusline_chain",
         "workspace_dir",
         "worktrees_dir",
         "redis_db_count",

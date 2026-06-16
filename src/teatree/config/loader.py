@@ -9,20 +9,23 @@ per-setting resolvers live in ``resolution`` and are reached through the package
 facade at call-time (the partition's loader -> resolution edge, deferred to avoid
 the loader/resolution/discovery import cycle).
 
-``load_config`` builds only the **file tier** (the global ``[teatree]`` table
-merged onto the dataclass defaults). The higher tiers — env, the #1775 DB
-override tier (``ConfigSetting`` rows), and the per-overlay ``[overlays.<name>]``
-table — are layered on top by ``resolution.get_effective_settings``; consult its
-docstring for the full ``env -> DB -> per-overlay -> global -> default``
-precedence. Callers that need effective values must use ``get_effective_settings``,
-not the bare ``load_config().user`` (which sees neither env, DB, nor per-overlay).
+``load_config`` builds only the **TOML file tier**, and under the #1775 hard
+partition only the TOML-home carve-out reads off it — the global ``[teatree]``
+table merged onto the dataclass defaults. Every DB-home field keeps its dataclass
+default here; its authoritative value comes from the ``ConfigSetting`` store. The
+remaining tiers — env, the DB store (``ConfigSetting`` rows, for DB-home fields),
+and the per-overlay ``[overlays.<name>]`` table (for TOML-home fields) — are
+layered on top per-field by ``resolution.get_effective_settings`` according to
+each field's home; consult its docstring for the per-home precedence. Callers that
+need effective values must use ``get_effective_settings``, not the bare
+``load_config().user`` (which sees neither env, the DB store, nor per-overlay).
 """
 
 import tomllib
 from pathlib import Path
 
 import teatree.config as _facade
-from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
@@ -122,6 +125,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
         orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
+        statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
         handover_mirror_path=(
             Path(str(teatree["handover_mirror_path"])).expanduser()
             if teatree.get("handover_mirror_path")

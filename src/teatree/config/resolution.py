@@ -36,30 +36,36 @@ from teatree.types import SpeakConfig
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
-    """Return the user settings with env, DB, and per-overlay overrides applied.
+    """Return the user settings under the #1775 DB/TOML hard partition + env.
 
-    Resolution per field (first match wins): ``T3_*`` env var (see
-    ``ENV_SETTING_OVERRIDES``), the DB override tier (``ConfigSetting`` rows,
-    #1775), the active overlay's override from ``[overlays.<name>]``, the global
-    ``[teatree]`` value, the ``UserSettings`` dataclass default — i.e.
+    Every ``UserSettings`` field has exactly ONE home (see ``config/homes.py``),
+    so resolution per field depends on that home (first match wins):
 
-        env -> DB -> per-overlay TOML -> global [teatree] -> dataclass default.
+    *   DB-home field — ``T3_*`` env var, then the ``ConfigSetting`` store
+        (overlay-scope row, then global-scope row), then the dataclass default:
 
-    The DB tier is the first slice of "move config to the database" (#1775): a
-    ``ConfigSetting`` row for a key in ``OVERLAY_OVERRIDABLE_SETTINGS`` overrides
-    the file value but is still beaten by an explicit env var. An EMPTY table is a
-    provable no-op — :func:`_db_setting_overrides` returns ``{}`` — so nothing
-    regresses during the migration window. The read fails safe to ``{}`` whenever
-    Django is not configured or the table does not exist yet.
+            env -> DB(overlay scope) -> DB(global scope) -> default.
 
-    The DB tier itself has TWO scopes, mirroring the TOML two-tier shape: a
-    GLOBAL ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
+        Its ``[teatree]`` / ``[overlays.<name>]`` TOML value is NOT read.
+    *   TOML-home field — ``T3_*`` env var, then the active overlay's
+        ``[overlays.<name>]`` override, then the global ``[teatree]`` value, then
+        the dataclass default:
+
+            env -> per-overlay TOML -> global [teatree] -> default.
+
+        A ``ConfigSetting`` row for it is ignored on read.
+
+    The per-overlay TOML layer is filtered to TOML-home keys (``_toml_home``) so a
+    ``[overlays.<name>]`` value for a DB-home key never leaks in. The DB read fails
+    safe to ``{}`` whenever Django is not configured or the table does not exist
+    yet, so an empty table resolves every DB-home field to its dataclass default.
+
+    The DB tier has TWO scopes, mirroring the TOML two-tier shape: a GLOBAL
+    ``ConfigSetting`` row (``scope=""``) applies to every overlay, and an
     OVERLAY-scoped row (``scope=<overlay name>``) applies to that overlay alone.
-    :func:`_db_setting_overrides` layers global rows first, then the active
-    overlay's rows on top — so an overlay-scoped DB row beats a global DB row,
-    exactly as a per-overlay ``[overlays.<name>]`` TOML value beats the global
-    ``[teatree]`` value. The active overlay is the explicit ``overlay_name`` on
-    the named path, else ``T3_OVERLAY_NAME`` / discovery on the active path.
+    The resolver layers global rows first, then the active overlay's rows on top —
+    so an overlay-scoped DB row beats a global DB row, exactly as a per-overlay
+    ``[overlays.<name>]`` TOML value beats the global ``[teatree]`` value.
 
     The active overlay is resolved via ``T3_OVERLAY_NAME`` first (matches
     ``get_overlay()``), then cwd-based discovery, then the single
@@ -71,12 +77,13 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     tier, the per-overlay ``[overlays.<name>]`` overrides, and the autonomy
     collapse run identically. This is the single resolver both paths share.
 
-    To make an additional setting overridable, add it to
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay + DB) or ``ENV_SETTING_OVERRIDES``
-    (env); the resolver picks it up generically via ``dataclasses.replace``.
-    The one non-generic override is ``speak``: its ``[overlays.<name>.speak]``
-    sub-table MERGES onto the base (see :func:`_overlay_speak_override`) rather
-    than flat-replacing, so a partial table overrides only the keys it sets.
+    To make an additional setting DB-overridable, add it to
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
+    ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
+    ``dataclasses.replace``. The one non-generic override is ``speak`` (a
+    TOML-home field): its ``[overlays.<name>.speak]`` sub-table MERGES onto the
+    base (see :func:`_overlay_speak_override`) rather than flat-replacing, so a
+    partial table overrides only the keys it sets.
 
     As a final step the single ``autonomy`` switch is applied: under
     :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates

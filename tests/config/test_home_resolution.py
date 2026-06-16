@@ -90,6 +90,14 @@ class TestTomlHomeIgnoresDb(TestCase):
         # Still the dataclass default (True) — the DB row never applies.
         assert get_effective_settings().orchestrator_bash_gate_enabled is True
 
+    def test_statusline_chain_resolves_from_teatree_not_db(self) -> None:
+        # statusline_chain is TOML-home: the bash statusline hook reads it
+        # straight from ~/.teatree.toml and can never reach the DB, so it must
+        # resolve from [teatree] and a ConfigSetting row for it is ignored.
+        _write_toml(self.config_path, '[teatree]\nstatusline_chain = ["custom/*.sh"]\n')
+        ConfigSetting.objects.set_value("statusline_chain", value=["db/*.sh"])
+        assert get_effective_settings().statusline_chain == ["custom/*.sh"]
+
 
 class TestOverlayScopeLayering(TestCase):
     @pytest.fixture(autouse=True)

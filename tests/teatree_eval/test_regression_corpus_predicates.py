@@ -87,13 +87,14 @@ class TestPredicatesAreAntiVacuous(TestCase):
 class TestStagedAutonomyHermeticAgainstDbTier(TestCase):
     """The substrate-floor helper pins autonomy regardless of a live DB override (#1775 host leak).
 
-    The DB config override tier (#1775) wins over the file tier, so a host
-    carrying a per-overlay ``autonomy`` ``ConfigSetting`` row silently overrode
-    the hermetic TOML the floor check stages — the floor then read the host's
-    live autonomy instead of the staged value and failed on that host. The
-    helper must neutralise the DB (and env) tier so the staged TOML is
-    authoritative. Both tests go RED on the pre-fix helper (the seeded ``full``
-    row leaks past the staged ``babysit``).
+    ``autonomy`` is DB-home under the #1775 partition: it resolves solely from
+    the ``ConfigSetting`` store, so a host carrying a per-overlay ``autonomy``
+    row would silently override whatever the floor check stages. The helper
+    stages autonomy through that same DB-home seam (the per-overlay row reader)
+    and neutralises the global DB scope and the env tier, so the staged value is
+    authoritative regardless of any live host row. Both tests go RED on a helper
+    that fails to neutralise the loaders (the seeded ``full`` row leaks past the
+    staged ``babysit``).
     """
 
     def _pin_overlay_autonomy_full_in_db(self) -> str:
