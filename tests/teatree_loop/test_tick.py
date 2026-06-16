@@ -398,115 +398,6 @@ def test_identity_alias_groups_reads_overlay_config_first(
     )
 
 
-def test_identity_aliases_for_request_unions_across_backends(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``_identity_aliases_for_request`` unions every overlay's alias groups.
-
-    The renderer suppresses a self-reassignment only when both ends fall
-    inside one group; collecting every overlay's groups means the operator's
-    own handles suppress regardless of which overlay surfaced the reassign.
-    """
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
-    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
-
-    def _backend(name: str, aliases: list[list[str]]) -> OverlayBackends:
-        overlay = MagicMock(spec=OverlayBase)
-        overlay.config = MagicMock()
-        overlay.config.identity_aliases = aliases
-        return OverlayBackends(
-            name=name,
-            hosts=(MagicMock(spec=CodeHostBackend),),
-            messaging=None,
-            ready_labels=(),
-            overlay=overlay,
-        )
-
-    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
-    request = TickRequest(
-        backends=[
-            _backend("teatree", [["souliane", "op-alt", "op.work"]]),
-            _backend("acme", [["alice", "alice.work"]]),
-        ],
-    )
-    assert _identity_aliases_for_request(request) == (
-        ("souliane", "op-alt", "op.work"),
-        ("alice", "alice.work"),
-    )
-
-
-def test_identity_aliases_for_request_falls_back_to_operator_identities(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No explicit ``identity_aliases`` → ``backend.identities`` is the self-group (#1113).
-
-    The deployment that surfaced the noise configures only the flat
-    ``user_identity_aliases`` (→ ``backend.identities``), never the grouped
-    ``identity_aliases``. The render path must apply the same self-group
-    fallback the scanner path already had, or every intra-self reassignment
-    between the operator's own handles renders as ``reassigned`` churn.
-    """
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
-    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
-
-    overlay = MagicMock(spec=OverlayBase)
-    overlay.config = MagicMock()
-    overlay.config.identity_aliases = []  # no grouped aliases configured
-    backend = OverlayBackends(
-        name="teatree",
-        hosts=(MagicMock(spec=CodeHostBackend),),
-        messaging=None,
-        ready_labels=(),
-        overlay=overlay,
-        identities=("souliane", "op-gh", "op-gl"),
-    )
-    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
-    assert _identity_aliases_for_request(TickRequest(backends=[backend])) == (("souliane", "op-gh", "op-gl"),)
-
-
-def test_identity_aliases_for_request_empty_without_backends() -> None:
-    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
-
-    assert _identity_aliases_for_request(TickRequest()) == ()
-
-
-def test_identity_aliases_for_request_fails_open_on_config_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from unittest.mock import MagicMock  # noqa: PLC0415
-
-    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
-    from teatree.loop import tick as tick_mod  # noqa: PLC0415
-    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
-
-    def _boom(*_args: object, **_kwargs: object) -> object:
-        msg = "config read failed"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(tick_mod, "_identity_alias_groups_for_overlay", _boom)
-    request = TickRequest(
-        backends=[
-            OverlayBackends(
-                name="acme",
-                hosts=(MagicMock(spec=CodeHostBackend),),
-                messaging=None,
-                ready_labels=(),
-                overlay=None,
-            ),
-        ],
-    )
-    assert _identity_aliases_for_request(request) == ()
-
-
 def test_identity_alias_groups_falls_through_to_toml_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1548,8 +1439,8 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
         scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
         with (
             tempfile.TemporaryDirectory() as d,
-            patch("teatree.loop.tick.get_effective_settings", return_value=settings),
-            patch("teatree.loop.tick.orchestrate_phase", side_effect=RuntimeError("config blew up")),
+            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
+            patch("teatree.loop.phases.render.orchestrate_phase", side_effect=RuntimeError("config blew up")),
         ):
             sl = Path(d) / "sl.txt"
             report = run_tick(TickRequest(scanners=[scanner]), statusline_path=sl)
@@ -1588,7 +1479,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
         backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=2)]
         with (
             patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
-            patch("teatree.loop.tick.get_effective_settings", return_value=settings),
+            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
         ):
             scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
             run_tick(TickRequest(scanners=[scanner], backends=backends), statusline_path=sl)
