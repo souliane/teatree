@@ -1713,8 +1713,18 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     self-contained file).    │
 │                                                     [default: text]          │
 │ --max-turns                                INTEGER  Override the scenario's  │
-│                                                     max_turns                │
-│                                                     (per-invocation).        │
+│                                                     max_turns. Omitted, it   │
+│                                                     reads the                │
+│                                                     T3_EVAL_MAX_TURNS global │
+│                                                     knob (an escape hatch),  │
+│                                                     else defers to each      │
+│                                                     scenario's own max_turns │
+│                                                     — the per-scenario turn  │
+│                                                     budget, mirroring        │
+│                                                     per-scenario cost. The   │
+│                                                     metered lane's USD       │
+│                                                     budget is the real       │
+│                                                     safety net.              │
 │ --max-budget-usd                           FLOAT    Per-run USD budget       │
 │                                                     circuit breaker for the  │
 │                                                     metered sdk runner.      │

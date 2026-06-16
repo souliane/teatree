@@ -288,7 +288,7 @@ Each worktree gets its own **isolated environment** — dedicated database, port
 
 #### Canonical provisioning command (always overlay-scoped)
 
-Provisioning a worktree's database, env, and setup steps goes through exactly **one** command. It is `worktree`-scoped (one worktree) or `workspace`-scoped (every worktree in the ticket), and the `<overlay>` token is **mandatory** — a bare `t3 worktree provision` (no overlay) does not resolve the overlay's repos, ports, or DB import strategy and is the recorded failure mode:
+Provisioning a worktree's database, env, and setup steps goes through exactly **one** command. It is `worktree`-scoped (one worktree) or `workspace`-scoped (every worktree in the ticket), and the `<overlay>` token is **mandatory** — dropping it (a bare `worktree provision` with no `<overlay>` prefix) does not resolve the overlay's repos, ports, or DB import strategy and is the recorded failure mode:
 
 ```bash
 # Provision ONE worktree — "Run DB import + env cache + direnv + prek + overlay setup steps":

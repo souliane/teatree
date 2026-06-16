@@ -35,13 +35,23 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.sdk_runner import CleanRoomConfig, build_sdk_options
+from teatree.eval.sdk_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, env_float
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 WATCHDOG_SECONDS = 120
-JUDGE_MAX_BUDGET_USD = "0.05"
+
+_JUDGE_BUDGET_ENV_VAR = "T3_EVAL_JUDGE_MAX_BUDGET_USD"
+#: Per-judge-call cap at the per-scenario breaker's $1.00 tier; a stingy ceiling
+#: truncates one grading call into a suite-aborting error. Env var overrides.
+JUDGE_DEFAULT_BUDGET_USD = 1.00
+
+
+def resolve_judge_budget_usd() -> float:
+    """Per-judge-call cap; ``T3_EVAL_JUDGE_MAX_BUDGET_USD`` overrides (non-positive → default)."""
+    return env_float(_JUDGE_BUDGET_ENV_VAR, default=JUDGE_DEFAULT_BUDGET_USD)
+
 
 _JUDGE_SYSTEM_PROMPT = (
     "You are grading an AI agent's behaviour against a rubric. Decide PASS or FAIL "
@@ -145,6 +155,11 @@ class ClaudeJudge:
             structured = asyncio.run(_drive_judge(prompt, spec.judge.model))
         except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
+        except Exception as exc:
+            reason = classify_terminal_error(str(exc))
+            if reason is None:
+                raise
+            return JudgeVerdict(passed=False, skipped=False, rationale=f"judge hit {reason} cap")
         return _verdict_from_structured(structured)
 
 
@@ -166,7 +181,7 @@ def _judge_options(*, model: str, cwd: str, env: dict[str, str]) -> ClaudeAgentO
             max_turns=1,
         )
     )
-    options.max_budget_usd = float(JUDGE_MAX_BUDGET_USD)
+    options.max_budget_usd = resolve_judge_budget_usd()
     options.output_format = {"type": "json_schema", "schema": _VERDICT_SCHEMA}
     return options
 

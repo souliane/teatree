@@ -20,8 +20,7 @@
 
 - name: planner_skips_e2e_plan_for_backend_ticket
   scenario: "the plan emits an explicit no-UI-surface skip note and fabricates NO scenarios for a pure-backend ticket"
-  agent_path: skills/code/SKILL.md
-  agent_sections: ["5. E2E Tests"]
+  agent_path: agents/planner.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Write]
