@@ -186,7 +186,7 @@ repos:
   # (resolved via `uvx --from ast-grep-cli==0.42.3`). The pyproject hook
   # grandfathers the three existing complexity-ignore entries via --grandfather.
   - repo: https://github.com/souliane/skills
-    rev: 29c0a2c62e95203783e860536ce38cec4375de39
+    rev: 08a9715af678766fde6ce61a6fce288ade1eba88
     hooks:
       - id: ac-django-no-pytest-django-db
         files: ^tests/.*\.py$
