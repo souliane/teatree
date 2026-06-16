@@ -122,6 +122,85 @@ class DreamProposeEvalsFlagTestCase(TestCase):
         assert seen["eval_proposals"] is not None
 
 
+class DreamNightlyTickRequestsProposalsTestCase(TestCase):
+    """The cadence-driven ``tick`` now requests eval proposals by default (#2346)."""
+
+    @staticmethod
+    def _capture(seen: dict[str, object]):
+        def _run(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+            seen["eval_proposals"] = eval_proposals
+            return _ok_result()
+
+        return _run
+
+    def test_tick_requests_proposals_by_default(self) -> None:
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=StringIO())
+        # The seam is LIVE by default: tick passes a real EvalProposalRequest.
+        assert seen["eval_proposals"] is not None
+
+    def test_tick_disabled_by_falsy_env(self) -> None:
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
+            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "0"}),
+        ):
+            call_command("dream", "tick", stdout=StringIO())
+        assert seen["eval_proposals"] is None
+
+    def test_successful_tick_runs_guarded_promotion(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file") as promote_fn,
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            promote_fn.return_value = []
+            call_command("dream", "tick", stdout=StringIO())
+        # A successful pass that requested proposals drives the guarded promotion.
+        promote_fn.assert_called_once()
+
+    def test_promotion_failure_is_warned_not_crashed(self) -> None:
+        # A promotion error must NOT crash the pass that already stamped success.
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=RuntimeError("promote boom")),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "WARN eval promotion raised: RuntimeError" in out
+        # The pass still stamped success despite the promotion warning.
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_promotion_count_in_summary_line(self) -> None:
+        from teatree.loops.dream.promote import PromotionOutcome  # noqa: PLC0415
+
+        outcomes = [
+            PromotionOutcome(scenario_name="a_under_load", promoted=True, reason="promoted"),
+            PromotionOutcome(scenario_name="b_under_load", promoted=False, reason="REJECTED (anti-vacuity)"),
+        ]
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=outcomes),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "promoted 1 live eval(s)" in out
+        assert "rejected 1 vacuous candidate(s)" in out
+
+
 class DreamLeaseTtlTestCase(TestCase):
     def test_run_acquires_lease_sized_to_the_pass_budget(self) -> None:
         # The default 120s lease would expire under a wall-clock-capped pass and

@@ -271,6 +271,30 @@ tests in the foreground); a discriminating `_single_worker_fail` fixture (one
 scenario rejects a token single delegate, not only the total-serial case
 (`tests/eval_replay/test_full_speed_fan_out_anti_vacuous.py`).
 
+### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
+
+The nightly dream pass (`t3 dream tick`) does more than write durable memories:
+when the eval-derivation seam is on (LIVE by default — `[loops.dream]
+propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch), it derives an inert eval
+CANDIDATE from each grounded drift cluster (`teatree.loops.dream.eval_proposer`)
+and then PROMOTES it to a real `under_load` scenario here
+(`teatree.loops.dream.promote`). A promoted candidate lands as a spec appended to
+`evals/scenarios/promoted_drift.yaml` plus its `_{fail,pass}` replay fixtures —
+the same artifacts a hand-authored scenario ships, so the deterministic replay
+gate (`test_scenarios_anti_vacuous.py`) and the weekly metered lane run it with no
+special-casing.
+
+Promotion is AUTO but gated by a **non-bypassable anti-vacuity guard**
+(`promote.guard_can_fail`), the dreaming-side enforcement of "a drift is not fixed
+until an anti-vacuous eval pins it". Before writing anything, the guard runs the
+REAL grader (`report.evaluate`) against a synthesised `_fail` transcript (an agent
+that re-commits the cited drift): the candidate is promoted ONLY when that verdict
+is FAIL (the matchers have teeth) AND a compliant `_pass` transcript grades PASS
+(the scenario is not a tautology). A candidate whose grader cannot fail is
+REJECTED — no file written — so an unproven eval can never reach the suite. The
+guard is deterministic (no model, no network); live metered grading of a promoted
+scenario lands with the weekly Agent-SDK lane.
+
 ### Wall-clock — `--parallel N`
 
 Each Agent-SDK query is I/O-bound (network round-trips), so the suite runs scenarios

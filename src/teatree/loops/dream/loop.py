@@ -24,6 +24,9 @@ is invoked directly by the cron, not through the scanner-signal dispatch
 pipeline.
 """
 
+import os
+import tomllib
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
@@ -36,6 +39,51 @@ DREAM_LEASE_NAME = "dream-tick"
 DREAM_DEFAULT_CADENCE_SECONDS = 24 * 3600  # nightly; the cron drives the actual ~04:00 firing.
 DREAM_PASS_BUDGET_SECONDS = 30 * 60
 DREAM_LEASE_SECONDS = DREAM_PASS_BUDGET_SECONDS + 5 * 60
+
+#: The nightly eval-derivation seam is LIVE by default (#2346 "make it live"): the
+#: cadence-driven ``tick`` requests eval proposals unless explicitly disabled. The
+#: kill-switch is two-layered, first match wins:
+#:
+#: 1. ``T3_DREAM_PROPOSE_EVALS`` env — ``0``/``false``/``no`` disables, anything
+#:    else (incl. absent) defers to the toml layer; truthy explicitly enables.
+#: 2. ``[loops.dream] propose_evals`` in ``~/.teatree.toml`` — an explicit bool.
+#:
+#: Default (no env, no toml key) is ON, so the seam is live out of the box while a
+#: single toml line (or a falsy env var) turns it off without a code change.
+_DEFAULT_PROPOSE_EVALS = True
+_ENV_PROPOSE_EVALS = "T3_DREAM_PROPOSE_EVALS"
+_FALSY = frozenset({"0", "false", "no", "off"})
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def propose_evals_enabled(*, config_path: Path | None = None) -> bool:
+    """Resolve whether the nightly ``tick`` should request eval proposals (default ON).
+
+    The env layer wins when it carries an explicit truthy/falsy value; an absent
+    or unrecognised env value defers to the ``[loops.dream] propose_evals`` toml
+    key, which itself defaults to :data:`_DEFAULT_PROPOSE_EVALS` (ON). *config_path*
+    overrides the toml location for tests.
+    """
+    raw_env = os.environ.get(_ENV_PROPOSE_EVALS, "").strip().lower()
+    if raw_env in _FALSY:
+        return False
+    if raw_env in _TRUTHY:
+        return True
+    return _toml_propose_evals(config_path)
+
+
+def _toml_propose_evals(config_path: Path | None) -> bool:
+    """Read ``[loops.dream] propose_evals`` from the toml; default ON, never raise."""
+    path = config_path if config_path is not None else Path.home() / ".teatree.toml"
+    try:
+        if not path.is_file():
+            return _DEFAULT_PROPOSE_EVALS
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return _DEFAULT_PROPOSE_EVALS
+    dream_table = data.get("loops", {}).get("dream", {}) if isinstance(data.get("loops"), dict) else {}
+    value = dream_table.get("propose_evals") if isinstance(dream_table, dict) else None
+    return value if isinstance(value, bool) else _DEFAULT_PROPOSE_EVALS
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
