@@ -44,6 +44,45 @@ Reactive mode — something is wrong, find and fix it.
 
 Diagnose the root cause and apply one targeted fix. Reactive patch loops (fix symptom → new symptom → patch that → new symptom) indicate the root cause was missed. When you find yourself applying a second patch, stop and re-diagnose from scratch.
 
+### Scope the Class, Not One Call Site
+
+When a bug fires at one location but the underlying defect lives in a shared helper, function, or pattern, fix the *class* of bug — never just the single failing call site. A null-deref that crashed at one caller is almost always reachable from every other caller of the same unguarded helper.
+
+Do this — never patch one site and move on:
+
+1. **Enumerate every call site before touching the fix.** Grep the whole tree for callers so you know the blast radius:
+
+   ```bash
+   grep -rn 'unguarded_helper(' src/      # every caller of the offending helper
+   # or, if ripgrep is available:
+   rg 'unguarded_helper\(' src/
+   ```
+
+2. **Fix the helper itself** (or the shared pattern) so all call sites are covered at once.
+3. **Never** `echo "patched that one"` and stop — guarding only the one crashing caller leaves the same bug latent everywhere else.
+
+## Verify a Recalled SHA Before Any Destructive Git
+
+Before any destructive or history-moving git operation (`cherry-pick`, `reset --hard`, `rebase`, `revert`, force-push), re-verify the target against the live branch. A SHA recalled from earlier in the session — or from a handover/preamble — may be stale: branches get rewritten, rebased, or amended, and the hash you remember may no longer be the commit you mean.
+
+Do this — never act on a remembered hash:
+
+1. **Read the source branch to find the real, current SHA first:**
+
+   ```bash
+   git log --oneline feature/ruff-baseline      # find the commit on its actual branch
+   git show feature/ruff-baseline:<n>           # or inspect by branch-relative ref
+   git rev-parse feature/ruff-baseline          # resolve the branch tip live
+   ```
+
+2. **Only then** run the destructive command against the SHA you just confirmed:
+
+   ```bash
+   git cherry-pick <sha-confirmed-from-the-log-above>
+   ```
+
+3. **Never** `git cherry-pick <sha-recalled-from-context>` directly — a hash from polluted or aged context is a guess until the live branch confirms it.
+
 ## Dependencies
 
 - **workspace** (required) — provides server restart and environment context. **Load `/t3:workspace` now** if not already loaded.
@@ -73,12 +112,42 @@ When a user reports "this worked yesterday" or "this just started happening," ch
 
 This is faster than reading every file in detail and often pinpoints the cause immediately.
 
+### Phase 0d: Diff Against the Base Branch FIRST (before blaming code)
+
+This is the PRIMARY first step for any regression or red CI on a feature branch. Before forming a single hypothesis about application code, confirm what *this branch* actually introduced relative to its base. The most common "mysterious" failure is a change the branch itself added (a stray symlink, a config edit, a generated artifact) — not pre-existing code.
+
+Do this — never skip it:
+
+1. **Diff (or log) against the base branch as your very first command.** Do not echo a guess like "probably pre-existing" / "flaky infra" / "not my change" before you have run it.
+
+   ```bash
+   # See exactly what this branch changed relative to its base
+   git diff origin/main...HEAD          # full diff (use master if that is the base)
+   git log --oneline origin/main..HEAD  # just the commits this branch added
+   ```
+
+   The `A...B` (three-dot) form diffs from the merge-base, so it shows only what the branch introduced — not unrelated drift on `main`.
+
+2. **For a "worked last week" regression**, log what changed since the base instead of reading every file:
+
+   ```bash
+   git log --oneline origin/main..HEAD -- path/to/affected/area
+   ```
+
+Only after the base diff is clean do you move on to blaming application code.
+
 ### Phase 1: Root Cause Investigation
 
 - Read **full** error output, stack traces, logs. Do not skim.
 - Identify the exact failure point (file, line, function).
 - Check if the error is environment-specific: **test with the user's real env, not a sanitized one.** Do not use `unset VAR` or `env -i` to mask env issues — if the command fails in the user's shell, that's the bug. Find the source of the stale env var (`.zshrc`, direnv, `.env`) and fix it.
-- **CI failures on feature branches:** always `git diff master...HEAD` first to confirm what the branch introduced. Do not speculate about pre-existing causes without checking the base branch. Symlinks, config files, and generated artifacts can sneak into commits.
+- **CI failures on feature branches:** the base-branch diff is the mandatory first action — not an optional one. The correct order is: confirm what the branch introduced *before* forming any hypothesis about a pre-existing cause.
+
+    ```bash
+    git diff origin/master...HEAD   # or origin/main...HEAD
+    ```
+
+  Asserting "pre-existing" / "flaky" / "infra" / "not my change" before that diff has run is the failure mode this rule exists to prevent. Symlinks, config files, and generated artifacts can sneak into commits and are invisible until you diff the base.
 - **CI fails but local passes:** follow this checklist in order:
   1. **Is the latest commit pushed?** Compare local HEAD with remote HEAD (`git log origin/<branch> --oneline -1`). Unpushed fixes are the most common cause.
   2. **Check ALL failed jobs**, not just the primary one. Large builds (e.g., full frontend apps) can swallow errors in output buffers; smaller builds of the same codebase often show errors more clearly.
