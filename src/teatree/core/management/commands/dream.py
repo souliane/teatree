@@ -20,10 +20,14 @@ here via ``call_command``.
 """
 
 import datetime as dt
-from typing import Annotated
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from django_typer.management import TyperCommand, command
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class Command(TyperCommand):
@@ -140,9 +144,10 @@ class Command(TyperCommand):
 
         DreamRunMarker.objects.mark_succeeded(now)
         promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
+        memory_phases = self._run_memory_phases(dry_run=dry_run)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}.",
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}.",
         )
         return True
 
@@ -168,6 +173,71 @@ class Command(TyperCommand):
         if not outcomes:
             return ""
         return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s)"
+
+    def _run_memory_phases(self, *, dry_run: bool) -> str:
+        """Run the memory-file phases 4-6 over every discovered memory dir, fault-isolated.
+
+        Phases 4 (cross-link), 5 (re-index), and 6 (decay/archive) each run LIVE by
+        default behind their own ``[loops.dream]`` / ``T3_DREAM_*`` kill-switch and
+        each in its own try/except, so one phase (or one memory dir) failing never
+        crashes the tick or stops the other phases. Operates only on the discovered
+        ``~/.claude`` memory dirs (engine reuse); the units under test inject a tmp
+        dir directly into the phase functions, never the real one.
+        """
+        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
+
+        memory_dirs = discover_memory_dirs()
+        if not memory_dirs:
+            return ""
+        phases: list[tuple[str, Callable[..., str | None]]] = [
+            ("cross-link", self._cross_link_dirs),
+            ("re-index", self._reindex_dirs),
+            ("decay", self._decay_dirs),
+        ]
+        parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run) for label, runner in phases]
+        return "".join(part for part in parts if part)
+
+    def _phase_summary(
+        self,
+        label: str,
+        runner: "Callable[..., str | None]",
+        memory_dirs: list[Path],
+        *,
+        dry_run: bool,
+    ) -> str:
+        """Run one phase's per-dir runner under fault isolation, returning its summary clause."""
+        try:
+            summary = runner(memory_dirs, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN {label} raised: {type(exc).__name__}: {exc}"
+        return f"; {summary}" if summary else ""
+
+    def _cross_link_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+        from teatree.loops.dream import cross_link  # noqa: PLC0415
+        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415
+
+        if not cross_link_enabled():
+            return None
+        added = sum(cross_link.cross_link_memories(d, dry_run=dry_run).links_added for d in memory_dirs)
+        return f"cross-linked {added} memory edge(s)" if added else None
+
+    def _reindex_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+        from teatree.loops.dream import reindex  # noqa: PLC0415
+        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415
+
+        if not reindex_enabled():
+            return None
+        changed = sum(1 for d in memory_dirs if reindex.reindex_memory(d, dry_run=dry_run).changed)
+        return f"re-indexed {changed} MEMORY.md" if changed else None
+
+    def _decay_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+        from teatree.loops.dream import decay  # noqa: PLC0415
+        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
+
+        if not decay_enabled():
+            return None
+        archived = sum(decay.decay_memories(d, dry_run=dry_run).archived_count for d in memory_dirs)
+        return f"archived {archived} stale memory(ies)" if archived else None
 
 
 def _env_propose_evals() -> bool:

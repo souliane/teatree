@@ -27,7 +27,10 @@ from teatree.loops.dream.loop import (
     DREAM_LOOP_NAME,
     DREAM_PASS_BUDGET_SECONDS,
     MINI_LOOP,
+    cross_link_enabled,
+    decay_enabled,
     propose_evals_enabled,
+    reindex_enabled,
 )
 from teatree.loops.fanout import build_registry_jobs
 from teatree.loops.orchestrator import Orchestrator
@@ -161,6 +164,50 @@ class ProposeEvalsKillSwitchTestCase(TestCase):
         with patch.dict("os.environ", {}, clear=False):
             __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
             assert propose_evals_enabled(config_path=self.toml) is True
+
+
+class MemoryPhaseKillSwitchTestCase(TestCase):
+    """Phases 4-6 are LIVE by default, each flippable via its own env/toml (#1933 §6)."""
+
+    _PHASES = (
+        ("cross_link", "T3_DREAM_CROSS_LINK", cross_link_enabled),
+        ("reindex", "T3_DREAM_REINDEX", reindex_enabled),
+        ("decay", "T3_DREAM_DECAY", decay_enabled),
+    )
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.toml = __import__("pathlib").Path(self.tmp) / "t3.toml"
+
+    def _clear_env(self) -> None:
+        for _key, env, _fn in self._PHASES:
+            __import__("os").environ.pop(env, None)
+
+    def test_each_phase_defaults_on(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            self._clear_env()
+            for _key, _env, fn in self._PHASES:
+                assert fn(config_path=self.toml) is True, fn.__name__
+
+    def test_each_phase_disabled_by_falsy_env(self) -> None:
+        for _key, env, fn in self._PHASES:
+            with patch.dict("os.environ", {env: "false"}):
+                assert fn(config_path=self.toml) is False, env
+
+    def test_each_phase_disabled_by_toml(self) -> None:
+        for key, env, fn in self._PHASES:
+            self.toml.write_text(f"[loops.dream]\n{key} = false\n", encoding="utf-8")
+            with patch.dict("os.environ", {}, clear=False):
+                __import__("os").environ.pop(env, None)
+                assert fn(config_path=self.toml) is False, key
+
+    def test_env_truthy_wins_over_toml_false(self) -> None:
+        for key, env, fn in self._PHASES:
+            self.toml.write_text(f"[loops.dream]\n{key} = false\n", encoding="utf-8")
+            with patch.dict("os.environ", {env: "1"}):
+                assert fn(config_path=self.toml) is True, key
 
 
 class DreamLeaseSizingTestCase(TestCase):
