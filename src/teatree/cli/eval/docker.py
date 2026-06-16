@@ -60,7 +60,10 @@ def _image_present() -> bool:
 
 
 def _build_image(root: Path) -> int:
-    return run_streamed(["docker", "build", "-q", "-t", DOCKER_IMAGE, "-f", _DOCKERFILE, "."], cwd=root, check=False)
+    # No ``-q``: a quiet build emits NOTHING until it finishes, so a slow/hung
+    # image build is indistinguishable from a wedged runner. Streaming the build
+    # log makes the build's progress (and any stall) visible in the CI log.
+    return run_streamed(["docker", "build", "-t", DOCKER_IMAGE, "-f", _DOCKERFILE, "."], cwd=root, check=False)
 
 
 def _run_in_image(root: Path, eval_args: list[str]) -> int:
@@ -73,6 +76,11 @@ def _run_in_image(root: Path, eval_args: list[str]) -> int:
             "UV_PROJECT_ENVIRONMENT=/tmp/.venv",
             "-e",
             "HOME=/tmp",
+            # Unbuffered stdio so the in-container ``t3 eval`` per-scenario progress
+            # lines flush to the runner's log in real time instead of being held in
+            # a pipe buffer until the process exits (a buffered hang shows nothing).
+            "-e",
+            "PYTHONUNBUFFERED=1",
             "-e",
             f"{IN_CONTAINER_ENV_VAR}=1",
             *_auth_passthrough_flags(),

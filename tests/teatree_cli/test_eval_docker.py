@@ -88,6 +88,31 @@ class TestRunEvalInDocker:
         index = command.index("T3_EVAL_IN_CONTAINER=1")
         assert command[index - 1 : index + 1] == ["-e", "T3_EVAL_IN_CONTAINER=1"]
 
+    def test_build_is_not_quiet_so_build_progress_streams(self) -> None:
+        # A `-q` build emits nothing until it finishes, so a slow/hung image build
+        # is indistinguishable from a wedged runner. The build must stream.
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=False),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["all", "--free-only"])
+        build = streamed.call_args_list[0].args[0]
+        assert "-q" not in build
+
+    def test_container_run_is_unbuffered_so_per_scenario_progress_streams(self) -> None:
+        # PYTHONUNBUFFERED forces the in-container `t3 eval` per-scenario progress
+        # lines to flush live instead of sitting in a pipe buffer until exit.
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["all", "--free-only"])
+        command = streamed.call_args.args[0]
+        index = command.index("PYTHONUNBUFFERED=1")
+        assert command[index - 1 : index + 1] == ["-e", "PYTHONUNBUFFERED=1"]
+
     def test_raises_when_docker_missing(self) -> None:
         with patch(f"{_MODULE}.shutil.which", return_value=None), pytest.raises(DockerUnavailableError):
             run_eval_in_docker(["all"])
