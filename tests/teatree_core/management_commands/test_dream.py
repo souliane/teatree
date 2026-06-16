@@ -242,6 +242,25 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
         assert marker.last_succeeded_at is not None
 
 
+class DreamEmptyBatchSummaryTestCase(TestCase):
+    """A batch that distils 0 clusters from non-empty input is surfaced in the summary (#1933)."""
+
+    def test_summary_surfaces_empty_batch_count(self) -> None:
+        result = DreamRunResult(clusters_recorded=0, members_replayed=4153, dry_run=False, empty_batches=2)
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=result):
+            call_command("dream", "run", stdout=stdout)
+        out = stdout.getvalue()
+        assert "2 batch(es) returned 0 clusters from non-empty input" in out
+
+    def test_no_empty_batches_omits_the_warning(self) -> None:
+        result = DreamRunResult(clusters_recorded=3, members_replayed=781, dry_run=False, empty_batches=0)
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation", return_value=result):
+            call_command("dream", "run", stdout=stdout)
+        assert "returned 0 clusters from non-empty input" not in stdout.getvalue()
+
+
 class DreamSinceTestCase(TestCase):
     def test_run_passes_since_to_engine(self) -> None:
         captured: dict[str, object] = {}

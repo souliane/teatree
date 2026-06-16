@@ -113,10 +113,15 @@ class Command(TyperCommand):
             return False
 
         evals = f"; {result.evals_proposed} eval candidate(s)" if result.evals_proposed else ""
+        empty = (
+            f"; WARN {result.empty_batches} batch(es) returned 0 clusters from non-empty input"
+            if result.empty_batches
+            else ""
+        )
         if dry_run:
             self.stdout.write(
                 f"DRY   dream pass — {result.clusters_recorded} cluster(s) would be recorded "
-                f"from {result.members_replayed} member(s){evals}; no rows or marker written.",
+                f"from {result.members_replayed} member(s){evals}{empty}; no rows or marker written.",
             )
             return False
 
@@ -128,7 +133,7 @@ class Command(TyperCommand):
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}.",
+            f"from {result.members_replayed} member(s){evals}{empty}.",
         )
         return True
 

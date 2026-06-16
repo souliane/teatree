@@ -19,10 +19,15 @@ so the LLM prompt can never blow up.
 
 Phase 2 (cluster / distill) — the injected :class:`Distiller` groups the extract
 by root cause and returns one imperative :class:`DistilledCluster` per group,
-each citing a real mistake present in the extract. The real distiller
-(:func:`_sdk_distiller`) makes ONE bounded headless ``claude-agent-sdk`` call
-(the headless-runner invocation shape) and parses its JSON defensively; tests
-inject a fake so the engine needs no LLM.
+each citing a real mistake present in the extract. :func:`distill_in_batches`
+splits the weighted member set into tractable batches (capped by
+``T3_DREAM_MAX_DISTILL_MEMBERS``) so a single oversized call can never silently
+return nothing, then merges the per-batch clusters by ``cluster_key``; a batch
+that returns 0 clusters from a NON-empty member set is counted and logged rather
+than swallowed. The real distiller (:func:`_sdk_distiller`) makes ONE bounded
+headless ``claude-agent-sdk`` call per batch (the headless-runner invocation
+shape) and parses its JSON defensively; tests inject a fake so the engine needs
+no LLM.
 
 Phase 3 (write to the ledger) — :func:`write_clusters` rejects any uncited /
 unknown-source / blank-citation cluster (no hallucinated memories), idempotently
@@ -144,6 +149,7 @@ class DreamRunResult:
     members_replayed: int
     dry_run: bool
     evals_proposed: int = 0
+    empty_batches: int = 0
 
 
 def default_projects_dir() -> Path:
@@ -522,10 +528,13 @@ def run_consolidation(
     grounded clusters and appends them to the review queue — only candidate
     descriptors, never a scenario file or fixture.
     """
+    from teatree.loops.dream.distill import distill_in_batches  # noqa: PLC0415
+
     members = enumerate_members(since=since)
     extract = build_extract(members)
     distill = distiller or _sdk_distiller
-    clusters = distill(extract)
+    outcome = distill_in_batches(extract, distiller=distill)
+    clusters = outcome.clusters
     written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
     proposed = 0
     if eval_proposals is not None:
@@ -538,6 +547,7 @@ def run_consolidation(
         members_replayed=len(members),
         dry_run=dry_run,
         evals_proposed=proposed,
+        empty_batches=outcome.empty_batches,
     )
 
 

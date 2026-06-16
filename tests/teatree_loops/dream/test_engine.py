@@ -11,7 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import engine
+from teatree.loops.dream import distill, engine
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
@@ -62,7 +62,10 @@ class RunConsolidationSeamTestCase(TestCase):
             seen.append(extract)
             return []
 
-        run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
+        with tempfile.TemporaryDirectory() as tmp:
+            member = _write_member(Path(tmp))
+            with patch.object(engine, "enumerate_members", return_value=[member]):
+                run_consolidation(overlay="", since=None, dry_run=False, distiller=_spy)
         assert len(seen) == 1
         assert isinstance(seen[0], ConsolidationExtract)
 
@@ -571,6 +574,104 @@ class SdkDistillerParseTestCase(TestCase):
             clusters = engine._sdk_distiller(empty)
         turn.assert_not_called()
         assert clusters == []
+
+
+def _many_members(tmp_path: Path, count: int) -> list[TranscriptMember]:
+    members: list[TranscriptMember] = []
+    for i in range(count):
+        f = tmp_path / f"feedback_{i:04d}.md"
+        f.write_text(f"BINDING: lesson {i} — {_CITATION}")
+        members.append(TranscriptMember(path=f, kind="memory"))
+    return members
+
+
+class ChunkedDistillTestCase(TestCase):
+    """A large member set is distilled in batches and merged by cluster_key (#1933)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_large_member_set_is_split_into_more_than_one_batch(self) -> None:
+        members = _many_members(self.tmp, 9)
+        extract = build_extract(members)
+        seen_batch_sizes: list[int] = []
+
+        def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            seen_batch_sizes.append(len(batch.snippets))
+            return []
+
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "4"}):
+            distill.distill_in_batches(extract, distiller=_spy)
+
+        assert len(seen_batch_sizes) > 1
+        assert max(seen_batch_sizes) <= 4
+        assert sum(seen_batch_sizes) == len(extract.snippets)
+
+    def test_clusters_with_same_key_across_batches_are_merged_not_duplicated(self) -> None:
+        members = _many_members(self.tmp, 8)
+        extract = build_extract(members)
+
+        def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            return [_cluster_for(TranscriptMember(path=batch.snippets[0].path, kind="memory"), key="shared")]
+
+        with patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "3"}):
+            outcome = distill.distill_in_batches(extract, distiller=_spy)
+
+        keys = [c.cluster_key for c in outcome.clusters]
+        assert keys.count("shared") == 1
+
+    def test_run_consolidation_splits_oversized_extract(self) -> None:
+        members = _many_members(self.tmp, 10)
+        batch_count = {"n": 0}
+
+        def _spy(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            batch_count["n"] += 1
+            return []
+
+        with (
+            patch.object(engine, "enumerate_members", return_value=members),
+            patch.dict(os.environ, {"T3_DREAM_MAX_DISTILL_MEMBERS": "3"}),
+        ):
+            run_consolidation(overlay="", since=None, dry_run=True, distiller=_spy)
+
+        assert batch_count["n"] > 1
+
+
+class SilentEmptyBatchTestCase(TestCase):
+    """A batch returning 0 clusters from non-empty input is surfaced, not swallowed (#1933)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_empty_from_nonempty_batch_is_counted(self) -> None:
+        members = _many_members(self.tmp, 4)
+        with patch.object(engine, "enumerate_members", return_value=members):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.empty_batches >= 1
+
+    def test_empty_from_nonempty_batch_logs_warning(self) -> None:
+        members = _many_members(self.tmp, 4)
+        with (
+            patch.object(engine, "enumerate_members", return_value=members),
+            self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured,
+        ):
+            run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert any("0 cluster" in line for line in captured.output)
+
+    def test_productive_batch_does_not_flag_empty(self) -> None:
+        members = _many_members(self.tmp, 4)
+
+        def _one(batch: ConsolidationExtract) -> list[DistilledCluster]:
+            return [_cluster_for(TranscriptMember(path=batch.snippets[0].path, kind="memory"))]
+
+        with patch.object(engine, "enumerate_members", return_value=members):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_one)
+        assert result.empty_batches == 0
+
+    def test_empty_extract_does_not_flag_empty_batch(self) -> None:
+        with patch.object(engine, "enumerate_members", return_value=[]):
+            result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
+        assert result.empty_batches == 0
 
 
 class RunConsolidationEvalProposalTestCase(TestCase):
