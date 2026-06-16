@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from django.test import TestCase
 
 from teatree.config import Autonomy, Mode
 from teatree.core.backend_factory import OverlayBackends
@@ -74,28 +75,24 @@ def _backend(
     )
 
 
-@pytest.mark.django_db
-class TestEffectiveSettingsForOverlaySeesCollapse:
+class TestEffectiveSettingsForOverlaySeesCollapse(TestCase):
     """A.3 — the loop resolver routes through ``_apply_autonomy``."""
 
-    def test_full_overlay_resolver_sees_collapsed_values(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _stage_config(tmp_path, monkeypatch)
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_full_overlay_resolver_sees_collapsed_values(self) -> None:
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         settings = _effective_settings_for_overlay("t3-teatree")
         assert settings.autonomy is Autonomy.FULL
         assert settings.mode is Mode.AUTO
         assert settings.require_human_approval_to_merge is False
 
-    def test_notify_overlay_resolver_sees_collapsed_values(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _stage_config(tmp_path, monkeypatch)
+    def test_notify_overlay_resolver_sees_collapsed_values(self) -> None:
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-client", Autonomy.NOTIFY)
         settings = _effective_settings_for_overlay("t3-client")
         assert settings.autonomy is Autonomy.NOTIFY
@@ -103,11 +100,7 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         assert settings.require_human_approval_to_merge is False
         assert settings.notify_on_behalf is True
 
-    def test_global_interactive_mode_does_not_defeat_collapse_in_loop(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_global_interactive_mode_does_not_defeat_collapse_in_loop(self) -> None:
         """The over-pin fix is visible through the loop resolver too.
 
         A GLOBAL-scope ``mode`` row is a workspace default (not a hard pin), so
@@ -115,45 +108,37 @@ class TestEffectiveSettingsForOverlaySeesCollapse:
         global ``ConfigSetting`` (no scope), the DB-home twin of the old global
         ``[teatree] mode``.
         """
-        monkeypatch.delenv("T3_MODE", raising=False)
-        _stage_config(tmp_path, monkeypatch)
+        self.monkeypatch.delenv("T3_MODE", raising=False)
+        _stage_config(self.tmp_path, self.monkeypatch)
         ConfigSetting.objects.set_value("mode", Mode.INTERACTIVE.value)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         settings = _effective_settings_for_overlay("t3-teatree")
         assert settings.mode is Mode.AUTO
 
-    def test_babysit_overlay_resolver_keeps_conservative_values(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _stage_config(tmp_path, monkeypatch)
+    def test_babysit_overlay_resolver_keeps_conservative_values(self) -> None:
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("careful", Autonomy.BABYSIT)
         settings = _effective_settings_for_overlay("careful")
         assert settings.autonomy is Autonomy.BABYSIT
         assert settings.require_human_approval_to_merge is True
 
 
-@pytest.mark.django_db
-class TestPrSweepSoloOverlayGate:
+class TestPrSweepSoloOverlayGate(TestCase):
     """B.4 — the single-author CLEAR-skipping bypass is exclusive to ``full``."""
 
-    def test_full_overlay_enables_solo_bypass(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _stage_config(tmp_path, monkeypatch)
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_full_overlay_enables_solo_bypass(self) -> None:
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is True
 
-    def test_notify_overlay_keeps_clear_path_no_solo_bypass(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_notify_overlay_keeps_clear_path_no_solo_bypass(self) -> None:
         """``notify`` collapses the merge gates but must NOT skip the CLEAR path.
 
         The collaborative ``notify`` tier merges the user's MR only after a
@@ -161,30 +146,22 @@ class TestPrSweepSoloOverlayGate:
         ``solo_overlay = True`` would let the sweep merge an un-CLEARed MR via
         a direct ``gh pr merge``, bypassing colleague approval.
         """
-        _stage_config(tmp_path, monkeypatch)
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-client", Autonomy.NOTIFY)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-client"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is False
 
-    def test_babysit_overlay_keeps_clear_path(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _stage_config(tmp_path, monkeypatch)
+    def test_babysit_overlay_keeps_clear_path(self) -> None:
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("careful", Autonomy.BABYSIT)
         scanner = _pr_sweep_scanner_for(_backend(name="careful"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is False
 
-    def test_full_overlay_arms_auto_review_dispatch(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_full_overlay_arms_auto_review_dispatch(self) -> None:
         """``full`` autonomy collapses ``require_human_approval_to_merge`` → arms #68."""
-        _stage_config(tmp_path, monkeypatch)
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
         assert scanner is not None
@@ -192,11 +169,7 @@ class TestPrSweepSoloOverlayGate:
         assert scanner.auto_review_dispatch is True
         assert scanner.review_dispatcher is not None
 
-    def test_full_overlay_with_pinned_human_approval_disarms_auto_review_dispatch(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_full_overlay_with_pinned_human_approval_disarms_auto_review_dispatch(self) -> None:
         """An explicit ``require_human_approval_to_merge = true`` survives the collapse.
 
         ``full`` autonomy would collapse the merge gate to ``false``, but a
@@ -207,7 +180,7 @@ class TestPrSweepSoloOverlayGate:
         own review. This is the case that catches a future collapse-precedence
         regression silently arming a human-approval overlay.
         """
-        _stage_config(tmp_path, monkeypatch)
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         # A per-overlay (overlay-scoped) gate row is a HARD pin — it survives the
         # ``full`` collapse, keeping the human in the merge loop.
@@ -218,18 +191,14 @@ class TestPrSweepSoloOverlayGate:
         assert scanner.auto_review_dispatch is False
         assert scanner.review_dispatcher is None
 
-    def test_self_identities_threaded_from_backend(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_self_identities_threaded_from_backend(self) -> None:
         """#2210: the operator's identity set is wired so the review-arm is own-PR scoped.
 
         ``backend.identities`` (the multi-alias self set) must reach the
         scanner — without it ``pr_authored_by_self`` has no identity set to
         match against and (fail-closed) would arm nothing, defeating #68.
         """
-        _stage_config(tmp_path, monkeypatch)
+        _stage_config(self.tmp_path, self.monkeypatch)
         _stage_autonomy("t3-teatree", Autonomy.FULL)
         backend = _backend(name="t3-teatree", identities=("souliane", "souliane-alt"))
         scanner = _pr_sweep_scanner_for(backend, slack_user_id="")

@@ -81,15 +81,15 @@ def test_tick_with_no_scanners_writes_tick_meta(tmp_path: Path) -> None:
     assert data["cadence"] == 720
 
 
-@pytest.mark.django_db
-class TestTickMetaCadence:
+class TestTickMetaCadence(django.test.TestCase):
     """``loop_cadence_seconds`` is DB-home (#1775): the tick meta reads it from the store."""
 
-    def test_tick_meta_cadence_falls_back_to_db_setting(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_tick_meta_cadence_falls_back_to_db_setting(self) -> None:
         # #1036: tick-meta.json `cadence` (drives the statusline next-tick
         # countdown) must honor the configured loop_cadence_seconds when
         # T3_LOOP_CADENCE is unset, never diverging from the slot cadence.
@@ -97,12 +97,12 @@ class TestTickMetaCadence:
         # ConfigSetting store, not [teatree] TOML (ignored on read).
         from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
-        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
         ConfigSetting.objects.set_value("loop_cadence_seconds", 300)
-        statusline = tmp_path / "statusline.txt"
+        statusline = self.tmp_path / "statusline.txt"
         started = dt.datetime(2026, 5, 6, tzinfo=dt.UTC)
         run_tick(TickRequest(scanners=[]), statusline_path=statusline, now=started)
-        meta = tmp_path / "tick-meta.json"
+        meta = self.tmp_path / "tick-meta.json"
         data = json.loads(meta.read_text(encoding="utf-8"))
         assert data["cadence"] == 300
         assert data["next_epoch"] == int(started.timestamp()) + 300
@@ -265,18 +265,14 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
-@pytest.mark.django_db
-class TestUserIdentityAliasWiring:
-    """``user_identity_aliases`` is DB-home (#1775): global + per-overlay rows wire it.
+class TestUserIdentityAliasWiring(django.test.TestCase):
+    """``user_identity_aliases`` is DB-home (#1775): global + per-overlay rows wire it."""
 
-    A class-based ``@pytest.mark.django_db`` group (the project rule for DB tests
-    that still need pytest fixtures like ``monkeypatch`` — see souliane/teatree#98).
-    """
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
 
-    def test_build_default_jobs_propagates_user_identity_aliases(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_build_default_jobs_propagates_user_identity_aliases(self) -> None:
         """``user_identity_aliases`` lands on TicketDispositionScanner.
 
         Wiring proof for #975 — the loop reads the global setting and hands
@@ -292,8 +288,8 @@ class TestUserIdentityAliasWiring:
         from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
 
         ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "acme.work"])
-        monkeypatch.setattr("teatree.config.discover_overlays", list)
-        monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
+        self.monkeypatch.setattr("teatree.config.discover_overlays", list)
+        self.monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
         backends = [
             OverlayBackends(
@@ -307,10 +303,7 @@ class TestUserIdentityAliasWiring:
         disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
         assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane", "acme.work")
 
-    def test_user_identity_aliases_no_override_inherits_global(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_user_identity_aliases_no_override_inherits_global(self) -> None:
         """An overlay with no per-overlay override sees the global setting.
 
         #1775: the global value is a GLOBAL-scope ``ConfigSetting`` row; with no
@@ -324,16 +317,13 @@ class TestUserIdentityAliasWiring:
         # ``acme`` is registered without a per-overlay DB row, so it inherits the
         # GLOBAL-scope value. Its (empty) per-overlay TOML overrides are ignored
         # for a DB-home key.
-        monkeypatch.setattr(
+        self.monkeypatch.setattr(
             "teatree.config.discover_overlays",
             lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
         )
         assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
 
-    def test_build_default_jobs_per_overlay_alias_override(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_build_default_jobs_per_overlay_alias_override(self) -> None:
         """Per-overlay override beats the global ``user_identity_aliases`` for that overlay.
 
         The setting is registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (#975),
@@ -350,8 +340,8 @@ class TestUserIdentityAliasWiring:
 
         ConfigSetting.objects.set_value("user_identity_aliases", ["global-only"])
         ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane"], scope="scoped")
-        monkeypatch.setattr("teatree.config.discover_overlays", list)
-        monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
+        self.monkeypatch.setattr("teatree.config.discover_overlays", list)
+        self.monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
         backends = [
             OverlayBackends(

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_protocols import PullRequestSpec
@@ -163,14 +164,6 @@ class TestConfigLoader:
         config = load_config(path)
         assert config.user.ban_close_trailers_on_namespaces == []
 
-    @pytest.mark.django_db
-    def test_resolves_namespace_patterns_from_db_store(self) -> None:
-        # ``ban_close_trailers_on_namespaces`` is DB-home (#1775): a GLOBAL
-        # ``ConfigSetting`` row supplies the patterns (a ``[teatree.publish_gates]``
-        # value would be ignored on read).
-        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["eng-group/*", "acme/*"])
-        assert get_effective_settings().ban_close_trailers_on_namespaces == ["eng-group/*", "acme/*"]
-
     def test_missing_section_defaults_to_empty(self, tmp_path: Path) -> None:
         path = tmp_path / ".teatree.toml"
         _write_toml(path, '[teatree]\nbranch_prefix = "ac"\n')
@@ -189,6 +182,16 @@ ban_close_trailers_on_namespaces = "not-a-list"
         )
         config = load_config(path)
         assert config.user.ban_close_trailers_on_namespaces == []
+
+
+class TestConfigLoaderDbHome(TestCase):
+    """``ban_close_trailers_on_namespaces`` is DB-home (#1775): set in the store."""
+
+    def test_resolves_namespace_patterns_from_db_store(self) -> None:
+        # A GLOBAL ``ConfigSetting`` row supplies the patterns (a
+        # ``[teatree.publish_gates]`` value would be ignored on read).
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["eng-group/*", "acme/*"])
+        assert get_effective_settings().ban_close_trailers_on_namespaces == ["eng-group/*", "acme/*"]
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

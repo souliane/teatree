@@ -8,8 +8,8 @@ through the typer ``CliRunner`` against the same ``speed`` subgroup the overlay
 app builder attaches via :func:`teatree.cli.speed.register_speed_commands`.
 """
 
-import pytest
 import typer
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.speed import register_speed_commands
@@ -25,8 +25,7 @@ def _app() -> typer.Typer:
     return app
 
 
-@pytest.mark.django_db
-class TestSpeedSet:
+class TestSpeedSet(TestCase):
     def test_set_writes_global_speed_row(self) -> None:
         result = runner.invoke(_app(), ["speed", "set", "full"])
         assert result.exit_code == 0
@@ -55,8 +54,7 @@ class TestSpeedSet:
         assert ConfigSetting.objects.count() == 0
 
 
-@pytest.mark.django_db
-class TestSpeedShow:
+class TestSpeedShow(TestCase):
     def test_show_reports_effective_value(self) -> None:
         ConfigSetting.objects.set_value("speed", Speed.FULL.value)
         result = runner.invoke(_app(), ["speed", "show"])

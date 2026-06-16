@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import typer
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.autonomy import register_autonomy_commands
@@ -34,8 +35,7 @@ def _app() -> typer.Typer:
     return app
 
 
-@pytest.mark.django_db
-class TestAutonomySetGlobal:
+class TestAutonomySetGlobal(TestCase):
     def test_global_writes_global_scope_row(self) -> None:
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--global"])
         assert result.exit_code == 0
@@ -56,8 +56,12 @@ class TestAutonomySetGlobal:
         assert ConfigSetting.objects.get_effective("autonomy", scope="t3-teatree") == Autonomy.NOTIFY.value
 
 
-@pytest.mark.django_db
-class TestAutonomySetPerOverlay:
+class TestAutonomySetPerOverlay(TestCase):
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
     def test_named_overlay_writes_overlay_scope_row(self) -> None:
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "t3-teatree"])
         assert result.exit_code == 0
@@ -72,7 +76,7 @@ class TestAutonomySetPerOverlay:
         # ... while the new overlay gets full.
         assert ConfigSetting.objects.get_effective("autonomy", scope="t3-teatree") == Autonomy.FULL.value
 
-    def test_defaults_to_active_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_defaults_to_active_overlay(self) -> None:
         """With no --overlay, the value lands in the active overlay's scope (real resolver).
 
         Overlay discovery is RAW/TOML (#1775 KEEP-TOML): a bare
@@ -80,38 +84,36 @@ class TestAutonomySetPerOverlay:
         active overlay. The autonomy *value* itself is DB-home, so the write
         lands as an overlay-scoped ``ConfigSetting`` row, not a TOML key.
         """
-        config_path = tmp_path / ".teatree.toml"
+        config_path = self.tmp_path / ".teatree.toml"
         config_path.write_text("[teatree]\n[overlays.t3-active]\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
-        monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
-        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-active")
+        self.monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
+        self.monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-active")
         result = runner.invoke(_app(), ["autonomy", "set", "full"])
         assert result.exit_code == 0
         assert ConfigSetting.objects.get_effective("autonomy", scope="t3-active") == Autonomy.FULL.value
 
-    def test_no_active_overlay_and_no_target_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_active_overlay_and_no_target_refuses(self) -> None:
         """No --overlay, no --global, and no resolvable active overlay → refuse, write nothing."""
         # No installed overlays and a cwd free of manage.py → no active overlay resolves.
-        monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        away = tmp_path / "no_manage"
+        self.monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+        self.monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        away = self.tmp_path / "no_manage"
         away.mkdir()
-        monkeypatch.chdir(away)
+        self.monkeypatch.chdir(away)
         result = runner.invoke(_app(), ["autonomy", "set", "full"])
         assert result.exit_code == 1
         assert ConfigSetting.objects.count() == 0
 
 
-@pytest.mark.django_db
-class TestAutonomySetValidation:
+class TestAutonomySetValidation(TestCase):
     def test_typo_is_rejected_and_writes_nothing(self) -> None:
         result = runner.invoke(_app(), ["autonomy", "set", "yolo", "--global"])
         assert result.exit_code == 1
         assert ConfigSetting.objects.count() == 0
 
 
-@pytest.mark.django_db
-class TestAutonomyShow:
+class TestAutonomyShow(TestCase):
     def test_show_reports_effective_value(self) -> None:
         ConfigSetting.objects.set_value("autonomy", Autonomy.NOTIFY.value)
         result = runner.invoke(_app(), ["autonomy", "show"])
@@ -153,8 +155,7 @@ def isolated_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return cfg
 
 
-@pytest.mark.django_db
-class TestAutonomyKnobCollapsesGatesNotFloor:
+class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
     """The knob the CLI persists flips the approval gates, never the safety floor.
 
     These round-trip through ``get_effective_settings`` after the CLI write so
@@ -163,17 +164,18 @@ class TestAutonomyKnobCollapsesGatesNotFloor:
     just asserted on the raw store.
     """
 
-    def test_full_must_allow_colleague_autoapprove_and_automerge(
-        self,
-        isolated_resolution: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, isolated_resolution: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.isolated_resolution = isolated_resolution
+        self.monkeypatch = monkeypatch
+
+    def test_full_must_allow_colleague_autoapprove_and_automerge(self) -> None:
         """``autonomy set full`` collapses on-behalf-post (colleague approve) + merge gates."""
-        isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
+        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
         result = runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
         assert result.exit_code == 0
 
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
         # must-ALLOW: colleague auto-approve (on-behalf posts publish immediately)
         # and the loop's auto-merge are both unblocked.
@@ -183,34 +185,26 @@ class TestAutonomyKnobCollapsesGatesNotFloor:
         # And the merge-autonomy path is actually reachable (gated on mode == AUTO).
         assert settings.mode is Mode.AUTO
 
-    def test_full_must_deny_relaxing_the_safety_floor(
-        self,
-        isolated_resolution: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_full_must_deny_relaxing_the_safety_floor(self) -> None:
         """A full-autonomy overlay never relaxes privacy / never-lockout — the floor stays on."""
-        isolated_resolution.write_text('[teatree]\nprivacy = "strict"\n', encoding="utf-8")
+        self.isolated_resolution.write_text('[teatree]\nprivacy = "strict"\n', encoding="utf-8")
         runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
 
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
         assert settings.privacy == "strict"
         # never-lockout / self-rescue posture (the orchestrator bash gate) untouched.
         assert settings.orchestrator_bash_gate_enabled is True
 
-    def test_babysit_must_deny_autonomous_merge_and_approve(
-        self,
-        isolated_resolution: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_babysit_must_deny_autonomous_merge_and_approve(self) -> None:
         """``autonomy set babysit`` keeps every approval gate blocking (the conservative default)."""
-        isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
+        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
         # ``mode = auto`` is a per-overlay opinion; under the partition it is the
         # overlay-scoped DB row, not a ``[overlays.<name>]`` TOML key.
         ConfigSetting.objects.set_value("mode", Mode.AUTO.value, scope="careful")
         runner.invoke(_app(), ["autonomy", "set", "babysit", "--overlay", "careful"])
 
-        monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.BABYSIT
         # must-DENY: even with mode = auto, the gates stay blocking under babysit.

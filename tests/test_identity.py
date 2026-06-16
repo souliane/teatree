@@ -10,6 +10,7 @@ is exercised end-to-end through ``agent_signature_enabled`` / ``_suffix``.
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
 from teatree.identity import agent_signature_enabled, agent_signature_suffix
@@ -33,8 +34,7 @@ def test_signature_disabled_when_no_config(config_file: Path) -> None:
     assert agent_signature_suffix("\nCo-Authored-By: agent <a@b>") == ""
 
 
-@pytest.mark.django_db
-class TestSignatureEnabled:
+class TestSignatureEnabled(TestCase):
     """Enabling the signature is the DB-home ``agent_signature`` row (#1775)."""
 
     def test_signature_enabled_passes_suffix_through(self) -> None:

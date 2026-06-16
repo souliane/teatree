@@ -14,6 +14,7 @@ opted into ``create`` / ``dummy``.
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 from teatree.config import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, MissingIssuePolicy, load_config
 from teatree.core.models import ConfigSetting
@@ -65,8 +66,7 @@ class TestDefaultPolicy:
         )
 
 
-@pytest.mark.django_db
-class TestExplicitCreatePolicy:
+class TestExplicitCreatePolicy(TestCase):
     """``create`` is opt-in: it authorises auto-create on colleague repos too.
 
     ``missing_issue_ref_policy`` is DB-home (#1775): the opt-in value is the
@@ -86,8 +86,7 @@ class TestExplicitCreatePolicy:
         )
 
 
-@pytest.mark.django_db
-class TestExplicitDummyPolicy:
+class TestExplicitDummyPolicy(TestCase):
     """``dummy`` is opt-in: it authorises a placeholder ref on colleague repos too.
 
     DB-home (#1775): the opt-in value is the GLOBAL-scope ``ConfigSetting`` row.
@@ -105,9 +104,12 @@ class TestExplicitDummyPolicy:
         )
 
 
-@pytest.mark.django_db
-class TestPerOverlayOverride:
-    def test_per_overlay_override_wins_over_global(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestPerOverlayOverride(TestCase):
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
+    def test_per_overlay_override_wins_over_global(self) -> None:
         """A trusted overlay can opt into ``create`` without flipping the global.
 
         DB-home (#1775): both tiers are ``ConfigSetting`` rows — the global value
@@ -116,7 +118,7 @@ class TestPerOverlayOverride:
         """
         ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.FIND_EXISTING_THEN_ASK.value)
         ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.CREATE.value, scope="trusted")
-        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.CREATE
 
 
@@ -127,8 +129,7 @@ class TestEnvOverride:
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.DUMMY
 
 
-@pytest.mark.django_db
-class TestInvalidValue:
+class TestInvalidValue(TestCase):
     def test_typo_raises_loud(self) -> None:
         """An invalid stored value is raised LOUD with the key named (#1775).
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.loop import _cadence_for_loop_slot, loop_app
@@ -88,22 +89,25 @@ class TestCadenceParser:
         monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
         assert _cadence_for_loop_slot() == "12m"
 
-    @pytest.mark.django_db
-    def test_uses_db_cadence_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+
+class TestCadenceParserDbHome(TestCase):
+    """``loop_cadence_seconds`` is DB-home (#1775): the slot cadence reads the store."""
+
+    @pytest.fixture(autouse=True)
+    def _monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
+    def test_uses_db_cadence_when_env_unset(self) -> None:
         # #1036: with no T3_LOOP_CADENCE env, the slot cadence falls back to
         # the resolved ``loop_cadence_seconds``, not the hardcoded 720 default.
-        # #1775: ``loop_cadence_seconds`` is a DB-home setting, so it is staged
-        # through the ``ConfigSetting`` store (a ``[teatree]`` TOML value for it
-        # is ignored on read).
-        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
         ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
         assert _cadence_for_loop_slot() == "1m"
 
-    @pytest.mark.django_db
-    def test_env_overrides_db_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_overrides_db_cadence(self) -> None:
         # #1036: env wins over the resolved DB value (established precedence).
         ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
-        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
+        self.monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         assert _cadence_for_loop_slot() == "10m"
 
 

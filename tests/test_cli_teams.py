@@ -8,7 +8,7 @@ the typer ``CliRunner`` against the same ``teams`` app the root CLI registers vi
 :data:`teatree.cli.teams.teams_app`.
 """
 
-import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.teams import teams_app
@@ -18,8 +18,7 @@ from teatree.core.models import ConfigSetting
 runner = CliRunner()
 
 
-@pytest.mark.django_db
-class TestTeamsOff:
+class TestTeamsOff(TestCase):
     def test_off_writes_teams_enabled_false(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=True)
         result = runner.invoke(teams_app, ["off"])
@@ -32,8 +31,7 @@ class TestTeamsOff:
         assert ConfigSetting.objects.get_effective("teams_enabled") is False
 
 
-@pytest.mark.django_db
-class TestTeamsOn:
+class TestTeamsOn(TestCase):
     def test_on_writes_teams_enabled_true(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=False)
         result = runner.invoke(teams_app, ["on"])
@@ -48,8 +46,7 @@ class TestTeamsOn:
         assert ConfigSetting.objects.get_effective("speed") == "full"
 
 
-@pytest.mark.django_db
-class TestTeamsStatus:
+class TestTeamsStatus(TestCase):
     def test_status_reflects_enabled(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=True)
         result = runner.invoke(teams_app, ["status"])
@@ -78,8 +75,7 @@ class TestTeamsStatus:
         assert ConfigSetting.objects.get_effective("teams_enabled") is True
 
 
-@pytest.mark.django_db
-class TestStatusReflectsRoundTrip:
+class TestStatusReflectsRoundTrip(TestCase):
     def test_off_then_status_reports_off(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=True)
         assert runner.invoke(teams_app, ["off"]).exit_code == 0
