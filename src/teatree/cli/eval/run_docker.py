@@ -12,6 +12,7 @@ import dataclasses
 import typer
 
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.metered_routing import should_route_to_docker
 from teatree.eval.backends import SUBSCRIPTION_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
 
@@ -69,13 +70,48 @@ class RunDockerArgs:
 
 
 def run_in_docker_or_exit(
-    args: RunDockerArgs, *, baseline: bool, gate_regressions: bool, gate_cost_regression: bool
+    args: RunDockerArgs,
+    *,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
 ) -> None:
-    if baseline or gate_regressions or gate_cost_regression:
+    if baseline or gate_regressions or gate_cost_regression or gate_cost_bounds:
         typer.echo(
-            "--docker runs in an ephemeral container, so it cannot update or compare the "
-            "durable baseline; drop --baseline/--gate-regressions/--gate-cost-regression or run on the host.",
+            "--docker runs in an ephemeral container, so it cannot update or read the durable "
+            "run-history the gates consume; drop --baseline/--gate-regressions/"
+            "--gate-cost-regression/--gate-cost-bounds or run on the host.",
             err=True,
         )
         raise typer.Exit(code=2)
     args.dispatch()
+
+
+def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-history flag forwarded with the run args.
+    args: RunDockerArgs,
+    *,
+    docker: bool,
+    metered: bool,
+    local: bool,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
+) -> None:
+    """Forward the run into the CI image when the metered lane (or ``--docker``) requires it.
+
+    A no-op on the host path. When routing, the durable-history flags are
+    rejected first (:func:`run_in_docker_or_exit`) because the in-container run is
+    ``--no-persist``, then the run is dispatched into the container (which exits
+    the process).
+    """
+    if not (docker or should_route_to_docker(metered=metered, local=local)):
+        return
+    run_in_docker_or_exit(
+        args,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )

@@ -15,13 +15,14 @@ from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
 from teatree.cli.eval.corpus import corpus_app
+from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
-from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
+from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
-from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
+from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     RunGuards,
@@ -180,6 +181,17 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "(default 0.20 = +20% vs the baseline). A scenario rising more than this exits non-zero."
         ),
     ),
+    gate_cost_bounds: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--gate-cost-bounds",
+        help=(
+            "Check this run's per-scenario cost against the CHECKED-IN ceilings in "
+            "evals/cost_bounds.yaml (calibrated bound x (1 + margin)). A scenario over its "
+            "ceiling — OR a configured scenario the run recorded no cost for (fail-loud, never "
+            "skip-as-pass) — exits non-zero. The absolute-ceiling counterpart of "
+            "--gate-cost-regression (relative drift vs the mutable DB baseline)."
+        ),
+    ),
     judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--judge/--no-judge",
@@ -288,26 +300,29 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     effort_level = require_effort(effort)
     max_turns = resolve_max_turns_override(max_turns)
     metered = backend == SDK_BACKEND or trials > 1 or models is not None
-    if docker or should_route_to_docker(metered=metered, local=local):
-        run_in_docker_or_exit(
-            RunDockerArgs(
-                name=name,
-                lane=lane,
-                output_format=output_format,
-                max_turns=max_turns,
-                max_budget_usd=max_budget_usd,
-                effort=effort_level,
-                trials=trials,
-                require=require,
-                models=models,
-                backend=backend,
-                require_executed=require_executed,
-                parallel=parallel,
-            ),
-            baseline=baseline,
-            gate_regressions=gate_regressions,
-            gate_cost_regression=gate_cost_regression,
-        )
+    route_to_docker_if_needed(
+        RunDockerArgs(
+            name=name,
+            lane=lane,
+            output_format=output_format,
+            max_turns=max_turns,
+            max_budget_usd=max_budget_usd,
+            effort=effort_level,
+            trials=trials,
+            require=require,
+            models=models,
+            backend=backend,
+            require_executed=require_executed,
+            parallel=parallel,
+        ),
+        docker=docker,
+        metered=metered,
+        local=local,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
     if local:
         warn_local_metered(metered=metered)
     ensure_django()
@@ -343,6 +358,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_regressions=gate_regressions,
             gate_cost_regression=gate_cost_regression,
             cost_regression_tolerance=cost_regression_tolerance,
+            gate_cost_bounds=gate_cost_bounds,
             grader=grader,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
@@ -361,6 +377,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_regressions=gate_regressions,
             gate_cost_regression=gate_cost_regression,
             cost_regression_tolerance=cost_regression_tolerance,
+            gate_cost_bounds=gate_cost_bounds,
             grader=grader,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
@@ -398,6 +415,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         gate_regressions=gate_regressions,
         gate_cost_regression=gate_cost_regression,
         cost_regression_tolerance=cost_regression_tolerance,
+        gate_cost_bounds=gate_cost_bounds,
     ):
         sys.exit(1)
 
@@ -430,44 +448,7 @@ def prepare_subscription(
     typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
 
 
-@eval_app.command("history")
-def history(
-    limit: int = typer.Option(20, "--limit", help="Maximum number of recent runs to show."),
-    model: str | None = typer.Option(None, "--model", help="Filter to one model's runs."),
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-    show_baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--baseline",
-        help="Show only the current baseline run(s) and their per-scenario pass-rate.",
-    ),
-    mark_baseline: int | None = typer.Option(
-        None,
-        "--mark-baseline",
-        help="Mark the run with this id as the baseline for its model, then show history.",
-    ),
-) -> None:
-    """Show recent eval runs and per-scenario pass-rate over time.
-
-    The data substrate the model-regression diff reads. ``--baseline`` shows the
-    current reference run per model; ``--mark-baseline <id>`` promotes a run to
-    baseline (demoting the prior baseline for that model).
-    """
-    ensure_django()
-    require_valid_format(output_format)
-    from teatree.cli.eval.history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
-    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
-
-    if mark_baseline is not None and not mark_run_baseline(mark_baseline):
-        typer.echo(f"unknown run id: {mark_baseline}", err=True)
-        raise typer.Exit(code=2)
-    runs = EvalRunRecord.objects.all()
-    if model is not None:
-        runs = runs.for_model(model)
-    if show_baseline:
-        runs = runs.baselines()
-    runs = list(runs[:limit])
-    renderer = render_history_json if output_format == "json" else render_history_text
-    typer.echo(renderer(runs))
+eval_app.command("history")(history_command)
 
 
 @eval_app.callback(invoke_without_command=True)

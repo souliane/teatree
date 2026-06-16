@@ -67,7 +67,13 @@ variables:
     # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a
     # collected-but-all-skipped run exits non-zero, so the suite can never pass
     # green with zero behavioral coverage (souliane/teatree#1811).
-    - uv run t3 eval run --trials 3 --require any --backend sdk --require-executed
+    # `--gate-cost-bounds` checks each scenario's metered cost against the
+    # CHECKED-IN ceilings in `evals/cost_bounds.yaml` (calibrated bound x
+    # (1 + margin)); a scenario over its ceiling — or a configured scenario that
+    # metered $0 — fails the weekly run loud. It reads the just-persisted run
+    # (no `--docker` here, so the ledger is on the runner), keeping the cost gate
+    # weekly/manual, off the per-MR path.
+    - uv run t3 eval run --trials 3 --require any --backend sdk --require-executed --gate-cost-bounds
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.

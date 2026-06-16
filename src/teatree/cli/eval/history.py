@@ -6,9 +6,15 @@ per-scenario pass-rate. The aggregation itself lives on the models
 """
 
 import json
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-from teatree.core.models import EvalRunRecord
+import typer
+
+from teatree.cli._format_opts import require_valid_format
+from teatree.utils.django_bootstrap import ensure_django
+
+if TYPE_CHECKING:
+    from teatree.core.models import EvalRunRecord
 
 
 class HistoryPassRate(TypedDict):
@@ -34,6 +40,8 @@ class HistoryRun(TypedDict):
 
 
 def mark_run_baseline(run_id: int) -> bool:
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+
     run = EvalRunRecord.objects.filter(pk=run_id).first()
     if run is None:
         return False
@@ -41,7 +49,7 @@ def mark_run_baseline(run_id: int) -> bool:
     return True
 
 
-def _run_dict(run: EvalRunRecord) -> HistoryRun:
+def _run_dict(run: "EvalRunRecord") -> HistoryRun:
     return HistoryRun(
         id=run.pk,
         started_at=run.started_at.isoformat(),
@@ -62,11 +70,11 @@ def _run_dict(run: EvalRunRecord) -> HistoryRun:
     )
 
 
-def render_history_json(runs: list[EvalRunRecord]) -> str:
+def render_history_json(runs: list["EvalRunRecord"]) -> str:
     return json.dumps({"runs": [_run_dict(run) for run in runs]}, indent=2)
 
 
-def render_history_text(runs: list[EvalRunRecord]) -> str:
+def render_history_text(runs: list["EvalRunRecord"]) -> str:
     if not runs:
         return "(no eval runs recorded)"
     lines: list[str] = []
@@ -81,3 +89,41 @@ def render_history_text(runs: list[EvalRunRecord]) -> str:
             for r in run.pass_rates()
         )
     return "\n".join(lines)
+
+
+def history_command(
+    limit: int = typer.Option(20, "--limit", help="Maximum number of recent runs to show."),
+    model: str | None = typer.Option(None, "--model", help="Filter to one model's runs."),
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    show_baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--baseline",
+        help="Show only the current baseline run(s) and their per-scenario pass-rate.",
+    ),
+    mark_baseline: int | None = typer.Option(
+        None,
+        "--mark-baseline",
+        help="Mark the run with this id as the baseline for its model, then show history.",
+    ),
+) -> None:
+    """Show recent eval runs and per-scenario pass-rate over time.
+
+    The data substrate the model-regression diff reads. ``--baseline`` shows the
+    current reference run per model; ``--mark-baseline <id>`` promotes a run to
+    baseline (demoting the prior baseline for that model).
+    """
+    ensure_django()
+    require_valid_format(output_format)
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+
+    if mark_baseline is not None and not mark_run_baseline(mark_baseline):
+        typer.echo(f"unknown run id: {mark_baseline}", err=True)
+        raise typer.Exit(code=2)
+    runs = EvalRunRecord.objects.all()
+    if model is not None:
+        runs = runs.for_model(model)
+    if show_baseline:
+        runs = runs.baselines()
+    runs = list(runs[:limit])
+    renderer = render_history_json if output_format == "json" else render_history_text
+    typer.echo(renderer(runs))

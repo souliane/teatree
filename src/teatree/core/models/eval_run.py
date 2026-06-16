@@ -310,6 +310,16 @@ class EvalRunRecord(models.Model):
             for name in scenarios
         ]
 
+    def costs_by_scenario(self, *, model: str | None = None) -> dict[str, float]:
+        """Per-scenario total ``cost_usd`` for this run, optionally filtered to one model.
+
+        The recorded-cost map the declarative cost-bounds gate
+        (:func:`teatree.eval.cost_bounds.check_cost_bounds`) checks against its
+        checked-in ceilings. Sums across rows sharing a scenario name, the same
+        way :meth:`cost_regression_diff` aggregates its sides.
+        """
+        return _costs_by_scenario(self, model=model)
+
 
 def _costs_by_scenario(run: "EvalRunRecord", *, model: str | None) -> dict[str, float]:
     """Per-scenario total ``cost_usd`` for *run*, optionally filtered to one model.
