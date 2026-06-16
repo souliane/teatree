@@ -65,7 +65,7 @@ def _make_upstream_with_branches(base: Path, branches: tuple[str, ...]) -> Path:
     """Create a real upstream repo carrying *branches*; return its path (the clone URL)."""
     upstream = base / "upstream"
     upstream.mkdir()
-    _git(upstream, "init", "-q")
+    _git(upstream, "init", "-q", "-b", "main")
     _git(upstream, "config", "user.email", "t@example.com")
     _git(upstream, "config", "user.name", "Test")
     (upstream / "e2e").mkdir()
