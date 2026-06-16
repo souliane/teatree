@@ -8,6 +8,7 @@ single-pass grade.
 
 import json
 import sys
+from collections.abc import Callable
 
 import typer
 from claude_agent_sdk.types import EffortLevel
@@ -25,7 +26,7 @@ from teatree.eval.backends import SDK_BACKEND, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
-from teatree.eval.pass_at_k import run_pass_at_k
+from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.sdk_runner import MAX_BUDGET_USD
 
@@ -35,6 +36,36 @@ from teatree.eval.sdk_runner import MAX_BUDGET_USD
 #: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
 #: ERRORED so the rest of the comparison table is still produced.
 MAX_MATRIX_CELL_RETRIES = 2
+
+
+def _emit_progress(line: str) -> None:
+    """Print one flushed progress line to stderr so the CI log streams it live.
+
+    The metered suite runs each scenario inside a silent list-comprehension; with
+    no per-scenario emission a hang produces ZERO output until the whole suite
+    ends (and GitHub never exposes an in-progress job's log blob), so a hung run
+    is indistinguishable from a slow one. A flushed ``RUN``/``DONE`` line per
+    scenario streams to the runner's stdout in real time: the suite is visibly
+    advancing, and a hang leaves the last ``RUN <scenario>`` line as the pinpoint.
+    """
+    print(line, file=sys.stderr, flush=True)  # noqa: T201 — load-bearing live progress; see docstring.
+
+
+def _run_scenario_with_progress(
+    spec: EvalSpec,
+    trial: Callable[[EvalSpec], ScenarioResult],
+    *,
+    trials: int,
+    require: str,
+    position: tuple[int, int],
+) -> PassAtKResult:
+    """Run one pass@k scenario, bracketed by flushed RUN/DONE progress lines."""
+    index, total = position
+    _emit_progress(f"RUN  [{index}/{total}] {spec.name} (k={trials}, require={require})")
+    result = run_pass_at_k(spec, trial, k=trials, require=require)
+    verdict = "SKIP" if result.skipped else ("PASS" if result.ok else "FAIL")
+    _emit_progress(f"DONE [{index}/{total}] {spec.name}: {verdict} ({result.passes}/{result.trials})")
+    return result
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -79,7 +110,11 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         return evaluate(spec, runner.run(spec), judge=grader)
 
     effective_specs = [with_model(spec, model_override) for spec in specs] if model_override else specs
-    results = [run_pass_at_k(spec, _trial, k=trials, require=require) for spec in effective_specs]
+    total = len(effective_specs)
+    results = [
+        _run_scenario_with_progress(spec, _trial, trials=trials, require=require, position=(index, total))
+        for index, spec in enumerate(effective_specs, start=1)
+    ]
     if output_format == "json":
         typer.echo(
             json.dumps(
