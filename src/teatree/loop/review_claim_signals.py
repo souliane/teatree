@@ -19,6 +19,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, cast
 
+from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -47,7 +48,6 @@ def review_loop_enabled() -> bool:
     cures the over-claim, not this gate.
     """
     try:
-        from teatree.loop.loop_state_db import loop_held_in_db  # noqa: PLC0415
         from teatree.loop_enabled import loop_enabled_by_name  # noqa: PLC0415
 
         if loop_held_in_db(_REVIEW_LOOP_NAME):
