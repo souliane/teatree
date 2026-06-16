@@ -15,7 +15,14 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
-from teatree.eval.judge import ClaudeJudge, JudgeBudget, JudgeBudgetExceededError, build_judge_prompt
+from teatree.eval.judge import (
+    JUDGE_DEFAULT_BUDGET_USD,
+    ClaudeJudge,
+    JudgeBudget,
+    JudgeBudgetExceededError,
+    build_judge_prompt,
+    resolve_judge_budget_usd,
+)
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 
 
@@ -91,6 +98,20 @@ class TestJudgeBudget:
         budget.consume()
         with pytest.raises(JudgeBudgetExceededError):
             budget.consume()
+
+
+class TestResolveJudgeBudget:
+    def test_default_is_the_generous_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_EVAL_JUDGE_MAX_BUDGET_USD", raising=False)
+        assert resolve_judge_budget_usd() == pytest.approx(JUDGE_DEFAULT_BUDGET_USD)
+
+    def test_env_override_raises_the_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_EVAL_JUDGE_MAX_BUDGET_USD", "2.5")
+        assert resolve_judge_budget_usd() == pytest.approx(2.5)
+
+    def test_non_positive_override_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_EVAL_JUDGE_MAX_BUDGET_USD", "0")
+        assert resolve_judge_budget_usd() == pytest.approx(JUDGE_DEFAULT_BUDGET_USD)
 
 
 class TestClaudeJudgeGrade:
@@ -179,7 +200,41 @@ class TestClaudeJudgeGrade:
         spec = _spec(judge=JudgeSpec(rubric="x", model="sonnet"))
         _verdict, captured = self._grade(spec, [_result(structured_output={"verdict": "PASS", "reason": "ok"})])
         assert captured["options"].model == "sonnet"
-        assert captured["options"].max_budget_usd is not None
+        assert captured["options"].max_budget_usd == pytest.approx(JUDGE_DEFAULT_BUDGET_USD)
+
+    def test_judge_budget_cap_fails_one_cell_not_the_whole_suite(self) -> None:
+        spec = _spec(judge=JudgeSpec(rubric="x"))
+
+        async def _over_budget(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            msg = "Claude Code returned an error result: Reached maximum budget ($0.5)"
+            raise RuntimeError(msg)
+            yield  # pragma: no cover
+
+        with (
+            patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.eval.judge.query", _over_budget),
+        ):
+            verdict = ClaudeJudge().grade(spec, _run())
+        assert verdict.passed is False
+        assert verdict.skipped is False
+        assert "budget_exceeded" in verdict.rationale
+
+    def test_unknown_judge_error_propagates(self) -> None:
+        spec = _spec(judge=JudgeSpec(rubric="x"))
+
+        async def _boom(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            msg = "kaboom: judge process crashed"
+            raise RuntimeError(msg)
+            yield  # pragma: no cover
+
+        with (
+            patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
+            patch("teatree.eval.judge.query", _boom),
+            pytest.raises(RuntimeError, match="kaboom"),
+        ):
+            ClaudeJudge().grade(spec, _run())
 
     def test_json_schema_output_format_requested(self) -> None:
         spec = _spec(judge=JudgeSpec(rubric="x"))
