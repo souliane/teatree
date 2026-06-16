@@ -1,6 +1,7 @@
 """Named single-responsibility phases of one loop tick.
 
-``run_tick`` composes these phases instead of carrying the work inline:
+``run_tick`` is a thin pipeline that composes these phases instead of
+carrying the work inline:
 
 *   :func:`scan_phase` — the read-then-signal stage: run the scan jobs in
     parallel and collect their signals + per-scanner errors.
@@ -17,10 +18,15 @@
     claimed manifest of dispatchable work clamped to
     ``max_concurrent_auto_starts``. It only computes + claims + returns the
     manifest — spawning stays in the session/self-pump half.
+*   :func:`render_phase` — the closing stage: project the dispatched
+    actions into statusline zones, refresh the ``tick-meta.json`` /
+    ``open-prs.json`` sidecars, plan the admit budget, fold in the
+    live-loop / open-PR / loop-owner anchors, and write the statusline.
 """
 
 from teatree.loop.phases.act import act_phase
 from teatree.loop.phases.orchestrate import ManifestEntry, OrchestrationManifest, orchestrate_phase
+from teatree.loop.phases.render import render_phase
 from teatree.loop.phases.scan import ScanOutcome, scan_phase
 from teatree.loop.phases.sweep import SweepSplit, sweep_phase
 
@@ -31,6 +37,7 @@ __all__ = [
     "SweepSplit",
     "act_phase",
     "orchestrate_phase",
+    "render_phase",
     "scan_phase",
     "sweep_phase",
 ]
