@@ -45,13 +45,14 @@ class AdminSuperuserTestCase(TestCase):
         assert user.is_superuser
         assert user.check_password("s3cret-pw")
 
-    def test_reuses_existing_superuser_without_exposing_password(self) -> None:
+    def test_reuses_existing_superuser_without_resetting_password(self) -> None:
         get_user_model().objects.create_superuser(username="existing", password="already-set")
         result, _run_server, _browser = _invoke("--no-browser")
         assert result.exit_code == 0
         assert "using existing superuser 'existing'" in result.output
         assert "password" not in result.output
         assert get_user_model().objects.filter(is_superuser=True).count() == 1
+        assert get_user_model().objects.get(username="existing").check_password("already-set")
 
 
 class AdminServerLaunchTestCase(TestCase):
