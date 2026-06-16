@@ -292,6 +292,9 @@ t3 loop start
 # Out of band, run one tick or read the last-rendered statusline:
 t3 loop tick
 t3 loop status
+
+# List the DB-configured autonomous loops (name, enabled, delay, last run, next due):
+t3 loops list
 ```
 
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
