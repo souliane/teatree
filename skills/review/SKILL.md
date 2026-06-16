@@ -32,6 +32,14 @@ Both self-review and external review cycles.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
 - **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companions (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
+  **Do this — never skip it (imperative, the prose above is the WHY):** reviewing ANY overlay repo, the FIRST actions — before reading the diff, fetching ticket context, or asking for an MR URL — are to derive the declared set (`get_review_companion_skills()` = `[pr_review_companion, *companion_skills]`) and load every skill in it via the `Skill` tool, in order — never proceed to the diff with only the generic `/t3:review`:
+
+  1. `/t3-<overlay>` — the overlay's own workspace/review-quality skill (the `pr_review_companion`).
+  2. `/t3:review` — this skill (the generic review doctrine).
+  3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companions.
+
+  Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names yourself from `get_review_companion_skills()`; do not wait for the prompt to enumerate them.
+
 ## Workflows
 
 ### North-Star Rubric — Six Quality Attributes
@@ -219,6 +227,24 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 **References:** [Ralph Loop](https://github.com/snarktank/ralph) (external verification over self-assessed completion), [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) (Anthropic, feature-list-driven incremental verification).
 
 ### Giving Code Review
+
+#### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X — never Y)
+
+A colleague-authored MR on a **shared product repo** (a repo you do NOT solely own — shared with colleagues, gated on their review) is **review work, not merge work**. The action when you are handed one is to **fetch its diff and review it** — never to land it yourself. Do X (fetch + review); never Y (merge a teammate's product-repo MR):
+
+- **Do — fetch the diff to start the review** (read-only, no state change):
+
+  ```bash
+  t3 review run <MR_URL>               # read-only review-shape audit (#1206): changes, complexity, existing review, findings catalog
+  glab mr diff <MR_IID> --repo <repo>  # raw diff for a manual read (gh: gh pr diff <N>)
+  glab mr view <MR_IID> --repo <repo>  # MR metadata / description (gh: gh pr view <N>)
+  ```
+
+  `t3 review run <MR_URL>` is the canonical first command — it never publishes and never merges; it just gathers what the reviewer needs. The plain `glab mr diff` / `gh pr diff` are the fetch-only fallbacks when you only need the raw patch.
+
+- **The merge commands are out of scope on a colleague's product-repo MR.** `glab mr merge`, `gh pr merge`, and `t3 <overlay> ticket merge` do not belong on a teammate-authored shared-repo MR — merging a colleague's product-repo MR treats their work as yours to land. The keystone merge (`t3 <overlay> ticket merge <id>`) is reserved for **your OWN** green, cold-review-cleared work (a solo-owned overlay repo you authored), not a colleague's. A repo being private is a visibility axis, not an ownership one — private ≠ yours-to-merge.
+
+The A/B distinction: your own solo-owned overlay repo, green and cleared → merge it via the keystone; a teammate's shared product-repo MR → fetch the diff and review it, hold for the colleague, never auto-merge. (Own-vs-external routing is Step -1 below.)
 
 **Pre-flight gate — complete BEFORE reading any diff:**
 
