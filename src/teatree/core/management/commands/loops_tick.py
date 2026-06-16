@@ -18,6 +18,9 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
+from teatree.core.connector_preflight import run_connector_preflight
+from teatree.core.models import LoopLease
 from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
 
 if TYPE_CHECKING:
@@ -69,11 +72,8 @@ class Command(TyperCommand):
         ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
     ) -> None:
-        from teatree.core.connector_preflight import run_connector_preflight  # noqa: PLC0415
-
         run_connector_preflight(overlay)
 
-        from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
         session_id = current_session_id()
@@ -97,11 +97,6 @@ class Command(TyperCommand):
             )
             return
 
-        from teatree.core.backend_factory import (  # noqa: PLC0415
-            code_host_from_overlay,
-            iter_overlay_backends,
-            messaging_from_overlay,
-        )
         from teatree.loop.tick import TickRequest, run_tick  # noqa: PLC0415
 
         try:
