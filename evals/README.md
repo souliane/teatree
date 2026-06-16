@@ -36,6 +36,8 @@ The **eval definitions** (data) live here, in the top-level `evals/`:
   replay test AND the live sdk runner).
 - `evals/fixtures/*.stream.jsonl` — the `_{pass,fail,noop}` replay fixtures
   (data), siblings to the scenarios they pin.
+- `evals/cost_bounds.yaml` — the checked-in per-scenario metered-cost ceilings
+  (data: read by the declarative `--gate-cost-bounds` gate).
 - `evals/README.md` — this file, the architecture SOT.
 
 The **tests over those definitions** live under `tests/`:
@@ -478,6 +480,33 @@ reports "no cost baseline" when no metered baseline exists at all. The gate runs
 in every run shape — single-trial, `--trials` (pass@k, cost summed across
 trials), and `--models` (per `(scenario, model)` cell) — so a cost blow-up fails
 loud in the matrix/pass@k lanes too, not only the single-trial path.
+
+### Declarative cost-bounds gate (absolute ceilings)
+
+`--gate-cost-bounds` is the ABSOLUTE-CEILING counterpart of the relative
+`--gate-cost-regression` above. Where the regression gate diffs against a
+*mutable DB baseline run* (and no-ops a zero-cost scenario), this gate checks
+each scenario's metered cost against the CHECKED-IN ceilings in
+`evals/cost_bounds.yaml` — a flat `scenario -> {bound_usd, margin?}` map whose
+`bound_usd` is the per-scenario cost measured by the uncapped baseline
+calibration. The ceiling is `bound_usd * (1 + margin)` (a top-level
+`default_margin` applies when a scenario omits its own). A scenario over its
+ceiling prints `COST OVER BOUND <name>` and exits non-zero. Because the bounds
+are checked in, the ceiling survives a DB reset and every change to it is
+reviewed in a diff — distinct from the regression gate's mutable in-DB baseline.
+
+Its fail-loud contract is stricter than the regression gate's no-op: a scenario
+*listed* in `cost_bounds.yaml` whose run recorded NO cost (it did not execute, or
+metered $0) is a `COST MISSING <name>` violation — RED, never skip-as-pass. A
+scenario NOT listed is un-bounded. The gate engine is the pure, unit-tested
+`src/teatree/eval/cost_bounds.py` (`load_cost_bounds` + `check_cost_bounds`); the
+CLI wiring (`cli/eval/run_modes.py::CostBoundsGate`) reads the just-persisted
+run's `EvalRunRecord.costs_by_scenario()`. It needs the durable ledger, so —
+like `--gate-cost-regression`/`--baseline` — it is rejected at the `--docker`
+boundary (the ephemeral container is `--no-persist`); it is wired into the
+PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), keeping the cost gate
+weekly/manual and off the per-PR path. Run it on the host against the accumulated
+ledger with `t3 eval run --backend sdk --gate-cost-bounds`.
 
 ### Model matrix
 

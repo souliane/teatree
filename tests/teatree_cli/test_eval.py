@@ -877,6 +877,18 @@ def _cost_runner(cost_usd: float) -> type:
     return _CostRunner
 
 
+def _per_scenario_cost_runner(costs: dict[str, float]) -> type:
+    """A runner that returns a different metered cost per scenario name (default $0)."""
+
+    class _PerScenarioCostRunner:
+        def __init__(self, *_: object, **__: object) -> None: ...
+
+        def run(self, spec: EvalSpec) -> EvalRun:
+            return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=costs.get(spec.name, 0.0))
+
+    return _PerScenarioCostRunner
+
+
 @pytest.mark.django_db
 class TestEvalCostRegressionGate:
     def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
@@ -944,6 +956,95 @@ class TestEvalCostRegressionGate:
 
         assert result.exit_code == 0, result.output
         assert "no cost baseline" in result.output
+
+
+@pytest.mark.django_db
+class TestEvalCostBoundsGate:
+    """`--gate-cost-bounds` — the declarative absolute-ceiling gate.
+
+    Reads CHECKED-IN ceilings (`evals/cost_bounds.yaml`, `COST_BOUNDS_PATH`)
+    rather than a mutable DB baseline. A scenario over `bound * (1 + margin)` is
+    RED; a configured scenario the run recorded no cost for is RED too (fail-loud,
+    never skip-as-pass). The bounds file is patched to a tmp_path per test.
+    """
+
+    @contextmanager
+    def _bounds_file(self, tmp_path: Path, body: str) -> "Iterator[None]":
+        bounds = tmp_path / "cost_bounds.yaml"
+        bounds.write_text(body, encoding="utf-8")
+        with patch("teatree.eval.cost_bounds.COST_BOUNDS_PATH", bounds):
+            yield
+
+    def _run_candidate(self, specs: list[EvalSpec], *, cost_usd: float) -> object:
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _cost_runner(cost_usd)),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            return CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--gate-cost-bounds"])
+
+    def test_cost_over_ceiling_exits_non_zero(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        # bound 0.10 + 25% margin = 0.125 ceiling; a 0.30 run is over.
+        with self._bounds_file(tmp_path, "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 0.10\n"):
+            result = self._run_candidate(specs, cost_usd=0.30)
+        assert result.exit_code == 1, result.output
+        assert "COST OVER BOUND alpha" in result.output
+
+    def test_cost_under_ceiling_passes(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        # ceiling 0.125; an 0.11 run is under.
+        with self._bounds_file(tmp_path, "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 0.10\n"):
+            result = self._run_candidate(specs, cost_usd=0.11)
+        assert result.exit_code == 0, result.output
+        assert "COST OVER BOUND" not in result.output
+        assert "COST MISSING" not in result.output
+
+    def test_configured_scenario_with_no_recorded_cost_fails_loud(self, tmp_path: Path) -> None:
+        # `beta` is pinned in the ceilings file but the run carries only `alpha`.
+        # A configured-but-uncosted scenario is RED, never a silent pass.
+        specs = [_spec("alpha")]
+        body = "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 1.00\n  beta:\n    bound_usd: 0.20\n"
+        with self._bounds_file(tmp_path, body):
+            result = self._run_candidate(specs, cost_usd=0.05)
+        assert result.exit_code == 1, result.output
+        assert "COST MISSING beta" in result.output
+
+    def test_zero_recorded_cost_for_configured_scenario_fails_loud(self, tmp_path: Path) -> None:
+        # A two-scenario run where `alpha` PAYS (so the unmetered-$0 total guard
+        # passes) but the configured `beta` metered $0. The cost-bounds gate alone
+        # turns this RED — a configured-but-uncosted scenario is fail-loud, never
+        # skip-as-pass.
+        specs = [_spec("alpha"), _spec("beta")]
+        body = "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 1.00\n  beta:\n    bound_usd: 0.10\n"
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _per_scenario_cost_runner({"alpha": 0.20, "beta": 0.0})),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+            self._bounds_file(tmp_path, body),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--gate-cost-bounds"])
+        assert result.exit_code == 1, result.output
+        assert "COST MISSING beta" in result.output
+        assert "COST OVER BOUND" not in result.output
+
+    def test_unpinned_scenario_is_unbounded(self, tmp_path: Path) -> None:
+        # The run carries `alpha`, but the ceilings file pins nothing — un-bounded, green.
+        specs = [_spec("alpha")]
+        with self._bounds_file(tmp_path, "default_margin: 0.25\nscenarios: {}\n"):
+            result = self._run_candidate(specs, cost_usd=99.0)
+        assert result.exit_code == 0, result.output
+        assert "nothing to gate" in result.output
+
+    def test_rejected_in_docker(self) -> None:
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": ""}, clear=False),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--gate-cost-bounds", "--docker"])
+        assert result.exit_code == 2, result.output
+        run_docker.assert_not_called()
+        assert "ephemeral container" in result.output
 
 
 @pytest.mark.django_db

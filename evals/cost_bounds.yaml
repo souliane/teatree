@@ -1,0 +1,22 @@
+# Per-scenario metered-cost ceilings — the declarative cost-regression gate.
+#
+# Each ceiling is a CALIBRATED bound (the per-scenario metered cost measured by
+# the uncapped baseline calibration) plus a tolerance MARGIN. The weekly/manual
+# metered run fails loud (`t3 eval run --backend sdk --gate-cost-bounds`) when a
+# scenario's recorded `cost_usd` exceeds `bound_usd * (1 + margin)`.
+#
+# This is the ABSOLUTE-CEILING counterpart of `--gate-cost-regression` (relative
+# drift vs a mutable DB baseline run). The bounds here are CHECKED IN, so the
+# ceiling survives a DB reset and every change to it is reviewed in a diff.
+#
+# Distinct fail-loud contract: a scenario LISTED here whose run recorded NO cost
+# (it did not execute, or metered $0) is a MISSING violation — the gate goes RED
+# rather than silently passing it. A scenario NOT listed here is un-bounded.
+#
+# `default_margin` applies to any scenario that omits its own `margin`. Add a
+# scenario by appending its calibrated `bound_usd` (and an optional per-scenario
+# `margin` when it needs a tighter/looser band than the default).
+
+default_margin: 0.25
+
+scenarios: {}

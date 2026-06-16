@@ -1814,6 +1814,24 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     than this exits          │
 │                                                     non-zero.                │
 │                                                     [default: 0.2]           │
+│ --gate-cost-bounds                                  Check this run's         │
+│                                                     per-scenario cost        │
+│                                                     against the CHECKED-IN   │
+│                                                     ceilings in              │
+│                                                     evals/cost_bounds.yaml   │
+│                                                     (calibrated bound x (1 + │
+│                                                     margin)). A scenario     │
+│                                                     over its ceiling — OR a  │
+│                                                     configured scenario the  │
+│                                                     run recorded no cost for │
+│                                                     (fail-loud, never        │
+│                                                     skip-as-pass) — exits    │
+│                                                     non-zero. The            │
+│                                                     absolute-ceiling         │
+│                                                     counterpart of           │
+│                                                     --gate-cost-regression   │
+│                                                     (relative drift vs the   │
+│                                                     mutable DB baseline).    │
 │ --judge                    --no-judge               Grade scenarios that opt │
 │                                                     in (a `judge:` block)    │
 │                                                     with an LLM judge in     │

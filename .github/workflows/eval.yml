@@ -22,6 +22,17 @@
 # invoked, `--require-executed` still makes it FAIL LOUD if it can't execute
 # (missing key/binary).
 #
+# COST-BOUNDS GATE (`--gate-cost-bounds`, evals/cost_bounds.yaml):
+#   The declarative per-scenario cost ceiling gate reads the JUST-PERSISTED run
+#   to check each scenario's metered cost against its calibrated bound x
+#   (1 + margin). It therefore needs the durable run-history ledger and CANNOT
+#   run inside the ephemeral `--docker` container this workflow uses (the
+#   in-container run is forced `--no-persist`). The cost gate is wired into the
+#   PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), where the ledger
+#   lives on the runner — keeping the cost gate weekly/manual and off the per-PR
+#   path. A maintainer can also run it on the host against the accumulated
+#   ledger: `t3 eval run --backend sdk --gate-cost-bounds`.
+#
 # AUTH — CLAUDE_CODE_OAUTH_TOKEN (the everywhere-portable path)
 #   The metered backend authenticates from `CLAUDE_CODE_OAUTH_TOKEN`, the
 #   OAuth token from `claude setup-token`. This is the auth that works in every

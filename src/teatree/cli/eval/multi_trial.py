@@ -14,6 +14,7 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
+    CostBoundsGate,
     RegressionGates,
     RunGuards,
     persist_matrix_run,
@@ -48,6 +49,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     gate_regressions: bool = False,
     gate_cost_regression: bool = False,
     cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
+    gate_cost_bounds: bool = False,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
@@ -109,6 +111,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     )
     regressed = False
     cost_regressed = False
+    cost_bounds_failed = False
     if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
         record = persist_pass_at_k_run(results, model=model_name, max_turns=max_turns, baseline=baseline)
@@ -116,7 +119,8 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
-    failed = any(not r.ok for r in results) or regressed or cost_regressed
+        cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
+    failed = any(not r.ok for r in results) or regressed or cost_regressed or cost_bounds_failed
     if failed and model_override is None:
         sys.exit(1)
     return failed
@@ -135,6 +139,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     gate_regressions: bool,
     gate_cost_regression: bool = False,
     cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
+    gate_cost_bounds: bool = False,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
@@ -165,18 +170,20 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     )
     regressed = False
     cost_regressed = False
+    cost_bounds_failed = False
     if persist:
         record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
         regressed = RegressionGates.scores(record, enabled=gate_regressions)
         cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
+        cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
     # An errored cell is NOT a graded FAIL, but the lane still exits non-zero on
     # it for visibility — a transient blip should be seen, just not counted as a
     # model failure in the comparison.
     failed = any(not row.passed and not row.skipped and not row.errored for row in rows)
     errored = any(row.errored for row in rows)
-    if failed or errored or regressed or cost_regressed:
+    if failed or errored or regressed or cost_regressed or cost_bounds_failed:
         sys.exit(1)
 
 

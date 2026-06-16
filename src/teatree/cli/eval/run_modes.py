@@ -235,6 +235,34 @@ class RegressionGates:
         return any_regressed
 
 
+class CostBoundsGate:
+    """The declarative absolute-ceiling cost gate, distinct from :class:`RegressionGates`.
+
+    ``RegressionGates.costs`` diffs a run against a *mutable DB baseline run* and
+    no-ops a zero-cost scenario. This gate checks the just-persisted run's
+    per-scenario cost against the CHECKED-IN ``evals/cost_bounds.yaml`` ceilings:
+    a scenario over ``bound_usd * (1 + margin)`` is RED, and a *configured*
+    scenario the run recorded no cost for is RED too (fail-loud, never
+    skip-as-pass). The ceiling survives a DB reset because it lives in the diff.
+    """
+
+    @staticmethod
+    def check(record: "EvalRunRecord", *, enabled: bool) -> bool:
+        """Check *record*'s per-scenario cost against the ceilings; print violations; True if any."""
+        if not enabled:
+            return False
+        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415
+
+        config = load_cost_bounds()
+        if not config.bounds:
+            typer.echo("cost-bounds: no scenarios pinned in evals/cost_bounds.yaml — nothing to gate")
+            return False
+        result = check_cost_bounds(record.costs_by_scenario(), config)
+        for violation in result.violations:
+            typer.echo(violation.render())
+        return result.failed
+
+
 def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` flag through the persist+gate tail.
     results: list[ScenarioResult],
     *,
@@ -245,23 +273,27 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     gate_regressions: bool,
     gate_cost_regression: bool,
     cost_regression_tolerance: float,
+    gate_cost_bounds: bool = False,
 ) -> bool:
-    """Persist a single-trial run and run the score + cost baseline gates.
+    """Persist a single-trial run and run the score + cost baseline + cost-bounds gates.
 
     Returns ``True`` when the process should exit non-zero: any scenario
-    failed, OR a score regression, OR a cost regression beyond tolerance. With
-    ``--no-persist`` the gates have no durable record to compare and are
+    failed, OR a score regression, OR a cost regression beyond tolerance, OR a
+    declarative cost-bounds violation (over ceiling / configured-but-uncosted).
+    With ``--no-persist`` the gates have no durable record to read and are
     skipped — only the scenario pass/fail decides the exit.
     """
     regressed = False
     cost_regressed = False
+    cost_bounds_failed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
         regressed = RegressionGates.scores(record, enabled=gate_regressions)
         cost_regressed = RegressionGates.costs(
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
-    return any(not r.passed for r in results) or regressed or cost_regressed
+        cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
+    return any(not r.passed for r in results) or regressed or cost_regressed or cost_bounds_failed
 
 
 def build_subscription_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:
