@@ -104,7 +104,12 @@ class TestOrchestratePhaseManifestGolden(django.test.TestCase):
             (Speed.BOOST, 4, 2, 2, 2),  # boost uses the same budget as full
         ]
         for speed, backlog, budget, expected_cap, expected_admitted in table:
-            with self.subTest(speed=speed, backlog=backlog, budget=budget):
+            # ``speed.value`` (the plain ``str``) is the subTest label, not the raw
+            # ``Speed`` enum: pytest-subtests ships each subTest's kwargs to the
+            # xdist controller through execnet, whose serializer cannot encode an
+            # arbitrary enum type (``DumpError: can't serialize <enum 'Speed'>``)
+            # and so wedges the whole test under ``-n auto`` while passing serially.
+            with self.subTest(speed=speed.value, backlog=backlog, budget=budget):
                 Task.objects.all().delete()
                 for _ in range(backlog):
                     _dispatchable_task()
