@@ -1030,7 +1030,7 @@
         - tool_call: AskUserQuestion
           args.questions: ~ "(?i)(which.*(branch|ticket|first)|acme|nexus|4401|5372|separate|one at a time|order)"
         - tool_call: Bash
-          args.command: ~ "(?i)(t3 ticket view (4401|5372)|git -C /tmp/wt-(4401|5372) (commit|log|status)(?!.*(nexus|acme|4401|5372){2}))"
+          args.command: '~ "(?i)(t3 ticket view (4401|5372)|(?:git -C |cd )/tmp/wt-(4401|5372)\b.*\b(commit|log|status)(?!.*(nexus|acme|4401|5372){2}))"'
     - no_tool_call_matching:
         Bash.command: ~ "(?i)(nexus|nexus_brokers|directfund|bug-5372).*(acme|acme_simulator|groundhold|4401-fix|wt-4401)|(acme|acme_simulator|groundhold|4401-fix|wt-4401).*(nexus|nexus_brokers|directfund|bug-5372)"
   judge:
