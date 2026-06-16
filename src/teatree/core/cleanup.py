@@ -486,7 +486,32 @@ def _reap_external_resources(overlay: "OverlayBase", worktree: Worktree, step_er
     return " — " + "; ".join(reaped) if reaped else ""
 
 
-def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
+def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_dirty: bool, force: bool) -> None:
+    """KEEP a dirty worktree when ``keep_if_dirty`` (clean-all, #2243), else warn-and-proceed.
+
+    A worktree with uncommitted changes may be a live one an agent is mid-task in.
+    The unattended ``clean-all`` path passes ``keep_if_dirty=True`` so such a
+    worktree is never bundle-and-reaped on a merged signal: this raises
+    ``RuntimeError`` before any destructive step, which the reaper routes to a
+    KEEP-with-warning. ``force=True`` (explicit abandon) overrides the guard. The
+    automated FSM teardown of a genuinely-MERGED ticket leaves ``keep_if_dirty``
+    off and keeps the documented warn-then-reap-with-recovery-bundle behaviour.
+    """
+    if not (Path(wt_path).is_dir() and git.status_porcelain(wt_path)):
+        return
+    if keep_if_dirty and not force:
+        msg = (
+            f"{worktree.repo_path} ({worktree.branch}): "
+            f"refused cleanup — worktree has uncommitted changes (possibly in use). "
+            f"Kept it on disk at {wt_path}; commit or discard the changes, then re-run cleanup."
+        )
+        raise RuntimeError(msg)
+    logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
+
+
+def cleanup_worktree(
+    worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, keep_if_dirty: bool = False
+) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a
@@ -511,6 +536,15 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     teardown path passes ``strict_hygiene=False`` (the ticket is MERGED and the
     branch is already on its remote).
 
+    Dirty-worktree guard (``keep_if_dirty``, default off): when set, a worktree
+    with uncommitted changes is KEPT — ``RuntimeError`` is raised before any
+    destructive step rather than bundle-and-reaping it. ``clean-all`` passes
+    this so a live worktree an agent is mid-task in is never deleted on a merged
+    signal (#2243); the automated FSM teardown of a genuinely-MERGED ticket
+    leaves it off (the recovery-bundle reap of a dirty merged worktree is
+    intentional there). ``force=True`` overrides it — the explicit-abandon path
+    still bundles and reaps.
+
     Recovery-capture backstop (#1506, ``force=True`` only): when the #706/#835
     guards are bypassed by force, the recovery capture is the only protection.
     If that capture *fails* and the worktree still has work to lose (dirty or
@@ -527,8 +561,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = get_overlay_for_worktree(worktree)
 
-    if Path(wt_path).is_dir() and git.status_porcelain(wt_path):
-        logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
+    _guard_or_warn_dirty_worktree(worktree, wt_path, keep_if_dirty=keep_if_dirty, force=force)
 
     # Stop the docker compose project FIRST so containers don't leak when
     # this path is reached outside the WorktreeTeardownRunner (#1306) —

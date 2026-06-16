@@ -19,6 +19,7 @@ import typer
 if TYPE_CHECKING:
     from teatree.config import OverlayEntry
 
+import teatree.cli.admin as _admin
 import teatree.cli.agent as _agent
 import teatree.cli.cost as _cost
 import teatree.cli.info as _info
@@ -56,6 +57,7 @@ from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.infra import infra_app
 from teatree.cli.loop import loop_app
+from teatree.cli.loops import loops_app
 from teatree.cli.mutation import mutation_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
@@ -139,6 +141,7 @@ app.command()(_cost.cost)
 app.command()(_speak.speak)
 app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
+app.command()(_admin.admin)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")
@@ -154,6 +157,7 @@ app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
+app.add_typer(loops_app, name="loops")
 app.add_typer(teams_app, name="teams")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")

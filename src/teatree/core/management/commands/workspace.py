@@ -556,11 +556,24 @@ class Command(TyperCommand):
     def clean_all(
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
+        *,
+        interactive: bool = typer.Option(
+            default=False,
+            help="Prompt push/abandon/skip per worktree with unsynced work (#2361). "
+            "Default is fully unattended — uncertain worktrees are kept with a warning, never prompted.",
+        ),
     ) -> list[str]:
-        """Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots."""
+        """Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots.
+
+        Unattended by default (#2361): never blocks on stdin; an uncertain worktree
+        is kept with a warning, not prompted. ``--interactive`` opts into the
+        per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
+        loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
+        the deterministic squash signal are unchanged.
+        """
         workspace = _workspace_dir()
         cleaned: list[str] = []
-        interactive = _is_interactive()
+        interactive = interactive and _is_interactive()
         in_use = _wh.dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
         reaper = WorktreeReaper(workspace)
         cleaned.extend(reaper.reap_squash_merged_worktrees(interactive=interactive))

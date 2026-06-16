@@ -259,6 +259,7 @@ t3 speak                        # read text aloud on local speakers per [teatree
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
+t3 admin                        # run the Django admin for the teatree project on a local dev server
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
 ```
@@ -270,6 +271,14 @@ t3 dream tick                   # cadence-gated cron entry point (~04:00 schedul
 the full `t3` command tree (core plus every installed overlay). It is in the
 optional `ui` dependency group — install it with `uv sync --group ui` before the
 first run.
+
+`t3 admin` runs the Django admin for the teatree project on a local dev server
+(`http://127.0.0.1:8000/admin/` by default). It applies migrations, ensures a
+superuser exists — creating one non-interactively when absent and printing its
+generated password (override via `T3_ADMIN_USER` / `T3_ADMIN_PASSWORD`) — and
+opens the browser at `/admin/` (`--no-browser` to skip; `--host` / `--port` to
+override). The admin binds to the same teatree database every other `t3` command
+reads, so no overlay context is needed.
 
 ### 2. Loop & Statusline
 
@@ -292,6 +301,9 @@ t3 loop start
 # Out of band, run one tick or read the last-rendered statusline:
 t3 loop tick
 t3 loop status
+
+# List the DB-configured autonomous loops (name, enabled, delay, last run, next due):
+t3 loops list
 ```
 
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting

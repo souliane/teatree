@@ -1273,8 +1273,14 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_warns_on_uncommitted_changes(self) -> None:
-        """clean-all warns when a worktree directory has uncommitted changes."""
+    def test_keeps_worktree_with_uncommitted_changes(self) -> None:
+        """clean-all KEEPS a worktree with uncommitted changes — never reaps a live dir (#2243).
+
+        Pre-fix a dirty worktree on a merged signal was bundle-and-reaped with a
+        "cleaning anyway (PR merged)" warning; the unattended default must never
+        delete a dir an agent may be mid-task in. The row survives and a skip line
+        names the uncommitted changes.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -1285,7 +1291,7 @@ class TestWorkspaceCleanAll(TestCase):
             wt_dir.mkdir(parents=True)
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/85")
-            Worktree.objects.create(
+            row = Worktree.objects.create(
                 overlay="test",
                 ticket=ticket,
                 repo_path="backend",
@@ -1299,14 +1305,15 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                self.assertLogs("teatree.core.cleanup", level="WARNING") as logs,
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = " M dirty_file.py"
                 mock_git.commits_absent_from_all_remotes.return_value = []
-                call_command("workspace", "clean-all")
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-            assert any("uncommitted changes" in msg for msg in logs.output)
+            assert Worktree.objects.filter(pk=row.pk).exists(), f"dirty worktree must be kept; got: {cleaned!r}"
+            assert wt_dir.is_dir(), "DATA LOSS: dirty worktree dir was removed"
+            assert any("uncommitted changes" in c and "ac-backend-85-ticket" in c for c in cleaned)
 
     @_no_prune
     @_no_stash
@@ -3561,3 +3568,281 @@ class TestIsSquashMergedRealGit(TestCase):
             _git(work, "checkout", "-q", "main")
             with self._no_host_cli():
                 assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is False
+
+
+class TestCleanAllUnattendedDefault(TestCase):
+    """clean-all is fully unattended by default — it never blocks on stdin (#2361).
+
+    The user's complaint: ``clean-all`` stalled on a key-press before doing
+    anything and then prompted on every one of ~100+ stale worktrees. The fix
+    makes the default path never call ``input``, regardless of TTY, and gates the
+    per-worktree prompt behind an explicit ``--interactive`` opt-in.
+    """
+
+    def _make_unsynced_row(self, workspace: Path) -> Worktree:
+        """A CREATED row whose branch is genuinely ahead (would trip the prompt)."""
+        repo_main = workspace / "frontend"
+        repo_main.mkdir(parents=True)
+        (repo_main / ".git").mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2361")
+        wt_dir = workspace / "2361-stale" / "frontend"
+        wt_dir.mkdir(parents=True)
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="frontend",
+            branch="2361-stale",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+    def _patch_cleanup_to_refuse(self) -> AbstractContextManager[object]:
+        return patch.object(
+            ws_reap_mod,
+            "cleanup_worktree",
+            side_effect=RuntimeError("1 unsynced commit(s) not on origin/main: abc123"),
+        )
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_default_run_never_calls_input_even_on_a_tty(self) -> None:
+        """Anti-vacuous: ``builtins.input`` raises, and ``_is_interactive`` is True.
+
+        Pre-fix, ``clean_all`` derived interactivity from TTY presence
+        (``interactive = _is_interactive()``), so a TTY run prompted per worktree.
+        Patching ``input`` to raise turns any single stdin read into a failure;
+        forcing ``_is_interactive`` True proves the unattended default is the
+        ``--interactive``-flag gate, NOT a lucky non-TTY. Revert the gate (set the
+        default back to ``_is_interactive()``) and this test goes RED.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s) / "workspace"
+            row = self._make_unsynced_row(workspace)
+
+            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
+                msg = "clean-all blocked on stdin in the unattended default (#2361)"
+                raise AssertionError(msg)
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_is_interactive", return_value=True),
+                patch("builtins.input", side_effect=_input_must_not_be_called),
+                self._patch_cleanup_to_refuse(),
+            ):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert Worktree.objects.filter(pk=row.pk).exists(), "uncertain row must be kept, not reaped"
+            assert any("Skipped" in c and "unsynced" in c.lower() for c in cleaned)
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_interactive_flag_without_a_tty_stays_unattended(self) -> None:
+        """``--interactive`` in a pipe / loop tick still never prompts.
+
+        The flag is ANDed with ``_is_interactive`` so a non-TTY context (the loop,
+        a pipe) runs unattended even with the opt-in passed — the safe direction.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s) / "workspace"
+            row = self._make_unsynced_row(workspace)
+
+            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
+                msg = "clean-all --interactive blocked on stdin with no TTY (#2361)"
+                raise AssertionError(msg)
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_is_interactive", return_value=False),
+                patch("builtins.input", side_effect=_input_must_not_be_called),
+                self._patch_cleanup_to_refuse(),
+            ):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all", "--interactive"))
+
+            assert Worktree.objects.filter(pk=row.pk).exists()
+            assert any("Skipped" in c for c in cleaned)
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_interactive_flag_with_a_tty_does_prompt(self) -> None:
+        """The opt-in prompt still works: ``--interactive`` + a real TTY reads a choice.
+
+        Proves the flag is not inert — with both the flag and a TTY, the
+        per-worktree push/abandon/skip prompt fires (here the user skips).
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s) / "workspace"
+            row = self._make_unsynced_row(workspace)
+            prompts: list[str] = []
+
+            def _record_prompt(prompt: str = "") -> str:
+                prompts.append(prompt)
+                return ""  # default = skip
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_is_interactive", return_value=True),
+                patch("builtins.input", side_effect=_record_prompt),
+                self._patch_cleanup_to_refuse(),
+            ):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all", "--interactive"))
+
+            assert prompts, "interactive + TTY must reach the per-worktree prompt"
+            assert any("[P]ush" in p and "[A]bandon" in p and "[S]kip" in p for p in prompts)
+            assert Worktree.objects.filter(pk=row.pk).exists(), "default choice (skip) keeps the row"
+            assert any("Skipped" in c for c in cleaned)
+
+
+@_no_prune
+@_no_stash
+@_no_orphan_dbs
+@_no_orphan_isolated_roots
+@_no_orphan_docker
+@_no_dslr_prune
+@_patch_overlays(FULL_OVERLAY)
+@override_settings(**SETTINGS)
+class TestCleanAllUnattendedReapMatrix(TestCase):
+    """End-to-end ``call_command('workspace','clean-all')`` reap decisions (#1830, #2361).
+
+    Each case runs the whole command unattended (no ``--interactive``) against a
+    real on-disk git repo, mocking only the unstoppable forge CLI (``gh``/``glab``
+    via ``_run_host_cli``) and the docker-down / dropdb side effects — never the
+    git layer, so the deterministic squash signals and data-loss guards run for
+    real. Asserts the reap/keep decision and that no prompt was ever issued.
+    """
+
+    def _run(self, workspace: Path, *, forge: "subprocess.CompletedProcess[str] | None") -> list[str]:
+        dropped: list[str] = []
+
+        def _input_must_not_be_called(*_a: object, **_k: object) -> str:
+            msg = "unattended clean-all blocked on stdin (#2361)"
+            raise AssertionError(msg)
+
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch.object(ws_cleanup_mod, "_run_host_cli", return_value=forge),
+            patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=forge is not None),
+            patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
+            patch("builtins.input", side_effect=_input_must_not_be_called),
+        ):
+            mock_config.return_value.user.workspace_dir = workspace
+            return cast("list[str]", call_command("workspace", "clean-all"))
+
+    def _row(self, work: Path, wt_path: Path, *, branch: str = "feature", number: str = "1830") -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{number}")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch=branch,
+            state=Worktree.State.PROVISIONED,
+            extra={"clone_path": str(work), "worktree_path": str(wt_path)},
+        )
+
+    def test_patch_id_merged_branch_is_reaped(self) -> None:
+        """A squash-merged branch (non-ancestor) is reaped via the git-cherry patch-id signal.
+
+        Forge forced absent (``forge=None``), so only the deterministic
+        ``_branch_captured_upstream`` (``git cherry``) path can classify it merged.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp, ticket_number="1830")
+            work = Path(wt.extra["clone_path"])
+            wt_path = Path(wt.extra["worktree_path"])
+
+            cleaned = self._run(tmp, forge=None)
+
+            assert not Worktree.objects.filter(pk=wt.pk).exists(), f"patch-id-merged row should be reaped: {cleaned!r}"
+            assert not wt_path.exists()
+            assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_forge_confirmed_merged_branch_is_reaped(self) -> None:
+        """When git signals are ambiguous but the forge reports MERGED, the row is reaped.
+
+        The branch is pushed and genuinely ahead of origin/main (no empty diff, no
+        cherry-equivalence), so ONLY the forge MR/PR record (retained after branch
+        deletion) confirms it shipped — the forge-fallback path.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "shipped.py").write_text("merged via forge\n", encoding="utf-8")
+            _git(work, "add", "shipped.py")
+            _git(work, "commit", "-q", "-m", "feat: shipped, forge-only signal")
+            _git(work, "push", "-q", "origin", "feature")
+            _git(work, "checkout", "-q", "main")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+            wt = self._row(work, wt_path, number="1830b")
+
+            forge_merged = subprocess.CompletedProcess([], 0, '[{"number": 42}]', "")
+            cleaned = self._run(tmp, forge=forge_merged)
+
+            assert not Worktree.objects.filter(pk=wt.pk).exists(), f"forge-merged row should be reaped: {cleaned!r}"
+            assert not wt_path.exists()
+
+    def test_dirty_live_worktree_is_kept(self) -> None:
+        """#2243 / #835: a worktree with uncommitted changes is KEPT, never reaped.
+
+        Even when the forge reports the branch merged, a dirty working tree means
+        live in-progress work — the data-loss guard keeps it. This is the
+        deterministic live-worktree protection: never delete a dir in use.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp, ticket_number="2243")
+            work = Path(wt.extra["clone_path"])
+            wt_path = Path(wt.extra["worktree_path"])
+            (wt_path / "in_progress.py").write_text("agent mid-task\n", encoding="utf-8")
+            _git(wt_path, "add", "in_progress.py")
+
+            forge_merged = subprocess.CompletedProcess([], 0, '[{"number": 2243}]', "")
+            cleaned = self._run(tmp, forge=forge_merged)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: dirty live worktree reaped: {cleaned!r}"
+            assert wt_path.is_dir(), "dirty live worktree dir must survive"
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_ambiguous_unmerged_branch_is_kept(self) -> None:
+        """A branch with unique unpushed work and no merged signal is kept with a warning.
+
+        Forge absent + genuinely-ahead commits on no remote → uncertain → KEEP,
+        never delete on a guess.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "unique.py").write_text("real unpushed work\n", encoding="utf-8")
+            _git(work, "add", "unique.py")
+            _git(work, "commit", "-q", "-m", "feat: genuinely unique unpushed work")
+            _git(work, "checkout", "-q", "main")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+            wt = self._row(work, wt_path, number="1830c")
+
+            cleaned = self._run(tmp, forge=None)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"ambiguous row must be kept: {cleaned!r}"
+            assert wt_path.is_dir()

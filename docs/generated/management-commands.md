@@ -203,6 +203,10 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 
 Run one tick: scan all overlays, dispatch, render statusline.
 
+## `loops_list`
+
+List DB-configured autonomous loops (read-only; #1796).
+
 ## `mr_reminder`
 
 | Subcommand | Description |
