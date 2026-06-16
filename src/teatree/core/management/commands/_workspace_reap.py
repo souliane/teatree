@@ -56,7 +56,12 @@ def reap_one_worktree(worktree: Worktree, *, interactive: bool, strict_hygiene: 
     branch never pushed anywhere is still kept. The CREATED-state loop passes the
     default ``True`` (no prior merge confirmation).
 
-    Two failure modes are caught. A ``RuntimeError`` is the #706/#835/#1506
+    ``clean-all`` is always the caller, so ``keep_if_dirty=True`` is forwarded:
+    a worktree with uncommitted changes (an agent mid-task) is KEPT, never
+    bundle-and-reaped on a merged signal (#2243) — the data-loss guard the
+    constraint requires for a live worktree.
+
+    Two failure modes are caught. A ``RuntimeError`` is the #706/#835/#1506/#2243
     data-loss guards refusing genuinely-unsynced or uncommitted work; it is
     routed to :func:`resolve_unsynced_worktree`, which keeps the row and reports
     it (or, interactively, offers push/abandon). An ``ImproperlyConfigured``
@@ -67,7 +72,7 @@ def reap_one_worktree(worktree: Worktree, *, interactive: bool, strict_hygiene: 
     skipped with a warning and the run continues over the rest.
     """
     try:
-        return str(cleanup_worktree(worktree, strict_hygiene=strict_hygiene))
+        return str(cleanup_worktree(worktree, strict_hygiene=strict_hygiene, keep_if_dirty=True))
     except RuntimeError as exc:
         return resolve_unsynced_worktree(worktree, exc, interactive=interactive)
     except ImproperlyConfigured as exc:
