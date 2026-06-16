@@ -396,6 +396,48 @@ class TestTranscriptReplay:
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
 
+    def test_max_turns_honors_env_override_when_flag_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # T3_EVAL_MAX_TURNS used to be silently ignored (the option defaulted to None).
+        monkeypatch.setenv("T3_EVAL_MAX_TURNS", "17")
+        specs = [_spec("alpha")]
+        captured: dict[str, object] = {}
+
+        class _StubRunner:
+            def __init__(self, *, max_turns_override: int | None = None, **_: object) -> None:
+                captured["max_turns_override"] = max_turns_override
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0
+        assert captured["max_turns_override"] == 17
+
+    def test_max_turns_defers_to_per_scenario_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No flag and no env → no global override (None); the runner uses each scenario's max_turns.
+        monkeypatch.delenv("T3_EVAL_MAX_TURNS", raising=False)
+        specs = [_spec("alpha")]
+        captured: dict[str, object] = {}
+
+        class _StubRunner:
+            def __init__(self, *, max_turns_override: int | None = None, **_: object) -> None:
+                captured["max_turns_override"] = max_turns_override
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0
+        assert captured["max_turns_override"] is None
+
     def test_sdk_backend_forces_require_executed_without_the_flag(self) -> None:
         # "if we run, of course we want it executed" — the sdk path arms the
         # all-skipped gate unconditionally; --require-executed is not opt-in for it.

@@ -44,7 +44,7 @@ from teatree.eval.discovery import discover_specs
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.report import evaluate, render_html, render_json, render_text
-from teatree.eval.sdk_runner import resolve_metered_budget_usd, resolve_metered_effort
+from teatree.eval.sdk_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
 _RUN_FORMATS = (*VALID_FORMATS, "html")
@@ -105,7 +105,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     max_turns: int | None = typer.Option(
         None,
         "--max-turns",
-        help="Override the scenario's max_turns (per-invocation).",
+        help=(
+            "Override the scenario's max_turns. Omitted, it reads the T3_EVAL_MAX_TURNS global knob "
+            "(an escape hatch), else defers to each scenario's own max_turns — the per-scenario turn "
+            "budget, mirroring per-scenario cost. The metered lane's USD budget is the real safety net."
+        ),
     ),
     max_budget_usd: float = typer.Option(
         METERED_DEFAULT_BUDGET_USD,
@@ -282,6 +286,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
     # re-invocation in-process (no re-route loop).
     effort_level = require_effort(effort)
+    max_turns = resolve_max_turns_override(max_turns)
     metered = backend == SDK_BACKEND or trials > 1 or models is not None
     if docker or should_route_to_docker(metered=metered, local=local):
         run_in_docker_or_exit(
