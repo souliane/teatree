@@ -363,7 +363,7 @@ def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:
 
     The three approval gates are now DB-home (#1775), so a *global* pin for them
     is a GLOBAL-scope (``scope=""``) ``ConfigSetting`` row, NOT a ``[teatree]``
-    TOML key (a DB-home key in ``[teatree]`` is a load-time error). A TOML-home
+    TOML key (a DB-home key left in ``[teatree]`` is ignored on read). A TOML-home
     global key still counts via the ``[teatree]`` table.
     """
     pinned: set[str] = set()

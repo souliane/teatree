@@ -244,12 +244,12 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
     ),
     "config_setting": DjangoGroup(
-        "DB-backed config override tier — env -> DB -> TOML precedence (#1775).",
+        "DB-home settings store — the sole tier for a DB-home setting below env (#1775).",
         [
-            ("set", "Upsert a DB override row for an overridable setting (JSON value)."),
+            ("set", "Upsert a DB row for a DB-home setting (JSON value)."),
             ("get", "Print a setting's resolved value and its source (db vs file/env)."),
-            ("clear", "Remove a DB override row, falling back to the file/env source."),
-            ("list", "List every DB config override row (read-only)."),
+            ("clear", "Remove a DB row, falling back to the dataclass default."),
+            ("list", "List every DB config setting row (read-only)."),
             ("import", "Seed the DB store from operational [teatree] toml keys (one-time)."),
         ],
         core_dispatch=True,

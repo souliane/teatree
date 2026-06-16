@@ -7,27 +7,18 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 ### 10.1 ~/.teatree.toml
 
 ```toml
+# ~/.teatree.toml holds ONLY the TOML-home carve-out + overlay discovery /
+# messaging / raw-table keys (#1775). The operational knobs — mode, the
+# approval gates, on_behalf_post_mode, repo_mode, the cadence/threshold dials,
+# … — are DB-home and live in the ConfigSetting store; a value for one of them
+# left in [teatree] / [overlays.<name>] is IGNORED on read. Set them with
+# `t3 <overlay> config_setting set` (see below), and migrate an existing config
+# once with `t3 <overlay> config_setting import`.
 [teatree]
 workspace_dir = "~/workspace"
-branch_prefix = ""
 privacy = "strict"
-mode = "interactive"                       # global default — confirm before publishing actions. Per-overlay override to "auto" enables loop-driven autonomy.
-loop_cadence_seconds = 720                 # /loop tick interval (default 12 min)
-require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
-require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
-e2e_confidence_threshold = 90              # rubric score (0-100) a Playwright spec must reach to be VERIFIED by the /t3:e2e verify<->review loop; the single knob both /t3:e2e-review (rubric) and /t3:e2e (loop) read
-on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960) over colleague-VISIBLE posts; drafts (post-draft-note) are exempt under every mode: draft_or_ask (default) | ask (both BLOCK every colleague-visible action, EXEMPT drafts) | immediate (gate off)
-on_behalf_auto_actions = ["post_e2e_evidence"]  # on-behalf actions that PROCEED even under ask/draft_or_ask (own-ticket self-documentation, not a colleague voice); clear to [] to re-gate test plan
-notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
-user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
-statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
-repo_mode = ""                             # solo/collaborative working mode (#550 item 4); "" = auto-detect from git shortlog history
-missing_issue_ref_policy = "find_existing_then_ask"  # when a commit/MR needs an issue ref and none is in hand: find_existing_then_ask (default — recover the original issue first, then ASK on colleague-facing repos / CREATE on the user's own repos, never a dummy) | create (opt-in: auto-create even on colleague repos) | dummy (opt-in: placeholder ref even on colleague repos)
-claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
-agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
-max_concurrent_local_stacks = 0            # #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded, default)
-provision_step_timeout_seconds = 1800      # #2220: hard ceiling for one long-blocking provisioning step (DSLR restore / migrate / --create-db); abort+alert past it, never hang
-stale_stack_min_age_minutes = 0            # #2207: age threshold (min) for reaping ABANDONED docker stacks no live worktree owns (auto before start/provision + `workspace reap-stale`); 0 = opt-in off (default), e.g. 240 to enable
+statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones (read by the bash statusline hook)
+orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django)
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -63,6 +54,17 @@ default_channel = "C_FALLBACK"        # optional: channel for an MR matching no 
 "souliane/teatree" = "C_TEATREE"      # exact owner/repo → channel id (or #channel-name)
 "acme-engineering" = "C_ACME"         # org-namespace prefix → channel for every repo under it
 
+```
+
+The operational (DB-home) settings are set in the store, not the file above —
+globally, or scoped to one overlay with `--overlay <name>`:
+
+```bash
+t3 <overlay> config_setting set mode auto                                  # global default
+t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject
+t3 <overlay> config_setting set on_behalf_post_mode immediate
+t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
+t3 <overlay> config_setting import                                         # one-time: migrate a pre-partition [teatree] block
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -116,33 +118,40 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the ten fields a pre-Django
-reader needs (`orchestrator_bash_gate_enabled`, `speak`, `handover_mirror_path`,
-`check_updates`), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
+`[overlays.<name>]` + env only. The TOML carve-out is the eleven fields a non-Django
+or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak`,
+`handover_mirror_path`, `check_updates`, and `statusline_chain` — the latter read
+straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
+to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
 `redis_db_count`, `timezone`, `privacy`), and the nested structured `mr_reminder`
 table. The two DERIVED fields (`notify_on_behalf`, `ask_before_post_on_behalf`) are
 computed by the resolver and have no home. The resolution-tier wiring below details
 each home's chain.
 
-A subset of `[teatree]` keys can be overridden per-overlay in
-`[overlays.<name>]`. The resolution chain (first match wins):
+The resolution chain is **per home** (first match wins) — each field reads from
+exactly the tiers its home allows:
 
-1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`).
-2. **DB override tier** — a `ConfigSetting` row whose `key` is an overridable setting ([#1775](https://github.com/souliane/teatree/issues/1775), "move config to the database"). Itself two-scoped (see below): an **overlay-scoped** DB row beats a **global** DB row.
-3. Active overlay's override from `[overlays.<name>]`.
-4. Global `[teatree]` value.
-5. `UserSettings` dataclass default.
+* **DB-home field** (every field not in the carve-out): `T3_*` env var (wired one-offs
+  in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`,
+  `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`), then the **DB store** — an
+  **overlay-scoped** `ConfigSetting` row, then a **global** row — then the
+  `UserSettings` dataclass default. Its `[teatree]` / `[overlays.<name>]` TOML
+  value is **ignored on read** (left over from a pre-partition config, it is
+  migrated into the store with `t3 <overlay> config_setting import`).
+* **TOML-home field** (the carve-out): `T3_*` env var, then the active overlay's
+  `[overlays.<name>]` override, then the global `[teatree]` value, then the
+  dataclass default. A `ConfigSetting` row for it is **ignored on read** (and
+  `config_setting set` refuses to write one).
 
-The DB tier (`core.models.ConfigSetting`, `db_table=teatree_config_setting`) is
-the canonical-tier-is-the-DB pattern (`MergeClear` / `DbApproval`): a row
-overrides the file value but is still beaten by an explicit env var. An **empty
-table is a provable no-op** — `resolution._db_setting_overrides()` returns `{}`,
-so nothing regresses during the migration window — and the read **fails safe to
-`{}`** for INFRASTRUCTURE failures (Django unconfigured or the table missing
-pre-migration), so this hot config path never raises on a missing table. The
-tier is scoped to keys registered in `OVERLAY_OVERRIDABLE_SETTINGS`, coercing the
-stored JSON value with that registry's parser; a row for any other key is
-ignored.
+The DB store (`core.models.ConfigSetting`, `db_table=teatree_config_setting`) is
+the canonical-tier-is-the-DB pattern (`MergeClear` / `DbApproval`): for a DB-home
+field it is the SOLE authoritative tier below env. An **empty table resolves every
+DB-home field to its dataclass default** — `resolution._db_setting_overrides()`
+returns `{}` — and the read **fails safe to `{}`** for INFRASTRUCTURE failures
+(Django unconfigured or the table missing pre-migration), so this hot config path
+never raises on a missing table. The store is scoped to keys registered in
+`OVERLAY_OVERRIDABLE_SETTINGS` (exactly the DB-home set), coercing the stored JSON
+value with that registry's parser; a row for any other key is ignored.
 
 **Per-overlay + global DB scope.** Each `ConfigSetting` row carries a `scope`,
 mirroring the TOML two-tier shape in the database: the empty-string scope
@@ -195,12 +204,16 @@ backwards edge on the `core` domain layer (tach-clean). Admin path:
 `--overlay <name>` on `set`/`get`/`clear` addresses that overlay's DB scope (omit
 for the global scope). `get` is the read side of the dual-read store — it prints a
 setting's resolved value and names its source (`db` when a row exists, else `file/env`). `import` is
-the one-time dual-read migration ([#938](https://github.com/souliane/teatree/issues/938)):
+the one-time partition migration ([#938](https://github.com/souliane/teatree/issues/938)):
 it seeds the store from every operational `[teatree]` toml key that is a registered
 `OVERLAY_OVERRIDABLE_SETTINGS` field (coerced through that registry's parser,
 upserted so a re-run is idempotent), skipping bootstrap-file-only and unknown keys.
-The pilot migrated setting is `issue_implementer_enabled` (a default-off boolean
-kill-switch).
+Run it once after upgrading to the partition so an existing install's DB-home
+`[teatree]` keys keep applying (they are otherwise ignored on read). **Known limitation:**
+`import` currently migrates only the GLOBAL `[teatree]` table — a per-overlay
+`[overlays.<name>]` value for a DB-home key is not auto-migrated; re-set those with
+`t3 <overlay> config_setting set <key> <json> --overlay <name>` (tracked as a
+follow-up to extend `import` to walk overlay tables).
 
 Bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE`
 / the offline `private_repos` allowlist) are explicitly out of scope — they must
@@ -243,7 +256,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
 | `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `e2e_confidence_threshold` | Rubric score (0-100, default `90`) a Playwright spec must reach to be VERIFIED by the `/t3:e2e` verify↔review loop (`/t3:e2e` § "Verify–Review Loop to Threshold"). The single knob both the `/t3:e2e-review` E2E Confidence Rubric and the loop read, so "the threshold" is one resolved value. A stricter client overlay raises it (e.g. `95`); a fast dogfood overlay lowers it. Documentation-driven today (the loop is agent prose, not a deterministic gate) — the typed field is the shared source of truth for the doc value and any future programmatic consumer. |
-| `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — registered as overridable, but the live scanner reads the global `[teatree]` value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay overrides are accepted in the registry but not yet consumed by `_scanning_news_scanner` in `loop/global_scanner_factories.py`) |
+| `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — DB-home, but the live scanner reads only the GLOBAL-scope value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay rows are accepted by the registry but not yet consumed by `_scanning_news_scanner` in `loop/global_scanner_factories.py`). Set it with `config_setting set scanning_news_disabled true` |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |
 | `eval_local_disabled` | Escape hatch for the periodic local-eval scanner (`eval_local`). The loop fires a weekly `eval_local` task so the SCOPED eval suite runs locally via the no-API-key subscription runner (the local half of "evals run locally + in CI weekly"; CI half is the standalone `.github/workflows/eval.yml` weekly schedule). |

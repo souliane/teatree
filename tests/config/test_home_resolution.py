@@ -46,11 +46,12 @@ class TestDbHomeIgnoresToml(TestCase):
         assert get_effective_settings().issue_implementer_enabled is True
 
     def test_db_home_field_ignores_a_teatree_toml_value(self) -> None:
-        # A DB-home key set in [teatree] is NOT read — load_config refuses it at
-        # load time in commit 3, but the resolution invariant here is: with no DB
-        # row, the resolved value is the dataclass default, not the TOML value.
-        # We assert via a DB row that the DB is the sole authority: the DB row
-        # value wins and there is no TOML layer beneath it for this key.
+        # A DB-home key set in [teatree] is NOT read — it is ignored on read (its
+        # home is the DB; migrate it with `t3 <overlay> config_setting import`).
+        # The resolution invariant here: with no DB row, the resolved value is the
+        # dataclass default, not the TOML value. We assert via a DB row that the
+        # DB is the sole authority: the DB row value wins and there is no TOML
+        # layer beneath it for this key.
         _write_toml(self.config_path, "[teatree]\n")
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=7)
         assert get_effective_settings().issue_implementer_max_concurrent == 7

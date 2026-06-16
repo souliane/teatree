@@ -42,10 +42,10 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
 - **`T3_CONTRIBUTE`** — `false` (default) or `true`:
   - `false`: only improve the active project overlay. Core skill gaps are noted in conversation but not acted on.
   - `true`: also improve core skills in `$T3_REPO`. Retro creates a local commit; whether it then pushes is governed by the mode resolution below.
-- **Push behavior is mode-conditional — defer to `t3:rules § Publishing Actions Are Mode-Conditional`.** Resolve the effective mode in the prescribed order (`T3_MODE` env → active overlay config → global `[teatree]` table → per-repo memory overrides → default `interactive`).
+- **Push behavior is mode-conditional — defer to `t3:rules § Publishing Actions Are Mode-Conditional`.** Resolve the effective mode in the prescribed order (`T3_MODE` env → active overlay's per-overlay `mode` value → global `mode` value → per-repo memory overrides → default `interactive`). Both per-overlay and global `mode` values live in the `ConfigSetting` DB store (`config_setting set mode … [--overlay <name>]`), not in TOML.
   - **`auto`**: push immediately after the privacy scan passes — no prompt, no "your call", no deferral to `/t3:contribute`. Open the PR if one doesn't already exist.
   - **`interactive`**: commit locally and remind the user to run `/t3:contribute`.
-  - The legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` env vars are honored only when no `mode` is configured anywhere; the `mode` setting subsumes them and wins on conflict. **Do not gate retro pushes on `T3_PUSH` when `mode = "auto"` is set in `~/.teatree.toml`.** A fork-vs-upstream split (origin ≠ `T3_UPSTREAM`) does not change the push decision; it only affects whether `/t3:contribute` opens an upstream issue afterward.
+  - The legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` env vars are honored only when no `mode` is configured anywhere; the `mode` setting subsumes them and wins on conflict. **Do not gate retro pushes on `T3_PUSH` when `mode` resolves to `"auto"` (set via `config_setting set mode auto` or `T3_MODE`).** A fork-vs-upstream split (origin ≠ `T3_UPSTREAM`) does not change the push decision; it only affects whether `/t3:contribute` opens an upstream issue afterward.
 - **`T3_UPSTREAM`** — upstream GitHub repo (e.g., `souliane/teatree`). Used by `/t3:contribute` to open issues upstream after pushing. When `origin` matches `T3_UPSTREAM`, pushes already land directly on upstream.
 - **`T3_PRIVACY`** — privacy check strictness: `strict` (default) or `relaxed`. See § Privacy Scan.
 - **`T3_REVIEW_SKILL`** — name of an external skill review tool (e.g., `ac-reviewing-codebase`). If set, retro recommends running it after skill improvements. If not set, retro suggests installing one during first run and storing the preference.
@@ -498,7 +498,7 @@ During every retro, scan the agent's personal config and memory files.
 If `T3_REVIEW_SKILL` is configured and skill files were modified during this retro:
 
 1. Suggest running the review skill (a systematic multi-phase audit for deeper quality assurance) on the changed skills (e.g., `/$T3_REVIEW_SKILL`).
-2. If `T3_REVIEW_SKILL` is NOT configured, include this note in the retro output: "Consider installing a skill review tool for periodic deep quality audits. Set `T3_REVIEW_SKILL` in `~/.teatree` to enable integration."
+2. If `review_skill` is NOT configured, include this note in the retro output: "Consider installing a skill review tool for periodic deep quality audits. Set it with `t3 <overlay> config_setting set review_skill <skill-name>` (or the `T3_REVIEW_SKILL` env var) to enable integration."
 
 ### 9. Consolidation over Drift
 

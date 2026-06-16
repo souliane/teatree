@@ -275,8 +275,8 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # ``UserSettings`` field (see ``config/homes.py``) has an entry here: the parser
 # coerces a stored ``ConfigSetting`` JSON value to the field's type. This registry
 # is the SOLE source for a DB-home field — its ``[teatree]`` / ``[overlays.<name>]``
-# TOML tables are NOT read on resolution; a DB-home key in TOML is a load-time
-# error (``load_config`` refuses it). ``_db_setting_overrides`` consults this to
+# TOML tables are NOT read on resolution; a DB-home key left in TOML is ignored on
+# read (migrate it with ``config_setting import``). ``_db_setting_overrides`` consults this to
 # decide which ``ConfigSetting`` rows supply a value and reuses each entry's
 # parser; a row for a key absent here is ignored. Per DB-home field the chain is
 # ``env -> ConfigSetting (overlay then global) -> dataclass default``. A
@@ -557,12 +557,12 @@ class UserSettings:
     # someone else's message).
     #
     # **Deprecated** in favour of the tri-state ``on_behalf_post_mode``
-    # below. Kept on ``UserSettings`` for one release as a derived
-    # computed value: ``True`` when the resolved mode is ``ASK`` or
-    # ``DRAFT_OR_ASK``, ``False`` when ``IMMEDIATE``. The toml loader
-    # still accepts ``[teatree] ask_before_post_on_behalf = true/false``
-    # and translates it into the new mode (see ``load_config``) so
-    # existing user configs keep working.
+    # below, and now a DERIVED value (#1775): the resolver computes it
+    # (``True`` when the resolved mode is ``ASK`` or ``DRAFT_OR_ASK``,
+    # ``False`` when ``IMMEDIATE``) rather than reading it. Under the hard
+    # partition a legacy ``[teatree] ask_before_post_on_behalf`` TOML key is
+    # ignored on read; set the successor ``on_behalf_post_mode`` (DB-home)
+    # via ``config_setting set`` / migrate it with ``config_setting import``.
     ask_before_post_on_behalf: bool = True
     # Tri-state pre-gate over on-behalf colleague/customer posts (#960):
     #
@@ -575,10 +575,11 @@ class UserSettings:
     # * ``IMMEDIATE`` — the gate is off; gated actions publish directly
     #   (subject to the always-gated list in ``Mode``).
     #
-    # Backward-compat shim: if ``on_behalf_post_mode`` is absent but the
-    # legacy ``ask_before_post_on_behalf`` is set, the loader resolves
-    # the mode as ``ASK`` (true) / ``IMMEDIATE`` (false). The default
-    # when neither is set is ``DRAFT_OR_ASK``.
+    # DB-home (#1775): resolves from the ``ConfigSetting`` store + env only.
+    # The pre-partition shim that translated a legacy ``[teatree]
+    # ask_before_post_on_behalf`` TOML key into this mode is retired — that
+    # TOML key is ignored on read now; migrate it with ``config_setting import``.
+    # The default when no row is set is ``DRAFT_OR_ASK``.
     on_behalf_post_mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK
     # Carve-out from the on-behalf pre-gate: actions in this allowlist resolve
     # to PROCEED even under ASK / DRAFT_OR_ASK, because they are the user's

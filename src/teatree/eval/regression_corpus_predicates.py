@@ -41,8 +41,8 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
     DB-home under the #1775 partition — it resolves SOLELY from the
     ``ConfigSetting`` store, not from ``[overlays.<name>]`` TOML — so this stages
     it through that store's resolver seam rather than a hermetic ``~/.teatree.toml``
-    (a ``[overlays.<name>] autonomy`` key is ignored on read now, and a DB-home
-    key in ``[teatree]`` is a load-time error).
+    (a ``[overlays.<name>]`` / ``[teatree]`` ``autonomy`` key is ignored on read
+    now — its home is the DB).
 
     It pins the per-overlay DB scope for *overlay_name* (alias-tolerant) to the
     staged raw value — exercising the real ``_coerce_db_rows`` parser path — and

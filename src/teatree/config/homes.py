@@ -4,9 +4,10 @@ Every non-derived ``UserSettings`` field has EXACTLY ONE home.
 
 :attr:`SettingHome.DB` — the field's sole authoritative tier is the
 ``ConfigSetting`` store (global + per-overlay rows) plus the ``T3_*`` env layer.
-The ``[teatree]`` / ``[overlays.<name>]`` TOML tables are NOT read for it; a TOML
-value for a DB-home key is a load-time error (``load_config`` refuses it) rather
-than a silently-shadowed override.
+The ``[teatree]`` / ``[overlays.<name>]`` TOML tables are NOT read for it: a TOML
+value for a DB-home key is ignored on read (its home is the DB), so an install
+moving to the partition migrates such keys into the store with ``t3 <overlay>
+config_setting import``.
 
 :attr:`SettingHome.TOML` — the field's sole authoritative tier is the
 ``[teatree]`` / ``[overlays.<name>]`` TOML tables plus the ``T3_*`` env layer. A

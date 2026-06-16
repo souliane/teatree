@@ -113,8 +113,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # ``get_effective_settings``. ``on_behalf_post_mode`` is DB-home (so it keeps
     # its default here), and ``ask_before_post_on_behalf`` is DERIVED from the
     # mode — derived from the file-tier default mode here, re-derived from the
-    # resolved DB-home mode by ``get_effective_settings``. A DB-home key in
-    # ``[teatree]`` / ``[overlays.<name>]`` is rejected at load time (Commit 3).
+    # resolved DB-home mode by ``get_effective_settings``. A DB-home key left in
+    # ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
+    # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
