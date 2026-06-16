@@ -54,6 +54,54 @@ class Token:
     raw: str = ""
 
 
+def raw_substitution_sees_live(raw: str, openers: tuple[str, ...]) -> bool:
+    """Quote-aware walk: True iff any ``openers`` marker in ``raw`` is LIVE.
+
+    A command/process substitution (``$(...)``, ``<(...)``, ``>(...)``) or a
+    backtick command substitution is expanded by bash only when it is unquoted
+    or inside DOUBLE quotes; inside SINGLE quotes it is inert literal text bash
+    passes verbatim. Both pre-publish raw-span walkers share this state machine
+    so they classify a substitution identically. It tracks ``in_single`` and
+    ``in_double`` over the verbatim source span:
+
+    - A ``'`` toggles single-quote state ONLY when not inside a double-quoted
+        span -- inside ``"..."`` an apostrophe is a LITERAL character, not a
+        delimiter (the fail-open bug this fixes: ``"it's $(cat secret)"`` is one
+        double-quoted string whose ``'`` is a literal apostrophe, so the
+        ``$(...)`` after it is genuinely LIVE, not inert).
+    - A ``"`` toggles double-quote state ONLY when not inside a single-quoted
+        span -- inside ``'...'`` a double quote is a literal character (bash has
+        no single-quote escape).
+    - A marker in ``openers`` is LIVE the moment it opens while NOT inside a
+        single-quoted region (unquoted OR double-quoted, both of which bash
+        expands); INERT only inside a genuinely single-quoted span.
+
+    Returns True on the first live marker, else False. Markers are matched as
+    literal prefixes, so a single-character backtick opener composes with the
+    two-character ``$(`` / ``<(`` / ``>(`` family.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not in_single:
+            for opener in openers:
+                if raw.startswith(opener, i):
+                    return True
+        i += 1
+    return False
+
+
 # Metacharacters that act as command separators in bash. Two-char
 # operators MUST be checked before their one-char prefixes so ``&&`` is
 # not mis-emitted as two ``&`` tokens.

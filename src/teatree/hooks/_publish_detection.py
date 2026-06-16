@@ -37,7 +37,7 @@ from itertools import starmap
 from typing import Final
 
 from teatree.hooks._gh_glab_hiding import token_has_substitution_marker
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
+from teatree.hooks._shell_lexer import TokenKind, raw_substitution_sees_live, split_commands, tokenize
 
 _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 
@@ -370,33 +370,27 @@ def _segment_raws(command: str) -> list[list[str]]:
     return segments
 
 
+# Substitution openers bash expands outside single quotes: command
+# substitution ``$(...)``, process substitution ``<(...)``/``>(...)``, and the
+# legacy backtick command substitution. The two-char ``$(`` family and the
+# one-char backtick compose as literal-prefix markers.
+_SUBSTITUTION_OPENERS: Final[tuple[str, ...]] = ("$(", "<(", ">(", "`")
+
+
 def _raw_has_live_substitution(raw: str) -> bool:
     """Return True iff a ``$(`` / ``<(`` / ``>(`` / backtick in ``raw`` is LIVE.
 
     A substitution is live (bash WOULD run it) only OUTSIDE a single-quoted
-    span; inside single quotes it is inert literal text. Walks the verbatim
-    source span tracking single-quote state (no single-quote escape in bash)
-    and reports True the moment a substitution marker opens while not inside a
-    single-quoted region. An empty ``raw`` is treated as live (conservative).
+    span; inside single quotes it is inert literal text. Delegates to the
+    shared quote-aware walker (:func:`raw_substitution_sees_live`), which tracks
+    BOTH single- and double-quote context — so an apostrophe inside a
+    double-quoted span (``"it's $(gh ...)"``) is a literal character and the
+    genuinely LIVE substitution after it is reported live, not mis-classified as
+    inert. An empty ``raw`` is treated as live (conservative).
     """
     if not raw:
         return True
-    in_single = False
-    i = 0
-    n = len(raw)
-    while i < n:
-        ch = raw[i]
-        if ch == "'":
-            in_single = not in_single
-            i += 1
-            continue
-        if not in_single:
-            if ch == "`":
-                return True
-            if ch in {"$", "<", ">"} and i + 1 < n and raw[i + 1] == "(":
-                return True
-        i += 1
-    return False
+    return raw_substitution_sees_live(raw, _SUBSTITUTION_OPENERS)
 
 
 def _segment_is_opaque_forge_transport_raw(words: list[str], raws: list[str]) -> bool:

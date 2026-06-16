@@ -841,6 +841,99 @@ class TestInertSingleQuotedSubstitutionBodyIsScanned:
         assert banned_terms_scanner.scan_text(payload, config_path=config) == "acmecorp"
 
 
+class TestDoubleQuotedApostropheLiveSubstitutionFailsClosed:
+    """A DOUBLE-quoted body whose literal apostrophe precedes a LIVE ``$(...)`` fails closed.
+
+    The fail-open regression this guards against: the raw-span walker toggled
+    its single-quote flag on EVERY ``'`` without tracking double-quote context.
+    Inside a double-quoted span an apostrophe is a LITERAL character, not a
+    single-quote delimiter — so a genuinely LIVE ``$(...)`` after that apostrophe
+    (``--body "it's $(cat secret)"`` — the whole body is one double-quoted string,
+    bash WILL expand the substitution) was misclassified as INERT and the gate
+    scanned the literal token instead of failing closed. A planted banned term
+    inside that substitution leaked. The state machine now tracks both
+    ``in_single`` and ``in_double``; the apostrophe is the ONLY difference between
+    a leak and a correct fail-closed block.
+    """
+
+    def test_double_quoted_apostrophe_then_live_cat_subst_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # PROOF (verifier): the whole body is one DOUBLE-quoted string; the inner
+        # ``'`` is a literal apostrophe, so bash expands ``$(cat <file>)`` at post
+        # time. The planted banned term in that file WOULD be published, so the
+        # gate MUST fail closed (block). RED before the fix (the walker treats the
+        # apostrophe as opening a single-quoted region and reports the live subst
+        # INERT → scans the literal token → ALLOW/leak).
+        secret = tmp_path / "secret.txt"
+        secret.write_text("ship to acmecorp\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "it\'s $(cat {secret})"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+    def test_apostrophe_is_the_only_difference_from_failclosed_control(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # CONTROL: the same body WITHOUT the apostrophe already fails closed today.
+        # Proving both spellings block establishes the apostrophe is the only
+        # difference — the live substitution is the real trigger, not the quote.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("ship to acmecorp\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "its $(cat {secret})"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_double_quoted_apostrophe_live_subst_payload_fails_closed(self, tmp_path: Path) -> None:
+        # The payload-level twin: the extracted publish payload must carry the
+        # fail-closed sentinel (not the literal ``$(cat ...)`` token) because the
+        # gate cannot read what bash will expand at post time.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("anything\n", encoding="utf-8")
+        cmd = f'gh pr create -R o/r --title t --body "it\'s $(cat {secret})"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_double_quoted_apostrophe_live_subst_forge_transport_is_opaque(self) -> None:
+        # SYMMETRIC case for ``_raw_has_live_substitution`` (the opaque-transport
+        # detector). The trailing ``&& sh -c "…"`` segment is opaque ONLY because
+        # of its LIVE substitution — the substitution is ``$(cat …)`` with NO
+        # ``gh``/``glab``/``curl`` marker word, so the ``carries_forge`` branch
+        # cannot fire and the verdict turns purely on substitution liveness. A
+        # non-forge interpreter that runs a live ``$(…)`` could expand into ANY
+        # forge call the gate cannot see, so it must fail closed. The leading real
+        # publish segment makes this a publish command so the payload path runs.
+        # RED before the fix: the literal apostrophe made the old single-quote-only
+        # walker treat the rest of the double-quoted span as a single-quoted region
+        # and report the genuinely LIVE ``$(cat …)`` INERT → the segment looked
+        # clean → NO fail-closed sentinel was appended (the opaque transport
+        # slipped through). The control WITHOUT the apostrophe already fails closed
+        # — the apostrophe is the ONLY difference between a leak and a block.
+        apos = 'gh pr create -R o/r --title t --body ok && sh -c "it\'s here: $(cat /tmp/payload.sh)"'
+        ctrl = 'gh pr create -R o/r --title t --body ok && sh -c "its here: $(cat /tmp/payload.sh)"'
+        apos_payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": apos})
+        ctrl_payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": ctrl})
+        assert apos_payload is not None
+        assert ctrl_payload is not None
+        # Both spellings must fail closed; the apostrophe must not flip the verdict.
+        assert FAIL_CLOSED_SENTINEL in apos_payload
+        assert FAIL_CLOSED_SENTINEL in ctrl_payload
+
+    def test_genuinely_single_quoted_live_subst_in_double_then_inert_still_scanned(self) -> None:
+        # The inverse boundary: a ``"…"`` double-quoted prefix that CLOSES, then a
+        # genuinely single-quoted ``'$(date)'`` span, keeps the substitution INERT
+        # — the state machine must still treat the truly-single-quoted region as
+        # inert and SCAN the literal body, not fail closed.
+        body = "header done"
+        cmd = f"gh pr create -R o/r --title t --body \"{body}\"' literal $(date) here'"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+
 class TestReadOnlyCommandsAreNotPublishes:
     """A read-only command that merely QUOTES a publish substring is NOT a post.
 

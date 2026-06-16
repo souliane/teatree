@@ -33,7 +33,7 @@ from teatree.hooks._command_parser import (
     attached_value,
     read_file_arg,
 )
-from teatree.hooks._shell_lexer import Token, TokenKind, split_commands
+from teatree.hooks._shell_lexer import Token, TokenKind, raw_substitution_sees_live, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
@@ -74,10 +74,16 @@ def _raw_substitution_is_live(raw: str) -> bool:
     inside DOUBLE quotes; inside SINGLE quotes (``'...$(x)...'``) it is inert
     literal text bash passes verbatim, so the gate already holds the real body
     in the decoded value and can scan it. This walks the verbatim source span
-    tracking single-quote state (a single-quoted region runs to the next ``'``;
-    bash has no single-quote escape) and reports True the moment a ``$(`` opens
-    while NOT inside a single-quoted region -- the live case the gate cannot
-    read before the command runs, so it must fail closed.
+    with a quote-context state machine (:func:`raw_substitution_sees_live`):
+    a ``'`` opens a single-quoted region only when NOT already inside double
+    quotes -- inside a double-quoted span an apostrophe is a LITERAL character,
+    not a delimiter -- and a ``$(`` is reported live the moment it opens while
+    NOT inside a single-quoted region (unquoted OR double-quoted, both of which
+    bash expands). Without this double-quote awareness a body like
+    ``"it's $(cat secret)"`` -- one double-quoted string whose ``'`` is a
+    literal apostrophe -- would mis-toggle into a phantom single-quoted region
+    and report the genuinely LIVE ``$(...)`` as inert, scanning the literal
+    token instead of failing closed (a fail-open leak).
 
     ``raw`` defaults to empty for in-process callers that do not carry a source
     span; an empty/absent ``raw`` is treated as live (conservative -- the gate
@@ -85,19 +91,7 @@ def _raw_substitution_is_live(raw: str) -> bool:
     """
     if not raw:
         return True
-    in_single = False
-    i = 0
-    n = len(raw)
-    while i < n:
-        ch = raw[i]
-        if ch == "'":
-            in_single = not in_single
-            i += 1
-            continue
-        if not in_single and ch == "$" and i + 1 < n and raw[i + 1] == "(":
-            return True
-        i += 1
-    return False
+    return raw_substitution_sees_live(raw, ("$(",))
 
 
 def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> str:
