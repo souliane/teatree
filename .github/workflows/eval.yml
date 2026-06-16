@@ -44,10 +44,10 @@
 #   job correctly fails RED (the metered backend can authenticate nothing) —
 #   that loud failure is intended, not a regression.
 #
-# The FREE deterministic eval lanes (eval-skill-triggers commit-stage,
+# The FREE deterministic TESTS (eval-skill-triggers commit-stage,
 # eval-pinned-regressions push-stage) are unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
-# metered in-process Agent-SDK suite (the SDK spawns the `claude` CLI child
+# metered in-process Agent-SDK eval (the SDK spawns the `claude` CLI child
 # internally, so `shutil.which("claude")` is still the provisioning gate) lives here.
 # ============================================================
 

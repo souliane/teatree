@@ -7,19 +7,21 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.eval.all import AiLaneOutcome
+from teatree.cli.eval.all import AiLaneOutcome, _suite_should_fail
 from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
+from teatree.cli.eval.run_modes import RunGuards
 from teatree.cli.eval.verdict import LaneResult
 from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.persistence import persist_run
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
-from teatree.eval.report import MatcherResult, ScenarioResult, evaluate
+from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, evaluate
 from teatree.eval.skill_command_validity import CommandValidityReport, CommandViolation
 from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
 from teatree.eval.transcript_conformance import InvariantResult
@@ -698,9 +700,9 @@ class TestEvalBackend:
 
     def test_subscription_backend_grades_a_saved_transcript(self, tmp_path: Path) -> None:
         specs = [_spec("worktree_first")]
-        transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
-        ).read_text(encoding="utf-8")
+        transcript = (Path(__file__).parents[2] / "evals" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
 
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
@@ -716,9 +718,9 @@ class TestEvalBackend:
         # saved subscription transcript. Pointed at a transcript dir holding one,
         # the scenario passes without `--backend` ever being given.
         specs = [_spec("worktree_first")]
-        transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
-        ).read_text(encoding="utf-8")
+        transcript = (Path(__file__).parents[2] / "evals" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
 
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
@@ -2059,9 +2061,9 @@ class TestEvalRunMeteredDockerByDefault:
 
     def test_grades_present_subscription_transcript(self, tmp_path: Path) -> None:
         specs = [_spec("worktree_first")]
-        transcript = (
-            Path(__file__).parents[1] / "eval_lanes" / "fixtures" / "worktree_first_pass.stream.jsonl"
-        ).read_text(encoding="utf-8")
+        transcript = (Path(__file__).parents[2] / "evals" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
         with _patch_all_lanes(specs):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
@@ -2379,3 +2381,63 @@ class TestEvalAllSdkMeteredGuard:
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
+
+
+class TestSuiteMeteredImpliesStrict:
+    """A metered (``--backend sdk``) suite IMPLIES strict — a needs-setup lane fails loud (§4c).
+
+    Without a metered backend only ``--strict`` escalates a setup-skip; under an
+    explicit metered backend a skipped-for-setup lane is a fail-loud, not a
+    silent green (a metered run that could not set a lane up never validated it).
+    """
+
+    def _lanes(self) -> list[LaneResult]:
+        return [
+            LaneResult(name="skill-triggers", cost="free", passed=True, skipped=False, detail="ok"),
+            LaneResult(
+                name="ai-eval",
+                cost="metered",
+                passed=True,
+                skipped=True,
+                detail="no transcripts",
+                setup_hint="produce transcripts in-session",
+            ),
+        ]
+
+    def test_metered_setup_skip_fails_without_strict(self) -> None:
+        assert _suite_should_fail(self._lanes(), strict=False, metered=True) is True
+
+    def test_unmetered_setup_skip_stays_green_without_strict(self) -> None:
+        assert _suite_should_fail(self._lanes(), strict=False, metered=False) is False
+
+    def test_unmetered_setup_skip_fails_under_explicit_strict(self) -> None:
+        assert _suite_should_fail(self._lanes(), strict=True, metered=False) is True
+
+    def test_all_green_never_fails(self) -> None:
+        green = [LaneResult(name="x", cost="free", passed=True, skipped=False, detail="ok")]
+        assert _suite_should_fail(green, strict=True, metered=True) is False
+
+
+class TestRunGuardsJudgeMetered:
+    """``RunGuards.judge_metered`` turns a judge-oracle run that judged nothing RED (§4a)."""
+
+    def _result(self, *, judge: object) -> ScenarioResult:
+        return ScenarioResult(
+            spec=_spec("alpha"),
+            run=_run("alpha", tool_calls=_PASSING_CALL),
+            matcher_results=(),
+            skipped=False,
+            judge=judge,
+        )
+
+    def test_judge_requested_all_skipped_raises_exit(self) -> None:
+        skipped = self._result(judge=JudgeOutcome(passed=True, skipped=True, rationale="claude absent"))
+        with pytest.raises(typer.Exit):
+            RunGuards.judge_metered(judge_requested=True, results=[skipped])
+
+    def test_judge_actually_graded_does_not_raise(self) -> None:
+        graded = self._result(judge=JudgeOutcome(passed=True, skipped=False, rationale="graded"))
+        RunGuards.judge_metered(judge_requested=True, results=[graded])
+
+    def test_no_judge_oracle_does_not_raise(self) -> None:
+        RunGuards.judge_metered(judge_requested=True, results=[self._result(judge=None)])

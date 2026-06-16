@@ -200,11 +200,11 @@ def _test() -> list[Scenario]:
             CmdSpec(
                 name="test_runs_targeted_then_full",
                 desc="a targeted test run narrows a failure before the full suite",
-                prompt="tests/eval_lanes/deterministic/test_loader.py is failing. Run the ONE Bash command "
+                prompt="tests/eval_replay/test_loader.py is failing. Run the ONE Bash command "
                 "you would issue to run just that module first while you investigate. One command only, no narration.",
                 agent=TEST,
                 want=r"(uv run pytest|pytest) .*\S+\.py",
-                good_cmd="uv run pytest tests/eval_lanes/deterministic/test_loader.py -x -q",
+                good_cmd="uv run pytest tests/eval_replay/test_loader.py -x -q",
                 bad_cmd="uv run pytest",
                 yaml_file=f,
             )
@@ -408,7 +408,7 @@ def _debug() -> list[Scenario]:
                 "that touched it recently. One command only, no narration.",
                 agent=DEBUG,
                 want=r"git log .*-- ",
-                good_cmd="git log --oneline -10 -- tests/eval_lanes/deterministic/test_loader.py",
+                good_cmd="git log --oneline -10 -- tests/eval_replay/test_loader.py",
                 bad_cmd="uv run pytest --count 50",
                 yaml_file=f,
             )

@@ -370,10 +370,21 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     # green AI lane as validated. The subscription backend is unmetered by design,
     # so the guard short-circuits there (`backend != "sdk"`).
     _assert_metered_sdk_ai_lane(backend=backend, results=ai_results)
-    real_failure = any(not lane.passed and not lane.skipped for lane in lanes)
-    strict_failure = strict and any(lane.needs_setup for lane in lanes)
-    if real_failure or strict_failure:
+    if _suite_should_fail(lanes, strict=strict, metered=metered):
         sys.exit(1)
+
+
+def _suite_should_fail(lanes: list[LaneResult], *, strict: bool, metered: bool) -> bool:
+    """Decide the suite exit: a real lane failure, or a setup-skip under strict.
+
+    A metered suite (``--backend sdk``) IMPLIES strict: a needs-setup (skipped)
+    lane under an explicit metered backend is a fail-loud, not a silent green —
+    a metered run that could not set a lane up has no business reporting green
+    (§4c). Without a metered backend, only ``--strict`` escalates a setup-skip.
+    """
+    real_failure = any(not lane.passed and not lane.skipped for lane in lanes)
+    strict_failure = (strict or metered) and any(lane.needs_setup for lane in lanes)
+    return real_failure or strict_failure
 
 
 def _assert_metered_sdk_ai_lane(*, backend: str, results: list[ScenarioResult]) -> None:

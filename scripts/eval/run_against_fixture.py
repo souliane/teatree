@@ -9,8 +9,8 @@ and a known-bad transcript before the real ``claude`` run.
 Usage::
 
     uv run python scripts/eval/run_against_fixture.py \
-        tests/eval_lanes/scenarios/<slug>.yaml \
-        tests/eval_lanes/fixtures/<slug>_fail.stream.jsonl \
+        evals/scenarios/<slug>.yaml \
+        evals/fixtures/<slug>_fail.stream.jsonl \
         --expect fail
 
 The script exits 0 when the observed verdict matches ``--expect``

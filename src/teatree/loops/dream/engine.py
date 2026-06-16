@@ -40,7 +40,7 @@ review queue. This realises the "a behavioural drift is not fixed until an
 anti-vacuous eval pins it" rule from the dreaming side, but only as a CANDIDATE:
 a core-maker / human ratifies each into a real ``under_load`` scenario (pollution
 preamble + discriminating matchers + ``_pass``/``_fail`` fixtures + the teeth
-proof). The engine never autonomously writes an ``evals.yaml`` or a fixture — the
+proof). The engine never autonomously writes a scenario file or a fixture — the
 LLM-generated, self-anti-vacuous derivation is the deferred follow-up the design
 issue specifies.
 
@@ -520,7 +520,7 @@ def run_consolidation(
     byte-identical to before. When a request is supplied, the sibling
     :mod:`teatree.loops.dream.eval_proposer` derives inert eval candidates from the
     grounded clusters and appends them to the review queue — only candidate
-    descriptors, never an ``evals.yaml`` or fixture.
+    descriptors, never a scenario file or fixture.
     """
     members = enumerate_members(since=since)
     extract = build_extract(members)

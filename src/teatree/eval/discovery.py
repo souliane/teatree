@@ -1,14 +1,14 @@
 """Discover eval scenarios shipped with teatree core and overlays.
 
-Three surfaces are walked, in order:
+Two surfaces are walked, in order:
 
-1.  The core catalog at ``tests/eval_lanes/scenarios/*.yaml`` — cross-
-    overlay invariants whose fixtures use placeholder identities.
-2.  Co-located ``skills/<name>/evals.yaml`` siblings — a skill ships its
-    own behavioral evals beside its ``SKILL.md`` (the Anthropic skill-
-    authoring convention). A co-located spec defaults its ``agent_path``
-    to its owning ``skills/<name>/SKILL.md`` when it omits one.
-3.  Each installed overlay's ``get_eval_scenarios_dir()`` hook
+1.  The core catalog at ``evals/scenarios/*.yaml`` — the single canonical
+    home for every shipped scenario. A scenario targeting a skill carries an
+    explicit ``agent_path: skills/<name>/SKILL.md`` (coverage is attributed
+    per skill through that path). Scenario bodies never live co-located inside
+    the ``skills/`` tree — that tree carries skill prose only
+    (``tests/eval_replay/test_no_inline_skill_evals.py`` enforces it).
+2.  Each installed overlay's ``get_eval_scenarios_dir()`` hook
     (see :class:`teatree.core.overlay.OverlayBase`). Overlay-specific
     scenarios that reference tenant identities, banned-jargon lists, or
     per-workspace channel ids live in the overlay package so the core
@@ -33,19 +33,37 @@ from teatree.eval.models import EvalSpec
 
 logger = logging.getLogger(__name__)
 
-SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "tests" / "eval_lanes" / "scenarios"
+
+class ScenarioCatalogError(RuntimeError):
+    """Raised when the core scenario catalog directory does not exist.
+
+    ``SCENARIOS_DIR.glob("*.yaml")`` returns ``[]`` (no raise) on a missing dir,
+    so a mis-pointed move would silently shrink the catalog to whatever the
+    installed overlays contribute while a metered run still meters ``>$0`` and
+    exits green. A missing catalog dir is a hard configuration error, not an
+    empty catalog.
+    """
+
+
+SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "evals" / "scenarios"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
-# module's path so discovery stays a leaf of the eval package (the same
-# backwards-edge convention ``trigger_qa`` follows — it must not reach up into
-# ``teatree.skill_support.loading``, a higher-level module).
+# module's path so the eval package stays a leaf (the same backwards-edge
+# convention ``trigger_qa`` follows — it must not reach up into
+# ``teatree.skill_support.loading``, a higher-level module). The per-skill
+# coverage gate (``teatree.eval.coverage``) enumerates skills from here.
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 
 def discover_specs() -> list[EvalSpec]:
+    if not SCENARIOS_DIR.is_dir():
+        msg = (
+            f"scenario catalog directory is missing: {SCENARIOS_DIR}. A missing dir would yield an "
+            "empty catalog (glob returns []), silently shrinking the suite. Check the path / the move."
+        )
+        raise ScenarioCatalogError(msg)
     specs: list[EvalSpec] = []
     for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
         specs.extend(load_eval_yaml(path))
-    specs.extend(_discover_colocated_specs(skills_dir=DEFAULT_SKILLS_DIR))
     specs.extend(_discover_overlay_specs())
     _reject_duplicate_names(specs)
     return specs
@@ -62,17 +80,6 @@ def _reject_duplicate_names(specs: list[EvalSpec]) -> None:
                 f"duplicate scenario name {spec.name!r} (also defined in {first})",
             )
         seen[spec.name] = spec.source_path
-
-
-def _discover_colocated_specs(*, skills_dir: Path = DEFAULT_SKILLS_DIR) -> list[EvalSpec]:
-    if not skills_dir.is_dir():
-        return []
-    specs: list[EvalSpec] = []
-    for evals_yaml in sorted(skills_dir.glob("*/evals.yaml")):
-        owning_skill = evals_yaml.parent.name
-        default_agent_path = f"skills/{owning_skill}/SKILL.md"
-        specs.extend(load_eval_yaml(evals_yaml, default_agent_path=default_agent_path))
-    return specs
 
 
 def find_spec(name: str) -> EvalSpec | None:

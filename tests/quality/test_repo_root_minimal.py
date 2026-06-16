@@ -13,8 +13,8 @@ docs-site configs, CI / hooks / tool configs, the Claude Code plugin contract
 (``plugins/t3`` is a self-symlink back to root, so ``settings.json`` / ``hooks``
 / ``skills`` / ``agents`` / ``.claude-plugin`` are load-bearing AT root), the
 APM package contract (``apm.yml`` + ``.apm/``, pinned by
-``test_apm_package_structure.py``), and the source / tests / docs / tooling
-trees.
+``test_apm_package_structure.py``), and the source / tests / eval-definitions
+(``evals/``) / docs / tooling trees.
 
 The relocated trio is asserted explicitly absent so a half-move that left the
 old root copy behind (the silent-sbom-divergence trap) is caught here.
@@ -61,6 +61,7 @@ ALLOWED_ROOT = frozenset(
         ".apm",
         "src",
         "tests",
+        "evals",  # eval definitions (specs + fixtures); the SOT is evals/README.md
         "e2e",
         "docs",
         "scripts",

@@ -383,6 +383,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     executed = sum(1 for r in results if not r.skipped)
     RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
     RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
+    RunGuards.judge_metered(judge_requested=judge, results=results)
     if finalize_single_run(
         results,
         specs=specs,
