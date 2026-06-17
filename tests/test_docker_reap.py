@@ -180,23 +180,98 @@ class TestReapComposeProject:
         assert reap_compose_project("backend-wt99").is_noop
 
 
+def _is_image_label_format(cmd: list[str]) -> bool:
+    """Whether *cmd* is a ``docker images ... --format '{{.Label ...}}'`` call.
+
+    ``.Label`` is invalid on docker's image formatter context (#2361) — the
+    daemon raises ``can't evaluate field Label in type *formatter.imageContext``.
+    The fixtures below use this to refuse the bad template the way real docker
+    does, so a regression that reaches for ``.Label`` on images turns red.
+    """
+    return cmd[:2] == ["docker", "images"] and any(".Label " in arg for arg in cmd)
+
+
 class TestListComposeProjects:
     def test_aggregates_project_labels_across_containers_and_images(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Project names come from container labels directly and image labels via inspect."""
+
         def fake(cmd, *, expected_codes=None, timeout=None, **_kwargs):
             del expected_codes, timeout
             cmd = list(cmd)
             if cmd[:2] == ["docker", "ps"]:
                 return CompletedProcess(cmd, 0, "backend-wt1\nbackend-wt2\n\n", "")
-            return CompletedProcess(cmd, 0, "backend-wt2\nfrontend-wt3\n", "")
+            if cmd[:2] == ["docker", "images"]:
+                return CompletedProcess(cmd, 0, "sha256:img-a\nsha256:img-b\n", "")
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return CompletedProcess(cmd, 0, "backend-wt2\nfrontend-wt3\n", "")
+            return CompletedProcess(cmd, 0, "", "")
 
         _patch(monkeypatch, fake)
 
         assert list_compose_projects() == {"backend-wt1", "backend-wt2", "frontend-wt3"}
 
+    def test_image_enumeration_never_uses_the_invalid_label_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#2361 regression: ``docker images`` must enumerate by ``.ID`` + inspect, never ``.Label``.
+
+        The fake daemon mirrors real docker — it returns a non-zero
+        template-parsing error for any ``docker images --format '{{.Label ...}}'``
+        call. If the production code asked for ``.Label`` on images, that arm
+        would fire and the recorded ``docker images`` call would carry the
+        forbidden field.
+        """
+        calls: list[list[str]] = []
+
+        def fake(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            calls.append(cmd)
+            if _is_image_label_format(cmd):
+                return CompletedProcess(cmd, 1, "", "template parsing error: can't evaluate field Label")
+            if cmd[:2] == ["docker", "images"]:
+                return CompletedProcess(cmd, 0, "sha256:img-a\n", "")
+            if cmd[:3] == ["docker", "image", "inspect"]:
+                return CompletedProcess(cmd, 0, "orphan-wt9\n", "")
+            return CompletedProcess(cmd, 0, "", "")
+
+        _patch(monkeypatch, fake)
+
+        assert list_compose_projects() == {"orphan-wt9"}
+
+        image_calls = [c for c in calls if c[:2] == ["docker", "images"]]
+        assert image_calls, "expected a docker images enumeration"
+        for call in image_calls:
+            assert not any(".Label " in arg for arg in call), f"invalid .Label field on image formatter: {call}"
+            assert "{{.ID}}" in call, f"image enumeration must select ids: {call}"
+        inspect_calls = [c for c in calls if c[:3] == ["docker", "image", "inspect"]]
+        assert inspect_calls, "expected a docker image inspect to resolve the project label"
+        for call in inspect_calls:
+            assert any("Config.Labels" in arg for arg in call), f"inspect must read .Config.Labels map: {call}"
+            assert "sha256:img-a" in call, "inspect must target the enumerated image ids"
+
+    def test_no_images_skips_the_inspect_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty image-id list must not fire an argument-less ``docker image inspect``."""
+        calls: list[list[str]] = []
+
+        def fake(cmd, *, expected_codes=None, timeout=None, **_kwargs):
+            del expected_codes, timeout
+            cmd = list(cmd)
+            calls.append(cmd)
+            if cmd[:2] == ["docker", "ps"]:
+                return CompletedProcess(cmd, 0, "backend-wt1\n", "")
+            return CompletedProcess(cmd, 0, "", "")
+
+        _patch(monkeypatch, fake)
+
+        assert list_compose_projects() == {"backend-wt1"}
+        assert not any(c[:3] == ["docker", "image", "inspect"] for c in calls)
+
     def test_ignores_blank_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake(cmd, *, expected_codes=None, timeout=None, **_kwargs):
             del expected_codes, timeout
-            return CompletedProcess(list(cmd), 0, "backend-wt1\n\n   \n", "")
+            cmd = list(cmd)
+            if cmd[:2] == ["docker", "ps"]:
+                return CompletedProcess(cmd, 0, "backend-wt1\n\n   \n", "")
+            return CompletedProcess(cmd, 0, "", "")
 
         _patch(monkeypatch, fake)
 

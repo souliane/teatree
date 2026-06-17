@@ -17,10 +17,15 @@ def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:
     directory directly (robust to a DB-vs-git branch drift and to detached HEAD).
     Unlike :func:`unsynced_commits` (which compares against ``origin/main`` only
     and therefore flags pushed-but-unmerged branches), ``--not --remotes`` is
-    empty whenever the tip was pushed anywhere — to its own remote tracking ref,
-    to main, or captured by a squash-merge that was itself pushed. A non-empty
-    result means these commits exist on NO remote: removing the worktree would
-    destroy them irrecoverably. Returns ``"<sha> <subject>"`` lines (newest
+    empty whenever the tip's own SHA was pushed anywhere — to its own remote
+    tracking ref or to main as a fast-forward / merge commit. It is NOT empty for
+    a squash-merge: that rewrites the branch's commits into a NEW SHA on the
+    default branch, so the original commit is absent-from-all-remotes by SHA even
+    though its WORK is shipped — a patch-id comparison
+    (:func:`teatree.core.management.commands._workspace_cleanup.is_squash_merged`)
+    is what recognises that case. A non-empty result here means these commits
+    exist on NO remote BY SHA: removing the worktree on this signal alone would
+    destroy a genuinely-unmerged tip. Returns ``"<sha> <subject>"`` lines (newest
     first).
 
     **Fails closed.** Uses :func:`run_strict` so a non-zero ``git log`` exit

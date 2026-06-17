@@ -16,24 +16,9 @@ from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_cleanup import (
-    WorktreeReaper,
-    _die,
-    _fix_drift,
-    _raise_on_cleanup_failures,
-    clean_merged_worktrees,
-    drop_orphan_databases,
-    is_clean_ignored,
-    prune_branches,
-)
-from teatree.core.management.commands._workspace_docker import (
-    reap_orphan_worktree_docker,
-    reap_stale_local_stacks,
-    reap_stale_report,
-)
-from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
-from teatree.core.management.commands._workspace_reap import _is_interactive, reap_one_worktree
-from teatree.core.management.commands._workspace_stash import drop_orphaned_stashes
+from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
+from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
+from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
@@ -556,6 +541,12 @@ class Command(TyperCommand):
     def clean_all(
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
+        reap_unsynced: str = typer.Option(
+            "keep",
+            "--reap-unsynced",
+            help="Disposition for orphaned RAW worktrees with unpushed work (#2361): "
+            "'keep' (default, safe — leave them) or 'snapshot' (write a recovery artifact, THEN reap).",
+        ),
         *,
         interactive: bool = typer.Option(
             default=False,
@@ -570,31 +561,20 @@ class Command(TyperCommand):
         per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
         loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
         the deterministic squash signal are unchanged.
+
+        Orphaned RAW worktrees (#2361): a ``git worktree`` with no teatree
+        ``Worktree`` row (created by a sub-agent's bare ``git worktree add``) is
+        discovered and disposed of. A merged/gone orphan is reaped; one with
+        unpushed work is reaped only under ``--reap-unsynced=snapshot`` AND only
+        after a recovery artifact is captured — ``keep`` (default) leaves it.
+
+        The ordered passes live in :func:`run_clean_all`; this method is the thin
+        CLI wrapper that supplies the worktree dir and the command's IO sinks.
         """
-        workspace = _workspace_dir()
-        cleaned: list[str] = []
-        interactive = interactive and _is_interactive()
-        in_use = _wh.dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
-        reaper = WorktreeReaper(workspace)
-        cleaned.extend(reaper.reap_squash_merged_worktrees(interactive=interactive))
-        for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
-            if is_clean_ignored(wt.branch, overlay=wt.overlay):
-                cleaned.append(f"SKIPPED '{wt.branch}': matches clean_ignore — keeping")
-                continue
-            cleaned.append(reap_one_worktree(wt, interactive=interactive))
-
-        cleaned.extend(reaper.remove_empty_ticket_dirs())
-
-        cleaned.extend(drop_orphan_databases())
-        cleaned.extend(reap_orphan_worktree_docker())
-        cleaned.extend(reap_orphan_isolated_worktree_roots())
-
-        repo_root = Path.cwd()
-        if (repo_root / ".git").exists():
-            cleaned.extend(prune_branches(str(repo_root)))
-            cleaned.extend(drop_orphaned_stashes(str(repo_root)))
-
-        cleaned.extend(_wh.prune_dslr_snapshots_skipping(keep=keep_dslr, in_use_tenants=in_use))
-
-        _raise_on_cleanup_failures(cleaned, self.stdout.write, self.stderr.write)
-        return cleaned
+        return run_clean_all(
+            _workspace_dir(),
+            CleanAllIO(write_out=self.stdout.write, write_err=self.stderr.write),
+            keep_dslr=keep_dslr,
+            reap_unsynced=reap_unsynced,
+            interactive=interactive,
+        )
