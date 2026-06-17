@@ -1,17 +1,18 @@
 # Testing skill evals
 
 A behaviour-bearing skill ships **evals** — small scenarios that grade what an
-agent *does* when it loads the skill. This is the end-to-end guide: where evals
-live, how grading works, the three cost tiers, how to run them, and what CI does.
+agent *does* when it loads the skill. This is a quick playbook: how a scenario
+runs and gets graded, where evals live, the cost lanes, and how to run them free
+vs metered.
 
-For methodology — how to write a skill worth evaluating in the first place — see
-Anthropic's
-[skill-creator SKILL.md](https://github.com/anthropics/skills/blob/main/skills/skill-creator/SKILL.md)
-and
-[agent-skills best practices](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/best-practices).
+For *how to write a skill worth evaluating in the first place*, read Anthropic's
+[agent-skills best practices](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/best-practices)
+— this page does not repeat them. It covers only what is teatree-specific or
+otherwise unclear.
+
 The in-session driver that produces the AI-lane transcripts is the
-`/t3:running-evals` skill. The harness reference (full schema, every matcher
-operator, failure-class index) is
+`/t3:running-evals` skill. The full harness reference (every matcher operator,
+the schema, the failure-class index) is
 [`evals/README.md`](https://github.com/souliane/teatree/blob/main/evals/README.md).
 
 ## test vs eval
@@ -20,20 +21,79 @@ A **test** asserts what a function *returns* — deterministic, free, every comm
 (`t3 teatree run tests`). An **eval** grades what an agent *did* on a prompt
 (`t3 eval …`). This page is about evals.
 
+## A scenario is two separate AI steps: RUN, then GRADE
+
+This is the part that trips people up. One scenario produces a verdict in **two
+distinct steps**, and **both steps are AI calls — but they are separate calls,
+to separate models, for separate jobs**:
+
+1. **RUN** — an agent does the task in a **clean context**, the same way
+   Anthropic frames a skill eval: once *with the skill loaded*, once at a
+   *baseline* (no skill). This is NOT a hand-started "fresh session" in your
+   terminal — it is the harness spinning up an isolated agent (an in-session
+   sub-agent, or a clean-room SDK run) whose only job is to attempt the prompt.
+   The output of RUN is a **transcript**: the tool calls the agent made plus its
+   text.
+2. **GRADE** — a *separate* step reads that transcript and decides PASS/FAIL. It
+   uses AI only where it must: **deterministic matchers** handle every crisp
+   criterion (a tool call is present/absent, text matches a regex) with no model
+   at all; an **LLM judge** is invoked *only* for the fuzzy criteria a matcher
+   can't express ("did the agent explain the trade-off honestly?").
+
+The RUN agent and the GRADE judge are different model invocations with different
+prompts. The RUN agent never grades itself. A scenario is meaningful only when
+the with-skill RUN goes GREEN while the baseline RUN degrades — that is what
+proves the *skill*, not the base model, drove the behaviour.
+
 ```mermaid
-flowchart TD
-    Change([Skill or code change]) --> Q{What's in the loop?}
-    Q -->|"no model (parser, path, config)"| T["Deterministic test → pytest<br/>free · every commit"]
-    Q -->|"agent running a skill"| EV{t3 eval}
-    EV -->|"transcript ($0): grade an<br/>already-recorded session run"| TR["Transcript: tool calls + text"]
-    EV -->|"sdk: fresh run in a clean room<br/>(subscription auth — no API key)"| RUN["claude_agent_sdk.query()<br/>with-skill AND baseline (no-skill)<br/>isolated HOME · bypassPermissions"]
-    RUN --> TR
-    TR --> GRADE{Grade the transcript}
-    GRADE -->|"deterministic matchers<br/>(tool_call present/absent · text/regex)"| V{Verdict}
-    GRADE -->|"judge oracle — LLM-as-judge<br/>transcript vs prose rubric"| V
-    V -->|"GREEN with-skill"| G([skill works])
-    V -->|"RED at baseline / when broken"| R([eval has teeth])
+flowchart LR
+    P([prompt]) --> RUN["RUN (AI call #1)<br/>agent attempts the task<br/>with-skill AND baseline"]
+    RUN --> T["transcript<br/>(tool calls + text)"]
+    T --> M["matchers (no model)<br/>crisp criteria"]
+    T --> J["judge (AI call #2)<br/>fuzzy criteria only"]
+    M --> V([PASS / FAIL])
+    J --> V
 ```
+
+The harness only ever sees the transcript, so HOW it was produced is swappable —
+which is exactly what the cost lanes below trade on.
+
+## A concrete anti-vacuous scenario
+
+A scenario must go **GREEN** when the skill works and **RED** when it doesn't —
+otherwise it grades nothing. The reliable way to get that is to pair a
+**positive** matcher (the right action happened) with a **negative** one (the
+wrong action did not). Here is a real one — "do the work now, don't hand the
+steps back":
+
+```yaml
+- name: do_work_now_runs_command_not_hands_back_steps
+  agent_path: skills/rules/SKILL.md          # the SKILL.md this grades; coverage keys on it
+  scenario: "an in-scope 'help me X' request runs the t3 command, not hands steps back"
+  model: haiku
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    The user says "help me create the worktree for this ticket". Worktree
+    creation is a sanctioned t3 command. Take the single action you would take now.
+  expect:
+    - tool_call: Bash                         # GREEN path: it ran the command
+      args.command: ~ "t3 .*worktree (provision|add|create)"
+    - no_tool_call_matching:                  # RED guard: it did NOT bounce a question back
+        AskUserQuestion.questions: '~ "(?i)(should I|do you want|shall I)"'
+```
+
+Why the pair matters: with only the positive matcher, an agent that *both* runs
+the command *and* needlessly asks "should I?" would still pass — the scenario
+would be blind to the behaviour its own name promises to gate. The negative
+matcher gives it teeth.
+
+Each scenario ships replay fixtures under
+`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`;
+`tests/eval_replay/test_scenarios_anti_vacuous.py` asserts the `_pass` fixture
+goes GREEN while `_fail`/`_noop` go RED, so a toothless matcher is caught at test
+time. Reach for a `judge:` block (an LLM judge over a prose `rubric`) only when
+the criterion is genuinely fuzzy — matchers first.
 
 ## Where evals live
 
@@ -41,10 +101,10 @@ flowchart TD
   explicit `agent_path: skills/<skill>/SKILL.md`; coverage keys on that path.
 - `evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl` — the replay fixtures.
   They are **synthetic** (corpus-gen, `fixt-` session ids). A real captured
-  transcript carries personal content and must NEVER reach this public repo —
-  the runtime capture target is gitignored and a CI guard
+  transcript carries personal content and must NEVER reach this public repo: the
+  runtime capture target is gitignored and a CI guard
   (`tests/eval_replay/test_fixtures_have_no_personal_content.py`) fails on any
-  personal/identity/credential marker in `evals/fixtures/`.
+  identity/credential marker in `evals/fixtures/`.
 - `evals/README.md` — the harness reference.
 
 The `skills/` tree carries prose only; a re-introduced `skills/*/evals.yaml`
@@ -52,71 +112,48 @@ turns `tests/eval_replay/test_no_inline_skill_evals.py` RED. An overlay ships it
 own scenarios under `<overlay>/eval/scenarios/`, discovered via
 `OverlayBase.get_eval_scenarios_dir()`.
 
-## How grading works
+A behaviour-bearing skill must be **covered** by ≥1 scenario; a pure-doc skill
+declares a non-empty `eval_exempt: <reason>` in its frontmatter.
+`t3 eval coverage --fail-on-gap` is the enforcing gate (zero gaps allowed).
 
-The harness only ever sees a captured transcript — tool calls and text blocks —
-so HOW the transcript was produced is swappable. Two grading mechanisms run over
-it:
+## The cost lanes
 
-- **Deterministic matchers** (every scenario): `tool_call` present, `no_tool_call_matching`
-  absent, `any_of` disjunction, `final_state` on the terminal message — each
-  with a `contains "<substr>"` or `~ "<regex>"` operator. Free, no model. Always
-  pair a negative with a positive matcher so a no-op transcript cannot pass
-  vacuously.
-- **`judge:` LLM oracle** (opt-in per scenario): when pass/fail is not cleanly
-  matcher-gradeable, a judge model reads the transcript against a prose `rubric`
-  and returns PASS/FAIL. Runs the model, so it is gated like the `sdk` lane.
+The GRADE step is the same everywhere; only the RUN step changes cost.
 
-## The three cost tiers
-
-| Tier | What it does | Cost |
+| Lane | What it does | Cost |
 |------|-------------|------|
-| **matcher** | deterministic assertion over a transcript — no model in the loop | free |
-| **transcript** (`--backend transcript`, default) | REUSE an already-recorded run by grading its on-disk transcript | $0 extra |
+| **matcher** | deterministic GRADE over a transcript — no model in the loop | free |
+| **transcript** (`--backend transcript`, default) | RUN is REUSED — grade an already-recorded run | $0 extra |
 | **sdk** (`--backend sdk`) | RUN the model fresh in a clean room, then grade | subscription-covered, NOT API-billed |
 
 **The `sdk` backend does not cost API money.** It authenticates via the
 subscription (`CLAUDE_CODE_OAUTH_TOKEN`), exactly like the transcript the
 `transcript` backend reuses — neither bills an `ANTHROPIC_API_KEY`. The
-difference is `sdk` *runs the model fresh* (spends model time, subscription-
-covered) while `transcript` *reuses an already-recorded run* ($0 extra). The
-`sdk` lane is never a silent fallback — it runs only when passed explicitly.
-
-## With-skill AND baseline
-
-The `sdk` lane runs each scenario **twice**: once with the skill loaded as the
-system prompt, once with a neutral baseline (no skill). A scenario is meaningful
-only if it goes GREEN with-skill while the baseline degrades — that proves the
-skill, not the base model, drove the behaviour. The report surfaces both
-verdicts. A scenario that is not skill-attributable can opt out of the baseline,
-but baseline is ON by default.
+difference is `sdk` *runs the model fresh* (spends subscription-covered model
+time) while `transcript` *reuses an already-recorded run* ($0 extra). The `sdk`
+lane is never a silent fallback — it runs only when passed explicitly.
 
 ## How to run
 
 ```bash
-t3 eval --free-only          # the fast pre-push gate: free deterministic lanes, no transcripts needed
-t3 eval                      # the WHOLE suite (free lanes + AI lane); grades recorded transcripts, never runs a model silently
+t3 eval --free-only          # the fast pre-push gate: free deterministic lanes only
+t3 eval                      # the WHOLE suite; grades recorded transcripts, never runs a model silently
 t3 eval list                 # discovered scenarios
 t3 eval coverage             # per-skill coverage: covered / eval_exempt / gap (warn-first)
 ```
 
-The AI / trajectory lane cannot be a pure CLI — a standalone process has no
-in-session `Agent` and cannot spend subscription tokens. Use `/t3:running-evals`,
-which drives the chain in one invocation: `prepare-transcript` → dispatch a
-sub-agent per scenario → `capture-subagent` → `run --backend transcript`. To run
-the model fresh instead:
+The AI lane cannot be a pure CLI — a standalone process has no in-session
+`Agent` and cannot spend subscription tokens. Use `/t3:running-evals`, which
+drives the chain in one invocation: `prepare-transcript` → dispatch a sub-agent
+per scenario (the RUN) → `capture-subagent` → `run --backend transcript` (the
+GRADE). To RUN the model fresh instead of reusing a recorded run:
 
 ```bash
-t3 eval run --backend sdk --require-executed   # fresh run, subscription-covered; --require-executed fails an all-skipped run loud
+t3 eval run --backend sdk --require-executed   # fresh RUN, subscription-covered
 ```
 
-## Benchmark and where results live
-
-`t3 eval benchmark --models <a>,<b>` runs the suite per model/effort variant and
-renders a cost/pass-rate comparison. Every run persists into the run-history
-ledger (`t3 eval history`) unless `--no-persist`; `--baseline` marks a run as the
-per-model reference `--gate-regressions` / `--gate-cost-regression` diff against.
-The benchmark engine is `src/teatree/eval/benchmark.py`.
+`--require-executed` makes a collected-but-all-skipped run exit non-zero, so the
+metered path can never pass green with zero coverage.
 
 ## What CI does
 
@@ -133,5 +170,5 @@ Two surfaces, by cost (read
   `--require-executed` unconditionally, so a missing binary or all-skipped run
   fails RED. It authenticates from the `CLAUDE_CODE_OAUTH_TOKEN` repo secret (the
   subscription OAuth token, never an `ANTHROPIC_API_KEY`); until the secret is
-  set the job correctly fails RED. It publishes a per-trial transcript report
-  (`--transcript-html`) as a job artifact.
+  set the job correctly fails RED. It publishes a per-trial transcript report as
+  a job artifact.
