@@ -8,10 +8,11 @@ is forced ``--no-persist``.
 """
 
 import dataclasses
+from pathlib import Path
 
 import typer
 
-from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.docker import ARTIFACTS_MOUNT, DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker
 from teatree.eval.backends import SUBSCRIPTION_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
@@ -33,37 +34,52 @@ class RunDockerArgs:
     backend: str
     require_executed: bool
     parallel: int
+    transcript_html: Path | None = None
+
+    def _container_transcript_path(self) -> str:
+        """The in-container path the transcript artifact is written to.
+
+        The host ``--transcript-html`` path's PARENT is bind-mounted writable at
+        :data:`ARTIFACTS_MOUNT`, so the in-container run writes to
+        ``/artifacts/<filename>`` and the file lands back on the host. ``""``
+        when no artifact was requested.
+        """
+        if self.transcript_html is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.transcript_html.name}"
+
+    def _leading_optionals(self) -> list[list[str]]:
+        """Non-default flag groups that precede the always-present budget/effort flags."""
+        return [
+            [self.name] if self.name is not None else [],
+            ["--lane", self.lane] if self.lane is not None else [],
+            ["--format", self.output_format] if self.output_format != "text" else [],
+            ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
+        ]
+
+    def _trailing_optionals(self) -> list[list[str]]:
+        """Non-default flag groups that follow the always-present budget/effort flags."""
+        return [
+            ["--trials", str(self.trials), "--require", self.require] if self.trials != 1 else [],
+            ["--models", self.models] if self.models is not None else [],
+            ["--backend", self.backend] if self.backend != SUBSCRIPTION_BACKEND else [],
+            ["--require-executed"] if self.require_executed else [],
+            ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
+            ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
+        ]
 
     def passthrough(self) -> list[str]:
-        args = ["run"]
-        if self.name is not None:
-            args.append(self.name)
-        if self.lane is not None:
-            args += ["--lane", self.lane]
-        if self.output_format != "text":
-            args += ["--format", self.output_format]
-        if self.max_turns is not None:
-            args += ["--max-turns", str(self.max_turns)]
-        args += ["--max-budget-usd", str(self.max_budget_usd)]
-        # Pass --effort explicitly so the in-container run is deterministic
-        # regardless of the container's env (the host already resolved the default).
-        args += ["--effort", self.effort]
-        if self.trials != 1:
-            args += ["--trials", str(self.trials), "--require", self.require]
-        if self.models is not None:
-            args += ["--models", self.models]
-        if self.backend != SUBSCRIPTION_BACKEND:
-            args += ["--backend", self.backend]
-        if self.require_executed:
-            args.append("--require-executed")
-        if self.parallel != DEFAULT_PARALLEL:
-            args += ["--parallel", str(self.parallel)]
-        args.append("--no-persist")
-        return args
+        # --max-budget-usd / --effort are ALWAYS passed so the in-container run is
+        # deterministic regardless of the container's env (the host resolved the
+        # defaults); they sit between the leading and trailing optional groups.
+        always = ["--max-budget-usd", str(self.max_budget_usd), "--effort", self.effort]
+        groups = [*self._leading_optionals(), always, *self._trailing_optionals()]
+        return ["run", *(arg for group in groups for arg in group), "--no-persist"]
 
     def dispatch(self) -> None:
+        artifacts_dir = self.transcript_html.parent if self.transcript_html is not None else None
         try:
-            raise typer.Exit(code=run_eval_in_docker(self.passthrough()))
+            raise typer.Exit(code=run_eval_in_docker(self.passthrough(), artifacts_dir=artifacts_dir))
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None

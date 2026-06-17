@@ -1,10 +1,12 @@
 """``t3 eval all --docker`` — CI-image-parity local run."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from teatree.cli.eval.docker import (
+    ARTIFACTS_MOUNT,
     DOCKER_IMAGE,
     DockerUnavailableError,
     _auth_passthrough_flags,
@@ -139,6 +141,41 @@ class TestRunEvalInDocker:
         root = _repo_root()
         assert (root / "dev" / "Dockerfile.test").is_file()
         assert (root / "pyproject.toml").is_file()
+
+
+class TestWritableArtifactsMount:
+    """A run that emits an artifact gets a WRITABLE bind-mount.
+
+    The repo is mounted ``:ro`` (a metered run must not mutate the working tree),
+    so the per-trial transcript report writes into a SEPARATE writable mount at
+    :data:`ARTIFACTS_MOUNT` and lands back on the host. Without this mount the
+    in-container write to a ``:ro`` path is the ``Errno 30`` read-only failure the
+    real CI run hit.
+    """
+
+    def _run(self, artifacts_dir: Path | None) -> list[str]:
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["run", "--trials", "3"], artifacts_dir=artifacts_dir)
+        return streamed.call_args.args[0]
+
+    def test_mounts_the_artifacts_dir_writable_when_given(self, tmp_path: Path) -> None:
+        command = self._run(tmp_path)
+        assert f"{tmp_path}:{ARTIFACTS_MOUNT}" in command
+
+    def test_artifacts_mount_is_not_read_only(self, tmp_path: Path) -> None:
+        command = self._run(tmp_path)
+        # The repo mount carries `:ro`; the artifacts mount must NOT — otherwise the
+        # report write fails Errno 30 exactly like the bug.
+        assert f"{tmp_path}:{ARTIFACTS_MOUNT}:ro" not in command
+        assert f"{tmp_path}:{ARTIFACTS_MOUNT}" in command
+
+    def test_no_artifacts_mount_when_none(self) -> None:
+        command = self._run(None)
+        assert ARTIFACTS_MOUNT not in " ".join(command)
 
 
 class TestAuthPassthroughIntoContainer:

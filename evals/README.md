@@ -329,10 +329,28 @@ host.
 `--html <path>` writes a self-contained whole-suite HTML report (inline CSS, no
 external assets): a plain-language final verdict banner at the top, then a lane
 table (lane | verdict | cost | duration | detail). `cli/eval/suite_html.py`
-renders it from the same `LaneResult` data the terminal table is built from; the
-metered CI workflow (`.github/workflows/eval.yml`) writes `--html
-eval-report.html` and uploads it as a job artifact (`if: always()`, so a red run
-still publishes its report).
+renders it from the same `LaneResult` data the terminal table is built from — a
+LANE-level summary that answers "which lane is red", not "why".
+
+#### `t3 eval run --transcript-html <path>` — the metered CI artifact
+
+The metered CI workflow (`.github/workflows/eval.yml`) does NOT render the
+whole-suite report: that would re-run the entire suite a second time (the old
+`t3 eval all --html` step re-graded all ~181 scenarios for ~64min AFTER the
+metered step) and try to write into the read-only repo mount (`Errno 30`).
+Instead the metered `t3 eval run --trials k` step emits its OWN per-trial
+transcript report via `--transcript-html <path>` (`eval/pass_at_k_html.py`):
+for each scenario, the aggregate verdict plus EACH trial's PASS/FAIL and the
+agent's transcript — its reasoning (`run.text_blocks`) and tool calls
+(`run.tool_calls`) — so a maintainer can open the uploaded artifact and diagnose
+a red lane (e.g. the `under_load` drift scenarios) WITHOUT re-running anything.
+It is written from that run's in-memory results (no suite re-run, no ledger), so
+it survives the `--no-persist` ephemeral-container path; the `--docker` runner
+bind-mounts the destination's parent dir WRITABLE at `/artifacts` (the repo mount
+stays `:ro`), so the in-container report lands back on the host runner's
+`$RUNNER_TEMP` for upload. The upload step is `if: always()`, so a red run still
+publishes its report — and the report is dropped before the run's own non-zero
+exit, so the red lane is captured.
 
 ### `t3 eval all` — the explicit alias of the bare default (#1781)
 

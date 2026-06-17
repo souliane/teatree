@@ -160,6 +160,15 @@ jobs:
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
+      #
+      # `--transcript-html` makes THIS run emit the per-trial transcript report
+      # itself, written from its own in-memory results — NO separate render step
+      # that re-runs the whole suite (the old `t3 eval all --html` step re-graded
+      # all ~181 scenarios for ~64min AFTER this step), and NO read-only-mount
+      # write failure (the report lands in $RUNNER_TEMP via the docker runner's
+      # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
+      # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
+      # (reasoning + tool calls) so a maintainer can diagnose a red under_load lane.
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
@@ -187,25 +196,23 @@ jobs:
           # today's behaviour. A manual run may pass `under_load` to meter only the
           # behavioural-drift lane (the cheap PR-path anti-vacuity gate reads the same
           # catalog deterministically). The lane flag is only appended when set.
+          # `--transcript-html` writes to $RUNNER_TEMP (always writable; the report
+          # is dropped before the eval's own non-zero exit, so a red lane is still
+          # captured). The retry re-runs the whole `command`, so the file is simply
+          # overwritten with the last attempt's results — no staleness.
           command: |
             LANE_FLAG=""
             if [ -n "$EVAL_LANE" ]; then LANE_FLAG="--lane $EVAL_LANE"; fi
-            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG --require-executed --docker
-      # Render a human-readable whole-suite HTML report and publish it as a job
-      # artifact. `if: always()` so a red run still publishes its report (the
-      # report is exactly what a maintainer reads to triage the failure). The
-      # report run is non-gating: `|| true` keeps a render hiccup from masking the
-      # real eval verdict above, which already decided the job's exit code.
-      - name: Render the whole-suite HTML report
-        if: always() && steps.gate.outputs.run_eval == 'true'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
-        run: uv run t3 eval all --backend "$EVAL_BACKEND" --html eval-report.html || true
-      - name: Upload the HTML eval report
+            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG \
+              --require-executed --docker --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
+      # Publish the per-trial transcript report THIS run emitted as a job artifact.
+      # `if: always()` so a red run still publishes it (the report is exactly what a
+      # maintainer reads to triage the failure; the eval step above already decided
+      # the job's exit code). No render step — the artifact was written by the run.
+      - name: Upload the per-trial transcript report
         if: always() && steps.gate.outputs.run_eval == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-report
-          path: eval-report.html
+          path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
