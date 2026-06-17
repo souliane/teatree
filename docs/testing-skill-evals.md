@@ -7,7 +7,7 @@ thing? Skills carry behavior, so they need behavioral tests. That is an eval.
 
 This page is the contributor's guide: what an eval is, where they live, how they
 run, and how to run them. The full schema, every matcher operator, and the
-failure-class index live in [`evals/README.md`](../evals/README.md). For *how to
+failure-class index live in [`evals/README.md`](https://github.com/souliane/teatree/blob/main/evals/README.md). For *how to
 write a good skill*, start with Anthropic's
 [agent-skills best practices](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/best-practices).
 
@@ -134,7 +134,7 @@ green with zero coverage.
 - **Free lanes — every PR.** `skill-triggers` (prek hook), `pinned-regressions`
   - `skill-coverage` (pytest). `t3 tool verify-gates` runs the same set locally.
 - **Fresh-run lane — weekly + on demand.** A standalone workflow
-  ([`eval.yml`](../.github/workflows/eval.yml)), off the PR path: weekly cron +
+  ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: weekly cron +
   manual dispatch. It skips cleanly (exit 0, logged) when no PR merged in the
   lookback window, asserts `claude --version`, and passes `--require-executed`
   unconditionally, so a missing binary or all-skipped run fails RED. It
