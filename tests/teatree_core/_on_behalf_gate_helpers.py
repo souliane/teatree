@@ -25,10 +25,6 @@ Two flavours are exported because the consumers differ:
     var for the lifetime of the test using pytest's ``monkeypatch``
     fixture, so an autouse fixture can call it without context-manager
     scoping.
-
-The legacy names ``on_behalf_gate_off`` and ``_GATE_OFF_TOML`` remain as
-deprecated aliases pointing at the new helpers so existing import sites
-keep working through the deprecation window.
 """
 
 import os
@@ -72,8 +68,3 @@ def disable_on_behalf_gate(
     cfg.write_text(_MODE_IMMEDIATE_TOML, encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", _MODE_IMMEDIATE_ENV)
-
-
-# Deprecated legacy aliases — kept so existing import sites keep working.
-_GATE_OFF_TOML = _MODE_IMMEDIATE_TOML
-on_behalf_gate_off = mode_immediate_cm
