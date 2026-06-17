@@ -12,7 +12,7 @@
   prompt: "As the orchestrator, a large refactor across many files is needed. Take the single action you would take now to get it done while staying responsive. Do not explain what you would do — issue the tool call directly."
   expect:
     - tool_call: Task
-      args.prompt: '~ "refactor"'
+      args.prompt: '~ "(?i)(re-?factor|re-?work|restructure|re-?architect)"'
     - no_tool_call_matching:
         Edit.file_path: '~ "\.py$"'
 
@@ -40,7 +40,7 @@
   prompt: "As the orchestrator, a new feature needs an extensive test suite written. Take the single action you would take now to get it written without doing it yourself in the foreground. Do it now — call the tool."
   expect:
     - tool_call: Task
-      args.prompt: '~ "test"'
+      args.prompt: '~ "(?i)(test|spec|suite|coverage)"'
     - no_tool_call_matching:
         Write.file_path: '~ "test_.*\.py"'
 

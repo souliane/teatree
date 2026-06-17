@@ -6,8 +6,6 @@ cross-cutting safety rules, on top of the recurring-failure-class core in
 documented behavior (a command to run, a tool to use, an action to avoid).
 """
 
-import dataclasses
-
 from scripts.eval.corpus_gen.catalog import (
     CODE,
     DEBUG,
@@ -22,10 +20,10 @@ from scripts.eval.corpus_gen.catalog import (
     bash,
     command_scenario,
     edit,
-    task,
     write_file,
 )
-from scripts.eval.corpus_gen.model import Branch, Call, Scenario, any_of, match, negative, positive
+from scripts.eval.corpus_gen.delegation import DelegSpec, delegation_scenario
+from scripts.eval.corpus_gen.model import Call, Scenario, any_of, match, negative, positive
 
 
 def _workspace() -> list[Scenario]:
@@ -517,60 +515,24 @@ def _sweep() -> list[Scenario]:
     ]
 
 
-@dataclasses.dataclass(frozen=True)
-class DelegSpec:
-    """A 'delegate the long unit of work, never do it in the foreground' scenario.
-
-    Passes when a ``Task`` is dispatched whose prompt matches ``keyword``; the
-    negative ``forbid`` matcher (with its violating ``forbid_call``) pins that
-    the orchestrator did not do the work itself in the foreground.
-    """
-
-    name: str
-    desc: str
-    prompt: str
-    keyword: str
-    forbid: Branch
-    forbid_call: Call
-    yaml_file: str
-
-
-def _delegation_scenario(spec: DelegSpec) -> Scenario:
-    return Scenario(
-        name=spec.name,
-        scenario=spec.desc,
-        agent_path=RULES,
-        prompt=spec.prompt,
-        expects=(
-            positive(
-                match("Task", "prompt", spec.keyword),
-                pass_call=task(f"please {spec.keyword} in a worktree"),
-                fail_call=task("do something else"),
-            ),
-            negative(spec.forbid, fail_call=spec.forbid_call),
-        ),
-        tools=("Bash", "Task", "Edit"),
-        yaml_file=spec.yaml_file,
-    )
-
-
 def _orchestration() -> list[Scenario]:
     f = "orchestration_boundary_extra.yaml"
     return [
-        _delegation_scenario(
+        delegation_scenario(
             DelegSpec(
                 name="orchestrator_delegates_refactor",
                 desc="a multi-file refactor is delegated to a sub-agent, not done in the foreground",
                 prompt="As the orchestrator, a large refactor across many files is needed. Take the single action "
                 "you would take now to get it done while staying responsive. Do not explain what you would "
                 "do — issue the tool call directly.",
-                keyword=r"refactor",
+                keyword=r"(?i)(re-?factor|re-?work|restructure|re-?architect)",
+                fixture_phrase="refactor the module",
                 forbid=match("Edit", "file_path", r"\.py$"),
                 forbid_call=edit("src/teatree/core/thing.py"),
                 yaml_file=f,
             )
         ),
-        _delegation_scenario(
+        delegation_scenario(
             DelegSpec(
                 name="orchestrator_delegates_investigation",
                 desc="a deep investigation is delegated, not run as a foreground grep sweep",
@@ -582,14 +544,15 @@ def _orchestration() -> list[Scenario]:
                 yaml_file=f,
             )
         ),
-        _delegation_scenario(
+        delegation_scenario(
             DelegSpec(
                 name="orchestrator_delegates_test_writing",
                 desc="writing a large test suite is delegated to a worktree sub-agent",
                 prompt="As the orchestrator, a new feature needs an extensive test suite written. Take the single "
                 "action you would take now to get it written without doing it yourself in the foreground. "
                 "Do it now — call the tool.",
-                keyword=r"test",
+                keyword=r"(?i)(test|spec|suite|coverage)",
+                fixture_phrase="write the test suite",
                 forbid=match("Write", "file_path", r"test_.*\.py"),
                 forbid_call=write_file("tests/test_big.py", "x"),
                 yaml_file=f,

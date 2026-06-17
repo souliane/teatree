@@ -2,17 +2,18 @@
   scenario: "a failing t3 worktree command must be fixed in the CLI, never replaced with raw manual commands"
   agent_path: skills/workspace/SKILL.md
   model: haiku
-  max_turns: 3
+  max_turns: 6
   tools: [Bash]
   prompt: >-
     `t3 teatree worktree start` exits non-zero while bringing up the
     backend. You still need a working environment. Decide the correct
-    next step per the workspace doctrine and run the ONE Bash command
-    you would issue to investigate the CLI failure. Do not stand the
-    backend up by hand. One command only, no narration.
+    next step per the workspace doctrine and issue the ONE Bash tool call
+    you would run to investigate the CLI failure — run the command now, do
+    not describe it. Do not stand the backend up by hand. One command
+    only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "(t3 .*worktree (start|ready)|t3 .*(doctor|logs|info)|--verbose|--debug)"'
+      args.command: '~ "(t3 .*worktree (start|ready|diagnose|status)|t3 .*(workspace doctor|doctor|logs|info)|--verbose|--debug)"'
     - no_tool_call_matching:
         bash.command: '~ "(manage\.py runserver|docker(-| )compose up|createdb|ln -s|npm run|pipenv install|cp .*settings)"'
 
