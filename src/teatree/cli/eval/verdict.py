@@ -13,7 +13,7 @@ import typer
 
 @dataclasses.dataclass(frozen=True)
 class LaneResult:
-    """One eval lane's outcome in the unified ``t3 eval all`` summary.
+    """One eval lane's outcome in the unified ``t3 eval`` summary.
 
     ``setup_hint`` distinguishes the two reasons a lane can be skipped. A skip
     with a hint is *unrunnable for setup reasons* (the AI behavioural lane with
