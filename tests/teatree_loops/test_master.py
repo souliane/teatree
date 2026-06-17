@@ -24,9 +24,9 @@ def _mini(name: str) -> MiniLoop:
 class TestBuildLoopTableJobs(django.test.TestCase):
     def test_runs_only_enabled_and_due_loops(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-a", delay_seconds=60)  # never run -> due
-        Loop.objects.create(name="m-b", delay_seconds=60, last_run_at=now)  # cooling -> not due
-        Loop.objects.create(name="m-c", delay_seconds=60, enabled=False)  # due but disabled
+        Loop.objects.create(name="m-a", delay_seconds=60, prompt="do x")  # never run -> due
+        Loop.objects.create(name="m-b", delay_seconds=60, prompt="do x", last_run_at=now)  # cooling -> not due
+        Loop.objects.create(name="m-c", delay_seconds=60, prompt="do x", enabled=False)  # due but disabled
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-a"), _mini("m-b"), _mini("m-c"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-a" in jobs
@@ -35,7 +35,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
 
     def test_marks_last_run_for_dispatched_loop(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-d", delay_seconds=60)
+        Loop.objects.create(name="m-d", delay_seconds=60, prompt="do x")
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-d"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="m-d").last_run_at == now
@@ -48,8 +48,8 @@ class TestBuildLoopTableJobs(django.test.TestCase):
 
     def test_one_loop_raising_does_not_abort_the_rest(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-boom", delay_seconds=60)
-        Loop.objects.create(name="m-ok", delay_seconds=60)
+        Loop.objects.create(name="m-boom", delay_seconds=60, prompt="do x")
+        Loop.objects.create(name="m-ok", delay_seconds=60, prompt="do x")
         boom = MiniLoop(
             name="m-boom", default_cadence_seconds=60, build_jobs=lambda **_: (_ for _ in ()).throw(RuntimeError("x"))
         )
