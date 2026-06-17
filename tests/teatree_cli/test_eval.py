@@ -750,15 +750,15 @@ class TestEvalBackend:
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
             result = CliRunner().invoke(
                 app,
-                ["eval", "run", "--backend", "subscription", "--transcript-dir", str(tmp_path), "--no-persist"],
+                ["eval", "run", "--backend", "transcript", "--transcript-dir", str(tmp_path), "--no-persist"],
             )
         assert result.exit_code == 0, result.output
         assert "PASS worktree_first" in result.output
 
-    def test_default_backend_is_subscription(self, tmp_path: Path) -> None:
-        # A bare `t3 eval run` must NOT shell the metered sdk runner: it grades a
-        # saved subscription transcript. Pointed at a transcript dir holding one,
-        # the scenario passes without `--backend` ever being given.
+    def test_default_backend_is_transcript(self, tmp_path: Path) -> None:
+        # A bare `t3 eval run` must NOT run a model: it grades a saved transcript.
+        # Pointed at a transcript dir holding one, the scenario passes without
+        # `--backend` ever being given.
         specs = [_spec("worktree_first")]
         transcript = (Path(__file__).parents[2] / "evals" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
             encoding="utf-8"
@@ -780,10 +780,10 @@ class TestEvalBackend:
         assert result.exit_code == 0, result.output
         assert "SKIP worktree_first" in result.output
         assert str(tmp_path / "worktree_first.jsonl") in result.output
-        assert "prepare-subscription" in result.output
+        assert "prepare-transcript" in result.output
 
     def test_trials_with_default_backend_warns_metered(self, tmp_path: Path) -> None:
-        # `--trials` forces the metered sdk runner even under the subscription
+        # `--trials` forces the fresh-run sdk runner even under the transcript
         # default; the user is told so.
         specs = [_spec("alpha")]
         with (
@@ -792,7 +792,7 @@ class TestEvalBackend:
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
         assert result.exit_code == 0, result.output
-        assert "metered in-process Agent-SDK runner" in result.output
+        assert "fresh-run in-process Agent-SDK runner" in result.output
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1561,11 +1561,11 @@ class TestMatrixCostRegressionGate:
         assert "COST REGRESSED" in result.output
 
 
-class TestPrepareSubscription:
+class TestPrepareTranscript:
     def test_emits_prompt_and_transcript_path(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "prepare-subscription", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "prepare-transcript", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "alpha" in result.output
         assert str(tmp_path / "alpha.jsonl") in result.output
@@ -1575,7 +1575,7 @@ class TestPrepareSubscription:
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
             result = CliRunner().invoke(
                 app,
-                ["eval", "prepare-subscription", "--format", "json", "--transcript-dir", str(tmp_path)],
+                ["eval", "prepare-transcript", "--format", "json", "--transcript-dir", str(tmp_path)],
             )
         assert result.exit_code == 0, result.output
         # An update banner ("[update] …") can precede stdout; isolate the JSON
@@ -1649,7 +1649,7 @@ def _prose_report(*, weakest: str = "beta") -> ProseJudgeReport:
 
 @contextmanager
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval all` run patches; the list IS the lane set.
+def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the bare-`t3 eval` run patches; the list IS the lane set.
     specs: list[EvalSpec],
     *,
     trigger: TriggerQAReport | None = None,
@@ -1730,7 +1730,7 @@ class TestEvalDefault:
             result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
-        assert run_docker.call_args.args[0] == ["all", "--free-only"]
+        assert run_docker.call_args.args[0] == ["--free-only"]
 
     def test_bare_eval_docker_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
@@ -1745,53 +1745,24 @@ class TestEvalDefault:
 
 
 class TestEvalSuiteSdkBackendDockerByDefault:
-    """``--backend sdk`` is METERED → the whole-suite path defaults to the container.
+    """``--backend sdk`` RUNS a model → the whole-suite path defaults to the container.
 
-    The metered SDK AI lane + the live prose-judge bill the API, so requesting
-    them on the bare-``t3 eval`` / ``t3 eval all`` path must re-route through the
-    CI container (like ``eval run`` / ``eval benchmark``), never run silently on
-    the host. ``--local`` is the explicit host escape; the in-container marker
-    breaks the re-route loop.
+    The fresh-run SDK AI lane + the live prose-judge run a model, so requesting
+    them on the bare-``t3 eval`` path must re-route through the CI container (like
+    ``eval run`` / ``eval benchmark``), never run silently on the host. The
+    in-container marker breaks the re-route loop.
     """
-
-    def test_sdk_backend_routes_to_docker_not_host_lanes(self) -> None:
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as docker,
-            patch(
-                "teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("metered run must not run on host")
-            ),
-        ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk"])
-        assert result.exit_code == 0, result.output
-        docker.assert_called_once()
-        assert docker.call_args.args[0][:3] == ["all", "--backend", "sdk"]
 
     def test_bare_eval_sdk_backend_routes_to_docker(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=True),
             patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as docker,
-            patch(
-                "teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("metered run must not run on host")
-            ),
+            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("fresh run must not run on host")),
         ):
             result = CliRunner().invoke(app, ["eval", "--backend", "sdk"])
         assert result.exit_code == 0, result.output
         docker.assert_called_once()
-
-    def test_sdk_backend_local_escape_runs_on_host_with_warning(self, tmp_path: Path) -> None:
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            _patch_all_lanes([_spec("worktree_first")]),
-            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
-            patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
-        ):
-            result = CliRunner().invoke(
-                app, ["eval", "all", "--backend", "sdk", "--local", "--transcript-dir", str(tmp_path)]
-            )
-        assert result.exit_code == 0, result.output
-        docker.assert_not_called()
-        assert "WARNING" in result.output
+        assert docker.call_args.args[0][:2] == ["--backend", "sdk"]
 
     def test_sdk_backend_in_container_runs_in_process(self, tmp_path: Path) -> None:
         with (
@@ -1800,28 +1771,28 @@ class TestEvalSuiteSdkBackendDockerByDefault:
             patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
             patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         docker.assert_not_called()
 
-    def test_subscription_backend_stays_on_host(self, tmp_path: Path) -> None:
-        # The default subscription backend bills nothing (grades on-disk
+    def test_transcript_backend_stays_on_host(self, tmp_path: Path) -> None:
+        # The default transcript backend runs no model (grades on-disk
         # transcripts), so it must NOT re-route to docker.
         with (
             patch.dict("os.environ", {}, clear=True),
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         docker.assert_not_called()
 
-    def test_sdk_backend_docker_unavailable_without_local_exits_2(self) -> None:
+    def test_sdk_backend_docker_unavailable_exits_2(self) -> None:
         with (
             patch.dict("os.environ", {}, clear=True),
             patch("teatree.cli.eval.all.run_eval_in_docker", side_effect=DockerUnavailableError),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk"])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk"])
         assert result.exit_code == 2
         assert "docker" in result.output.lower()
 
@@ -1860,7 +1831,7 @@ class TestEvalSubcommandsStillWork:
 
     def test_all_subcommand_still_works(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "pinned-regressions" in result.output
 
@@ -1868,7 +1839,7 @@ class TestEvalSubcommandsStillWork:
 class TestEvalAll:
     def test_runs_free_lanes_and_renders_unified_table(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
         assert "skill-triggers" in result.output
@@ -1879,7 +1850,7 @@ class TestEvalAll:
         # transcript-graded ai-eval lane; the metered prose-judge is gated off the
         # default path (it bills the API — see TestEvalAllSkillProseJudgeLaneAdvisory).
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         lanes = (
             "skill-triggers",
@@ -1897,13 +1868,13 @@ class TestEvalAll:
 
     def test_coverage_gap_is_warn_first_exit_zero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], coverage_gaps=("loops",)):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "skill-coverage" in result.output
 
     def test_free_only_drops_the_ai_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         for lane in (
             "skill-triggers",
@@ -1923,12 +1894,12 @@ class TestEvalAll:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_ai_lane", side_effect=AssertionError("free-only must not run the AI lane")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
     def test_free_only_still_fails_on_a_deterministic_violation(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_docker_delegates_to_the_container_and_skips_host_lanes(self) -> None:
@@ -1936,31 +1907,31 @@ class TestEvalAll:
             patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker,
             patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--docker", "--free-only"])
+            result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
-        assert run_docker.call_args.args[0] == ["all", "--free-only"]
+        assert run_docker.call_args.args[0] == ["--free-only"]
 
     def test_docker_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=1):
-            result = CliRunner().invoke(app, ["eval", "all", "--docker"])
+            result = CliRunner().invoke(app, ["eval", "--docker"])
         assert result.exit_code == 1, result.output
 
     def test_docker_passes_non_default_backend_through(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker:
-            result = CliRunner().invoke(app, ["eval", "all", "--docker", "--backend", "sdk"])
+            result = CliRunner().invoke(app, ["eval", "--docker", "--backend", "sdk"])
         assert result.exit_code == 0, result.output
-        assert run_docker.call_args.args[0] == ["all", "--backend", "sdk"]
+        assert run_docker.call_args.args[0] == ["--backend", "sdk"]
 
     def test_docker_unavailable_exits_code_2(self) -> None:
         with patch("teatree.cli.eval.all.run_eval_in_docker", side_effect=DockerUnavailableError):
-            result = CliRunner().invoke(app, ["eval", "all", "--docker"])
+            result = CliRunner().invoke(app, ["eval", "--docker"])
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output
 
 
 class TestEvalFinalVerdict:
-    """Every ``t3 eval`` / ``t3 eval all`` run ends with a plain-language verdict.
+    """Every bare ``t3 eval`` run ends with a plain-language verdict.
 
     A non-expert reader must be able to tell from the LAST lines whether the run
     was all-good, found a real problem, or could not fully validate (the AI lane
@@ -1971,14 +1942,14 @@ class TestEvalFinalVerdict:
     def test_all_pass_renders_all_good_verdict(self, tmp_path: Path) -> None:
         # Free-only so every lane truly passes (no AI lane to caveat).
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "✅ ALL GOOD" in result.output, result.output
         assert "every check passed" in result.output, result.output
 
     def test_real_failure_renders_problems_and_names_the_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "❌ PROBLEMS FOUND" in result.output, result.output
         assert "negative-control" in result.output, result.output
@@ -1989,7 +1960,7 @@ class TestEvalFinalVerdict:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.eval.backends.SdkInProcessRunner", side_effect=AssertionError("must not meter")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "SKIPPED" in result.output, result.output
         assert "needs setup" in result.output, result.output
@@ -2001,7 +1972,7 @@ class TestEvalFinalVerdict:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.eval.backends.SdkInProcessRunner", side_effect=AssertionError("must not meter")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         # Deterministic part is good, AND the reader is told the AI lane was NOT run.
         assert "Deterministic checks" in result.output, result.output
@@ -2014,14 +1985,12 @@ class TestEvalFinalVerdict:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.eval.backends.SdkInProcessRunner", side_effect=AssertionError("must not meter")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--strict", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--strict", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_strict_stays_green_when_everything_actually_passes(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(
-                app, ["eval", "all", "--strict", "--free-only", "--transcript-dir", str(tmp_path)]
-            )
+            result = CliRunner().invoke(app, ["eval", "--strict", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "✅ ALL GOOD" in result.output, result.output
 
@@ -2144,60 +2113,40 @@ class TestEvalRunMeteredDockerByDefault:
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
 
-    def test_subscription_run_stays_host_default(self) -> None:
+    def test_transcript_run_stays_host_default(self) -> None:
         specs = [_spec("alpha")]
         with (
             patch.dict("os.environ", {}, clear=True),
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
-            patch("teatree.eval.backends.SubscriptionTranscriptRunner") as sub,
+            patch("teatree.eval.backends.TranscriptRunner") as sub,
         ):
             sub.return_value.run.return_value = _run("alpha", terminal_reason="skipped: x")
             sub.return_value.transcript_path.return_value = Path("/tmp/none.jsonl")
             CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         run_docker.assert_not_called()
 
-    def test_local_escape_runs_sdk_in_process_with_warning(self) -> None:
-        specs = [_spec("alpha")]
-
-        class _Stub:
-            def __init__(self, *_, **__) -> None: ...
-
-            def run(self, spec: EvalSpec) -> EvalRun:
-                return _run(spec.name, tool_calls=_PASSING_CALL)
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _Stub),
-            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
-        ):
-            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist", "--local"])
-        assert result.exit_code == 0, result.output
-        run_docker.assert_not_called()
-        assert "WARNING" in result.output
-
     def test_transcript_replay_skips_not_fails_when_no_transcript(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "transcript-replay" in result.output
         assert "SKIP" in result.output
 
     def test_negative_control_failure_exits_nonzero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_transcript_replay_violation_exits_nonzero(self, tmp_path: Path) -> None:
         violation = [InvariantResult(ok=False, offending_index=2, message="inv")]
         with _patch_all_lanes([_spec("worktree_first")], replay_results=violation):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_skips_alone_keep_exit_zero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
     def test_no_transcripts_emits_manifest_never_meters(self, tmp_path: Path) -> None:
@@ -2205,7 +2154,7 @@ class TestEvalRunMeteredDockerByDefault:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.eval.backends.SdkInProcessRunner", side_effect=AssertionError("must not meter")),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert str(tmp_path / "worktree_first.jsonl") in result.output
         assert "running-evals" in result.output
@@ -2217,13 +2166,13 @@ class TestEvalRunMeteredDockerByDefault:
         )
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
         with _patch_all_lanes(specs):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "ai-eval" in result.output
 
     def test_failing_free_lane_exits_nonzero(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], trigger=_bad_trigger()):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_sdk_backend_is_explicit_metered_opt_in(self, tmp_path: Path) -> None:
@@ -2231,13 +2180,13 @@ class TestEvalRunMeteredDockerByDefault:
             _patch_all_lanes([_spec("alpha")]),
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "ai-eval" in result.output
 
     def test_unknown_backend_exits_code_2(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("alpha")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "magic", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "magic", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 2
         assert "unknown eval backend" in result.output
 
@@ -2375,7 +2324,7 @@ class TestEvalAllCorpusGradeLane:
 
     def test_corpus_grade_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "corpus-grade" in result.output
         assert "judge-skipped" in result.output
@@ -2386,7 +2335,7 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=failing),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "corpus-grade" in result.output
 
@@ -2399,7 +2348,7 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
         ):
-            default_run = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            default_run = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert default_run.exit_code == 0, default_run.output
         assert "needs setup" in default_run.output.lower(), default_run.output
 
@@ -2407,9 +2356,7 @@ class TestEvalAllCorpusGradeLane:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.grade_shipped_corpus", return_value=all_skip),
         ):
-            strict_run = CliRunner().invoke(
-                app, ["eval", "all", "--free-only", "--strict", "--transcript-dir", str(tmp_path)]
-            )
+            strict_run = CliRunner().invoke(app, ["eval", "--free-only", "--strict", "--transcript-dir", str(tmp_path)])
         assert strict_run.exit_code == 1, strict_run.output
 
 
@@ -2418,13 +2365,13 @@ class TestEvalAllSkillCommandValidityLane:
 
     def test_command_validity_lane_runs_in_the_free_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "skill-command-validity" in result.output
 
     def test_stale_command_reference_fails_the_suite(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], command_validity_ok=False):
-            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "skill-command-validity" in result.output
 
@@ -2441,7 +2388,7 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "skill-prose-judge" in result.output
         assert "advisory" in result.output.lower()
@@ -2467,7 +2414,7 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
             patch("teatree.cli.eval.all.run_prose_judge") as prose,
         ):
             result = CliRunner().invoke(
-                app, ["eval", "all", "--free-only", "--backend", "sdk", "--transcript-dir", str(tmp_path)]
+                app, ["eval", "--free-only", "--backend", "sdk", "--transcript-dir", str(tmp_path)]
             )
         assert result.exit_code == 0, result.output
         prose.assert_not_called()
@@ -2481,7 +2428,7 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
             patch("teatree.cli.eval.all.run_prose_judge", return_value=weak),
             patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
 
@@ -2490,7 +2437,7 @@ class TestEvalAllSdkMeteredGuard:
 
     A metered (``--backend sdk``) AI lane that graded scenarios but billed $0 is
     the vacuous-green ``$0.00 (no metered calls)`` state (the ``--bare`` OAuth
-    bug). ``t3 eval run`` already turns this RED at its boundary; ``t3 eval all``
+    bug). ``t3 eval run`` already turns this RED at its boundary; bare ``t3 eval``
     must too, otherwise a green AI-lane row reads as validated when nothing ran.
     """
 
@@ -2503,7 +2450,7 @@ class TestEvalAllSdkMeteredGuard:
             patch("teatree.cli.eval.all.run_prose_judge", return_value=_prose_report()),
             patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
         assert "metered" in result.output.lower(), result.output
 
@@ -2517,20 +2464,20 @@ class TestEvalAllSdkMeteredGuard:
             patch("teatree.cli.eval.all.run_prose_judge", return_value=_prose_report()),
             patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
-    def test_subscription_suite_with_zero_cost_stays_green(self, tmp_path: Path) -> None:
-        # The default subscription backend is unmetered by design — a $0 graded
+    def test_transcript_suite_with_zero_cost_stays_green(self, tmp_path: Path) -> None:
+        # The default transcript backend runs no model by design — a $0 graded
         # run must NOT trip the sdk-only guard.
         graded_zero = evaluate(_spec("alpha"), _run("alpha", tool_calls=_PASSING_CALL, cost_usd=0.0))
-        lane = LaneResult(name="ai-eval", cost="subscription", passed=True, skipped=False, detail="1 graded")
+        lane = LaneResult(name="ai-eval", cost="transcript ($0)", passed=True, skipped=False, detail="1 graded")
         outcome = AiLaneOutcome(lane=lane, results=[graded_zero])
         with (
             _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.cli.eval.all.run_ai_lane", return_value=outcome),
         ):
-            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
 
 

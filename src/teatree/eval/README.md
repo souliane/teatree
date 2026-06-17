@@ -9,11 +9,17 @@ the scenarios and fixtures it documents:
 
 ➡ [`evals/README.md`](../../../evals/README.md)
 
-The short version of the split documented there:
+The concise end-to-end guide (where evals live, the three cost tiers, how to run,
+with-skill/baseline, what CI does) is
+[`docs/testing-skill-evals.md`](../../../docs/testing-skill-evals.md).
+
+The short version of the split:
 
 - **tests** — deterministic, no live model, free, run every commit (skill-triggers,
   pinned-regressions, skill-command-validity, coverage, negative-control,
   transcript-replay, corpus-grade, and the fixture replay of `scenarios/*.yaml`).
-- **evals** — a live model + grader, metered, run on a cadence and fail-loud
-  (the `--backend sdk` AI lane, `--judge`/`judge:` oracles, `benchmark`,
-  `skill-prose-judge`).
+- **evals** — a live model + grader, run on a cadence and fail-loud (the
+  `--backend sdk` AI lane, `--judge`/`judge:` oracles, `benchmark`,
+  `skill-prose-judge`). The `sdk` backend RUNS the model fresh and the
+  `transcript` backend REUSES a recorded run; both ride the subscription
+  (`CLAUDE_CODE_OAUTH_TOKEN`), NOT a billed API key.

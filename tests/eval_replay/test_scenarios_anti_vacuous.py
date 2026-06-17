@@ -30,7 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.eval.backends import SubscriptionTranscriptRunner
+from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.report import evaluate
@@ -81,7 +81,7 @@ def _fixtureless_behavioral_specs() -> list[EvalSpec]:
 def _run_against_fixture(spec: EvalSpec, fixture_text: str, tmp_path: Path) -> bool:
     """Return ``True`` when the scenario passed against ``fixture_text``."""
     (tmp_path / f"{spec.name}.jsonl").write_text(fixture_text, encoding="utf-8")
-    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 
