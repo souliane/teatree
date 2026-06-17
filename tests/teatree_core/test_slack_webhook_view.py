@@ -183,8 +183,7 @@ class TestSlackWebhookViewWithoutSecret(TestCase):
             reverse("teatree:slack_webhook"),
             data=body,
             content_type="application/json",
-            HTTP_X_SLACK_REQUEST_TIMESTAMP="1",
-            HTTP_X_SLACK_SIGNATURE="v0=x",
+            headers={"x-slack-request-timestamp": "1", "x-slack-signature": "v0=x"},
         )
 
         assert response.status_code == 503
