@@ -98,12 +98,41 @@ def reap_compose_project(project: str) -> ReapResult:
     return ReapResult(project=project, containers_removed=containers, images_removed=images)
 
 
-def list_compose_projects() -> set[str]:
+def _container_project_labels() -> list[str]:
+    """Project label values across all compose-built containers.
+
+    The container formatter context exposes ``.Label "<key>"``, so the project
+    name is read directly from one ``docker ps`` call.
+    """
     label_filter = ["--filter", f"label={_PROJECT_LABEL}"]
     label_format = ["--format", f'{{{{.Label "{_PROJECT_LABEL}"}}}}']
-    containers = _docker_lines(["docker", "ps", "-a", *label_filter, *label_format], timeout=_LIST_TIMEOUT)
-    images = _docker_lines(["docker", "images", *label_filter, *label_format], timeout=_LIST_TIMEOUT)
-    return {name for name in (*containers, *images) if name}
+    return _docker_lines(["docker", "ps", "-a", *label_filter, *label_format], timeout=_LIST_TIMEOUT)
+
+
+def _image_project_labels() -> list[str]:
+    """Project label values across all compose-built images.
+
+    The image formatter context has NO ``.Label`` field (only ``.Labels``, a
+    flattened string), so ``docker images --format '{{.Label "<key>"}}'`` raises
+    ``template parsing error: can't evaluate field Label in type
+    *formatter.imageContext`` and the image reap silently fails (#2361). Read the
+    label-filtered image ids first, then resolve each id's project label via
+    ``docker image inspect`` whose ``.Config.Labels`` map IS indexable.
+    """
+    ids = _docker_lines(
+        ["docker", "images", "--filter", f"label={_PROJECT_LABEL}", "--format", "{{.ID}}"],
+        timeout=_LIST_TIMEOUT,
+    )
+    if not ids:
+        return []
+    return _docker_lines(
+        ["docker", "image", "inspect", "--format", f'{{{{index .Config.Labels "{_PROJECT_LABEL}"}}}}', *ids],
+        timeout=_LIST_TIMEOUT,
+    )
+
+
+def list_compose_projects() -> set[str]:
+    return {name for name in (*_container_project_labels(), *_image_project_labels()) if name}
 
 
 def reap_orphan_compose_projects(live_projects: set[str]) -> list[ReapResult]:

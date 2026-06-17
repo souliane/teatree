@@ -17,6 +17,7 @@ from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
 import teatree.core.cleanup as cleanup_mod
+import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
 import teatree.core.management.commands._workspace_reap as ws_reap_mod
@@ -713,19 +714,22 @@ class TestWorkspaceTicket(TestCase):
             assert ticket.repos == ["backend", "frontend"]
 
 
-_no_prune = patch.object(workspace_mod, "prune_branches", new=lambda _repo: [])
+_no_prune = patch.object(ws_clean_all_mod, "prune_branches", new=lambda _repo: [])
 
 
-_no_stash = patch.object(workspace_mod, "drop_orphaned_stashes", new=lambda _repo: [])
+_no_stash = patch.object(ws_clean_all_mod, "drop_orphaned_stashes", new=lambda _repo: [])
 
 
-_no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
+_no_orphan_dbs = patch.object(ws_clean_all_mod, "drop_orphan_databases", new=list)
 
 
-_no_orphan_docker = patch.object(workspace_mod, "reap_orphan_worktree_docker", new=list)
+_no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=list)
 
 
-_no_orphan_isolated_roots = patch.object(workspace_mod, "reap_orphan_isolated_worktree_roots", new=list)
+_no_orphan_isolated_roots = patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=list)
+
+
+_no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws, *, reap_unsynced: [])
 
 
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
@@ -1142,6 +1146,73 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
                 call_command("workspace", "teardown", path=str(wt_dir))
 
 
+class TestCleanAllReapUnsyncedFlag(TestCase):
+    """``clean-all --reap-unsynced`` validates its value and threads it to the orphan pass (#2361)."""
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_rejects_an_unknown_policy_value(self) -> None:
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            pytest.raises(SystemExit),
+        ):
+            call_command("workspace", "clean-all", "--reap-unsynced", "delete-everything")
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_default_policy_is_keep(self) -> None:
+        captured: dict[str, str] = {}
+
+        def _spy(_ws: Path, *, reap_unsynced: str) -> list[str]:
+            captured["policy"] = reap_unsynced
+            return []
+
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
+        ):
+            call_command("workspace", "clean-all")
+
+        assert captured["policy"] == "keep"
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_orphan_isolated_roots
+    @_no_orphan_docker
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_snapshot_policy_is_threaded_to_the_orphan_pass(self) -> None:
+        captured: dict[str, str] = {}
+
+        def _spy(_ws: Path, *, reap_unsynced: str) -> list[str]:
+            captured["policy"] = reap_unsynced
+            return ["Reaped orphan worktree (snapshot at /tmp/x): feat (/tmp/wt)"]
+
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
+        ):
+            cleaned = cast("list[str]", call_command("workspace", "clean-all", "--reap-unsynced", "snapshot"))
+
+        assert captured["policy"] == "snapshot"
+        assert any("Reaped orphan worktree (snapshot at" in line for line in cleaned)
+
+
+@_no_orphan_raw
 class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
@@ -1669,7 +1740,7 @@ class TestWorkspaceCleanAll(TestCase):
     @override_settings(**SETTINGS)
     def test_reaps_orphan_worktree_docker(self) -> None:
         """#1523: clean-all reaps docker for compose projects whose worktree dir is gone."""
-        with patch.object(workspace_mod, "reap_orphan_worktree_docker") as mock_reap:
+        with patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker") as mock_reap:
             mock_reap.return_value = ["Reaped docker project teatree-wt99: 1 container(s), 1 image(s)"]
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
@@ -3449,6 +3520,7 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
 @_no_dslr_prune
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
+@_no_orphan_raw
 class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
     """clean-all reaps a SAFE merged worktree fully and never crashes on a foreign overlay.
 
@@ -3675,6 +3747,7 @@ class TestIsSquashMergedRealGit(TestCase):
                 assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is False
 
 
+@_no_orphan_raw
 class TestCleanAllUnattendedDefault(TestCase):
     """clean-all is fully unattended by default — it never blocks on stdin (#2361).
 
@@ -3735,7 +3808,7 @@ class TestCleanAllUnattendedDefault(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(workspace_mod, "_is_interactive", return_value=True),
+                patch.object(ws_clean_all_mod, "_is_interactive", return_value=True),
                 patch("builtins.input", side_effect=_input_must_not_be_called),
                 self._patch_cleanup_to_refuse(),
             ):
@@ -3768,7 +3841,7 @@ class TestCleanAllUnattendedDefault(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(workspace_mod, "_is_interactive", return_value=False),
+                patch.object(ws_clean_all_mod, "_is_interactive", return_value=False),
                 patch("builtins.input", side_effect=_input_must_not_be_called),
                 self._patch_cleanup_to_refuse(),
             ):
@@ -3802,7 +3875,7 @@ class TestCleanAllUnattendedDefault(TestCase):
 
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(workspace_mod, "_is_interactive", return_value=True),
+                patch.object(ws_clean_all_mod, "_is_interactive", return_value=True),
                 patch("builtins.input", side_effect=_record_prompt),
                 self._patch_cleanup_to_refuse(),
             ):
@@ -3819,6 +3892,7 @@ class TestCleanAllUnattendedDefault(TestCase):
 @_no_orphan_dbs
 @_no_orphan_isolated_roots
 @_no_orphan_docker
+@_no_orphan_raw
 @_no_dslr_prune
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
