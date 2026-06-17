@@ -1,55 +1,55 @@
 # Named regression-detector manifest — the single source of truth.
 #
-# Every fixed intra-code bug becomes one permanent named semgrep rule keyed to
+# Every fixed intra-code bug becomes one permanent named ast-grep rule keyed to
 # its issue (the OpenClaw GHSA-pattern twin; the "a regression isn't fixed until
 # its eval lands the same day" doctrine made structural). Sibling of
 # antipatterns.yaml — loaded by teatree.quality.regression_catalog.
 #
-# Each entry maps to one .semgrep/<status>/<id>.yaml rule file:
-#   id      stable kebab slug, unique, never reused; equals the rule's semgrep id
+# Each entry maps to one .ast-grep/<status>/<id>.yml rule file:
+#   id      stable kebab slug, unique, never reused; equals the rule's ast-grep id
 #   issue   souliane/teatree#<n> (the tracking bug) or BLOCKING-NOW (already fixed)
 #   status  blocking | warn
-#   file    rule path relative to repo root (.semgrep/<status>/<id>.yaml)
+#   file    rule path relative to repo root (.ast-grep/<status>/<id>.yml)
 #
 # The flip protocol: a `warn` rule's bug-fix PR moves the file warn/ -> blocking/,
 # flips status, and points issue at BLOCKING-NOW in the SAME PR as the fix, so
 # the detector lands the same day and main stays green (the bug is now gone).
 #
 # tests/quality/test_regression_rules.py enforces: every file exists + parses as
-# valid semgrep YAML, ids unique, every blocking rule is ZERO-findings on the
+# valid ast-grep YAML, ids unique, every blocking rule is ZERO-findings on the
 # current tree, every warn rule names a real tracking issue.
 
 - id: predictable-temp-path
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/predictable-temp-path.yaml
+  file: .ast-grep/blocking/predictable-temp-path.yml
 
 - id: consume-before-side-effect-not-atomic
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/consume-before-side-effect-not-atomic.yaml
+  file: .ast-grep/blocking/consume-before-side-effect-not-atomic.yml
 
 - id: cas-stamp-before-side-effect
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/cas-stamp-before-side-effect.yaml
+  file: .ast-grep/blocking/cas-stamp-before-side-effect.yml
 
 - id: response-json-on-2xx-uncaught
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/response-json-on-2xx-uncaught.yaml
+  file: .ast-grep/blocking/response-json-on-2xx-uncaught.yml
 
 - id: signal-receiver-without-fault-isolation
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/signal-receiver-without-fault-isolation.yaml
+  file: .ast-grep/blocking/signal-receiver-without-fault-isolation.yml
 
 - id: except-swallow-to-empty
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/except-swallow-to-empty.yaml
+  file: .ast-grep/blocking/except-swallow-to-empty.yml
 
 - id: gate-conflates-scanner-error-with-finding
   issue: BLOCKING-NOW
   status: blocking
-  file: .semgrep/blocking/gate-conflates-scanner-error-with-finding.yaml
+  file: .ast-grep/blocking/gate-conflates-scanner-error-with-finding.yml

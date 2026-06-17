@@ -1,22 +1,22 @@
 """Run the eval gate inside the exact CI image (``dev/Dockerfile.test``).
 
 Reuses ``dev/Dockerfile.test`` (the image the CI test job builds) so a containerized
-run reproduces CI's environment exactly. The metered AI lane (``t3 eval run
+run reproduces CI's environment exactly. The fresh-run AI lane (``t3 eval run
 --backend sdk``) and ``t3 eval benchmark`` default to running IN the container —
-the reproducible gate must never accidentally bill the host. The free /
-deterministic lanes stay host-default; ``t3 eval ... --local`` is the explicit
-host escape hatch for a quick check. No PyPI — the image installs the working tree
-via the mounted repo and ``uv``.
+the reproducible gate must never accidentally run a model on the host. The free /
+deterministic lanes stay host-default; ``t3 eval benchmark --local`` is the
+explicit host escape hatch for a quick check. No PyPI — the image installs the
+working tree via the mounted repo and ``uv``.
 
-The metered AI lane drives the in-process ``claude-agent-sdk`` (NOT ``claude -p``)
-inside the container, authenticated by ``CLAUDE_CODE_OAUTH_TOKEN`` (headless OAuth,
-no login state needed) or ``ANTHROPIC_API_KEY``. :func:`_auth_passthrough_flags`
-forwards whichever is set on the host via ``docker run -e VARNAME`` — the value
-travels through the container env, never argv, so it never lands in the process
-list or logs. ``HOME=/tmp`` keeps the virgin isolation (issue #1805).
+The fresh-run AI lane drives the in-process ``claude-agent-sdk`` (NOT ``claude -p``)
+inside the container, authenticated by the subscription's ``CLAUDE_CODE_OAUTH_TOKEN``
+(headless OAuth, no login state needed). :func:`_auth_passthrough_flags` forwards
+the host's token via ``docker run -e VARNAME`` — the value travels through the
+container env, never argv, so it never lands in the process list or logs.
+``HOME=/tmp`` keeps the virgin isolation (issue #1805).
 
 To break the re-route loop, :func:`_run_in_image` sets ``T3_EVAL_IN_CONTAINER=1``
-on the container env. The metered/benchmark command runs DIRECTLY in-process when
+on the container env. The fresh-run/benchmark command runs DIRECTLY in-process when
 that marker is present (or ``--local`` was passed); otherwise it routes back
 through :func:`run_eval_in_docker`, which builds the image if needed and re-invokes
 ``t3 eval <args>`` (the same args) inside the container.
@@ -53,7 +53,7 @@ def _requests_sdk_lane(eval_args: list[str]) -> bool:
 
 class DockerUnavailableError(RuntimeError):
     def __init__(self) -> None:
-        super().__init__("docker is not on PATH; install Docker or run `t3 eval all` on the host (the default).")
+        super().__init__("docker is not on PATH; install Docker or run `t3 eval` on the host (the default).")
 
 
 def _repo_root() -> Path:

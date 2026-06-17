@@ -57,7 +57,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         ".apm",
         ".claude-plugin",
         ".github",
-        ".semgrep",
+        ".ast-grep",
         ".vscode",
         # CI / quality gates
         "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)

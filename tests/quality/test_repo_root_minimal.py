@@ -49,7 +49,7 @@ ALLOWED_ROOT = frozenset(
         ".jscpd.json",
         ".markdownlint-cli2.yaml",
         ".codespell-dictionary.txt",
-        ".semgrep",
+        ".ast-grep",
         ".vscode",
         ".claudeignore",
         ".claude-plugin",

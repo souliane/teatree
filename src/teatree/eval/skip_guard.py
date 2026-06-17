@@ -5,16 +5,16 @@ Two distinct failure shapes, two guards:
 *   *All-skipped*: specs collected, zero executed. A scenario skips (not fails)
     when its run never happened — most often because ``claude`` is not on PATH.
     Every skipped scenario reports as passed, so a suite that collects specs but
-    executes none exits green with zero behavioral coverage. The metered (sdk)
-    path forces this guard on; the LOCAL subscription backend legitimately
+    executes none exits green with zero behavioral coverage. The fresh-run (sdk)
+    path forces this guard on; the LOCAL transcript backend legitimately
     all-skips before any transcript exists, so for it the guard is opt-in.
 
-*   *Unmetered sdk*: the sdk backend executed scenarios but metered $0 of API
+*   *Unmetered sdk*: the sdk backend executed scenarios but recorded $0 of model
     cost. That is the exact ``$0.00 (no metered calls)`` state the ``--bare``
-    OAuth-auth bug produced — ``claude -p`` "ran" but authenticated as nothing,
-    made zero tool calls, and billed nothing. A metered run that meters nothing
+    OAuth-auth bug produced — the model "ran" but authenticated as nothing,
+    made zero tool calls, and recorded nothing. A fresh run that records nothing
     never actually executed and must FAIL LOUD, never pass. This guard is
-    unconditional for the sdk backend (it is the metered path's reason to exist).
+    unconditional for the sdk backend (it is the fresh-run path's reason to exist).
 """
 
 
@@ -52,10 +52,10 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
 def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
     """Fail when the sdk backend executed scenarios but metered $0 of API cost.
 
-    Only the ``sdk`` backend is checked — the subscription backend is unmetered
+    Only the ``sdk`` backend is checked — the transcript backend runs no model
     by design. ``executed == 0`` is the all-skipped guard's job, not this one;
-    this fires only when scenarios ran (``executed > 0``) yet billed nothing,
-    which means ``claude -p`` never actually authenticated/executed.
+    this fires only when scenarios ran (``executed > 0``) yet recorded nothing,
+    which means the model never actually authenticated/executed.
     """
     if backend != "sdk" or executed == 0 or total_cost_usd > 0.0:
         return

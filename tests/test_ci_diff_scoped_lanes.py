@@ -5,7 +5,7 @@ levels: the classifier (``tests/test_changed_lanes_classifier.py``) and
 the workflow wiring (here). These tests pin the workflow so a future
 edit cannot silently:
 
-- gate a security/quality lane (semgrep, sbom, uv-audit) on the diff,
+- gate a security/quality lane (regression-rules, sbom, uv-audit) on the diff,
 - gate a docs/markdown gate on the diff,
 - drop the PR-only / push-and-PR trigger of any existing job,
 - gate the heavy ``test`` lane such that a push-to-main could skip it.

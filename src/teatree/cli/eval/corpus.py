@@ -10,7 +10,7 @@ a ``both`` entry grades its matcher part. The anti-circular guard
 (:func:`~teatree.eval.corpus_grade.assert_independent_oracle`) is enforced on
 every graded entry — a circular oracle is a FAIL row, so the grade exit code
 catches it. :func:`grade_shipped_corpus` is the same deterministic body the
-free ``corpus-grade`` lane in ``t3 eval all`` runs.
+free ``corpus-grade`` lane in ``t3 eval`` runs.
 
 ``show`` is privacy-safe by construction: it prints the label's own committed
 fields plus DERIVED session counts — never a tool input, prompt text, or any
@@ -65,7 +65,7 @@ def grade_corpus_rows(labels: list[CorpusLabel], *, directory: Path, judge: Judg
 
 
 def grade_shipped_corpus() -> list[CorpusGradeRow]:
-    """Grade the shipped corpus deterministically (no judge) — the free-lane body for ``t3 eval all``."""
+    """Grade the shipped corpus deterministically (no judge) — the free-lane body for ``t3 eval``."""
     return grade_corpus_rows(discover_corpus(), directory=CORPUS_DIR, judge=None)
 
 
@@ -79,7 +79,7 @@ CORPUS_NO_GRADED_HINT = (
 
 
 def corpus_grade_lane(rows: list[CorpusGradeRow]) -> LaneResult:
-    """Fold graded rows into the free ``corpus-grade`` lane for ``t3 eval all``.
+    """Fold graded rows into the free ``corpus-grade`` lane for ``t3 eval``.
 
     ``graded == 0`` (every entry judge-skipped, or an empty corpus) is NOT a
     green pass — there is nothing deterministically validated, so a green row

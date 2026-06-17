@@ -62,3 +62,13 @@ e2e/.videos/
 # Worktree-local architecture pre-check scratch (the reviewer-facing summary
 # lives in the PR body, not a tracked file — see skills/architecture-design).
 ARCHITECTURE.md
+
+# Captured eval transcripts (`t3 eval capture-subagent`, the `transcript`
+# backend's input) are written as a plain `<scenario>.jsonl` to the cwd / the
+# `--transcript-dir` (default the repo root). A REAL captured transcript holds
+# personal session content and must NEVER reach this PUBLIC repo. The committed
+# synthetic fixtures all live under `evals/fixtures/` with a `.stream.jsonl` /
+# `.session.jsonl` infix, so ignoring the plain root-level `*.jsonl` capture
+# target can never shadow a committed fixture. (#privacy: real transcripts stay
+# uncommitted; the synthetic corpus_gen pipeline is the only committed source.)
+/*.jsonl

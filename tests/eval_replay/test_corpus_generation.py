@@ -20,7 +20,7 @@ import pytest
 from scripts.eval.corpus_gen.all_scenarios import ALL_SCENARIOS
 from scripts.eval.corpus_gen.model import Scenario, fixture_stream
 from scripts.eval.generate_corpus import planned_files
-from teatree.eval.backends import SubscriptionTranscriptRunner
+from teatree.eval.backends import TranscriptRunner
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.report import evaluate
 
@@ -32,7 +32,7 @@ def _grade(scenario: Scenario, variant: str, tmp_path: Path) -> bool:
     spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
     spec = load_eval_yaml(spec_path)[0]
     (tmp_path / f"{spec.name}.jsonl").write_text(fixture_stream(scenario, variant), encoding="utf-8")
-    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 
@@ -114,7 +114,7 @@ def _grade_transcript(scenario: Scenario, transcript: str, tmp_path: Path) -> bo
     spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
     spec = load_eval_yaml(spec_path)[0]
     (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
-    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 

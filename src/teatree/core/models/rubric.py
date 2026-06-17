@@ -18,9 +18,9 @@ the rubric grade contract and the CLEAR/verdict contract cannot drift apart.
 Population (``ticket rubric-set``) accepts EXPLICIT criteria only — auto-derivation
 from ``/plan`` is the [#2240](https://github.com/souliane/teatree/issues/2240) follow-up.
 The LLM grader prior art lives in :mod:`teatree.eval.judge` (``JudgeSpec.rubric`` +
-``ClaudeJudge.grade``, currently ``claude -p`` → SDK-cutover candidate); it is kept
-SEPARATE here on purpose — extracting a shared grader would couple the metered-LLM
-path to this DB-record path and pull the SDK cutover into scope.
+``ClaudeJudge.grade``, the in-process Agent SDK); it is kept SEPARATE here on
+purpose — extracting a shared grader would couple the metered-LLM path to this
+DB-record path.
 """
 
 from typing import TYPE_CHECKING, ClassVar

@@ -14,7 +14,7 @@ import typer
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT, DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker
-from teatree.eval.backends import SUBSCRIPTION_BACKEND
+from teatree.eval.backends import TRANSCRIPT_BACKEND
 from teatree.eval.parallel import DEFAULT_PARALLEL
 
 
@@ -62,7 +62,7 @@ class RunDockerArgs:
         return [
             ["--trials", str(self.trials), "--require", self.require] if self.trials != 1 else [],
             ["--models", self.models] if self.models is not None else [],
-            ["--backend", self.backend] if self.backend != SUBSCRIPTION_BACKEND else [],
+            ["--backend", self.backend] if self.backend != TRANSCRIPT_BACKEND else [],
             ["--require-executed"] if self.require_executed else [],
             ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
@@ -110,7 +110,6 @@ def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-hi
     *,
     docker: bool,
     metered: bool,
-    local: bool,
     baseline: bool,
     gate_regressions: bool,
     gate_cost_regression: bool,
@@ -123,7 +122,7 @@ def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-hi
     ``--no-persist``, then the run is dispatched into the container (which exits
     the process).
     """
-    if not (docker or should_route_to_docker(metered=metered, local=local)):
+    if not (docker or should_route_to_docker(metered=metered, local=False)):
         return
     run_in_docker_or_exit(
         args,
