@@ -14,8 +14,18 @@
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
 #     lookback window since the last run — nothing new to test, no API spend.
-#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk).
-#     ALWAYS runs (force) — the no-PR guard is bypassed for a manual run.
+#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk)
+#     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
+#     bypassed for a manual run.
+#
+# LANE FAN-OUT (souliane/teatree#2492):
+#   The FULL ~68-scenario x 3-trial suite does not finish in a single 2x80min
+#   budget. So a `prepare` job computes the lane matrix (every permitted lane for
+#   the scheduled/default run, or the one explicit `lane` input) and the `eval`
+#   job fans OUT — ONE matrix leg per lane, each leg metering ONE lane
+#   (clean_room | under_load) that fits the budget, in PARALLEL job legs. Full
+#   coverage, parallel wall-clock. `fail-fast: false` keeps each lane's verdict
+#   independent (a red under_load leg never cancels the clean_room leg).
 #
 # The "nothing new to test" skip is a PRE-CHECK that decides whether to invoke
 # the eval at all — it is NOT a skip-as-pass inside the eval. Once the eval IS
@@ -82,20 +92,16 @@ on:
         type: string
 
 jobs:
-  # GATE (weekly + on-demand): the metered AI behavioral-eval suite. The Claude
-  # CLI install is asserted and `--require-executed` is passed unconditionally,
-  # so a missing binary / all-skipped run fails RED instead of passing green.
-  eval:
+  # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
+  # no-PR guard / manual force) and (b) computes the per-leg lane matrix. The full
+  # ~68-scenario x 3-trial suite cannot finish in a single 2x80min budget (#2492),
+  # so the eval job below fans OUT across lanes — one matrix leg per lane, each leg
+  # metering ONE lane (clean_room | under_load) that fits the budget, in parallel.
+  prepare:
     runs-on: ubuntu-latest
-    # FAIL LOUD on a hang. Without a job-level cap a wedge ANYWHERE outside the
-    # retry-wrapped eval step (a stuck report render, a hung docker build/daemon)
-    # runs to GitHub's 6h default with no signal — and an in-progress job's log
-    # blob is never exposed, so a hang looks identical to a slow run for hours.
-    # The eval step is bounded to 80min x 2 attempts (160min worst case);
-    # 180min caps the whole job just above that (plus the report/upload steps)
-    # so a real hang is killed and surfaced as a red, diagnosable run instead of
-    # an indefinite stall.
-    timeout-minutes: 180
+    outputs:
+      run_eval: ${{ steps.gate.outputs.run_eval }}
+      lanes: ${{ steps.matrix.outputs.lanes }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
@@ -104,7 +110,6 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
-      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
       - name: Sync dependencies (retry on transient network failure)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         with:
@@ -137,17 +142,67 @@ jobs:
               echo "run_eval=false" >> "$GITHUB_OUTPUT"
             fi
           fi
+      # Compute the lane matrix the eval job fans out over. Empty `lane` input
+      # (scheduled runs and the default manual run) = every permitted lane, one
+      # leg each. An explicit `lane` input runs that single lane. An unknown lane
+      # fails loud here rather than producing an empty matrix.
+      - name: Compute the lane matrix
+        id: matrix
+        env:
+          EVAL_LANE: ${{ inputs.lane || '' }}
+        run: |
+          LANES="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE")"
+          echo "lanes=$LANES" >> "$GITHUB_OUTPUT"
+          echo "Lane matrix: $LANES"
+
+  # GATE (weekly + on-demand): the metered AI behavioral-eval suite, fanned out
+  # ONE lane per matrix leg (#2492). The Claude CLI install is asserted and
+  # `--require-executed` is passed unconditionally, so a missing binary /
+  # all-skipped run fails RED instead of passing green.
+  eval:
+    needs: prepare
+    if: needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # `fail-fast: false` so a red under_load lane does not cancel the
+      # clean_room lane mid-run — each lane's verdict is independent signal.
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.prepare.outputs.lanes) }}
+    # FAIL LOUD on a hang. Without a job-level cap a wedge ANYWHERE outside the
+    # retry-wrapped eval step (a stuck report render, a hung docker build/daemon)
+    # runs to GitHub's 6h default with no signal — and an in-progress job's log
+    # blob is never exposed, so a hang looks identical to a slow run for hours.
+    # The eval step is bounded to 80min x 2 attempts (160min worst case);
+    # 180min caps the whole job just above that (plus the report/upload steps)
+    # so a real hang is killed and surfaced as a red, diagnosable run instead of
+    # an indefinite stall. Each leg now meters ONE lane, which fits the budget.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
       # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
       # it. A missing binary must FAIL the job (the runner would otherwise skip
       # every scenario and report a decorative green). `claude --version` is the
       # post-install assertion that turns an install failure into a red job.
       - name: Install and assert the Claude CLI
-        if: steps.gate.outputs.run_eval == 'true'
         run: |
           npm install -g @anthropic-ai/claude-code
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
-        if: steps.gate.outputs.run_eval == 'true'
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
       # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
@@ -170,49 +225,47 @@ jobs:
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
       # (reasoning + tool calls) so a maintainer can diagnose a red under_load lane.
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
-        if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
-          EVAL_LANE: ${{ inputs.lane || '' }}
+          # This leg meters exactly ONE lane (the matrix value), so the per-lane
+          # ~14-34-scenario subset fits the 2x80min budget where the full ~68 did
+          # not (#2492). The matrix value comes from the prepare job's validated
+          # lane list, never raw input — so it is always one of the permitted lanes.
+          EVAL_LANE: ${{ matrix.lane }}
         with:
-          # The FULL metered suite is ~68 scenarios x 3 trials, each a real
-          # metered `claude` SDK call — it does not fit a 30min attempt, and each
-          # retry re-runs the WHOLE suite from scratch (`--no-persist`, no resume),
-          # so a too-tight timeout just truncates+repeats the same partial work
-          # every attempt and never completes (the observed "hang"). 80min per
-          # attempt lets the suite finish; 2 attempts keep ONE transient-failure
-          # retry (the whole point of the retry wrapper — an AI/network flake is
-          # retried, not red-failed) without a third truncating pass. 2x80=160min
-          # sits under the 180min job cap. The per-scenario RUN/DONE progress lines
-          # (multi_trial.py) plus the job-level `timeout-minutes` make a genuine
-          # stall diagnosable (last RUN line = the wedged scenario) and fail loud
-          # rather than re-burning spend indefinitely.
+          # A single lane is ~14-34 scenarios x 3 trials, each a real metered
+          # `claude` SDK call. Each retry re-runs the whole leg from scratch
+          # (`--no-persist`, no resume), so a too-tight timeout just truncates and
+          # repeats partial work every attempt and never completes (the observed
+          # "hang"). 80min per attempt lets ONE lane finish comfortably; 2 attempts
+          # keep ONE transient-failure retry (the whole point of the retry wrapper —
+          # an AI/network flake is retried, not red-failed) without a third
+          # truncating pass. 2x80=160min sits under the 180min job cap. The
+          # per-scenario RUN/DONE progress lines (multi_trial.py) plus the job-level
+          # `timeout-minutes` make a genuine stall diagnosable (last RUN line = the
+          # wedged scenario) and fail loud rather than re-burning spend indefinitely.
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
-          # EVAL_LANE empty (scheduled runs and the default manual run) = every lane,
-          # today's behaviour. A manual run may pass `under_load` to meter only the
-          # behavioural-drift lane (the cheap PR-path anti-vacuity gate reads the same
-          # catalog deterministically). The lane flag is only appended when set.
-          # `--transcript-html` writes to $RUNNER_TEMP (always writable; the report
-          # is dropped before the eval's own non-zero exit, so a red lane is still
-          # captured). The retry re-runs the whole `command`, so the file is simply
-          # overwritten with the last attempt's results — no staleness.
+          # `--lane "$EVAL_LANE"` scopes the leg to its one lane. `--transcript-html`
+          # writes to $RUNNER_TEMP (always writable; the report is dropped before the
+          # eval's own non-zero exit, so a red lane is still captured). The retry
+          # re-runs the whole `command`, so the file is simply overwritten with the
+          # last attempt's results — no staleness.
           command: |
-            LANE_FLAG=""
-            if [ -n "$EVAL_LANE" ]; then LANE_FLAG="--lane $EVAL_LANE"; fi
-            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG \
+            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --lane "$EVAL_LANE" \
               --require-executed --docker --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
-      # Publish the per-trial transcript report THIS run emitted as a job artifact.
-      # `if: always()` so a red run still publishes it (the report is exactly what a
+      # Publish the per-trial transcript report THIS leg emitted as a job artifact.
+      # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
-      # the job's exit code). No render step — the artifact was written by the run.
+      # the leg's exit code). No render step — the artifact was written by the run.
+      # The name is per-lane so parallel matrix legs never collide on one artifact.
       - name: Upload the per-trial transcript report
-        if: always() && steps.gate.outputs.run_eval == 'true'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: eval-report
+          name: eval-report-${{ matrix.lane }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn

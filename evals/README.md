@@ -132,6 +132,14 @@ installed editable from a clone; the eval harness ships inside it.
   and passes `--require-executed` UNCONDITIONALLY, so a missing binary/key fails
   the job loud instead of an all-skipped green. The deterministic lanes are gated
   by prek per push + pytest per PR, not re-run here. See "Triggering" below.
+  **Lane fan-out ([#2492](https://github.com/souliane/teatree/issues/2492)).** The
+  full ~68-scenario x 3-trial suite does not fit a single `2 x 80min` job budget,
+  so a `prepare` job computes the lane matrix (`scripts/eval/lane_matrix.py`: every
+  permitted lane for the scheduled/default run, or the one explicit `lane` input)
+  and the `eval` job fans OUT — ONE matrix leg per lane (`clean_room` /
+  `under_load`), each metering one lane that fits, in parallel. `fail-fast: false`
+  keeps each lane's verdict independent. Each leg `t3 eval run --lane "$EVAL_LANE"`
+  and uploads a per-lane `eval-report-<lane>` artifact.
 
 ## Invocation
 

@@ -118,14 +118,19 @@ class TestGitHubRequireExecutedUnconditional:
 
 
 class TestGitHubScheduledGuardManualUnguarded:
-    """The scheduled path is no-PR-guarded; the manual dispatch always runs."""
+    """The scheduled path is no-PR-guarded; the manual dispatch always runs.
+
+    The gate decision lives in the ``prepare`` job (which also computes the lane
+    matrix the ``eval`` job fans out over, #2492); the ``eval`` job is gated on
+    that decision at the job level (``if: needs.prepare.outputs.run_eval``).
+    """
 
     def _gate_step_run(self) -> str:
         jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
-        for step in cast("list[dict[str, Any]]", jobs["eval"]["steps"]):
+        for step in cast("list[dict[str, Any]]", jobs["prepare"]["steps"]):
             if step.get("id") == "gate":
                 return cast("str", step["run"])
-        msg = "the eval job has no `gate` step deciding whether to run."
+        msg = "the prepare job has no `gate` step deciding whether to run."
         raise AssertionError(msg)
 
     def test_manual_dispatch_forces_a_run(self) -> None:
@@ -140,22 +145,36 @@ class TestGitHubScheduledGuardManualUnguarded:
             "tick with nothing new merged skips cleanly."
         )
 
-    def test_eval_step_is_gated_on_the_decision_not_the_invocation(self) -> None:
-        # The PRE-CHECK gates whether the eval step runs; it must NOT weaken the
-        # eval invocation itself (which always carries --require-executed).
+    def test_eval_job_is_gated_on_the_decision_not_the_invocation(self) -> None:
+        # The PRE-CHECK gates whether the eval JOB runs (job-level `if` on the
+        # prepare decision); it must NOT weaken the eval invocation itself (which
+        # always carries --require-executed).
         jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
-        for step in cast("list[dict[str, Any]]", jobs["eval"]["steps"]):
-            if "t3 eval run" in step.get("with", {}).get("command", ""):
-                assert step.get("if", "") == "steps.gate.outputs.run_eval == 'true'", (
-                    "The metered eval step must be gated on the gate decision."
-                )
-                assert _FLAG in step["with"]["command"], (
-                    "The gated eval invocation must still carry --require-executed (the guard "
-                    "decides whether to invoke, not whether the eval may silently skip-as-pass)."
-                )
-                return
-        msg = "the eval job has no `t3 eval run` step."
-        raise AssertionError(msg)
+        eval_job = cast("dict[str, Any]", jobs["eval"])
+        assert eval_job.get("if", "") == "needs.prepare.outputs.run_eval == 'true'", (
+            "The metered eval job must be gated on the prepare gate decision at the job level."
+        )
+        assert "prepare" in eval_job.get("needs", ""), "The eval job must depend on the prepare gate job."
+        assert _FLAG in _gh_eval_run_command(), (
+            "The gated eval invocation must still carry --require-executed (the guard "
+            "decides whether to invoke, not whether the eval may silently skip-as-pass)."
+        )
+
+    def test_eval_fans_out_one_lane_per_matrix_leg(self) -> None:
+        # #2492: the full suite does not fit the 2x80min budget, so each matrix leg
+        # meters ONE lane (from the prepare job's validated lane list).
+        jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
+        matrix = cast("dict[str, Any]", jobs["eval"]["strategy"]["matrix"])
+        assert "lane" in matrix, "The eval job must fan out over a lane matrix."
+        assert "fromJSON(needs.prepare.outputs.lanes)" in matrix["lane"], (
+            "The lane matrix must come from the prepare job's computed lane list."
+        )
+        command = _gh_eval_run_command()
+        assert '--lane "$EVAL_LANE"' in command, "Each leg must scope `t3 eval run` to its one matrix lane."
+        prepare_steps = cast("list[dict[str, Any]]", jobs["prepare"]["steps"])
+        assert any("lane_matrix.py" in step.get("run", "") for step in prepare_steps), (
+            "The prepare job must compute the lane matrix via lane_matrix.py."
+        )
 
 
 class TestGitHubCiHasNoMeteredEvalOnPrPath:
