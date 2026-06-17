@@ -20,7 +20,6 @@ from teatree.eval.conversation_audit import (
     classify_behavior_pattern,
     run_conversation_audit,
 )
-from teatree.eval.corpus_grade import CircularOracleError
 from teatree.eval.corpus_loader import discover_corpus
 from teatree.eval.corpus_models import CorpusLabel
 from teatree.eval.report import JudgeOutcome
@@ -89,7 +88,10 @@ class TestAuditCorpusMatchedSession(TestCase):
         assert record.expected_outcome == "backgrounded"
         assert record.predicted_outcome == "not_backgrounded"
 
-    def test_refuses_a_circular_matcher_oracle(self) -> None:
+    def test_circular_matcher_oracle_degrades_to_a_fail_record_not_a_crash(self) -> None:
+        # A circular matcher oracle must degrade to a FAIL record, mirroring
+        # `cli/eval/corpus.py::_grade_row`, NOT propagate CircularOracleError
+        # out of audit_session as an uncaught crash (#2279 nit 1).
         circular = CorpusLabel(
             entry_id="circ",
             labelled_by="human:author",
@@ -104,8 +106,48 @@ class TestAuditCorpusMatchedSession(TestCase):
             rule_author="human:author",
         )
         events = parse_session_jsonl(_BG_VIOLATING)
-        with pytest.raises(CircularOracleError):
-            audit_session(AuditInput(session_id="s", events=events, label=circular))
+        record = audit_session(AuditInput(session_id="s", events=events, label=circular))
+        assert record.verdict == EvalVerdict.FAIL
+        assert record.corpus_entry_id == "circ"
+        assert record.predicted_outcome == "not_ok"
+        assert record.nominated_for_label is True
+
+    def test_both_oracle_with_a_judge_is_not_refused_as_circular(self) -> None:
+        # assert_independent_oracle treats a `both` oracle as matcher-only ONLY
+        # when no judge is present. A `both` label graded WITH a judge has an
+        # independent grader, so it must NOT be refused — passing
+        # judge_present=judge is not None is what conveys that (#2279 nit 1).
+        both_same_author = CorpusLabel(
+            entry_id="both-judge",
+            labelled_by="human:author",
+            labelled_at="2026-06-09",
+            expected_behavior="x",
+            outcome_axis="ax",
+            expected_outcome="ok",
+            confidence="high",
+            oracle="both",
+            matchers=_label("background_ci_watch").matchers,
+            judge=_label("faithful_explanation").judge,
+            rule_author="human:author",
+        )
+        events = parse_session_jsonl(
+            _assistant(
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "Bash",
+                    "input": {"command": "gh run watch", "run_in_background": True},
+                }
+            )
+            + "\n"
+        )
+
+        def _judge(spec: object, run: object) -> JudgeOutcome:
+            return JudgeOutcome(passed=True, skipped=False, rationale="independent grader")
+
+        record = audit_session(AuditInput(session_id="s-both", events=events, label=both_same_author), judge=_judge)
+        assert record.verdict == EvalVerdict.PASS
+        assert record.predicted_outcome == "ok"
 
 
 class TestAuditUnlabelledSession(TestCase):

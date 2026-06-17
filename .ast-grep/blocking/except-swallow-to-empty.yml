@@ -1,0 +1,21 @@
+id: except-swallow-to-empty
+language: python
+severity: error
+message: >-
+  except handler returns "" with no log: a fetch failure (auth/network/HTTP)
+  is flattened into a sentinel indistinguishable from a genuinely-empty
+  value. Catch the specific failure exceptions, log the cause
+  (logger.warning / logger.exception with context), then return the sentinel
+  — so a failure is observable and never masquerades as a successfully
+  fetched empty value. See overlay.py get_issue_title.
+files:
+  - "src/teatree/core/overlay.py"
+rule:
+  kind: except_clause
+  has:
+    pattern: return ""
+    stopBy: end
+  not:
+    has:
+      pattern: logger.$METHOD($$$A)
+      stopBy: end

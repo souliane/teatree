@@ -17,7 +17,7 @@ that builds the registry from its own app. The default provider raises a clear
 error, so a caller that never registered one fails loud rather than silently
 validating against an empty registry.
 
-Free and deterministic — no model, no spend. Wired into ``t3 eval all`` (the
+Free and deterministic — no model, no spend. Wired into ``t3 eval`` (the
 free-lane summary) and exposed as the standalone ``t3 eval skill-command-validity``.
 """
 
@@ -66,7 +66,7 @@ def validate_shipped_skill_commands(skills_dir=DEFAULT_SKILLS_DIR) -> CommandVal
 
 
 def skill_command_validity_lane(report: CommandValidityReport) -> LaneResult:
-    """Fold a validity report into the free ``skill-command-validity`` lane for ``t3 eval all``."""
+    """Fold a validity report into the free ``skill-command-validity`` lane for ``t3 eval``."""
     detail = (
         f"{report.checked} `t3 …` invocation(s) all resolve"
         if report.ok

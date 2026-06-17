@@ -24,6 +24,7 @@ need effective values must use ``get_effective_settings``, not the bare
 import logging
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import teatree.config as _facade
 from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
@@ -97,52 +98,117 @@ def _load_toml(path: Path) -> dict:
             raise ValueError(msg) from exc
 
 
-def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
-    """Emit a loud WARN for any DB-home key left in ``[teatree]`` / ``[overlays.<name>]``.
+# Sentinel for a TOML value that cannot be coerced to its setting's type. It never
+# equals a parsed DB value, so a malformed TOML value still counts as a conflict.
+_UNPARSEABLE_TOML_VALUE = object()
 
-    Under the #1775 hard partition a DB-home key in the TOML file is IGNORED on
-    read (its home is the ``ConfigSetting`` store), so silently dropping it would
-    leave the operator wondering why ``mode = "auto"`` in their file did nothing.
-    This makes the drop VISIBLE — one WARNING per offending key, naming the key,
-    its TOML location, and the one-time ``config_setting import`` migration path.
 
-    The home registry is imported lazily (the same deferral ``homes`` uses) to
-    avoid a ``settings -> loader -> homes -> settings`` import cycle at module load.
+def _parse_toml_value(key: str, value: object) -> object:
+    """Coerce a raw TOML scalar through the same parser the DB store uses for *key*.
+
+    Both sides of a conflict comparison must be normalized the same way (a TOML
+    ``"auto"`` and a stored ``"auto"`` both become ``Mode.AUTO``) so the check
+    compares semantic values, not representations. A parse failure means the TOML
+    value is malformed for the setting's type — treated as "not equal" so the
+    conflict still surfaces rather than being swallowed.
     """
+    from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS  # noqa: PLC0415
+
+    parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+    if parser is None:
+        return value
+    try:
+        return parser(value)
+    except (ValueError, TypeError, AttributeError):
+        return _UNPARSEABLE_TOML_VALUE
+
+
+def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
+    """The DB-home keys present in *toml_table* (a cheap, static, no-DB check)."""
     from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
 
-    db_home_keys = {name for name, home in SETTING_HOMES.items() if home is SettingHome.DB}
+    return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB]
+
+
+def _conflicting_db_home_keys(
+    toml_table: dict[str, Any], db_home_keys: list[str], db_overrides: dict[str, Any]
+) -> list[str]:
+    """Return the *db_home_keys* whose TOML value CONFLICTS with the DB.
+
+    A conflict is a key present in BOTH the TOML table and the ``ConfigSetting``
+    store with DIFFERING (parser-normalized) values — the only case where the
+    TOML value is silently ignored *and* disagrees with the setting's real home,
+    so the operator is genuinely surprised. A DB-home key absent from the DB store
+    (being migrated away), or present but AGREEING, is silent: it resolves to the
+    same effective value, so warning about it is the noise this path removes.
+    """
+    conflicts: list[str] = []
+    for key in db_home_keys:
+        if key not in db_overrides:
+            continue
+        if _parse_toml_value(key, toml_table[key]) != db_overrides[key]:
+            conflicts.append(key)
+    return conflicts
+
+
+def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
+    """Emit ONE aggregated WARN for DB-home keys whose TOML value CONFLICTS with the DB.
+
+    Under the #1775 hard partition a DB-home key in the TOML file is IGNORED on
+    read (its home is the ``ConfigSetting`` store). After an install migrates such
+    keys into the store the TOML is clean, so warning on every DB-home key that
+    *appears* in the file produced ~100 lines of noise per command. The signal that
+    actually matters is a CONFLICT: the key is set to a different value in BOTH the
+    TOML and the DB, so the silently-ignored TOML value disagrees with what is in
+    effect. Those are aggregated into a SINGLE warning naming every offending key
+    and the one-time ``config_setting import`` migration path. A DB-home key that is
+    absent from the DB, or agrees with it, is silent.
+
+    The home registry and DB readers are imported lazily (the loader -> resolution
+    edge the module docstring describes) to avoid the loader/resolution/discovery
+    import cycle at module load and to keep the DB read off the hot import path.
+
+    The DB is read ONLY when a table actually carries a DB-home key. The common
+    post-migration file (every DB-home key already moved into the store) has none,
+    so ``load_config`` touches no connection — keeping it leak-free off the hot path
+    rather than opening a stray default-alias connection on every call.
+    """
+    offenders: list[str] = []
 
     teatree = raw.get("teatree")
     if isinstance(teatree, dict):
-        for key in teatree:
-            if key in db_home_keys:
-                _logger.warning(
-                    "Config key '[teatree] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
-                    "set it with `t3 <overlay> config_setting set %s ...` or migrate once with "
-                    "`t3 <overlay> config_setting import`.",
-                    key,
-                    path,
-                    key,
-                )
+        db_home_keys = _db_home_keys_in(teatree)
+        if db_home_keys:
+            from teatree.config.resolution import _db_global_overrides  # noqa: PLC0415
+
+            global_db = _db_global_overrides()
+            offenders.extend(f"[teatree] {key}" for key in _conflicting_db_home_keys(teatree, db_home_keys, global_db))
 
     overlays = raw.get("overlays")
     if isinstance(overlays, dict):
         for overlay_name, overlay_cfg in overlays.items():
             if not isinstance(overlay_cfg, dict):
                 continue
-            for key in overlay_cfg:
-                if key in db_home_keys:
-                    _logger.warning(
-                        "Config key '[overlays.%s] %s' in %s is a DB-home setting (#1775) and is IGNORED on read; "
-                        "set it with `t3 <overlay> config_setting set %s ... --overlay %s` or migrate once with "
-                        "`t3 <overlay> config_setting import`.",
-                        overlay_name,
-                        key,
-                        path,
-                        key,
-                        overlay_name,
-                    )
+            db_home_keys = _db_home_keys_in(overlay_cfg)
+            if not db_home_keys:
+                continue
+            from teatree.config.resolution import _db_overlay_overrides  # noqa: PLC0415
+
+            overlay_db = _db_overlay_overrides(overlay_name)
+            offenders.extend(
+                f"[overlays.{overlay_name}] {key}"
+                for key in _conflicting_db_home_keys(overlay_cfg, db_home_keys, overlay_db)
+            )
+
+    if offenders:
+        _logger.warning(
+            "Config keys in %s are DB-home settings (#1775) set to a DIFFERENT value than the "
+            "ConfigSetting store, and are IGNORED on read: %s. Resolve the conflict by removing them "
+            "from the file (the DB value is authoritative) or migrate once with "
+            "`t3 <overlay> config_setting import`.",
+            path,
+            ", ".join(offenders),
+        )
 
 
 def load_config(path: Path | None = None) -> TeaTreeConfig:

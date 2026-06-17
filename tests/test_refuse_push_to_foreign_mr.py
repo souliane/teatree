@@ -147,6 +147,40 @@ def _commit(work: Path, filename: str, body: str, message: str = "add feature") 
     _git(work, "commit", "-m", message)
 
 
+def _commit_with_large_body(work: Path, filename: str, ordinal: int, body_bytes: int) -> None:
+    """Commit a file with a multi-hundred-KB commit-message body.
+
+    The cumulative ``git log --format='%B'`` output across these commits is
+    the producer that must outrun ``grep -q``'s early close — large bodies
+    let a handful of commits fill the OS pipe buffer.
+    """
+    (work / filename).write_text(f"line {ordinal}\n", encoding="utf-8")
+    _git(work, "add", filename)
+    filler = ("lorem ipsum dolor sit amet " * 40 + "\n") * (body_bytes // 1080 + 1)
+    # Pass the large body via a message FILE, not a -m argument: a
+    # hundreds-of-KB commit message on the command line blows past Linux's
+    # ARG_MAX (E2BIG / "Argument list too long").
+    msg_file = work / f".commit-msg-{ordinal}"
+    msg_file.write_text(f"bulk commit {ordinal}\n\n{filler}", encoding="utf-8")
+    _git(work, "commit", "-F", str(msg_file))
+    msg_file.unlink()
+
+
+def _git_log_body_bytes(work: Path) -> int:
+    """Byte length of ``git log --format='%B' HEAD`` (the producer stream).
+
+    Its size determines whether ``grep -q``'s early close triggers SIGPIPE.
+    """
+    out = subprocess.run(
+        ["git", "log", "--format=%B", "HEAD"],  # noqa: S607
+        cwd=work,
+        capture_output=True,
+        check=True,
+        env=_hermetic_env(),
+    ).stdout
+    return len(out)
+
+
 def _run_hook(work: Path, env: dict[str, str], branch: str) -> subprocess.CompletedProcess[str]:
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],  # noqa: S607
@@ -244,6 +278,47 @@ class TestRefusePushToForeignOpenMr:
             "a clean feature line\n",
             message="add feature\n\n[push-to-foreign-mr-ok: pair-programming with teammate]",
         )
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_override_token_allows_push_with_large_log_body_no_sigpipe(self, tmp_path: Path) -> None:
+        """Honour the override token under a LARGE push-range log body (#2502).
+
+        The override token lives in the NEWEST commit, which ``git log
+        --format='%B'`` emits FIRST, so ``grep -q`` matches and closes the
+        pipe almost immediately while ``git log`` still has hundreds of KB of
+        older-commit bodies to write. Under the old ``git log | grep -q``
+        pipeline (``set -o pipefail``) ``git log`` then dies with SIGPIPE
+        (141), ``pipefail`` propagates 141, and the ``if`` is FALSE even
+        though the token IS present — the gate wrongly BLOCKS a legitimate
+        co-authoring push. The fixed here-string form has no producer process
+        to receive SIGPIPE, so the match is deterministic and the push is
+        allowed.
+
+        This is the anti-vacuous companion to
+        ``test_override_token_allows_push_to_foreign_open_mr`` — that test's
+        single tiny commit never fills the pipe buffer, so it passes on BOTH
+        the buggy pipe form and the fixed form and guards nothing against this
+        regression.
+        """
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        # Older commits with large bodies: the bulk that git log must still
+        # write AFTER grep -q matches the (newer) token commit and closes the
+        # pipe. ~1MB total comfortably exceeds the OS pipe buffer (64KB Linux,
+        # 16-64KB macOS) on every platform CI runs on.
+        for ordinal in range(1, 5):
+            _commit_with_large_body(work, "bulk.txt", ordinal, body_bytes=250_000)
+        # NEWEST commit carries the override token — emitted FIRST by git log.
+        _commit(
+            work,
+            "feature.txt",
+            "a clean feature line\n",
+            message="add feature\n\n[push-to-foreign-mr-ok: pair-programming with teammate]",
+        )
+
+        assert _git_log_body_bytes(work) > 512_000, "log body too small to exercise the SIGPIPE race"
 
         result = _run_hook(work, env, "feature-x")
 

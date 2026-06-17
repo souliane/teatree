@@ -1,0 +1,32 @@
+id: cas-stamp-before-side-effect
+language: python
+severity: error
+message: >-
+  A CAS receipt is claimed before a Slack side-effect that has no
+  release-on-failure. Claim -> side-effect -> release: stamp the CAS to
+  claim the slot (exactly-once), then post/react, then release the claim
+  (unmark_eyes_reacted / unmark_loop_replied) inside an `except` so a
+  failed side-effect retries instead of leaving a receipt that says
+  "done" while nothing landed. Wrap the post/react in try/except and
+  roll the claim back on failure, as react_merge_on_post does with
+  _release_post in review_request_merge_react.py.
+files:
+  - "src/teatree/loop/slack_answer/cycle.py"
+rule:
+  pattern: $B.react($$$A)
+  inside:
+    kind: function_definition
+    has:
+      regex: 'mark_eyes_reacted|_mark_unit_loop_replied'
+      stopBy: end
+    stopBy: end
+  not:
+    inside:
+      kind: try_statement
+      has:
+        kind: except_clause
+        has:
+          regex: 'unmark_eyes_reacted|_unmark_unit_loop_replied'
+          stopBy: end
+        stopBy: end
+      stopBy: end
