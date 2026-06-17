@@ -45,7 +45,18 @@ _TACH = _REPO / "tach.toml"
 # The new node already imported teatree.core inside the monolithic teatree.loop
 # node — the split makes that pre-existing coupling visible as one more fan-in
 # entry in the correct lower→higher direction; it adds no new coupling.
-_CORE_FANIN_BASELINE = 19
+# Bumped 19 → 20 (#2413 PR-4): the teatree.loop rendering cluster is carved into
+# six tach nodes (rendering_items / rendering_dms / rendering_classification /
+# rendering_permalinks / rendering_zones + the rendering facade). Only the
+# facade teatree.loop.rendering touches teatree.core — its cost_chip_lines()
+# reads CostReport / TaskAttempt (teatree.core.cost, teatree.core.models.task),
+# an import identical on origin/main, previously hidden inside the teatree.loop
+# node. The carve already minimizes core contact to that one facade node (the
+# five leaf nodes touch no core), and teatree.loop retains its own independent
+# core coupling, so it does not drop out to offset the addition. One new fan-in
+# entry (teatree.loop.rendering) in the correct lower→higher direction; it is a
+# pure carve artifact and adds no new coupling.
+_CORE_FANIN_BASELINE = 20
 _MAX_DECLARED_TWO_CYCLES = 0
 
 
