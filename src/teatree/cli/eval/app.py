@@ -9,7 +9,6 @@ from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
-from teatree.cli.eval.all_command import all_lanes
 from teatree.cli.eval.app_helpers import reject_unsupported_run_output, require_effort, require_spec
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
@@ -19,28 +18,21 @@ from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
-from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     RunGuards,
-    build_subscription_manifest,
+    build_transcript_manifest,
     finalize_single_run,
     make_grader,
-    render_subscription_text,
+    render_transcript_text,
 )
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
-from teatree.eval.backends import (
-    SDK_BACKEND,
-    SUBSCRIPTION_BACKEND,
-    SubscriptionTranscriptRunner,
-    UnknownBackendError,
-    make_runner,
-)
+from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
@@ -63,7 +55,6 @@ eval_app = typer.Typer(
     help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
 )
 eval_app.command("negative-control")(negative_control)
-eval_app.command("all")(all_lanes)
 eval_app.command("benchmark")(benchmark)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
@@ -204,45 +195,38 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help="Max number of LLM-judge calls per run (cost cap).",
     ),
     backend: str = typer.Option(
-        SUBSCRIPTION_BACKEND,
+        TRANSCRIPT_BACKEND,
         "--backend",
         help=(
-            "Execution backend for a single-trial run: 'subscription' (default — grade "
-            "subscription-produced transcripts, no API spend; see `t3 eval prepare-subscription`) "
-            "or 'sdk' (the metered in-process Agent-SDK runner, authed by CLAUDE_CODE_OAUTH_TOKEN; "
-            "runs in-container via --docker locally or in the standalone eval.yml CI job). --trials "
-            "and --models always use the metered sdk runner regardless of this flag."
+            "Execution backend for a single-trial run: 'transcript' (default — REUSE an "
+            "already-recorded run by grading its on-disk transcript, $0 extra; see "
+            "`t3 eval prepare-transcript`) or 'sdk' (RUN the model fresh in-process via the "
+            "Agent SDK, subscription-covered (CLAUDE_CODE_OAUTH_TOKEN), NOT API-billed; runs "
+            "in-container via --docker locally or in the standalone eval.yml CI job). --trials "
+            "and --models always use the fresh-run sdk runner regardless of this flag."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
         None,
         "--transcript-dir",
-        help="Directory of <scenario>.jsonl transcripts for the 'subscription' backend (default: cwd).",
+        help="Directory of <scenario>.jsonl transcripts for the 'transcript' backend (default: cwd).",
     ),
     require_executed: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--require-executed",
         help=(
             "Fail when the suite collected scenarios but executed none (all skipped). "
-            "AUTO-ON for the metered sdk backend and --trials/--models (a metered run "
-            "that executes nothing always fails loud); the flag only matters for the "
-            "subscription backend, whose pre-transcript all-skip is legitimate."
+            "AUTO-ON for the sdk backend and --trials/--models (a fresh-run lane that "
+            "executes nothing always fails loud); the flag only matters for the "
+            "transcript backend, whose pre-transcript all-skip is legitimate."
         ),
     ),
     docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--docker",
         help=(
-            "Force running inside the CI image (dev/Dockerfile.test) for ANY backend. The metered "
-            "sdk lane ALREADY defaults to the container; this forces it for the subscription lane too."
-        ),
-    ),
-    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--local",
-        help=(
-            "Run the metered sdk lane on the HOST instead of the default CI container — a quick "
-            "local check only. A host run is NOT the reproducible regression gate (use Docker/CI)."
+            "Force running inside the CI image (dev/Dockerfile.test) for ANY backend. The sdk "
+            "lane ALREADY defaults to the container; this forces it for the transcript lane too."
         ),
     ),
     parallel: int = typer.Option(
@@ -277,36 +261,34 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     baseline for its model — the reference ``--gate-regressions`` compares a
     later candidate run against (a regression exits non-zero).
 
-    ``--backend subscription`` (default) grades transcripts produced on the
-    subscription via an in-session sub-agent — no API spend (run
-    ``t3 eval prepare-subscription`` first for the prompts + expected paths).
-    ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
-    spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
-    (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
-    ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
-    ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
-    of ``--backend``.
+    ``--backend transcript`` (default) REUSES an already-recorded run by grading
+    its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
+    in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
+    paths). ``--backend sdk`` RUNS the model fresh in-process via the Agent SDK
+    (which spawns the ``claude`` CLI as its child), authed by the subscription's
+    ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
+    explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
+    always use the fresh-run ``sdk`` runner regardless of ``--backend``.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
     not authenticated), so a decorative all-skipped run cannot pass green. CI
-    arms it always; local runs leave it off so the subscription backend's
+    arms it always; local runs leave it off so the transcript backend's
     legitimate pre-transcript all-skip stays green.
 
-    ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
+    ``--docker`` runs the suite inside the CI image. The fresh-run ``sdk`` lane is
     meant to run in-container, never on the host — the runner forwards the host's
-    ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
-    ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
-    child inside a clean container and never lands on the command line.
+    ``CLAUDE_CODE_OAUTH_TOKEN`` in via docker's ``-e VARNAME`` pass-through, so the
+    token authenticates the SDK's ``claude`` child inside a clean container and
+    never lands on the command line.
 
     ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
     I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
     Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
     """
-    # The metered sdk lane (and the always-metered --trials/--models lanes) bills
-    # the API, so it defaults to running IN the CI container — a metered run must
-    # never accidentally run on the host. --docker forces the container for any
-    # backend; --local is the explicit host escape (a quick check, not the gate);
+    # The fresh-run sdk lane (and the always-fresh-run --trials/--models lanes)
+    # defaults to running IN the CI container — the reproducible gate must never
+    # accidentally run on the host. --docker forces the container for any backend;
     # the T3_EVAL_IN_CONTAINER marker the docker runner sets keeps the in-container
     # re-invocation in-process (no re-route loop).
     effort_level = require_effort(effort)
@@ -330,14 +312,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         ),
         docker=docker,
         metered=metered,
-        local=local,
         baseline=baseline,
         gate_regressions=gate_regressions,
         gate_cost_regression=gate_cost_regression,
         gate_cost_bounds=gate_cost_bounds,
     )
-    if local:
-        warn_local_metered(metered=metered)
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     reject_unsupported_run_output(
@@ -345,17 +324,18 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     )
     specs = filter_specs_by_lane(discover_specs(), lane) if name is None else [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
-    # "If we run the metered lane, of course we want it executed." The sdk backend
-    # (and the always-metered --trials/--models lanes) arm the all-skipped gate
-    # unconditionally — a metered run that executes nothing must fail loud, never
-    # pass. --require-executed stays only as the opt-in knob for the subscription
-    # backend's legitimate pre-transcript all-skip.
+    # "If we run the fresh-run lane, of course we want it executed." The sdk
+    # backend (and the always-fresh-run --trials/--models lanes) arm the
+    # all-skipped gate unconditionally — a fresh run that executes nothing must
+    # fail loud, never pass. --require-executed stays only as the opt-in knob for
+    # the transcript backend's legitimate pre-transcript all-skip.
     sdk_metered = backend == SDK_BACKEND or trials > 1 or models is not None
     require_executed = require_executed or sdk_metered
-    if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
+    if (trials > 1 or models is not None) and backend == TRANSCRIPT_BACKEND:
         typer.echo(
-            "note: --trials/--models force the metered in-process Agent-SDK runner (API-billed); "
-            "the 'subscription' default does not apply to multi-trial / matrix runs",
+            "note: --trials/--models force the fresh-run in-process Agent-SDK runner "
+            "(subscription-covered); the 'transcript' default does not apply to multi-trial / "
+            "matrix runs",
             err=True,
         )
     if models is not None:
@@ -420,7 +400,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # BEFORE any guard/gate can exit, so a red run still drops the artifact.
     if transcript_html is not None:
         transcript_html.write_text(render_html(results), encoding="utf-8")
-    if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
+    if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     executed = sum(1 for r in results if not r.skipped)
     RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
@@ -440,8 +420,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         sys.exit(1)
 
 
-@eval_app.command("prepare-subscription")
-def prepare_subscription(
+@eval_app.command("prepare-transcript")
+def prepare_transcript(
     name: str | None = typer.Argument(None, help="Scenario name to prepare (omit to prepare all)."),
     transcript_dir: Path | None = typer.Option(
         None,
@@ -450,22 +430,22 @@ def prepare_subscription(
     ),
     output_format: str = typer.Option("text", "--format", help="Manifest format: text or json."),
 ) -> None:
-    """Emit the per-scenario prompts for a LOCAL subscription eval run.
+    """Emit the per-scenario prompts for a LOCAL transcript-backend eval run.
 
     The eval CLI is a plain process with no in-session ``Agent`` tool, so it
     cannot itself drive a subscription-covered turn. This command prints, per
     scenario, the agent definition, prompt, and the transcript path the
-    ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+    ``transcript`` backend will read. The ``/t3:running-evals`` skill is the
     in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
     prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
     sub-agent's JSONL to that path, and finally grades with
-    ``t3 eval run --backend subscription``.
+    ``t3 eval run --backend transcript``.
     """
     ensure_django()
     require_valid_format(output_format)
     specs = discover_specs() if name is None else [require_spec(name)]
-    manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
-    typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
+    manifest = build_transcript_manifest(specs, transcript_dir or Path.cwd())
+    typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_transcript_text(manifest))
 
 
 eval_app.command("history")(history_command)
@@ -476,18 +456,18 @@ eval_app.command("history")(history_command)
 def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 to a public bare-``t3 eval`` flag. The arg list IS the CLI contract.
     ctx: typer.Context,
     backend: str = typer.Option(
-        SUBSCRIPTION_BACKEND,
+        TRANSCRIPT_BACKEND,
         "--backend",
         help=(
-            "AI-lane backend for the bare-`t3 eval` full suite: 'subscription' (default — grade "
-            "in-session transcripts, no API spend) or 'sdk' (the metered in-process Agent-SDK "
-            "runner, the explicit opt-in)."
+            "AI-lane backend for the bare-`t3 eval` full suite: 'transcript' (default — REUSE "
+            "already-recorded in-session transcripts, $0 extra) or 'sdk' (RUN the model fresh "
+            "in-process via the Agent SDK, subscription-covered, the explicit opt-in)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
         None,
         "--transcript-dir",
-        help="Directory of <scenario>.jsonl subscription transcripts for the AI lane (default: cwd).",
+        help="Directory of <scenario>.jsonl transcripts for the AI lane (default: cwd).",
     ),
     free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
@@ -504,31 +484,21 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         "--docker",
         help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
     ),
-    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-        False,
-        "--local",
-        help="Run a metered `--backend sdk` suite on the HOST (quick check, NOT the gate; prints a WARNING).",
-    ),
     parallel: int = typer.Option(
         DEFAULT_PARALLEL,
         "--parallel",
         help="Run this many AI-lane scenarios concurrently (wall-clock; default 1 = sequential).",
-    ),
-    html: Path | None = typer.Option(
-        None,
-        "--html",
-        help="Write a self-contained whole-suite HTML report to this path (CI artifact).",
     ),
 ) -> None:
     """Run the WHOLE eval suite. Pass a subcommand to target one lane instead.
 
     Bare ``t3 eval`` runs every lane in one go and prints a single aggregated
     summary table plus a plain-language verdict — the default. Subcommands are the
-    targeted path: ``run`` (a single AI scenario, the metered ``--backend sdk``
+    targeted path: ``run`` (a single AI scenario, the fresh-run ``--backend sdk``
     path), one-free-lane (``pinned-regressions`` / ``negative-control`` / …), and
-    introspection (``history`` / ``list`` / ``prepare-subscription``). ``--html``
-    writes a whole-suite report; the process exits non-zero if ANY lane fails
-    (fail-loud); ``--strict`` also fails on a setup-skipped lane.
+    introspection (``history`` / ``list`` / ``prepare-transcript``). The process
+    exits non-zero if ANY lane fails (fail-loud); ``--strict`` also fails on a
+    setup-skipped lane.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -538,7 +508,5 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         free_only=free_only,
         docker=docker,
         strict=strict,
-        local=local,
         parallel=parallel,
-        html_path=html,
     )
