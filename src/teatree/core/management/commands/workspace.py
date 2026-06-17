@@ -23,7 +23,6 @@ from teatree.core.management.commands._workspace_cleanup import (
     _raise_on_cleanup_failures,
     clean_merged_worktrees,
     drop_orphan_databases,
-    drop_orphaned_stashes,
     is_clean_ignored,
     prune_branches,
 )
@@ -34,6 +33,7 @@ from teatree.core.management.commands._workspace_docker import (
 )
 from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
 from teatree.core.management.commands._workspace_reap import _is_interactive, reap_one_worktree
+from teatree.core.management.commands._workspace_stash import drop_orphaned_stashes
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
