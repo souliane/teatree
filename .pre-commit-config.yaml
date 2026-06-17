@@ -50,6 +50,15 @@ repos:
         args: ["--locked", "--all-packages"]
 
   # Phase 2 - Formatters
+  # django-upgrade rewrites deprecated Django patterns to the target-version idiom.
+  # It runs before the formatters so ruff reformats its output to project style.
+  # Target is the supported floor (django>=X.Y in pyproject.toml) so rewrites stay
+  # compatible with every Django version the project supports.
+  - repo: https://github.com/adamchainz/django-upgrade
+    rev: 1db0cbd209d6c4dc78191593942e6269fae99e8d  # 1.30.0
+    hooks:
+      - id: django-upgrade
+        args: [--target-version, "5.2"]
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
     hooks:
