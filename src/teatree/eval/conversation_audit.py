@@ -46,7 +46,7 @@ from pathlib import Path
 
 from teatree.core.models import EvalVerdict, InvariantOutcome, SessionAuditRecord
 from teatree.eval.audit_persistence import persist_audit
-from teatree.eval.corpus_grade import assert_independent_oracle, grade
+from teatree.eval.corpus_grade import CircularOracleError, assert_independent_oracle, grade
 from teatree.eval.corpus_loader import CORPUS_DIR, discover_corpus
 from teatree.eval.corpus_models import CorpusLabel
 from teatree.eval.gate_failures import GateVerdict, classify_gate_failure, extract_gate_failures
@@ -185,7 +185,10 @@ def _graded_record(
     *,
     judge: JudgeGrader | None,
 ) -> SessionAuditRecord:
-    assert_independent_oracle(label)
+    try:
+        assert_independent_oracle(label, judge_present=judge is not None)
+    except CircularOracleError:
+        return _circular_fail_record(audit_input, label, analysis)
     if _needs_judge_but_absent(label, judge):
         return _unjudged_record(audit_input, label, analysis)
     result = grade(label, audit_input.events, judge=judge)
@@ -219,6 +222,29 @@ def _needs_judge_but_absent(label: CorpusLabel, judge: JudgeGrader | None) -> bo
     if judge is not None:
         return False
     return label.oracle == "judge" or (label.oracle == "both" and not label.matchers)
+
+
+def _circular_fail_record(audit_input: AuditInput, label: CorpusLabel, analysis: _Analysis) -> SessionAuditRecord:
+    """A FAIL record for a circular matcher oracle — mirrors ``cli/eval/corpus.py::_grade_row``.
+
+    A label graded only by matchers whose labeller authored the rule cannot
+    disagree with the rule, so it FAILs (never silently passes) and is always
+    nominated: a human (with an independent judge) should re-grade it. Degrading
+    to a record rather than letting :class:`CircularOracleError` crash the whole
+    batch keeps one bad label from aborting every other session's audit.
+    """
+    return SessionAuditRecord(
+        session_id=audit_input.session_id,
+        corpus_entry_id=label.entry_id,
+        outcome_axis=label.outcome_axis,
+        expected_outcome=label.expected_outcome,
+        predicted_outcome=_predicted_outcome(label, EvalVerdict.FAIL),
+        verdict=EvalVerdict.FAIL,
+        oracle=label.oracle,
+        invariant_results=analysis.invariant_outcomes,
+        gate_failure_slugs=analysis.gate_slugs,
+        nominated_for_label=True,
+    )
 
 
 def _unjudged_record(audit_input: AuditInput, label: CorpusLabel, analysis: _Analysis) -> SessionAuditRecord:
