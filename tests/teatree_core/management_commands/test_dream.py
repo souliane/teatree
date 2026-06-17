@@ -351,6 +351,66 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         assert "OK    dream pass" in out
 
 
+class DreamMemoryPromotionWiringTestCase(TestCase):
+    """Pass-2 memory promotion only runs when its default-OFF toggle is on (#2426)."""
+
+    def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
+        environ = {"T3_DREAM_PROPOSE_EVALS": "0", "T3_DREAM_CROSS_LINK": "0", "T3_DREAM_REINDEX": "0", **env}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", environ, clear=False),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_promotion_skipped_when_toggle_off(self) -> None:
+        with patch("teatree.loops.dream.promote_memory.file_core_gap_tickets") as file_fn:
+            self._tick(StringIO(), env={"T3_DREAM_MEMORY_PROMOTE": "0"})
+        file_fn.assert_not_called()
+
+    def test_promotion_runs_and_reports_when_toggle_on(self) -> None:
+        from teatree.loops.dream.promote_memory import TicketOutcome  # noqa: PLC0415
+
+        filed = [TicketOutcome(cluster_key="k1", filed=True, ticket_url="https://example/1")]
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=filed),
+            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
+        assert "ticketed 1 core-gap memory(ies), retired 0" in stdout.getvalue()
+
+    def test_promotion_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.loops.dream.promote_memory.file_core_gap_tickets",
+                side_effect=RuntimeError("ticket boom"),
+            ),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
+        out = stdout.getvalue()
+        assert "WARN memory promotion raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_no_code_host_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(None, "souliane/teatree"),
+        ):
+            self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
+        assert "no teatree code host resolved" in stdout.getvalue()
+
+
 class DreamLeaseTtlTestCase(TestCase):
     def test_run_acquires_lease_sized_to_the_pass_budget(self) -> None:
         # The default 120s lease would expire under a wall-clock-capped pass and

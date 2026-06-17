@@ -1,1 +1,1 @@
-0081_loop_prompt_xor_script
+0082_consolidatedmemory_disposition_and_more

@@ -110,6 +110,23 @@ def decay_enabled(*, config_path: Path | None = None) -> bool:
     return _phase_enabled(*_DECAY, config_path=config_path)
 
 
+#: Pass-2 memory promotion (#2426) FILES backlog tickets, so it is default OFF —
+#: opt in with ``T3_DREAM_MEMORY_PROMOTE=1`` / ``[loops.dream] memory_promote =
+#: true``. Absent, the dream pass never triages the ledger or files a ticket (no
+#: behaviour change).
+_MEMORY_PROMOTE = ("memory_promote", "T3_DREAM_MEMORY_PROMOTE")
+
+
+def memory_promote_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether Pass-2 memory→fix promotion runs (default OFF, #2426)."""
+    raw_env = os.environ.get(_MEMORY_PROMOTE[1], "").strip().lower()
+    if raw_env in _TRUTHY:
+        return True
+    if raw_env in _FALSY:
+        return False
+    return _toml_phase_disabled_by_default(_MEMORY_PROMOTE[0], config_path)
+
+
 #: The LLM-backed full-scenario derivation (#2447) is the one dream phase that is
 #: default OFF — it makes a metered SDK call per candidate and stages real eval
 #: files. Opt in with ``T3_DREAM_DERIVE_EVALS=1`` / ``[loops.dream] derive_evals =
