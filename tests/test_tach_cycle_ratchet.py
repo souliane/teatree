@@ -56,7 +56,19 @@ _TACH = _REPO / "tach.toml"
 # core coupling, so it does not drop out to offset the addition. One new fan-in
 # entry (teatree.loop.rendering) in the correct lower→higher direction; it is a
 # pure carve artifact and adds no new coupling.
-_CORE_FANIN_BASELINE = 20
+# Bumped 20 → 21 (#2413 slack_answer): the reactive Slack-answer subpackage is
+# carved out of the teatree.loop monolith into its own tach node
+# (teatree.loop.slack_answer) so a future slack_answer → orchestration-top
+# back-edge becomes a declared tach failure instead of an invisible cycle. The
+# node touches teatree.core because cycle.py / thread_readback.py import
+# teatree.core.backend_protocols + cycle.py imports teatree.core.backend_factory
+# (no more-specific declared core sub-node, so they resolve to teatree.core) —
+# imports identical on origin/main, previously hidden inside the teatree.loop
+# node. teatree.loop retains its own independent core coupling, so it does not
+# drop out to offset. One new fan-in entry (teatree.loop.slack_answer) in the
+# correct lower→higher direction; it is a pure carve artifact and adds no new
+# coupling.
+_CORE_FANIN_BASELINE = 21
 _MAX_DECLARED_TWO_CYCLES = 0
 
 

@@ -76,9 +76,20 @@ _TACH = _REPO_ROOT / "tach.toml"
 # redundant deferred edge in `rendering.py` (`live_loops_anchor` from
 # `statusline`, already eagerly imported on the same module header) up to the
 # eager import, dropping the count 31 -> 30.
+# The `slack_answer` slice declares the reactive Slack-answer subpackage
+# (`classifier` / `simple_answer` / `thread_readback` / `cycle`) as a single
+# tach node (mirroring the `scanners` / `self_improve` sibling-package nodes).
+# The subpackage was already eager-clean (ZERO intra-loop deferred imports
+# inside it), so the carve converts no internal edge; the one win is hoisting
+# the single deferred up-edge that TARGETED it — the orchestration-top
+# `tick_piggyback._piggyback_slack_answer` deferred
+# `from teatree.loop.slack_answer.cycle import run_slack_answer_cycle` — to the
+# module header (an eager declared parent->child edge, import-cycle-safe: the
+# slack_answer.cycle transitive eager closure reaches only declared leaves,
+# never the orchestration top), dropping the count 30 -> 29.
 # SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
 # declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 30
+_FROZEN_INTRA_LOOP_DEFERRED = 29
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:
@@ -501,3 +512,63 @@ class TestLoopRenderingNode:
             "teatree.loop.rendering_zones",
         ):
             assert child in deps, child
+
+
+_SLACK_ANSWER_ROOT = _LOOP_ROOT / "slack_answer"
+
+
+class TestLoopSlackAnswerNode:
+    """``teatree.loop.slack_answer`` is a declared domain node (#2413 slice).
+
+    The reactive Slack-answer subpackage (``classifier`` / ``simple_answer`` /
+    ``thread_readback`` / ``cycle``) was already eager-clean — ZERO intra-loop
+    deferred imports inside the subpackage, every intra-loop edge pointing DOWN
+    to already-declared nodes (``self_improve`` budget seam, ``statusline``) or a
+    sibling slack_answer file — but lived inside the single ``teatree.loop``
+    node, so tach's acyclic guard could not see it. Declaring the subpackage as
+    its own ``domain`` node (mirroring the ``scanners`` / ``self_improve``
+    sibling-package nodes) makes a future back-edge — a slack_answer file
+    importing the orchestration top — a tach failure instead of an invisible
+    cycle. The one deferred up-edge that targeted slack_answer lived in the
+    orchestration-top ``tick_piggyback._piggyback_slack_answer`` (a deferred
+    ``from teatree.loop.slack_answer.cycle import run_slack_answer_cycle``); it
+    is hoisted to the module header — an eager declared parent->child edge —
+    banking the ratchet one step.
+    """
+
+    def test_slack_answer_is_a_domain_node(self) -> None:
+        assert _module_entry("teatree.loop.slack_answer")["layer"] == "domain"
+
+    def test_slack_answer_intra_loop_deps_are_only_declared_leaves(self) -> None:
+        deps = _depends_on("teatree.loop.slack_answer")
+        loop_deps = {d for d in deps if d.startswith("teatree.loop")}
+        assert loop_deps == {"teatree.loop.self_improve", "teatree.loop.statusline"}
+        # The orchestration-top parent is NEVER a slack_answer dep.
+        assert "teatree.loop" not in deps
+
+    def test_no_slack_answer_file_eagerly_imports_the_orchestration_top(self) -> None:
+        # No file in the subpackage may eager-import a flat orchestration-top
+        # module (`tick*` / `queue_drain` / `mechanical` / `phases`) — that is
+        # the back-edge the carve forbids structurally.
+        offenders: list[str] = []
+        for py in _SLACK_ANSWER_ROOT.rglob("*.py"):
+            for mod in _eager_loop_imports(py):
+                tail = mod[len("teatree.loop.") :]
+                if tail.startswith(("tick", "queue_drain", "mechanical", "phases")):
+                    offenders.append(f"{py.relative_to(_SLACK_ANSWER_ROOT)} -> {mod}")
+        assert offenders == [], f"slack_answer eagerly importing the orchestration top: {sorted(offenders)}"
+
+    def test_parent_loop_declares_slack_answer(self) -> None:
+        assert "teatree.loop.slack_answer" in _depends_on("teatree.loop")
+
+    def test_tick_piggyback_does_not_defer_import_slack_answer(self) -> None:
+        # The `run_slack_answer_cycle` import is now an eager module-header import
+        # in tick_piggyback; no function-scoped `from teatree.loop.slack_answer`
+        # may remain (the deferred down-edge PR hoists).
+        source = (_LOOP_ROOT / "tick_piggyback.py").read_text(encoding="utf-8")
+        deferred = [
+            line.strip()
+            for line in source.splitlines()
+            if line.lstrip().startswith("from teatree.loop.slack_answer") and line != line.lstrip()
+        ]
+        assert deferred == [], f"tick_piggyback.py still defers a slack_answer import: {deferred}"

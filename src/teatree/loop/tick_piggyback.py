@@ -37,6 +37,7 @@ from teatree.loop.loop_cadences import _LOOP_OWNER_TTL_DEFAULT
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds as _loop_owner_ttl_seconds
 from teatree.loop.loop_cadences import self_improve_cadence_seconds as _self_improve_cadence_seconds
 from teatree.loop.loop_cadences import slack_answer_cadence_seconds as _slack_answer_cadence_seconds
+from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,6 @@ __all__ = [
 def _piggyback_slack_answer() -> None:
     """Drive one reactive Slack-answer cycle behind the dedicated lease CAS."""
     from teatree.core.models import LoopLease  # noqa: PLC0415
-    from teatree.loop.slack_answer.cycle import run_slack_answer_cycle  # noqa: PLC0415
 
     owner = f"tickpiggyback-{os.getpid()}-{uuid.uuid4().hex}"
     if not LoopLease.objects.acquire("loop-slack-answer", owner=owner, lease_seconds=_slack_answer_cadence_seconds()):
