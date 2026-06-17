@@ -2,6 +2,13 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from teatree.loop.loop_cadences import (
+    drain_cadence_seconds,
+    loop_owner_ttl_seconds,
+    self_improve_cadence_seconds,
+    slack_answer_cadence_seconds,
+)
+from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, per_loop_chunk_visible
 from teatree.loop.statusline_palette import (
     _ANSI_DIM,
     _ANSI_GREEN,
@@ -110,20 +117,12 @@ def _mini_loop_schedules() -> list[MiniLoopSchedule]:
 def _cadence_for_loop(name: str) -> int:
     """Return the cadence in seconds for the named loop (``loop-tick`` fallback)."""
     if name == "loop-slack-answer":
-        from teatree.loop.tick_piggyback import _slack_answer_cadence_seconds  # noqa: PLC0415
-
-        return _slack_answer_cadence_seconds()
+        return slack_answer_cadence_seconds()
     if name == "loop-self-improve":
-        from teatree.loop.tick_piggyback import _self_improve_cadence_seconds  # noqa: PLC0415
-
-        return _self_improve_cadence_seconds()
+        return self_improve_cadence_seconds()
     if name == "loop-owner":
-        from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds  # noqa: PLC0415
-
-        return _loop_owner_ttl_seconds()
+        return loop_owner_ttl_seconds()
     if name == "loop-drain-queue":
-        from teatree.loop.queue_drain import drain_cadence_seconds  # noqa: PLC0415
-
         return drain_cadence_seconds()
     return _cadence_seconds()
 
@@ -213,8 +212,6 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     single-owner default). When *colorize* is set, each chunk is wrapped in
     its recency color (:func:`_loop_recency_color`); fails open to ``[]``.
     """
-    from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, per_loop_chunk_visible  # noqa: PLC0415
-
     try:
         leases = _live_loop_leases()
     except Exception:  # noqa: BLE001

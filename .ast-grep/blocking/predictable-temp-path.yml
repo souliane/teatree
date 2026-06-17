@@ -1,0 +1,23 @@
+id: predictable-temp-path
+language: python
+severity: warning
+message: >-
+  Predictable interpolated /tmp path used as a write target. A guessable
+  /tmp name is a symlink/clobber race. Use tempfile.mkstemp /
+  NamedTemporaryFile / TemporaryDirectory instead.
+files:
+  - "src/teatree/**/*.py"
+ignores:
+  - "src/teatree/settings.py"
+  - "src/teatree/core/handover.py"
+  - "src/teatree/agents/handover.py"
+  - "src/teatree/loop/mechanical_resources.py"
+rule:
+  any:
+    - pattern: Path($S).write_text($$$A)
+    - pattern: Path($S).write_bytes($$$A)
+    - pattern: Path($S).open($$$A)
+    - pattern: open($S, $$$A)
+constraints:
+  S:
+    regex: '^f"/tmp/.*\{.+\}.*"$'

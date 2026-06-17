@@ -11,17 +11,17 @@ outcome, so skipping is conservative):
     recognise as docs, python, or config forces ``all`` — run everything.
     Uncertainty never skips.
 -   The ONLY sanctioned skip: a provably pure-docs/markdown diff (only
-    ``*.md`` / ``docs/**``, with no python, no config, no CI/semgrep) may
-    skip the HEAVY python lanes (``test``, ``mutation-diff``). It still
+    ``*.md`` / ``docs/**``, with no python, no config, no CI/rule change)
+    may skip the HEAVY python lanes (``test``, ``mutation-diff``). It still
     runs every docs/markdown gate and every always-on security lane.
 -   Any ``*.py`` / ``*.pyi`` change forces every python lane. A non-python
     file under a code directory (a fixture, a binary asset) is NOT
     recognised as python — it falls through to ``all`` (which still runs
     every python lane), so the code lane is never wrongly skipped.
--   Any config / CI / semgrep / lockfile / Dockerfile change forces
+-   Any config / CI / ast-grep rule / lockfile / Dockerfile change forces
     ``all`` — those can affect any job, so none may be skipped.
--   Security / quality lanes (semgrep, banned-terms, sbom, uv-audit) and
-    the docs gates run on EVERY classification — never skipped.
+-   Security / quality lanes (regression-rules, banned-terms, sbom,
+    uv-audit) and the docs gates run on EVERY classification — never skipped.
 
 The classifier itself classifies the changed PATHS; the ``preflight``
 job feeds it the result of ``git diff --name-only base...HEAD``.
@@ -36,7 +36,7 @@ from dataclasses import dataclass
 LANE_TEST = "test"
 LANE_LINT = "lint"
 LANE_TEST_SHAPE = "test-shape"
-LANE_SEMGREP = "semgrep-regressions"
+LANE_REGRESSION_RULES = "regression-rules"
 LANE_MUTATION_DIFF = "mutation-diff"
 LANE_DOCS_DRIFT = "docs-drift"
 LANE_DOC_UPDATE = "doc-update-gate"
@@ -46,11 +46,13 @@ LANE_SBOM = "sbom"
 LANE_UV_AUDIT = "uv-audit"
 
 HEAVY_PYTHON_LANES: frozenset[str] = frozenset({LANE_TEST, LANE_MUTATION_DIFF})
-PYTHON_LANES: frozenset[str] = frozenset({LANE_TEST, LANE_LINT, LANE_TEST_SHAPE, LANE_SEMGREP, LANE_MUTATION_DIFF})
+PYTHON_LANES: frozenset[str] = frozenset(
+    {LANE_TEST, LANE_LINT, LANE_TEST_SHAPE, LANE_REGRESSION_RULES, LANE_MUTATION_DIFF}
+)
 DOCS_LANES: frozenset[str] = frozenset(
     {LANE_DOCS_DRIFT, LANE_DOC_UPDATE, LANE_BLUEPRINT_CROSS_PR, LANE_COMMENT_DENSITY}
 )
-SECURITY_LANES: frozenset[str] = frozenset({LANE_SEMGREP, LANE_SBOM, LANE_UV_AUDIT})
+SECURITY_LANES: frozenset[str] = frozenset({LANE_REGRESSION_RULES, LANE_SBOM, LANE_UV_AUDIT})
 
 _DOCS_SUFFIXES: tuple[str, ...] = (".md", ".markdown")
 _DOCS_PREFIXES: tuple[str, ...] = ("docs/",)
@@ -64,7 +66,7 @@ _CONFIG_EXACT: frozenset[str] = frozenset(
         "manage.py",
     }
 )
-_CONFIG_PREFIXES: tuple[str, ...] = (".github/", ".semgrep/", "dev/")
+_CONFIG_PREFIXES: tuple[str, ...] = (".github/", ".ast-grep/", "dev/")
 _CONFIG_SUFFIXES: tuple[str, ...] = (".toml", ".lock", ".cfg", ".ini")
 
 
@@ -132,7 +134,7 @@ def classify(paths: Iterable[str]) -> Lanes:
     Order of dominance (most conservative wins):
 
     1.  An empty diff or any unrecognised path → ``all`` (fail-safe).
-    2.  Any config / CI / semgrep / lockfile path → ``all``.
+    2.  Any config / CI / ast-grep rule / lockfile path → ``all``.
     3.  Any python / code path → every python lane (+ docs + security).
     4.  A pure-docs diff → docs + security only (heavy python skipped).
     """

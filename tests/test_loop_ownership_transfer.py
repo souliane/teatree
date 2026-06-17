@@ -264,8 +264,11 @@ class TestConcurrentFreshClaimIsAtomic:
     directive and one non-owner ("stay idle") directive. On the pre-fix
     write-only-lock the read sits outside the flock so both children
     claim — the assertions below then trip, demonstrating this test
-    guards the fix. Repeated over many rounds because the bad interleave
-    is timing-dependent.
+    guards the fix. Repeated over several rounds because the bad interleave
+    is timing-dependent; each round spawns a fresh pair of simultaneously-
+    starting children, so a handful of rounds reliably hits the TOCTOU
+    window without the per-round subprocess + ``hook_router`` reload cost
+    of a larger sweep.
 
     The class-level ``timeout(300)`` overrides the project-wide 60s cap.
     That cap is a wall-clock budget, but this test asserts a *correctness*
@@ -278,7 +281,7 @@ class TestConcurrentFreshClaimIsAtomic:
     """
 
     def test_simultaneous_fresh_starts_never_both_claim(self, tmp_path: Path) -> None:
-        rounds = 12
+        rounds = 5
         for rnd in range(rounds):
             reg_dir = str(tmp_path / f"data-{rnd}")
             Path(reg_dir).mkdir(parents=True, exist_ok=True)

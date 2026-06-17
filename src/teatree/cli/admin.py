@@ -106,9 +106,15 @@ def _open_browser_when_ready(url: str) -> threading.Timer:
 
 
 def _run_server(host: str, port: int) -> None:
+    import sys  # noqa: PLC0415
+
     from teatree.utils.run import CommandFailedError, run_streamed  # noqa: PLC0415
 
-    cmd = ["python", "-m", "teatree", "runserver", f"{host}:{port}"]
+    # Use the interpreter running this CLI, not a bare "python" — a bare name
+    # resolves via PATH to whatever shim is first (e.g. a pyenv python with no
+    # teatree installed), so the runserver subprocess dies with "No module
+    # named teatree". sys.executable is the tool-venv python that has teatree.
+    cmd = [sys.executable, "-m", "teatree", "runserver", f"{host}:{port}"]
     try:
         run_streamed(cmd)
     except KeyboardInterrupt:

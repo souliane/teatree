@@ -701,13 +701,20 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         task.renew_lease = lambda **_kw: None
 
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=200, max_cost_usd=0.0)
+        # A long never-terminating stream: the watchdog must interrupt it on the
+        # turns breach (500 > 200) at the first heartbeat tick, NOT drain the
+        # whole list. The interrupt cuts the stream short, so the run finishes in
+        # ~one heartbeat — proving the watchdog stops a runaway rather than
+        # waiting it out.
         messages = [_assistant_text("step") for _ in range(1000)]
+        start = time.monotonic()
         with (
             _fake_sdk(messages, delay=0.05, task_usage=TaskUsage(turns=500, cost_usd=0.0)),
             patch.object(headless_mod.LoopWatchdog, "from_settings", return_value=watchdog),
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
         ):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+        elapsed = time.monotonic() - start
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
@@ -715,6 +722,10 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         assert "turns" in attempt.error
         assert "500" in attempt.error
         assert task.status == Task.Status.FAILED
+        # The interrupt cut the 1000-message stream short instead of streaming
+        # all 50s of it (1000 * 0.05s delay) — a generous bound that still fails
+        # loudly if the watchdog stops interrupting the stream.
+        assert elapsed < 10, f"watchdog did not cut the runaway stream short: {elapsed:.1f}s"
 
 
 class TestTicketBudget(TestCase):

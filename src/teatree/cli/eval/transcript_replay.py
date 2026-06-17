@@ -22,7 +22,7 @@ __all__ = [
 
 
 def replay_transcript_for_all() -> list[InvariantResult] | None:
-    """Replay the latest in-scope session transcript for ``t3 eval all``.
+    """Replay the latest in-scope session transcript for ``t3 eval``.
 
     Returns ``None`` when no transcript is in scope so the all-lanes orchestrator
     renders a SKIP rather than a FAIL — a missing real run is not a violation.

@@ -65,9 +65,9 @@ class TestAssertSdkRunWasMetered:
     def test_metered_sdk_run_does_not_raise(self) -> None:
         assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0556)
 
-    def test_subscription_backend_is_never_checked(self) -> None:
-        # The free subscription lane is unmetered by design ($0 is correct).
-        assert_sdk_run_was_metered(backend="subscription", executed=10, total_cost_usd=0.0)
+    def test_transcript_backend_is_never_checked(self) -> None:
+        # The transcript lane runs no model by design ($0 is correct).
+        assert_sdk_run_was_metered(backend="transcript", executed=10, total_cost_usd=0.0)
 
     def test_zero_executed_sdk_run_is_left_to_the_all_skipped_guard(self) -> None:
         # executed==0 is the all-skipped guard's job; this guard only fires when

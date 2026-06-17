@@ -13,7 +13,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.teams.panes import TeammatePane
 from teatree.teams.roles import TeamRole, team_claim_slot
 
@@ -25,6 +25,12 @@ def _pane_task() -> Task:
 
 
 class TestPaneHeartbeatRecovery(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # ``TeammatePane.spawn`` fails closed when teams is off; these recovery
+        # tests exercise the live-pane lifecycle, which only runs when teams is on.
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
+
     def test_live_heartbeated_pane_is_not_recovered(self) -> None:
         task = _pane_task()
         pane = TeammatePane.spawn(task, role=TeamRole.CORE_MAKER, lease_seconds=300)

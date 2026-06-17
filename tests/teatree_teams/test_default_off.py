@@ -14,14 +14,16 @@ import ast
 import uuid
 from pathlib import Path
 
+import pytest
 from django.test import TestCase
 
 import teatree
 from teatree.config import load_config
 from teatree.config.settings import UserSettings
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.teams.pane_spawn import claim_maker_pane
-from teatree.teams.roles import TeamRole
+from teatree.teams.panes import AgentTeamsDisabledError, PaneState, TeammatePane
+from teatree.teams.roles import TeamRole, team_claim_slot
 
 _SRC_ROOT = Path(teatree.__file__).resolve().parent
 
@@ -108,3 +110,28 @@ class TestNothingSpawnsWhenDisabled(TestCase):
         pane = claim_maker_pane(role=TeamRole.CORE_MAKER, settings=disabled, session_id="s1")
         assert pane is None
         assert not Task.objects.filter(claimed_by__startswith="team:").exists()
+
+    def test_pane_spawn_refuses_when_teams_disabled(self) -> None:
+        # The low-level spawn seam must ENFORCE the OFF setting (fail-closed):
+        # spawning a teammate while ``teams_enabled`` resolves to false raises and
+        # claims NOTHING, so the setting is the single source of truth even when a
+        # caller reaches the primitive directly (bypassing ``claim_maker_pane``).
+        ConfigSetting.objects.set_value("teams_enabled", value=False)
+        task = self._pending_task()
+        with pytest.raises(AgentTeamsDisabledError):
+            TeammatePane.spawn(task, role=TeamRole.CORE_MAKER)
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.claimed_by == ""
+        assert not Task.objects.filter(claimed_by__startswith="team:").exists()
+
+    def test_pane_spawn_is_allowed_when_teams_enabled(self) -> None:
+        # The must-spawn side: with the setting ON, the same seam claims the
+        # ``team:<role>`` slot and returns the ACTIVE pane.
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
+        task = self._pending_task()
+        pane = TeammatePane.spawn(task, role=TeamRole.CORE_MAKER)
+        assert pane.state == PaneState.ACTIVE
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == team_claim_slot(TeamRole.CORE_MAKER)

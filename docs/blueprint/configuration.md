@@ -12,8 +12,11 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # approval gates, on_behalf_post_mode, repo_mode, the cadence/threshold dials,
 # … — are DB-home and live in the ConfigSetting store; a value for one of them
 # left in [teatree] / [overlays.<name>] is IGNORED on read. Set them with
-# `t3 <overlay> config_setting set` (see below), and migrate an existing config
-# once with `t3 <overlay> config_setting import`.
+# `t3 <overlay> config_setting set` (see below). `t3 setup` auto-migrates an
+# existing config into the store on every run (non-clobbering: it seeds only keys
+# absent from the store, so a value you later change via `config_setting set`
+# survives); `t3 <overlay> config_setting import` is the manual equivalent (it
+# refreshes every operational key from the file).
 [teatree]
 workspace_dir = "~/workspace"
 privacy = "strict"
@@ -64,7 +67,7 @@ t3 <overlay> config_setting set mode auto                                  # glo
 t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
-t3 <overlay> config_setting import                                         # one-time: migrate a pre-partition [teatree] block
+t3 <overlay> config_setting import                                         # manual one-time migrate (refreshes from file); `t3 setup` runs the non-clobbering auto-migration
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
@@ -217,10 +220,14 @@ partition so an existing install's DB-home keys keep applying (they are otherwis
 ignored on read).
 
 A DB-home key left in `[teatree]` / `[overlays.<name>]` after the migration is
-ignored on read, but no longer silently: `load_config` emits one `WARNING`
-(logger `teatree.config`) per offending key naming the key, its TOML location, and
-the `config_setting set` / `import` path — so the dropped value is visible rather
-than a confusing no-op.
+ignored on read. This is loud only when it actually **conflicts** with the store:
+`load_config` warns (logger `teatree.config`) for a DB-home key set to a value that
+DIFFERS from its `ConfigSetting` row — the one case where the silently-ignored TOML
+value disagrees with what is in effect. All such conflicts collapse into a SINGLE
+`WARNING` naming every offending key, its TOML location, and the `config_setting
+import` path. A DB-home key that is absent from the store (being migrated away) or
+that agrees with it resolves to the same effective value and stays silent — so a
+cleaned config emits zero per-key noise rather than one line per DB-homed key.
 
 Bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE`
 / the offline `private_repos` allowlist) are explicitly out of scope — they must
@@ -269,6 +276,10 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `eval_local_disabled` | Escape hatch for the periodic local-eval scanner (`eval_local`). The loop fires a weekly `eval_local` task so the SCOPED eval suite runs locally via the no-API-key subscription runner (the local half of "evals run locally + in CI weekly"; CI half is the standalone `.github/workflows/eval.yml` weekly schedule). |
 | `eval_local_skill` | Override which skill the eval-local scanner dispatches (default `eval`) |
 | `eval_local_cadence_hours` | Cadence floor for the local-eval scanner (default 168 = weekly) |
+| `backlog_sweep_disabled` | Kill switch for the periodic backlog-sweep scanner (`backlog_sweep`, #2419) — **defaults `true` (default-OFF)** because the sweep is destructive-capable (it can propose closing issues). The loop fires a weekly `backlog_sweep` task only after the user opts in with `config_setting set backlog_sweep_disabled false`. Mirrors `t3:scanning-news`'s cadence/ask-gate wiring; the queued task carries an `ASK-GATE` directive so the dispatched skill never mass-closes unattended. |
+| `backlog_sweep_skill` | Override which skill the backlog-sweep scanner dispatches (default `backlog-sweep`) |
+| `backlog_sweep_cadence_hours` | Cadence floor for the backlog-sweep scanner (default 168 = weekly) |
+| `ask_before_backlog_sweep_closes` | Ask-gate for backlog-sweep issue closes (default `true`). When on, the dispatched skill records each close proposal with its citation and surfaces the batch for explicit approval instead of mass-closing — only the high-confidence merged-PR-superseded class auto-closes. Per-overlay overridable. |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `provision_step_timeout_seconds` | #2220: hard ceiling (seconds) for one long-blocking provisioning subprocess — a DSLR snapshot restore, `migrate`, or a `--create-db` test-DB rebuild (default `1800`). On exceeding it the step ABORTS and fires a loud out-of-band user alert instead of grinding silently; a forked migration graph is diagnosed by its symptom immediately. A non-positive value degrades to the default (the "never hang" invariant cannot be configured away). Per-overlay overridable; enforced by `teatree.core.provision_timebox`. |
 | `stale_stack_min_age_minutes` | #2207: stale-stack reaper threshold (minutes, default `0` = disabled, opt-in like `max_concurrent_local_stacks`; set e.g. `240` to enable). A docker compose stack with NO live `Worktree` row (a hand-rolled test stack, a failed-teardown leftover) is torn down once its newest container lifecycle event is older than this — automatically before `worktree start` / `workspace start` / `workspace provision`, and on demand via `t3 <overlay> workspace reap-stale [--dry-run]`. Age-keyed + fail-safe (unknown age ⇒ keep) so a parallel session's fresh manual stack is never reaped; `clean-all` remains the blunt every-unowned-project clean. Per-overlay overridable. |

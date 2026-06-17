@@ -242,6 +242,21 @@ class TestConfigSettingImport(TestCase):
         call_command("config_setting", "import", stdout=StringIO())
         assert ConfigSetting.objects.filter(key="mode", scope="myproj").count() == 1
 
+    def test_import_no_clobber_preserves_a_db_set_value(self) -> None:
+        # The ``t3 setup`` auto-migration mode: a value the user changed via
+        # ``config_setting set`` must survive a later import of a stale TOML value.
+        ConfigSetting.objects.set_value("mode", "auto")
+        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
+        call_command("config_setting", "import", "--no-clobber", stdout=StringIO())
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+
+    def test_import_default_clobbers_a_db_set_value(self) -> None:
+        # Without --no-clobber the manual import refreshes from the file.
+        ConfigSetting.objects.set_value("mode", "auto")
+        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
+        call_command("config_setting", "import", stdout=StringIO())
+        assert ConfigSetting.objects.get_effective("mode") == "interactive"
+
 
 class TestConfigSettingOverlayScope(TestCase):
     """``--overlay`` scoping on set / clear / get / list (per-overlay + global)."""

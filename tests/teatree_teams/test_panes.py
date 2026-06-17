@@ -14,7 +14,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.teams.panes import PaneState, TeammatePane
 from teatree.teams.roles import TeamRole, team_claim_slot
 
@@ -28,7 +28,20 @@ def _pending_task(ticket: Ticket) -> Task:
     return Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
 
 
-class TestPaneSpawnAndState(TestCase):
+class _TeamsEnabledMixin(TestCase):
+    """Lifecycle tests run with agent teams ON — spawning is gated on the setting.
+
+    ``TeammatePane.spawn`` fails closed when ``teams_enabled`` is off (the
+    enforcement these tests would otherwise trip); these tests exercise the
+    pane LIFECYCLE, which only exists once the master switch is on.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
+
+
+class TestPaneSpawnAndState(_TeamsEnabledMixin):
     def test_spawn_claims_the_team_role_slot(self) -> None:
         ticket = _ticket()
         task = _pending_task(ticket)
@@ -84,7 +97,7 @@ class TestPaneSpawnAndState(TestCase):
         assert task.status != Task.Status.CLAIMED
 
 
-class TestPaneTransitions(TestCase):
+class TestPaneTransitions(_TeamsEnabledMixin):
     def test_graceful_stop_teammate_idle_releases_claim(self) -> None:
         ticket = _ticket()
         task = _pending_task(ticket)

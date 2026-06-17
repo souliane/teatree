@@ -28,6 +28,19 @@ from teatree.teams.guardrails import assert_pane_claim_allowed
 from teatree.teams.roles import TeamRole, team_claim_slot
 
 
+class AgentTeamsDisabledError(RuntimeError):
+    """A teammate spawn was attempted while ``teams_enabled`` resolves to false.
+
+    The single source of truth for the agent-teams master switch is the
+    ``teams_enabled`` setting (env > overlay-row > global-row > default, resolved
+    via :func:`teatree.config.get_effective_settings`). The spawn seam FAILS
+    CLOSED: when the setting is off, :meth:`TeammatePane.spawn` raises this rather
+    than claiming a ``team:<role>`` slot, so a teammate can never be spawned while
+    the user has disabled agent teams — even if a caller reaches this primitive
+    directly, bypassing the ``claim_maker_pane`` claim path.
+    """
+
+
 class PaneState(Enum):
     """The derived lifecycle state of a maker pane."""
 
@@ -64,18 +77,43 @@ class TeammatePane:
     def spawn(cls, task: Task, *, role: TeamRole, lease_seconds: int = 300) -> "TeammatePane":
         """Claim *task* under ``team:<role>`` and return the ACTIVE pane (#1838 PR#7a).
 
-        The claim runs the namespace guard (:func:`assert_pane_claim_allowed`)
-        first, so a pane can never claim anything but its own ``team:<role>``
-        slot — the loop-owner collision is impossible by construction. The
-        existing ``Task.claim`` CAS is the spawn primitive, so a spawned pane
-        participates in the same lease lifecycle (``renew_lease`` heartbeat,
+        ENFORCES the agent-teams master switch FIRST: when ``teams_enabled``
+        resolves to false (the default), this raises :class:`AgentTeamsDisabledError`
+        before claiming anything, so a teammate can never be spawned while the
+        user has disabled agent teams. The setting (env > overlay-row >
+        global-row > default, via :func:`teatree.config.get_effective_settings`)
+        is the single source of truth for the off switch at every spawn seam —
+        this primitive and the ``claim_maker_pane`` claim path both fail closed.
+
+        Then the claim runs the namespace guard (:func:`assert_pane_claim_allowed`),
+        so a pane can never claim anything but its own ``team:<role>`` slot — the
+        loop-owner collision is impossible by construction. The existing
+        ``Task.claim`` CAS is the spawn primitive, so a spawned pane participates
+        in the same lease lifecycle (``renew_lease`` heartbeat,
         ``reclaim_orphaned_claims`` / ``reap_stale_claims`` recovery) as any
         other claim.
         """
+        cls._assert_teams_enabled()
         slot = team_claim_slot(role)
         assert_pane_claim_allowed(slot)
         task.claim(claimed_by=slot, lease_seconds=lease_seconds)
         return cls(task, role=role)
+
+    @staticmethod
+    def _assert_teams_enabled() -> None:
+        """Raise :class:`AgentTeamsDisabledError` unless ``teams_enabled`` is on.
+
+        Reads the effective setting (the DB-home single source of truth) at call
+        time so a flip takes effect immediately; fails closed when off.
+        """
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+
+        if not get_effective_settings().teams_enabled:
+            msg = (
+                "Refusing to spawn a teammate pane: agent teams is disabled "
+                "(teams_enabled = false). Enable it with `t3 teams on` to spawn panes."
+            )
+            raise AgentTeamsDisabledError(msg)
 
     def heartbeat(self, *, lease_seconds: int = 300) -> None:
         """Renew the pane's lease via the existing ``Task.renew_lease`` heartbeat.
@@ -140,4 +178,4 @@ class TeammatePane:
         return Session.objects.filter(ticket=task.ticket, ended_at__isnull=True).exists()
 
 
-__all__ = ["PaneState", "TeammatePane"]
+__all__ = ["AgentTeamsDisabledError", "PaneState", "TeammatePane"]

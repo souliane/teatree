@@ -1274,13 +1274,14 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
-│                                  suite: 'subscription' (default — grade      │
-│                                  in-session transcripts, no API spend) or    │
-│                                  'sdk' (the metered in-process Agent-SDK     │
-│                                  runner, the explicit opt-in).               │
-│                                  [default: subscription]                     │
-│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
-│                                  transcripts for the AI lane (default: cwd). │
+│                                  suite: 'transcript' (default — REUSE        │
+│                                  already-recorded in-session transcripts, $0 │
+│                                  extra) or 'sdk' (RUN the model fresh        │
+│                                  in-process via the Agent SDK,               │
+│                                  subscription-covered, the explicit opt-in). │
+│                                  [default: transcript]                       │
+│ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
+│                                  for the AI lane (default: cwd).             │
 │ --free-only                      Run only the free deterministic lanes (drop │
 │                                  the AI lane) — the fast pre-push gate.      │
 │ --strict                         Exit non-zero when a lane was SKIPPED for   │
@@ -1293,22 +1294,15 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --docker                         Run inside the exact CI image               │
 │                                  (dev/Dockerfile.test) for parity; host-run  │
 │                                  is the default.                             │
-│ --local                          Run a metered `--backend sdk` suite on the  │
-│                                  HOST (quick check, NOT the gate; prints a   │
-│                                  WARNING).                                   │
 │ --parallel              INTEGER  Run this many AI-lane scenarios             │
 │                                  concurrently (wall-clock; default 1 =       │
 │                                  sequential).                                │
 │                                  [default: 1]                                │
-│ --html                  PATH     Write a self-contained whole-suite HTML     │
-│                                  report to this path (CI artifact).          │
 │ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control        Self-test the harness: plant a known violation and   │
 │                         assert it is caught (token-free).                    │
-│ all                     Run every eval lane in sequence and render one       │
-│                         unified summary table + verdict.                     │
 │ benchmark               Benchmark cost AND pass-rate of model@effort         │
 │                         variants against the eval suite.                     │
 │ capture-subagent        Copy the freshest in-session sub-agent JSONL to a    │
@@ -1331,8 +1325,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         Scenario, Agent, File, Asserts).                     │
 │ run                     Run one scenario by name, or all scenarios when no   │
 │                         name is given.                                       │
-│ prepare-subscription    Emit the per-scenario prompts for a LOCAL            │
-│                         subscription eval run.                               │
+│ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
+│                         transcript-backend eval run.                         │
 │ history                 Show recent eval runs and per-scenario pass-rate     │
 │                         over time.                                           │
 │ corpus                  Ground-truth corpus curation: list, inspect, and     │
@@ -1353,56 +1347,6 @@ Usage: t3 eval negative-control [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval all`
-
-```
-Usage: t3 eval all [OPTIONS]
-
- Run every eval lane in sequence and render one unified summary table +
- verdict.
-
- The explicit form of the bare-``t3 eval`` default — both call
- :func:`run_full_suite`, so they run byte-for-byte the same suite (see that
- callback for the flag semantics, including ``--html``). Kept as a named
- subcommand for scripts/CI that spell the full run out.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --backend               TEXT     AI-lane backend: 'subscription' (default —  │
-│                                  grade in-session transcripts, no API spend) │
-│                                  or 'sdk' (the metered in-process Agent-SDK  │
-│                                  runner, authed by CLAUDE_CODE_OAUTH_TOKEN;  │
-│                                  the explicit CI opt-in via the standalone   │
-│                                  eval.yml job; ANTHROPIC_API_KEY also        │
-│                                  honored as a legacy alternative).           │
-│                                  [default: subscription]                     │
-│ --transcript-dir        PATH     Directory of <scenario>.jsonl subscription  │
-│                                  transcripts for the AI lane (default: cwd). │
-│ --free-only                      Run only the free deterministic lanes (drop │
-│                                  the AI lane) — the fast pre-push gate.      │
-│ --strict                         Exit non-zero when a lane was SKIPPED for   │
-│                                  setup reasons (the AI behavioural lane with │
-│                                  no transcripts / no key) — for CI, where    │
-│                                  'not yet validated' must fail. Default      │
-│                                  leaves a setup-skip green (the caveat is in │
-│                                  the verdict text, not a confusing           │
-│                                  non-zero).                                  │
-│ --docker                         Run inside the exact CI image               │
-│                                  (dev/Dockerfile.test) for parity; host-run  │
-│                                  is the default.                             │
-│ --local                          Run a metered `--backend sdk` suite on the  │
-│                                  HOST instead of the default CI container —  │
-│                                  a quick local check only, NOT the           │
-│                                  reproducible gate (use Docker/CI for that). │
-│ --parallel              INTEGER  Run this many AI-lane scenarios             │
-│                                  concurrently (wall-clock; default 1 =       │
-│                                  sequential).                                │
-│                                  [default: 1]                                │
-│ --html                  PATH     Write a self-contained whole-suite HTML     │
-│                                  report to this path (CI artifact).          │
-│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1484,7 +1428,7 @@ Usage: t3 eval capture-subagent [OPTIONS] NAME
  command finds the newest such file (optionally one written at/after
  ``--since``), validates it is a sub-agent transcript, and copies it to
  ``<transcript_dir>/<scenario>.jsonl`` so ``t3 eval run --backend
- subscription`` grades it — no ``claude -p`` spend. Record an epoch BEFORE each
+ transcript`` grades it — $0 extra. Record an epoch BEFORE each
  dispatch and pass it as ``--since`` so back-to-back scenarios never grab a
  prior sub-agent's file.
 
@@ -1493,7 +1437,7 @@ Usage: t3 eval capture-subagent [OPTIONS] NAME
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --transcript-dir        PATH   Where to write <scenario>.jsonl (default:     │
-│                                cwd) — must match `prepare-subscription`.     │
+│                                cwd) — must match `prepare-transcript`.       │
 │ --since                 FLOAT  Only consider sub-agent JSONLs modified       │
 │                                at/after this epoch (disambiguates sequential │
 │                                dispatches).                                  │
@@ -1686,27 +1630,27 @@ Usage: t3 eval run [OPTIONS] [NAME]
  baseline for its model — the reference ``--gate-regressions`` compares a
  later candidate run against (a regression exits non-zero).
 
- ``--backend subscription`` (default) grades transcripts produced on the
- subscription via an in-session sub-agent — no API spend (run
- ``t3 eval prepare-subscription`` first for the prompts + expected paths).
- ``--backend sdk`` drives the metered in-process Agent-SDK runner (which
- spawns the ``claude`` CLI as its child), authed by ``CLAUDE_CODE_OAUTH_TOKEN``
- (``ANTHROPIC_API_KEY`` is also honored as a legacy alternative); CI passes
- ``--backend sdk`` explicitly via the standalone ``eval.yml`` job.
- ``--trials``/``--models`` always use the metered ``sdk`` runner regardless
- of ``--backend``.
+ ``--backend transcript`` (default) REUSES an already-recorded run by grading
+ its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
+ in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
+ paths). ``--backend sdk`` RUNS the model fresh in-process via the Agent SDK
+ (which spawns the ``claude`` CLI as its child), authed by the subscription's
+ ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
+ explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
+ always use the fresh-run ``sdk`` runner regardless of ``--backend``.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
  not authenticated), so a decorative all-skipped run cannot pass green. CI
- arms it always; local runs leave it off so the subscription backend's
+ arms it always; local runs leave it off so the transcript backend's
  legitimate pre-transcript all-skip stays green.
 
- ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
+ ``--docker`` runs the suite inside the CI image. The fresh-run ``sdk`` lane is
  meant to run in-container, never on the host — the runner forwards the host's
- ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
- ``-e VARNAME`` pass-through, so the token authenticates the SDK's ``claude``
- child inside a clean container and never lands on the command line.
+ ``CLAUDE_CODE_OAUTH_TOKEN`` in via docker's ``-e VARNAME`` pass-through, so
+ the
+ token authenticates the SDK's ``claude`` child inside a clean container and
+ never lands on the command line.
 
  ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
  I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
@@ -1862,59 +1806,53 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     [default: 20]            │
 │ --backend                                  TEXT     Execution backend for a  │
 │                                                     single-trial run:        │
-│                                                     'subscription' (default  │
-│                                                     — grade                  │
-│                                                     subscription-produced    │
-│                                                     transcripts, no API      │
-│                                                     spend; see `t3 eval      │
-│                                                     prepare-subscription`)   │
-│                                                     or 'sdk' (the metered    │
-│                                                     in-process Agent-SDK     │
-│                                                     runner, authed by        │
-│                                                     CLAUDE_CODE_OAUTH_TOKEN; │
-│                                                     runs in-container via    │
+│                                                     'transcript' (default —  │
+│                                                     REUSE an                 │
+│                                                     already-recorded run by  │
+│                                                     grading its on-disk      │
+│                                                     transcript, $0 extra;    │
+│                                                     see `t3 eval             │
+│                                                     prepare-transcript`) or  │
+│                                                     'sdk' (RUN the model     │
+│                                                     fresh in-process via the │
+│                                                     Agent SDK,               │
+│                                                     subscription-covered     │
+│                                                     (CLAUDE_CODE_OAUTH_TOKE… │
+│                                                     NOT API-billed; runs     │
+│                                                     in-container via         │
 │                                                     --docker locally or in   │
 │                                                     the standalone eval.yml  │
 │                                                     CI job). --trials and    │
 │                                                     --models always use the  │
-│                                                     metered sdk runner       │
+│                                                     fresh-run sdk runner     │
 │                                                     regardless of this flag. │
-│                                                     [default: subscription]  │
+│                                                     [default: transcript]    │
 │ --transcript-dir                           PATH     Directory of             │
 │                                                     <scenario>.jsonl         │
 │                                                     transcripts for the      │
-│                                                     'subscription' backend   │
+│                                                     'transcript' backend     │
 │                                                     (default: cwd).          │
 │ --require-executed                                  Fail when the suite      │
 │                                                     collected scenarios but  │
 │                                                     executed none (all       │
 │                                                     skipped). AUTO-ON for    │
-│                                                     the metered sdk backend  │
-│                                                     and --trials/--models (a │
-│                                                     metered run that         │
+│                                                     the sdk backend and      │
+│                                                     --trials/--models (a     │
+│                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
 │                                                     fails loud); the flag    │
 │                                                     only matters for the     │
-│                                                     subscription backend,    │
+│                                                     transcript backend,      │
 │                                                     whose pre-transcript     │
 │                                                     all-skip is legitimate.  │
 │ --docker                                            Force running inside the │
 │                                                     CI image                 │
 │                                                     (dev/Dockerfile.test)    │
-│                                                     for ANY backend. The     │
-│                                                     metered sdk lane ALREADY │
-│                                                     defaults to the          │
-│                                                     container; this forces   │
-│                                                     it for the subscription  │
-│                                                     lane too.                │
-│ --local                                             Run the metered sdk lane │
-│                                                     on the HOST instead of   │
-│                                                     the default CI container │
-│                                                     — a quick local check    │
-│                                                     only. A host run is NOT  │
-│                                                     the reproducible         │
-│                                                     regression gate (use     │
-│                                                     Docker/CI).              │
+│                                                     for ANY backend. The sdk │
+│                                                     lane ALREADY defaults to │
+│                                                     the container; this      │
+│                                                     forces it for the        │
+│                                                     transcript lane too.     │
 │ --parallel                                 INTEGER  Run this many scenarios  │
 │                                                     concurrently (each SDK   │
 │                                                     scenario run is          │
@@ -1948,21 +1886,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 eval prepare-subscription`
+#### `t3 eval prepare-transcript`
 
 ```
-Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
+Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
 
- Emit the per-scenario prompts for a LOCAL subscription eval run.
+ Emit the per-scenario prompts for a LOCAL transcript-backend eval run.
 
  The eval CLI is a plain process with no in-session ``Agent`` tool, so it
  cannot itself drive a subscription-covered turn. This command prints, per
  scenario, the agent definition, prompt, and the transcript path the
- ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+ ``transcript`` backend will read. The ``/t3:running-evals`` skill is the
  in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
  prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
  sub-agent's JSONL to that path, and finally grades with
- ``t3 eval run --backend subscription``.
+ ``t3 eval run --backend transcript``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
@@ -3097,9 +3035,16 @@ Usage: t3 loop pending-spawn [OPTIONS]
  Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
  ``claim-next``, not this + ``spawn-claim``.
 
+ ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
+ reports work ONLY when a unit ``claim-next`` could actually claim,
+ so the Stop-hook self-pump stops re-offering a PENDING unit that a
+ full in-flight admit budget will always refuse.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit pending list as JSON.                                   │
-│ --help          Show this message and exit.                                  │
+│ --json                    Emit pending list as JSON.                         │
+│ --claimable-only          Report work ONLY when a claim could land (honour   │
+│                           the admit budget).                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7142,8 +7087,15 @@ Usage: t3 teatree config_setting import [OPTIONS]
  and unknown keys are skipped — only operational settings move. The upsert
  makes a re-run idempotent.
 
+ ``--no-clobber`` seeds only keys ABSENT from the store and leaves an
+ existing row untouched — the mode ``t3 setup`` runs on every update so a
+ value the user changed via ``config_setting set`` survives. Without it
+ (the default), a re-import refreshes every operational key from the file.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --no-clobber          Seed only keys absent from the store; never overwrite  │
+│                       an existing DB row.                                    │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

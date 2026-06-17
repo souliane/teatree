@@ -21,6 +21,7 @@ from teatree.self_update import (
     current_editable_source,
     ensure_self_db_migrated,
     reinstall_running_editable,
+    seed_db_config_from_toml,
 )
 
 
@@ -335,6 +336,60 @@ class TestSelfDbMigrate:
 
         assert failed is True
         assert "self-DB" in capsys.readouterr().out
+
+
+class TestSeedDbConfigFromToml:
+    """The ``t3 setup`` auto-migration (#938, TODO-75): seed the DB store from TOML.
+
+    Runs ``python -m teatree config_setting import --no-clobber`` in the runtime
+    interpreter, mirroring the self-DB migrate shape. Best-effort: a failure is a
+    WARN, never fail-closed — the TOML stays readable and the dual-read resolver
+    falls through, unlike the self-DB migrate the merge gate depends on.
+    """
+
+    def test_runs_no_clobber_import_in_runtime_interpreter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def _run(cmd: list[str], **_kw: object) -> _Proc:
+            calls.append(cmd)
+            return _Proc(0, "  imported 0 setting(s) into the DB store", "")
+
+        monkeypatch.setattr(self_update_mod, "run_allowed_to_fail", _run)
+
+        seed_db_config_from_toml()
+
+        assert len(calls) == 1
+        cmd = calls[0]
+        assert cmd[0] == self_update_mod.sys.executable, "must use the running interpreter"
+        assert cmd[1:4] == ["-m", "teatree", "config_setting"], f"got {cmd!r}"
+        assert "import" in cmd
+        assert "--no-clobber" in cmd, "the setup auto-migration must never clobber a DB-set value"
+        assert "--directory" not in cmd, "must NOT route through `uv --directory <clone>`"
+
+    def test_does_not_inherit_caller_settings_module(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "worktree_only.settings_local")
+        captured: list[dict[str, str]] = []
+
+        def _run(cmd: list[str], *, env: dict[str, str] | None = None, **_kw: object) -> _Proc:
+            captured.append(dict(env or {}))
+            return _Proc(0, "", "")
+
+        monkeypatch.setattr(self_update_mod, "run_allowed_to_fail", _run)
+
+        seed_db_config_from_toml()
+
+        assert captured, "import subprocess was not invoked"
+        assert captured[0].get("DJANGO_SETTINGS_MODULE") == "teatree.settings"
+
+    def test_failure_is_a_warn_not_fail_closed(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(self_update_mod, "run_allowed_to_fail", lambda *a, **k: _Proc(1, "", "boom"))
+
+        # Best-effort: returns without raising, unlike the fail-closed self-DB migrate.
+        seed_db_config_from_toml()
+
+        assert "config" in capsys.readouterr().out.lower()
 
 
 class TestReinstallResult:

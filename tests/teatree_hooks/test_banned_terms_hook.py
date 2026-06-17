@@ -721,16 +721,17 @@ def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
     assert captured.out == ""  # no deny JSON
 
 
-def test_live_hook_blocks_unreadable_commit_body_file_in_public_repo(
+def test_live_hook_blocks_unreadable_commit_body_file_in_provably_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ANTI-VACUITY guard for the private-downgrade above: the SAME unreadable
-    # ``git commit -F <nonexistent file>`` landing in a PUBLIC repo (cwd == that
-    # public repo) must STILL hard-block. The downgrade is private-only; an
-    # unscanned body must never slip into public history.
+    # ANTI-VACUITY guard for the downgrade above: the SAME unreadable
+    # ``git commit -F <nonexistent file>`` landing in a PROBE-CONFIRMED-PUBLIC
+    # repo must STILL hard-block. #1415 task #62 relaxes only the not-provably-
+    # public commit case (see the unknown-visibility test below); a known-public
+    # commit keeps the conservative hard-block.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
-    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
 
     public_repo = _public_clone(tmp_path)
     data = {
@@ -746,13 +747,16 @@ def test_live_hook_blocks_unreadable_commit_body_file_in_public_repo(
     assert decision["permissionDecision"] == "deny"
 
 
-def test_live_hook_blocks_unreadable_commit_body_file_in_unknown_visibility_repo(
+def test_live_hook_downgrades_unreadable_commit_body_file_in_unknown_visibility_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ANTI-VACUITY guard #2: an unreadable commit body whose landing repo is
-    # NEITHER allowlisted NOR probe-resolvable (the common cold-hook unknown
-    # state) must STILL hard-block. Default-deny on unknown visibility is
-    # preserved -- the downgrade fires only for a PROVABLY-private destination.
+    # #1415 task #62: an unreadable commit body whose landing repo is NEITHER
+    # allowlisted NOR probe-resolvable (the common cold-hook unknown state) now
+    # DOWNGRADES to warn. A commit is LOCAL; the pre-push public-leak gate
+    # (refuse-public-push-with-leak.sh) re-scans commit messages before they reach
+    # a public remote, so the commit-time gate must not hard-block an ordinary
+    # commit whose repo the in-hook probe cannot classify. Previously this forced
+    # ALLOW_BANNED_TERM=1 on every ordinary commit in an undeclared checkout.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -769,9 +773,8 @@ def test_live_hook_blocks_unreadable_commit_body_file_in_unknown_visibility_repo
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False  # downgraded to warn, not denied
+    assert captured.out == ""
 
 
 def test_live_hook_allows_workitem_url_inline_commit_in_private_worktree(

@@ -110,7 +110,7 @@ class LoopState(models.Model):
     """One row per mini-loop name carrying its durable control-plane status."""
 
     name = models.CharField(max_length=64, unique=True)
-    status = models.CharField(max_length=16, choices=LoopStatus.choices, default=LoopStatus.ENABLED)
+    status = models.CharField(max_length=16, choices=LoopStatus, default=LoopStatus.ENABLED)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

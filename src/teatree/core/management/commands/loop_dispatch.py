@@ -191,6 +191,13 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the pending list as JSON instead of a table."),
         ] = False,
+        claimable_only: Annotated[
+            bool,
+            typer.Option(
+                "--claimable-only",
+                help="Report work ONLY when a claim could land (honour the admit budget).",
+            ),
+        ] = False,
     ) -> None:
         """List pending Tasks the ``/loop`` slot should spawn in-session.
 
@@ -198,9 +205,22 @@ class Command(TyperCommand):
         ``subagent`` field tells the slot which subagent_type to pass
         to its ``Agent`` tool; an empty string means the role+phase pair
         has no registered subagent (operator triage).
+
+        ``--claimable-only`` (TODO #100) applies the SAME admit-budget gate
+        ``claim-next`` applies, so the probe answers "is there a unit a claim
+        could actually take?" rather than "is there any dispatchable PENDING
+        row?". The Stop-hook self-pump uses it: without the gate the probe
+        reports an un-advanceable unit (one held back by a full in-flight
+        budget) forever, so the self-pump re-offers a unit ``claim-next``
+        would always refuse — it never advances or stops. The gate
+        fails OPEN (unclamped) on an absent / stale / unreadable budget,
+        identical to the claimer.
         """
-        pending = Task.objects.filter(status=Task.Status.PENDING).select_related("ticket").order_by("pk")
-        payload = [_task_to_dict(task) for task in pending if _subagent_for(task)]
+        if claimable_only and _admit_budget_exhausted():
+            payload: list[dict[str, Any]] = []
+        else:
+            pending = Task.objects.filter(status=Task.Status.PENDING).select_related("ticket").order_by("pk")
+            payload = [_task_to_dict(task) for task in pending if _subagent_for(task)]
         if json_output:
             self.stdout.write(json.dumps(payload, indent=2))
             return

@@ -5,7 +5,7 @@ active core overlay on a single trigger: cadence
 (``eval_local_cadence_hours``, default 168h = weekly). It mirrors the
 shape of :mod:`teatree.loop.scanners.scanning_news`: the queued task
 directs running the SCOPED eval suite locally via the same runner
-``t3 eval run`` uses (the subscription backend, no API key), without
+``t3 eval run`` uses (the transcript backend, $0 extra), without
 blocking the tick.
 
 Integration-style with real Django ORM rows. Times are backdated with
@@ -119,12 +119,12 @@ class EvalLocalScannerTests(TestCase):
 
         assert second == []
 
-    def test_queued_task_directs_scoped_subscription_runner(self) -> None:
-        """The execution_reason must direct the SCOPED, no-API-key local runner.
+    def test_queued_task_directs_scoped_transcript_runner(self) -> None:
+        """The execution_reason must direct the SCOPED, $0-extra local runner.
 
         The dispatched skill reads ``execution_reason``; the directive must
-        name ``t3 eval run`` and the subscription backend so the local run
-        spends no API budget — mirroring what the user runs by hand.
+        name ``t3 eval run`` and the transcript backend so the local run
+        runs no model — mirroring what the user runs by hand.
         """
         _scanner().scan()
 
@@ -132,7 +132,7 @@ class EvalLocalScannerTests(TestCase):
         assert task is not None
         reason = task.execution_reason
         assert "t3 eval run" in reason
-        assert "subscription" in reason
+        assert "transcript" in reason
 
     def test_signal_summary_mentions_overlay(self) -> None:
         signals = _scanner().scan()

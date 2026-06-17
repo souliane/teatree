@@ -1,0 +1,22 @@
+id: consume-before-side-effect-not-atomic
+language: python
+severity: warning
+message: >-
+  Single-use approval consumed then audited outside one transaction.atomic.
+  Consume + audit + side-effect must share ONE transaction.atomic so a
+  failed post rolls back the consume and the audit never lies. The gate
+  takes the publish action as a callback and runs consume + publish +
+  OnBehalfAudit.create in one atomic block — see
+  require_on_behalf_approval in on_behalf_gate_recorded.py.
+files:
+  - "src/teatree/core/on_behalf_gate_recorded.py"
+  - "src/teatree/core/reply_transport.py"
+rule:
+  pattern: OnBehalfAudit.objects.create($$$A)
+  not:
+    inside:
+      kind: with_statement
+      has:
+        pattern: transaction.atomic($$$B)
+        stopBy: end
+      stopBy: end

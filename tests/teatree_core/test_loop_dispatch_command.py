@@ -397,6 +397,111 @@ class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 2
 
 
+class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
+    """``pending-spawn --claimable-only`` mirrors what ``claim-next`` would take.
+
+    TODO #100: the Stop-hook self-pump probes ``pending-spawn`` to decide
+    "is there work to continue the loop?". The legacy probe reports EVERY
+    dispatchable PENDING task regardless of the admit budget, but
+    ``claim-next`` refuses once the in-flight CLAIMED WIP reaches the
+    ceiling. So when the budget is exhausted, the probe reports the same
+    PENDING unit forever while ``claim-next`` claims nothing — the
+    self-pump re-offers a unit it can never advance. ``--claimable-only``
+    applies the same admit-budget gate the claimer applies, so the probe
+    reports work ONLY when a claim could actually land.
+    """
+
+    def _claim_in_flight(self, n: int) -> list[Task]:
+        claimed: list[Task] = []
+        for i in range(n):
+            task = self._author_task(url=f"https://example.com/issues/inflight/{i}")
+            task.claim(claimed_by="other-worker")
+            claimed.append(task)
+        return claimed
+
+    def _run_pending_claimable(self, sl: Path) -> list[dict]:
+        stdout = StringIO()
+        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+            call_command("loop_dispatch", "pending-spawn", "--json", "--claimable-only", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_budget_exhausted_reports_no_claimable_work(self) -> None:
+        # THE anti-vacuous core (RED on the pre-fix code): budget B, B already
+        # in flight, one more PENDING → claim-next would refuse → the
+        # claimable-only probe must report ZERO so the self-pump stops
+        # re-offering the un-advanceable unit.
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._claim_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_pending_claimable(sl)
+        assert payload == []
+        # The legacy probe (no gate) still reports the un-advanceable unit —
+        # proving the gate is what changed the answer, not the data.
+        legacy = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=legacy)
+        assert len(json.loads(legacy.getvalue())) == 1
+
+    def test_under_budget_reports_the_claimable_unit(self) -> None:
+        # Control: in-flight 1 < budget 2 → a claim could land → the probe
+        # reports the PENDING unit (it did not just blanket-suppress).
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._claim_in_flight(1)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_pending_claimable(sl)
+        assert len(payload) == 1
+        assert payload[0]["issue_url"] == "https://example.com/issues/pending"
+
+    def test_no_budget_key_reports_all_dispatchable_unclamped(self) -> None:
+        # Absence of a budget (medium / toggle-off) is UNCLAMPED — the probe
+        # reports the pending unit exactly as the legacy probe does today.
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._author_task(url="https://example.com/issues/a")
+            payload = self._run_pending_claimable(sl)
+        assert len(payload) == 1
+
+    def test_budget_read_error_fails_open_unclamped(self) -> None:
+        # A budget-read failure must NEVER clamp the probe — fail open so a
+        # broken sidecar read can never wedge the self-pump into idle.
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._author_task(url="https://example.com/issues/a")
+            stdout = StringIO()
+            with (
+                patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl),
+                patch(
+                    "teatree.core.management.commands.loop_dispatch.read_admit_budget",
+                    side_effect=RuntimeError("sidecar exploded"),
+                ),
+            ):
+                call_command("loop_dispatch", "pending-spawn", "--json", "--claimable-only", stdout=stdout)
+            assert len(json.loads(stdout.getvalue())) == 1
+
+    def test_default_probe_is_unchanged_no_gate(self) -> None:
+        # Without --claimable-only the legacy probe is byte-identical: it
+        # reports the un-advanceable unit even at a full budget (the legacy
+        # callers must not change behaviour).
+        from teatree.loop.admit_budget import write_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._claim_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            stdout = StringIO()
+            with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+                call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        assert len(json.loads(stdout.getvalue())) == 1
+
+
 class TestSpawnClaim(_LoopDispatchTest):
     def test_claims_pending_task(self) -> None:
         task = self._reviewer_task()

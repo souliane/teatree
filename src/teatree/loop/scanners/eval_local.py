@@ -22,8 +22,8 @@ The scanner mirrors :mod:`teatree.loop.scanners.scanning_news`:
     ``Session.started_at`` is the "last run" timestamp.
 * **Non-blocking.** ``scan()`` only writes the Task row and returns; the
     dispatcher routes it through the standard pending-task pipeline. The
-    queued task's directive runs the local subscription runner (the same
-    one ``t3 eval run`` defaults to — no API key, no API spend), so the
+    queued task's directive runs the local transcript runner (the same
+    one ``t3 eval run`` defaults to — $0 extra, runs no model), so the
     long-running suite never blocks the tick.
 """
 
@@ -157,18 +157,18 @@ class EvalLocalScanner:
             return None
 
     def _execution_reason(self, trigger: str) -> str:
-        """Direct the SCOPED local run via the no-API-key subscription runner.
+        """Direct the SCOPED local run via the $0-extra transcript runner.
 
         The dispatched skill reads ``execution_reason``; the ``t3 eval
-        run`` + ``subscription`` substrings are load-bearing — they tell
-        the skill to run the same scoped, no-API-spend path the user runs
-        by hand (``t3 eval run`` defaults to the subscription backend),
+        run`` + ``transcript`` substrings are load-bearing — they tell
+        the skill to run the same scoped, $0-extra path the user runs
+        by hand (``t3 eval run`` defaults to the transcript backend),
         plus the deterministic ``skill-triggers`` / ``pinned-regressions`` checks.
         """
         return (
             f"Periodic local eval ({trigger}) via skill: {self.skill} | run the SCOPED suite locally with "
             "`t3 eval skill-triggers`, `t3 eval pinned-regressions`, and `t3 eval run` "
-            "(subscription backend, no API key)"
+            "(transcript backend, $0 extra)"
         )
 
     def _placeholder_issue_url(self) -> str:

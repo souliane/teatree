@@ -12,7 +12,9 @@ Sibling gates on the same publishing flow:
 * :mod:`teatree.cli.review.on_behalf` — recorded-approval gate (the
     reviewer's identity is the user's; outbound posts need an approval row).
 * :mod:`teatree.cli.review.shape_gate` — colleague-MR shape gate (single
-    terse inline ``Nit:`` form).
+    terse inline finding that keeps its own severity label;
+    ``HIGH (correctness): ...`` / ``MED: ...`` / ``LOW: ...``, with a bare
+    ``Nit:`` reserved for a genuinely trivial item).
 
 This module is independent of both. It runs against every publishing call
 that takes a body AND an inline anchor (``file`` and ``line`` both set).
