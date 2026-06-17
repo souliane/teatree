@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from teatree.core.models import Loop, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import ConfigSetting, Loop, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 
 
 @admin.register(Ticket)
@@ -39,3 +39,12 @@ class LoopAdmin(admin.ModelAdmin):
     list_editable = ("enabled", "delay_seconds", "daily_at")
     search_fields = ("name",)
     readonly_fields = ("last_run_at", "created_at", "updated_at")
+
+
+@admin.register(ConfigSetting)
+class ConfigSettingAdmin(admin.ModelAdmin):
+    list_display = ("key", "scope", "value", "updated_at")
+    list_editable = ("value",)
+    list_filter = ("scope",)
+    search_fields = ("key", "scope")
+    readonly_fields = ("created_at", "updated_at")
