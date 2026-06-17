@@ -1,9 +1,9 @@
-"""Per-trial transcript HTML report for a metered pass@k ``t3 eval run``.
+"""Per-trial transcript HTML report for a pass@k ``t3 eval run``.
 
-The whole-suite summary (:mod:`teatree.cli.eval.suite_html`) renders one row per
-LANE — it answers "which lane is red". It cannot answer "WHY did this scenario
-fail", because the per-trial trajectories never reach it. This report fills that
-gap: for the metered ``--trials k`` run that CI executes, it renders, per
+The aggregated lane summary answers "which lane is red" but cannot answer "WHY
+did this scenario fail", because the per-trial trajectories never reach it. This
+report (``--transcript-html``) fills that gap: for the ``--trials k`` run that CI
+executes, it renders, per
 scenario, the aggregate verdict plus EACH trial's transcript — the agent's
 reasoning (``run.text_blocks``), its tool calls (``run.tool_calls``), and the
 failing matchers — so a maintainer can open the uploaded artifact and diagnose a

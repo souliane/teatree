@@ -1,4 +1,4 @@
-"""Pluggable eval execution backends (SDK vs subscription-transcript)."""
+"""Pluggable eval execution backends (SDK fresh-run vs recorded transcript)."""
 
 import os
 from pathlib import Path
@@ -7,13 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.eval.auth import OAUTH_TOKEN_ENV
-from teatree.eval.backends import (
-    SDK_BACKEND,
-    SUBSCRIPTION_BACKEND,
-    SubscriptionTranscriptRunner,
-    UnknownBackendError,
-    make_runner,
-)
+from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 
@@ -52,9 +46,9 @@ class TestMakeRunner:
         assert isinstance(runner, SdkInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(2.0)
 
-    def test_subscription_backend_builds_transcript_runner(self, tmp_path: Path) -> None:
-        runner = make_runner(SUBSCRIPTION_BACKEND, transcript_dir=tmp_path)
-        assert isinstance(runner, SubscriptionTranscriptRunner)
+    def test_transcript_backend_builds_transcript_runner(self, tmp_path: Path) -> None:
+        runner = make_runner(TRANSCRIPT_BACKEND, transcript_dir=tmp_path)
+        assert isinstance(runner, TranscriptRunner)
 
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(UnknownBackendError):
@@ -72,25 +66,24 @@ class TestMakeRunner:
             make_runner(SDK_BACKEND)
             assert os.environ.get(OAUTH_TOKEN_ENV) == "pass-token"
 
-    def test_subscription_backend_does_not_touch_pass(self) -> None:
-        # The free subscription lane never authenticates claude -p — it must not
-        # read the secret store at all.
+    def test_transcript_backend_does_not_touch_pass(self) -> None:
+        # The transcript lane runs no model — it must not read the secret store.
         with (
             patch.dict(os.environ, {}, clear=False),
             patch("teatree.eval.auth.read_pass") as read_pass,
         ):
             os.environ.pop(OAUTH_TOKEN_ENV, None)
-            make_runner(SUBSCRIPTION_BACKEND)
+            make_runner(TRANSCRIPT_BACKEND)
             read_pass.assert_not_called()
 
 
-class TestSubscriptionTranscriptRunner:
+class TestTranscriptRunner:
     def test_grades_a_subscription_produced_transcript(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         transcript = (FIXTURES / "worktree_first_pass.stream.jsonl").read_text(encoding="utf-8")
         (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
 
-        run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+        run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
 
         # Same extractors as the SDK path → tool calls are captured for grading.
         assert any(call.name == "Bash" for call in run.tool_calls)
@@ -98,14 +91,14 @@ class TestSubscriptionTranscriptRunner:
 
     def test_missing_transcript_yields_skip(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
-        run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+        run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
         assert run.terminal_reason.startswith("skipped")
         assert run.tool_calls == ()
         assert run.is_error is False
 
     def test_transcript_path_is_named_after_scenario(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path, name="my_scenario")
-        path = SubscriptionTranscriptRunner(transcript_dir=tmp_path).transcript_path(spec)
+        path = TranscriptRunner(transcript_dir=tmp_path).transcript_path(spec)
         assert path == tmp_path / "my_scenario.jsonl"
 
 
@@ -127,7 +120,7 @@ class TestSubscriptionRunnerGradesSessionSchemaSubagent:
         transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
         (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
 
-        run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+        run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
 
         # The defect (RED on current main): no result event -> ("aborted", True).
         assert run.terminal_reason != "aborted"
@@ -141,7 +134,7 @@ class TestSubscriptionRunnerGradesSessionSchemaSubagent:
         transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
         (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
 
-        result = evaluate(spec, SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec))
+        result = evaluate(spec, TranscriptRunner(transcript_dir=tmp_path).run(spec))
 
         assert not result.skipped
         assert result.passed
@@ -153,7 +146,7 @@ class TestSubscriptionRunnerGradesSessionSchemaSubagent:
         transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
         (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
 
-        result = evaluate(spec, SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec))
+        result = evaluate(spec, TranscriptRunner(transcript_dir=tmp_path).run(spec))
 
         # Not a spurious error-fail: it's a real matcher fail, not skipped, not is_error.
         assert not result.skipped

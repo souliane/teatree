@@ -297,7 +297,7 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     return any(not r.passed for r in results) or regressed or cost_regressed or cost_bounds_failed
 
 
-def build_subscription_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:
+def build_transcript_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:
     return [
         {
             "scenario": spec.name,
@@ -310,7 +310,7 @@ def build_subscription_manifest(specs: list[EvalSpec], target_dir: Path) -> list
     ]
 
 
-def render_subscription_text(manifest: list[dict[str, str]]) -> str:
+def render_transcript_text(manifest: list[dict[str, str]]) -> str:
     blocks = [
         (
             f"scenario: {entry['scenario']}  (model {entry['model']})\n"

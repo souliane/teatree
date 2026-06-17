@@ -34,7 +34,9 @@ class CreateModelIfTableAbsent(migrations.CreateModel):
         from_state: ProjectState,
         to_state: ProjectState,
     ) -> None:
-        existing = set(schema_editor.connection.introspection.table_names(schema_editor.connection.cursor()))
+        # ``table_names()`` opens and closes its own cursor in a context manager
+        # when none is passed -- do not hand it a cursor we would leak (#2279).
+        existing = set(schema_editor.connection.introspection.table_names())
         if _AUDIT_TABLE in existing:
             return
         super().database_forwards(app_label, schema_editor, from_state, to_state)

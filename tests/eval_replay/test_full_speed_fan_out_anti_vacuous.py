@@ -27,7 +27,7 @@ not run here.
 import dataclasses
 from pathlib import Path
 
-from teatree.eval.backends import SubscriptionTranscriptRunner
+from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import evaluate
@@ -41,7 +41,7 @@ _SINGLE_WORKER_FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_single_worker_fail.strea
 
 def _grade(spec: EvalSpec, fixture: Path, tmp_path: Path) -> bool:
     (tmp_path / f"{spec.name}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
-    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
     return evaluate(spec, run).passed
 
 

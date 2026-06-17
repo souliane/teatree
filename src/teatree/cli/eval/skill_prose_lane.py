@@ -75,7 +75,7 @@ def run_prose_judge() -> ProseJudgeReport:
 
 
 def skill_prose_judge_lane(report: ProseJudgeReport) -> LaneResult:
-    """Fold a prose-judge report into the ADVISORY ``skill-prose-judge`` lane for ``t3 eval all``.
+    """Fold a prose-judge report into the ADVISORY ``skill-prose-judge`` lane for ``t3 eval``.
 
     ADVISORY by construction: ``passed`` is ALWAYS ``True`` (a low score never
     fails the suite); the lane SKIPs only when every judge call skipped (no

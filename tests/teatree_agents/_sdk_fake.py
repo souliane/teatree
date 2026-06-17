@@ -80,6 +80,13 @@ class FakeSdkClient:
         import asyncio  # noqa: PLC0415
 
         for message in self._messages:
+            # Model the real SDK: once ``interrupt()`` lands the server stops
+            # streaming, so the consumer never sees the remaining messages. The
+            # fake used to drain the whole canned list regardless, so a watchdog
+            # test with a long stream paid the full per-message ``delay`` even
+            # though the run was interrupted on the first heartbeat tick.
+            if self.interrupted:
+                return
             if self._delay:
                 await asyncio.sleep(self._delay)
             yield message

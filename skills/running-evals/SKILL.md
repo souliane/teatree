@@ -1,6 +1,6 @@
 ---
 name: running-evals
-description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
+description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing recorded transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
 eval_exempt: in-session driver for the eval harness itself; its commands are covered by the eval CLI tests, not by a self-referential behavioural eval
 compatibility: any
 metadata:
@@ -31,43 +31,39 @@ Two buckets under one umbrella. The free deterministic lanes are **tests** — t
 |------|------|-----------------|------|
 | **test** (deterministic, no model) | skill-triggers (trigger test) | `t3 eval skill-triggers` | free |
 | **test** (deterministic, no model) | pinned-regressions (regression corpus) | `t3 eval pinned-regressions` | free |
-| **eval** (live model, metered) | AI/trajectory (sdk, CI cadence) | `t3 eval run --backend sdk` | metered API (`CLAUDE_CODE_OAUTH_TOKEN`) |
+| **eval** (fresh model run) | AI/trajectory (sdk, CI cadence) | `t3 eval run --backend sdk` | subscription-covered (`CLAUDE_CODE_OAUTH_TOKEN`), NOT API-billed |
 
-The default backend is `subscription` — it grades an in-session-produced transcript off disk (deterministic, no API spend); the live capture that produces it is the in-session step this skill drives (`prepare-subscription` → dispatch sub-agent → `capture-subagent` → `run --backend subscription`). The metered `--backend sdk` path is **never** a silent fallback — it runs only when passed explicitly (CI's cadence).
+The default backend is `transcript` — it REUSES an already-recorded run by grading its on-disk transcript ($0 extra, no model run); the in-session step this skill drives produces that transcript (`prepare-transcript` → dispatch sub-agent → `capture-subagent` → `run --backend transcript`). The `--backend sdk` path RUNS the model fresh (subscription-covered, not API-billed) and is **never** a silent fallback — it runs only when passed explicitly (CI's cadence). Neither backend bills an API key.
 
 ## What this skill auto-drives
 
-In ONE invocation, without the human running `prepare-subscription` or `capture-subagent` by hand:
+In ONE invocation, without the human running `prepare-transcript` or `capture-subagent` by hand:
 
-1. `t3 eval prepare-subscription` → the per-scenario agent definition, prompt, and the transcript path the `subscription` backend will read.
+1. `t3 eval prepare-transcript` → the per-scenario agent definition, prompt, and the transcript path the `transcript` backend will read.
 2. For each scenario, dispatch an in-session `Agent` sub-agent that runs the prompt. Claude Code writes that sub-agent's trajectory to `~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl` — NOT to the grader's path.
 3. `t3 eval capture-subagent <scenario> --since <epoch>` copies the freshest sub-agent JSONL to the transcript path the grader reads. Record the epoch BEFORE each dispatch and pass it as `--since` so back-to-back scenarios never grab a prior sub-agent's file.
-4. `t3 eval run --backend subscription` to grade the captured transcripts.
+4. `t3 eval run --backend transcript` to grade the captured transcripts.
 5. Print ONE unified results table.
 
-The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) — deterministic tests, no model — run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
+The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) — deterministic tests, no model — run alongside. Only steps 2–3 — producing and capturing the recorded transcripts — need this in-session skill; bare `t3 eval` (below) folds in everything else.
 
-The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
+The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `transcript` backend auto-detects it and grades on matchers identically to a stream-json transcript — capture and grade read on-disk files only, so the lane runs no model.
 
-## Bare `t3 eval` (and its `t3 eval all` alias) — the whole suite, one summary
+## Bare `t3 eval` — the whole suite, one summary
 
 ```bash
 # THE DEFAULT: bare `t3 eval` (no subcommand, no args) runs the WHOLE suite —
 # free deterministic lanes + AI lane — in one unified summary table.
-# Grades subscription transcripts when present in the transcript dir;
-# with none, emits the manifest + this skill's recipe — never meters.
+# Grades recorded transcripts when present in the transcript dir;
+# with none, emits the manifest + this skill's recipe — never runs a model.
 t3 eval
 t3 eval --transcript-dir ./transcripts
 
-# `t3 eval all` is the explicit alias of that default (same chokepoint),
-# kept for scripts/CI that spell the full run out.
-t3 eval all
-
-# Explicit metered opt-in (CI, with ANTHROPIC_API_KEY).
+# Explicit fresh-run opt-in (CI; subscription-covered, NOT API-billed).
 t3 eval --backend sdk
 ```
 
-Bare `t3 eval` runs the FREE lanes, then for the AI lane grades subscription transcripts when they exist, otherwise emits the subscription manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to the metered API path. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.
+Bare `t3 eval` runs the FREE lanes, then for the AI lane grades recorded transcripts when they exist ($0 extra), otherwise emits the transcript manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to running a model. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.
 
 ## CLI surface
 
@@ -80,13 +76,13 @@ t3 eval pinned-regressions
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
 t3 eval list
 
-# Subscription AI path (no API spend): prepare → produce in-session → capture → grade.
-t3 eval prepare-subscription --transcript-dir ./transcripts
+# Transcript AI path ($0 extra): prepare → produce in-session → capture → grade.
+t3 eval prepare-transcript --transcript-dir ./transcripts
 t3 eval capture-subagent <scenario> --transcript-dir ./transcripts --since <epoch>
-t3 eval run --backend subscription --transcript-dir ./transcripts
+t3 eval run --backend transcript --transcript-dir ./transcripts
 
-# Whole picture in one command (the non-session orchestratable piece).
-t3 eval all
+# Whole picture in one command (the bare-`t3 eval` default suite).
+t3 eval
 ```
 
 ## Authoring evals
@@ -95,7 +91,7 @@ A skill's behavioral evals live in the central catalog at `evals/scenarios/<skil
 
 ## Related
 
-- BLUEPRINT.md — Behavioral eval harness (`src/teatree/eval/`), subscription-default backend, all-skipped guard.
+- BLUEPRINT.md — Behavioral eval harness (`src/teatree/eval/`), transcript-default backend, all-skipped guard.
 - `evals/README.md` — eval schema, failure-class index, CLI reference.
 - `/t3:test` — the deterministic `t3 teatree run tests` side of the test-vs-eval coin.
 - `/t3:rules` § "Verification Before Completion" — evals are the behavioural half of that proof.

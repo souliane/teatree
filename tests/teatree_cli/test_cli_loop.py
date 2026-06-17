@@ -50,6 +50,45 @@ class TestTickCommandDelegation:
         call_mock.assert_called_once_with("loop_tick")
 
 
+class TestPendingSpawnCommandDelegation:
+    # [skill-load-ok: pure CLI delegation test, no web framework involved]
+    """``t3 loop pending-spawn`` forwards its flags to the management command.
+
+    TODO #100: ``--claimable-only`` makes the Stop-hook self-pump's probe
+    budget-aware so it stops re-offering an un-advanceable PENDING unit.
+    """
+
+    def test_no_flags_calls_with_empty_kwargs(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["pending-spawn"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_dispatch", "pending-spawn")
+
+    def test_json_flag_forwarded(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["pending-spawn", "--json"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_dispatch", "pending-spawn", json_output=True)
+
+    def test_claimable_only_flag_forwarded(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["pending-spawn", "--json", "--claimable-only"])
+
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_dispatch", "pending-spawn", json_output=True, claimable_only=True)
+
+
 class TestStatusCommand:
     def test_returns_one_when_no_statusline_file_yet(self, tmp_path: Path) -> None:
         with patch("teatree.cli.loop.default_path", return_value=tmp_path / "missing.txt"):

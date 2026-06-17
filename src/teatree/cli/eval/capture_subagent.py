@@ -25,7 +25,7 @@ def capture_subagent(
     transcript_dir: Path | None = typer.Option(
         None,
         "--transcript-dir",
-        help="Where to write <scenario>.jsonl (default: cwd) — must match `prepare-subscription`.",
+        help="Where to write <scenario>.jsonl (default: cwd) — must match `prepare-transcript`.",
     ),
     since: float | None = typer.Option(
         None,
@@ -41,7 +41,7 @@ def capture_subagent(
     command finds the newest such file (optionally one written at/after
     ``--since``), validates it is a sub-agent transcript, and copies it to
     ``<transcript_dir>/<scenario>.jsonl`` so ``t3 eval run --backend
-    subscription`` grades it — no ``claude -p`` spend. Record an epoch BEFORE each
+    transcript`` grades it — $0 extra. Record an epoch BEFORE each
     dispatch and pass it as ``--since`` so back-to-back scenarios never grab a
     prior sub-agent's file.
     """

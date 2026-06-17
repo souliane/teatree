@@ -22,7 +22,7 @@ import argparse
 import tempfile
 from pathlib import Path
 
-from teatree.eval.backends import SubscriptionTranscriptRunner
+from teatree.eval.backends import TranscriptRunner
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher
 from teatree.eval.report import evaluate
@@ -64,7 +64,7 @@ def main() -> int:
     fixture_text = args.fixture_path.read_text(encoding="utf-8")
     transcript_dir = Path(tempfile.mkdtemp(prefix="eval-scenarios-fixture-"))
     (transcript_dir / f"{spec.name}.jsonl").write_text(fixture_text, encoding="utf-8")
-    run = SubscriptionTranscriptRunner(transcript_dir=transcript_dir).run(spec)
+    run = TranscriptRunner(transcript_dir=transcript_dir).run(spec)
 
     result = evaluate(spec, run)
     actual = "pass" if result.passed else "fail"

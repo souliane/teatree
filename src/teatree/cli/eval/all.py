@@ -1,4 +1,4 @@
-"""``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
+"""``t3 eval list`` table render + bare-``t3 eval`` full-suite lane orchestration.
 
 The seven free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
 negative-control, transcript-replay, corpus-grade, skill-command-validity) always run;
@@ -7,12 +7,12 @@ surfaces as a SKIP when no real session transcript is in scope (never a FAIL), c
 grades the ground-truth corpus deterministically (judge-oracle entries skip), and
 skill-command-validity (#550 Tier-1) FAILs on a backticked ``t3 …`` in a SKILL.md that no
 longer resolves against the live CLI registry (the "no stale references" rule). The
-AI/trajectory lane grades subscription-produced transcripts when they exist on disk; with
-none it emits the subscription manifest plus the in-session recipe and NEVER silently shells
-the metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in. The
-metered path also runs the ADVISORY skill-prose-judge lane (#550 Tier-3) — it scores each
-SKILL.md's prose via the existing ``ClaudeJudge`` seam and nominates the weakest skill but
-NEVER fails the suite (judge-only is advisory; matcher/structural lanes gate CI).
+AI/trajectory lane grades already-recorded transcripts when they exist on disk ($0 extra);
+with none it emits the transcript manifest plus the in-session recipe and NEVER silently
+runs a model. ``--backend sdk`` is the explicit fresh-run opt-in. The fresh-run path also
+runs the ADVISORY skill-prose-judge lane (#550 Tier-3) — it scores each SKILL.md's prose via
+the existing ``ClaudeJudge`` seam and nominates the weakest skill but NEVER fails the suite
+(judge-only is advisory; matcher/structural lanes gate CI).
 """
 
 import dataclasses
@@ -28,13 +28,13 @@ from rich.table import Table
 
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
-from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
-from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
+from teatree.cli.eval.metered_routing import should_route_to_docker
+from teatree.cli.eval.run_modes import build_transcript_manifest, render_transcript_text
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
 from teatree.cli.eval.transcript_replay import replay_transcript_for_all
 from teatree.cli.eval.verdict import LaneResult, print_verdict
-from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.backends import TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import CoverageReport, skill_eval_coverage
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
@@ -139,9 +139,9 @@ class AiLaneOutcome:
 
     ``results`` is threaded out so the suite chokepoint can sum each run's
     ``cost_usd`` and run the unmetered-$0 guard (:func:`assert_sdk_run_was_metered`)
-    on the metered (``--backend sdk``) path — the same vacuous-green guard the
+    on the fresh-run (``--backend sdk``) path — the same vacuous-green guard the
     ``eval run`` boundary applies via ``RunGuards.sdk_metered``. It is empty when
-    the lane did not grade (no transcripts on the subscription path).
+    the lane did not grade (no transcripts on the transcript path).
     """
 
     lane: LaneResult
@@ -156,24 +156,24 @@ def run_ai_lane(
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
-    if isinstance(runner, SubscriptionTranscriptRunner) and not _any_transcript_present(specs, runner):
-        _emit_subscription_recipe(specs, target_dir)
+    if isinstance(runner, TranscriptRunner) and not _any_transcript_present(specs, runner):
+        _emit_transcript_recipe(specs, target_dir)
         return AiLaneOutcome(lane=_ai_lane_result([], backend=backend, graded=False), results=[])
     runs = run_specs(runner, specs, parallel=parallel)
     results = list(starmap(evaluate, zip(specs, runs, strict=True)))
     return AiLaneOutcome(lane=_ai_lane_result(results, backend=backend, graded=True), results=results)
 
 
-def _any_transcript_present(specs: list[EvalSpec], runner: SubscriptionTranscriptRunner) -> bool:
+def _any_transcript_present(specs: list[EvalSpec], runner: TranscriptRunner) -> bool:
     return any(runner.transcript_path(spec).is_file() for spec in specs)
 
 
-def _emit_subscription_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
-    typer.echo(render_subscription_text(build_subscription_manifest(specs, target_dir)))
+def _emit_transcript_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
+    typer.echo(render_transcript_text(build_transcript_manifest(specs, target_dir)))
     typer.echo(
-        "\nNo subscription transcripts on disk — the AI lane was not graded. Produce them "
-        "in-session (no API spend) via the /t3:running-evals skill (it dispatches a sub-agent per "
-        "scenario and captures each with `t3 eval capture-subagent`), then re-run `t3 eval all`.",
+        "\nNo recorded transcripts on disk — the AI lane was not graded. Produce them "
+        "in-session ($0 extra) via the /t3:running-evals skill (it dispatches a sub-agent per "
+        "scenario and captures each with `t3 eval capture-subagent`), then re-run `t3 eval`.",
         err=True,
     )
 
@@ -181,7 +181,7 @@ def _emit_subscription_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
 #: One-line, plain-language instruction for enabling the AI behavioural lane.
 AI_LANE_SETUP_HINT = (
     "no in-session transcripts; run `t3 eval capture-subagent` "
-    "(see /t3:running-evals) or use `--backend sdk` with an API key"
+    "(see /t3:running-evals) or use `--backend sdk` (subscription-covered)"
 )
 
 
@@ -189,7 +189,7 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
     if not graded:
         return LaneResult(
             name="ai-eval",
-            cost="subscription",
+            cost="transcript ($0)",
             passed=True,
             skipped=True,
             detail="not run — no transcripts to grade",
@@ -197,7 +197,7 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
         )
     executed = [r for r in results if not r.skipped]
     failed = sum(1 for r in executed if not r.passed)
-    cost = "metered (sdk)" if backend != SUBSCRIPTION_BACKEND else "subscription"
+    cost = "sdk (fresh run)" if backend != TRANSCRIPT_BACKEND else "transcript ($0)"
     return LaneResult(
         name="ai-eval",
         cost=cost,
@@ -208,22 +208,22 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
     )
 
 
-def hint_missing_transcripts(runner: SubscriptionTranscriptRunner, missing: list[EvalSpec]) -> None:
+def hint_missing_transcripts(runner: TranscriptRunner, missing: list[EvalSpec]) -> None:
     if not missing:
         return
     typer.echo(
-        f"\n{len(missing)} scenario(s) skipped — no subscription transcript on disk.",
+        f"\n{len(missing)} scenario(s) skipped — no recorded transcript on disk.",
         err=True,
     )
     for spec in missing:
         typer.echo(f"  - {spec.name}: expected transcript at {runner.transcript_path(spec)}", err=True)
     names = " ".join(spec.name for spec in missing)
     typer.echo(
-        "Produce them with the subscription (no API spend): run "
-        f"`t3 eval prepare-subscription {names}` for each scenario's prompt + path, drive each prompt "
+        "Produce them in-session ($0 extra): run "
+        f"`t3 eval prepare-transcript {names}` for each scenario's prompt + path, drive each prompt "
         "via an in-session sub-agent (the /t3:running-evals skill does this), then capture its "
         "trajectory with `t3 eval capture-subagent <scenario>` and re-run "
-        "`t3 eval run --backend subscription`.",
+        "`t3 eval run --backend transcript`.",
         err=True,
     )
 
@@ -245,19 +245,19 @@ def build_summary_table(lanes: Iterable[LaneResult]) -> Table:
 
 
 def _full_suite_docker_passthrough(
-    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL, html_path: Path | None = None
+    *, backend: str, free_only: bool, strict: bool, parallel: int = DEFAULT_PARALLEL
 ) -> list[str]:
-    passthrough = ["all"]
+    # The bare `t3 eval` callback IS the full suite (no subcommand), so the
+    # in-container re-invocation passes only the flags — `all` was removed.
+    passthrough: list[str] = []
     if free_only:
         passthrough.append("--free-only")
-    if backend != SUBSCRIPTION_BACKEND:
+    if backend != TRANSCRIPT_BACKEND:
         passthrough += ["--backend", backend]
     if strict:
         passthrough.append("--strict")
     if parallel != DEFAULT_PARALLEL:
         passthrough += ["--parallel", str(parallel)]
-    if html_path is not None:
-        passthrough += ["--html", str(html_path)]
     return passthrough
 
 
@@ -268,8 +268,8 @@ def _timed(build: Callable[[], LaneResult]) -> LaneResult:
     return dataclasses.replace(lane, duration_s=time.monotonic() - started)
 
 
-#: Shared by the bare-``t3 eval`` callback (in app.py) and the ``t3 eval all``
-#: command (in all_command.py) — identical full-suite ``--strict`` flag.
+#: Shared by the bare-``t3 eval`` callback (in app.py) — the full-suite
+#: ``--strict`` flag help.
 STRICT_HELP = (
     "Exit non-zero when a lane was SKIPPED for setup reasons (the AI behavioural lane with no "
     "transcripts / no key) — for CI, where 'not yet validated' must fail. Default leaves a "
@@ -278,33 +278,29 @@ STRICT_HELP = (
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` / `t3 eval all` flag. The arg list IS the CLI contract.
+def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each keyword-only param maps 1:1 to a public bare-`t3 eval` flag. The arg list IS the CLI contract.
     *,
     backend: str,
     transcript_dir: Path | None,
     free_only: bool,
     docker: bool,
     strict: bool,
-    local: bool = False,
     parallel: int = DEFAULT_PARALLEL,
-    html_path: Path | None = None,
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
-    Both the bare ``t3 eval`` default and the explicit ``t3 eval all`` subcommand
-    call this so the no-arg path and the named path execute byte-for-byte the
-    same suite. The seven free deterministic lanes (skill-triggers, skill-coverage,
-    pinned-regressions, negative-control, transcript-replay, corpus-grade,
-    skill-command-validity) always run; skill-coverage is warn-first,
-    transcript-replay SKIPs when no real session transcript is in scope (a missing
-    run is not a violation), corpus-grade grades the ground-truth corpus
-    deterministically (judge entries skip), and skill-command-validity FAILs on a
-    stale ``t3 …`` reference in a SKILL.md. The AI lane grades subscription-produced
-    transcripts when present and NEVER silently shells the metered ``claude -p``
-    runner; ``--backend sdk`` is the explicit metered opt-in. The metered path also
-    runs the ADVISORY skill-prose-judge lane (never fails the suite).
-    ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock only).
-    ``html_path`` writes a self-contained whole-suite HTML report (CI artifact).
+    The bare ``t3 eval`` default calls this. The seven free deterministic lanes
+    (skill-triggers, skill-coverage, pinned-regressions, negative-control,
+    transcript-replay, corpus-grade, skill-command-validity) always run;
+    skill-coverage is warn-first, transcript-replay SKIPs when no real session
+    transcript is in scope (a missing run is not a violation), corpus-grade grades
+    the ground-truth corpus deterministically (judge entries skip), and
+    skill-command-validity FAILs on a stale ``t3 …`` reference in a SKILL.md. The
+    AI lane grades already-recorded transcripts when present ($0 extra) and NEVER
+    silently runs a model; ``--backend sdk`` is the explicit fresh-run opt-in. The
+    fresh-run path also runs the ADVISORY skill-prose-judge lane (never fails the
+    suite). ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock
+    only).
 
     The run always ends with a plain-language verdict (:func:`build_verdict`) a
     non-expert can read: ``✅ ALL GOOD`` / ``❌ PROBLEMS FOUND`` / a ``✅`` for the
@@ -314,24 +310,21 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     default (the clarity is in the verdict text, not a confusing non-zero); pass
     ``--strict`` to make a setup-skipped lane exit non-zero for CI use.
     """
-    # The metered SDK AI lane + the live prose-judge bill the API, so the whole
+    # The fresh-run SDK AI lane + the live prose-judge run a model, so the whole
     # suite defaults to the CI container when they are in scope (`--backend sdk`,
     # not `--free-only`) — exactly like `eval run` / `eval benchmark`. `--docker`
-    # forces the container for any backend; `--local` is the explicit host escape;
-    # `--free-only` runs only the host-safe deterministic lanes, so it is never
-    # metered. A metered host run must never happen silently.
-    metered = backend != SUBSCRIPTION_BACKEND and not free_only
-    if docker or should_route_to_docker(metered=metered, local=local):
+    # forces the container for any backend; `--free-only` runs only the host-safe
+    # deterministic lanes, so it never runs a model.
+    metered = backend != TRANSCRIPT_BACKEND and not free_only
+    if docker or should_route_to_docker(metered=metered, local=False):
         passthrough = _full_suite_docker_passthrough(
-            backend=backend, free_only=free_only, strict=strict, parallel=parallel, html_path=html_path
+            backend=backend, free_only=free_only, strict=strict, parallel=parallel
         )
         try:
             raise typer.Exit(code=run_eval_in_docker(passthrough))
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
-    if local:
-        warn_local_metered(metered=metered)
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
@@ -346,29 +339,27 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     ai_results: list[ScenarioResult] = []
     if not free_only:
         # The AI lane runs first. It is itself backend-gated: the default
-        # subscription backend grades on-disk transcripts (no API spend) and never
-        # shells the metered runner, so it is safe on the bare-`t3 eval` path.
+        # transcript backend grades on-disk transcripts ($0 extra) and never runs
+        # a model, so it is safe on the bare-`t3 eval` path.
         started = time.monotonic()
         ai_outcome = run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir, parallel=parallel)
         ai_results = ai_outcome.results
         lanes.append(dataclasses.replace(ai_outcome.lane, duration_s=time.monotonic() - started))
     if metered:
-        # The ADVISORY Tier-3 prose-judge fires the LIVE metered ClaudeJudge, so it
-        # is gated on the explicit metered opt-in (`--backend sdk`), NOT merely on
-        # `not --free-only` — bare `t3 eval` (default subscription, advertised "no
-        # API spend") must never silently bill the judge, and `--free-only` (which
-        # is never metered) drops it. skill_prose_judge_lane always returns
-        # passed=True, so a low prose score never fails the suite.
+        # The ADVISORY Tier-3 prose-judge fires the LIVE ClaudeJudge, so it is gated
+        # on the explicit fresh-run opt-in (`--backend sdk`), NOT merely on
+        # `not --free-only` — bare `t3 eval` (default transcript, $0 extra) must
+        # never silently run a model, and `--free-only` drops it.
+        # skill_prose_judge_lane always returns passed=True, so a low prose score
+        # never fails the suite.
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
     Console().print(build_summary_table(lanes))
     print_verdict(lanes)
-    if html_path is not None:
-        _write_html_report(lanes, html_path)
-    # The metered (`--backend sdk`) AI lane: an sdk run that executed scenarios
-    # but billed $0 never actually executed (the `--bare` OAuth bug — `claude -p`
-    # authenticated as nothing, made zero tool calls, billed nothing). Mirror the
+    # The fresh-run (`--backend sdk`) AI lane: an sdk run that executed scenarios
+    # but recorded $0 never actually executed (the `--bare` OAuth bug — the model
+    # authenticated as nothing, made zero tool calls, recorded nothing). Mirror the
     # `eval run` boundary's RunGuards.sdk_metered: fail loud rather than read the
-    # green AI lane as validated. The subscription backend is unmetered by design,
+    # green AI lane as validated. The transcript backend runs no model by design,
     # so the guard short-circuits there (`backend != "sdk"`).
     _assert_metered_sdk_ai_lane(backend=backend, results=ai_results)
     if _suite_should_fail(lanes, strict=strict, metered=metered):
@@ -400,9 +391,3 @@ def _assert_metered_sdk_ai_lane(*, backend: str, results: list[ScenarioResult]) 
     except UnmeteredSdkRunError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
-
-
-def _write_html_report(lanes: list[LaneResult], html_path: Path) -> None:
-    from teatree.cli.eval.suite_html import render_suite_html  # noqa: PLC0415
-
-    html_path.write_text(render_suite_html(lanes), encoding="utf-8")
