@@ -357,7 +357,7 @@ Check the overlay skill's commit-message and PR-description rules **before** pro
 
 **Step 0g — Cross-Service Verification (Non-Negotiable):**
 
-A review of a service that talks to other services is incomplete until those other services have been checked. Reviewing one repo in isolation produces blind comments — the reviewer asserts "this is the convention" or "this default is fine" without knowing what the producers and consumers across the platform actually do. Comments built on that premise make the user look stupid when the author replies with "have you checked the FE / the gateway / the sibling microservice?".
+A review of a service that talks to other services is incomplete until those other services have been checked. Reviewing one repo in isolation produces blind comments — the reviewer asserts "this is the convention" or "this default is fine" without knowing what the producers and consumers across the platform actually do. Comments built on that premise undermine the reviewer's credibility when the author replies with "have you checked the FE / the gateway / the sibling microservice?".
 
 **Before posting any comment about a name, contract, default value, schema field, response shape, or wire format, exhaust the cross-service grep:**
 
