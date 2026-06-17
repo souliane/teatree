@@ -28,6 +28,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
+from teatree.core.config_migration import import_toml_into_db
 from teatree.core.models import ConfigSetting
 
 _OverlayOption = Annotated[
@@ -144,35 +145,18 @@ class Command(TyperCommand):
         fallback = getattr(get_effective_settings(overlay or None), key, None)
         self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]")
 
-    def _import_table(self, table: dict, scope: str) -> int:
-        """Upsert every operational key in *table* into *scope*; return the count moved.
-
-        A key registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) is coerced
-        through its registry parser and upserted into *scope* (``""`` = global, a
-        name = that overlay's scope). Bootstrap-file-only keys, the overlay's own
-        ``path`` / ``url`` discovery keys, and unknown keys are skipped — only
-        operational settings move. The upsert makes a re-run idempotent.
-        """
-        scope_label = "global" if not scope else f"overlay {scope!r}"
-        imported = 0
-        for key, raw_value in table.items():
-            parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
-            if parser is None:
-                continue
-            try:
-                canonical = parser(raw_value)
-            except (ValueError, TypeError, AttributeError) as exc:
-                self.stderr.write(f"  skipping {key!r} [{scope_label}]: invalid value {raw_value!r}: {exc}")
-                continue
-            ConfigSetting.objects.set_value(key, canonical, scope=scope)
-            imported += 1
-            self.stdout.write(
-                f"  imported {key} = {ConfigSetting.objects.get_effective(key, scope=scope)!r}  [{scope_label}]"
-            )
-        return imported
-
     @command(name="import")
-    def import_toml(self) -> None:
+    def import_toml(
+        self,
+        *,
+        no_clobber: Annotated[
+            bool,
+            typer.Option(
+                "--no-clobber",
+                help="Seed only keys absent from the store; never overwrite an existing DB row.",
+            ),
+        ] = False,
+    ) -> None:
         """Seed the DB store from the operational toml keys (one-time migration).
 
         The dual-read migration step (#938): every ``[teatree]`` key that is a
@@ -185,15 +169,16 @@ class Command(TyperCommand):
         ``DATABASE_URL`` / …), the overlay's own ``path`` / ``url`` discovery keys,
         and unknown keys are skipped — only operational settings move. The upsert
         makes a re-run idempotent.
+
+        ``--no-clobber`` seeds only keys ABSENT from the store and leaves an
+        existing row untouched — the mode ``t3 setup`` runs on every update so a
+        value the user changed via ``config_setting set`` survives. Without it
+        (the default), a re-import refreshes every operational key from the file.
         """
-        raw = load_config().raw
-        teatree_table = raw.get("teatree", {})
-        imported = 0
-        if isinstance(teatree_table, dict):
-            imported += self._import_table(teatree_table, scope="")
-        overlays = raw.get("overlays", {})
-        if isinstance(overlays, dict):
-            for overlay_name, overlay_cfg in overlays.items():
-                if isinstance(overlay_cfg, dict):
-                    imported += self._import_table(overlay_cfg, scope=overlay_name)
-        self.stdout.write(f"  imported {imported} operational setting(s) into the DB store")
+        result = import_toml_into_db(load_config().raw, clobber=not no_clobber)
+        for reason in result.skipped_reasons:
+            self.stderr.write(f"  {reason}")
+        for scope, key in result.rows:
+            stored = ConfigSetting.objects.get_effective(key, scope=scope)
+            self.stdout.write(f"  imported {key} = {stored!r}  [{_scope_label(scope)}]")
+        self.stdout.write(f"  {result.summary()}")
