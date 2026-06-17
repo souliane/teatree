@@ -15,7 +15,6 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
@@ -733,9 +732,9 @@ class TestToolAndCleanCommands(TestCase):
 
         with (
             _patch_overlay(),
-            patch.object(ws_cleanup_mod, "prune_branches", return_value=[]),
-            patch.object(ws_cleanup_mod, "drop_orphaned_stashes", return_value=[]),
-            patch.object(ws_cleanup_mod, "drop_orphan_databases", return_value=[]),
+            patch.object(workspace_mod, "prune_branches", return_value=[]),
+            patch.object(workspace_mod, "drop_orphaned_stashes", return_value=[]),
+            patch.object(workspace_mod, "drop_orphan_databases", return_value=[]),
             patch.object(workspace_mod, "reap_orphan_isolated_worktree_roots", return_value=[]),
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))

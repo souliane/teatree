@@ -1,4 +1,4 @@
-"""Orphaned-stash reaping for the ``t3 workspace clean-all`` subcommand.
+"""Orphaned-stash reaping for the ``t3 <overlay> workspace clean-all`` subcommand.
 
 Split out of :mod:`teatree.core.management.commands._workspace_cleanup` so that
 module stays under the module-health LOC cap. The squash-merge signal it relies
