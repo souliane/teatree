@@ -4778,18 +4778,34 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
  loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
  the deterministic squash signal are unchanged.
 
+ Orphaned RAW worktrees (#2361): a ``git worktree`` with no teatree
+ ``Worktree`` row (created by a sub-agent's bare ``git worktree add``) is
+ discovered and disposed of. A merged/gone orphan is reaped; one with
+ unpushed work is reaped only under ``--reap-unsynced=snapshot`` AND only
+ after a recovery artifact is captured — ``keep`` (default) leaves it.
+
+ The ordered passes live in :func:`run_clean_all`; this method is the thin
+ CLI wrapper that supplies the worktree dir and the command's IO sinks.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --keep-dslr                          INTEGER  Number of DSLR snapshots to    │
-│                                               keep per tenant.               │
-│                                               [default: 1]                   │
-│ --interactive    --no-interactive             Prompt push/abandon/skip per   │
-│                                               worktree with unsynced work    │
-│                                               (#2361). Default is fully      │
-│                                               unattended — uncertain         │
-│                                               worktrees are kept with a      │
-│                                               warning, never prompted.       │
-│                                               [default: no-interactive]      │
-│ --help                                        Show this message and exit.    │
+│ --keep-dslr                            INTEGER  Number of DSLR snapshots to  │
+│                                                 keep per tenant.             │
+│                                                 [default: 1]                 │
+│ --reap-unsynced                        TEXT     Disposition for orphaned RAW │
+│                                                 worktrees with unpushed work │
+│                                                 (#2361): 'keep' (default,    │
+│                                                 safe — leave them) or        │
+│                                                 'snapshot' (write a recovery │
+│                                                 artifact, THEN reap).        │
+│                                                 [default: keep]              │
+│ --interactive      --no-interactive             Prompt push/abandon/skip per │
+│                                                 worktree with unsynced work  │
+│                                                 (#2361). Default is fully    │
+│                                                 unattended — uncertain       │
+│                                                 worktrees are kept with a    │
+│                                                 warning, never prompted.     │
+│                                                 [default: no-interactive]    │
+│ --help                                          Show this message and exit.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
