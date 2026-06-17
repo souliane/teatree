@@ -123,8 +123,17 @@ def _parse_toml_value(key: str, value: object) -> object:
         return _UNPARSEABLE_TOML_VALUE
 
 
-def _conflicting_db_home_keys(toml_table: dict[str, Any], db_overrides: dict[str, Any]) -> list[str]:
-    """Return the DB-home keys in *toml_table* whose value CONFLICTS with the DB.
+def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
+    """The DB-home keys present in *toml_table* (a cheap, static, no-DB check)."""
+    from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
+
+    return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB]
+
+
+def _conflicting_db_home_keys(
+    toml_table: dict[str, Any], db_home_keys: list[str], db_overrides: dict[str, Any]
+) -> list[str]:
+    """Return the *db_home_keys* whose TOML value CONFLICTS with the DB.
 
     A conflict is a key present in BOTH the TOML table and the ``ConfigSetting``
     store with DIFFERING (parser-normalized) values — the only case where the
@@ -133,15 +142,11 @@ def _conflicting_db_home_keys(toml_table: dict[str, Any], db_overrides: dict[str
     (being migrated away), or present but AGREEING, is silent: it resolves to the
     same effective value, so warning about it is the noise this path removes.
     """
-    from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
-
     conflicts: list[str] = []
-    for key, toml_value in toml_table.items():
-        if SETTING_HOMES.get(key) is not SettingHome.DB:
-            continue
+    for key in db_home_keys:
         if key not in db_overrides:
             continue
-        if _parse_toml_value(key, toml_value) != db_overrides[key]:
+        if _parse_toml_value(key, toml_table[key]) != db_overrides[key]:
             conflicts.append(key)
     return conflicts
 
@@ -162,24 +167,37 @@ def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
     The home registry and DB readers are imported lazily (the loader -> resolution
     edge the module docstring describes) to avoid the loader/resolution/discovery
     import cycle at module load and to keep the DB read off the hot import path.
-    """
-    from teatree.config.resolution import _db_global_overrides, _db_overlay_overrides  # noqa: PLC0415
 
+    The DB is read ONLY when a table actually carries a DB-home key. The common
+    post-migration file (every DB-home key already moved into the store) has none,
+    so ``load_config`` touches no connection — keeping it leak-free off the hot path
+    rather than opening a stray default-alias connection on every call.
+    """
     offenders: list[str] = []
 
     teatree = raw.get("teatree")
     if isinstance(teatree, dict):
-        global_db = _db_global_overrides()
-        offenders.extend(f"[teatree] {key}" for key in _conflicting_db_home_keys(teatree, global_db))
+        db_home_keys = _db_home_keys_in(teatree)
+        if db_home_keys:
+            from teatree.config.resolution import _db_global_overrides  # noqa: PLC0415
+
+            global_db = _db_global_overrides()
+            offenders.extend(f"[teatree] {key}" for key in _conflicting_db_home_keys(teatree, db_home_keys, global_db))
 
     overlays = raw.get("overlays")
     if isinstance(overlays, dict):
         for overlay_name, overlay_cfg in overlays.items():
             if not isinstance(overlay_cfg, dict):
                 continue
+            db_home_keys = _db_home_keys_in(overlay_cfg)
+            if not db_home_keys:
+                continue
+            from teatree.config.resolution import _db_overlay_overrides  # noqa: PLC0415
+
             overlay_db = _db_overlay_overrides(overlay_name)
             offenders.extend(
-                f"[overlays.{overlay_name}] {key}" for key in _conflicting_db_home_keys(overlay_cfg, overlay_db)
+                f"[overlays.{overlay_name}] {key}"
+                for key in _conflicting_db_home_keys(overlay_cfg, db_home_keys, overlay_db)
             )
 
     if offenders:
