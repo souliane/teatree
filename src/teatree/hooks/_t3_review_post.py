@@ -22,9 +22,10 @@ invocation gets the same scanning as a bare ``t3`` leader, consistent with how
 the surrounding parser normalises a segment's leader.
 """
 
-import re
 from pathlib import PurePosixPath
 from typing import Final
+
+from teatree.hooks._publish_detection import _ENV_ASSIGNMENT_RE
 
 # The ``t3 review`` posting verbs whose BODY is the positional ``NOTE``
 # argument rather than a ``--body``/``--message`` flag.
@@ -43,22 +44,19 @@ _T3_REVIEW_VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--file", "--line", "
 # that itself starts with ``-``; everything after it is a positional.
 _END_OF_OPTIONS: Final[str] = "--"
 
-# Matches a leading ``KEY=value`` environment assignment, mirroring
-# :func:`_command_parser._first_two_words` so the leader is found the same way.
-_ENV_ASSIGNMENT_PATTERN: Final[str] = r"[A-Z_][A-Z0-9_]*=.*"
-
 
 def _t3_leader_index(words: list[str]) -> int | None:
     """Return the index of the ``t3`` executable word, or ``None``.
 
     The leader is canonicalised up to the ``t3`` executable: leading
-    ``KEY=value`` env assignments are skipped (as in
-    :func:`_command_parser._first_two_words`) and a path-form leader is reduced
-    to its basename, so ``t3``, ``./t3``, ``/usr/local/bin/t3`` and
-    ``FOO=bar t3`` all resolve to the ``t3`` executable.
+    ``KEY=value`` env assignments are skipped via the same permissive
+    :data:`_publish_detection._ENV_ASSIGNMENT_RE` the publish-detection layer
+    uses to classify the segment, and a path-form leader is reduced to its
+    basename, so ``t3``, ``./t3``, ``/usr/local/bin/t3``, ``FOO=bar t3`` and
+    ``foo=bar t3`` all resolve to the ``t3`` executable.
     """
     for i, word in enumerate(words):
-        if re.fullmatch(_ENV_ASSIGNMENT_PATTERN, word):
+        if _ENV_ASSIGNMENT_RE.fullmatch(word):
             continue
         return i if PurePosixPath(word).name == "t3" else None
     return None

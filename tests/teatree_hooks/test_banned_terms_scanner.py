@@ -404,6 +404,17 @@ class TestT3ReviewPostBodyIsPositionalNote:
         assert payload is not None
         assert "acmecorp" in payload
 
+    def test_lowercase_env_prefixed_t3_leader_note_is_surfaced(self) -> None:
+        # A lowercase env name (``foo=bar t3 ...``) is a valid bash assignment.
+        # The publish-detection layer strips it with the permissive env-prefix
+        # regex and classifies the segment as a review post, so the NOTE
+        # extractor must use the SAME permissive regex — an uppercase-only
+        # pattern left the leader unresolved and the banned term in the
+        # positional NOTE slipped through unscanned.
+        payload = self._payload('foo=bar t3 teatree review post-comment my-org/repo 7 "acmecorp note"')
+        assert payload is not None
+        assert "acmecorp" in payload
+
     def test_path_form_t3_leader_note_is_surfaced(self) -> None:
         # G2 RED guard: a path-form ``t3`` leader (``./t3``) was not recognised
         # as a review post, so the positional NOTE escaped scanning.
