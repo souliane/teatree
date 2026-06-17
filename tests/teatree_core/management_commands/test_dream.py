@@ -202,6 +202,57 @@ class DreamNightlyTickRequestsProposalsTestCase(TestCase):
         assert "rejected 1 vacuous candidate(s)" in out
 
 
+class DreamDeriveEvalsWiringTestCase(TestCase):
+    """The default-OFF LLM full-scenario derivation only runs when its toggle is on (#2447)."""
+
+    def test_derivation_skipped_when_toggle_off(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file") as stage_fn,
+            patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": "0"}),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=StringIO())
+        stage_fn.assert_not_called()
+
+    def test_derivation_runs_and_reports_when_toggle_on(self) -> None:
+        from teatree.loops.dream.llm_eval_proposer import DerivationOutcome  # noqa: PLC0415
+
+        outcomes = [
+            DerivationOutcome(scenario_name="a_under_load", derived=True, reason="proven"),
+            DerivationOutcome(scenario_name="b_under_load", derived=False, reason="DROPPED (anti-vacuity)"),
+        ]
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=outcomes),
+            patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": "1"}),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "staged 1 derived eval(s) for review, dropped 1" in out
+
+    def test_derivation_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch(
+                "teatree.loops.dream.llm_eval_proposer.stage_proposals_file",
+                side_effect=RuntimeError("derive boom"),
+            ),
+            patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": "1"}),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=stdout)
+        out = stdout.getvalue()
+        assert "WARN eval derivation raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+
 class DreamMemoryPhasesPipelineTestCase(TestCase):
     """A successful tick runs phases 4-6 over the discovered memory dirs (#1933 §6).
 

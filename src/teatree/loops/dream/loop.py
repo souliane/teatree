@@ -127,6 +127,24 @@ def memory_promote_enabled(*, config_path: Path | None = None) -> bool:
     return _toml_phase_disabled_by_default(_MEMORY_PROMOTE[0], config_path)
 
 
+#: The LLM-backed full-scenario derivation (#2447) is the one dream phase that is
+#: default OFF — it makes a metered SDK call per candidate and stages real eval
+#: files. Opt in with ``T3_DREAM_DERIVE_EVALS=1`` / ``[loops.dream] derive_evals =
+#: true``; absent, the dream pass never invokes the LLM synthesizer (no behaviour
+#: change). The deterministic ``promote`` path (default ON) is unaffected.
+_DERIVE_EVALS = ("derive_evals", "T3_DREAM_DERIVE_EVALS")
+
+
+def derive_evals_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether the LLM-backed full-scenario derivation runs (default OFF, #2447)."""
+    raw_env = os.environ.get(_DERIVE_EVALS[1], "").strip().lower()
+    if raw_env in _TRUTHY:
+        return True
+    if raw_env in _FALSY:
+        return False
+    return _toml_phase_disabled_by_default(_DERIVE_EVALS[0], config_path)
+
+
 def _toml_phase_disabled_by_default(toml_key: str, config_path: Path | None) -> bool:
     """Read ``[loops.dream] <toml_key>`` from the toml; default OFF, never raise."""
     path = config_path if config_path is not None else Path.home() / ".teatree.toml"

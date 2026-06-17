@@ -29,6 +29,7 @@ from teatree.loops.dream.loop import (
     MINI_LOOP,
     cross_link_enabled,
     decay_enabled,
+    derive_evals_enabled,
     memory_promote_enabled,
     propose_evals_enabled,
     reindex_enabled,
@@ -202,6 +203,43 @@ class MemoryPromoteToggleTestCase(TestCase):
         with patch.dict("os.environ", {}, clear=False):
             __import__("os").environ.pop("T3_DREAM_MEMORY_PROMOTE", None)
             assert memory_promote_enabled(config_path=self.toml) is False
+
+
+class DeriveEvalsToggleTestCase(TestCase):
+    """The LLM-backed full-scenario derivation is the one phase that is default OFF (#2447)."""
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.toml = __import__("pathlib").Path(self.tmp) / "t3.toml"
+
+    def test_default_is_off_with_no_env_no_toml(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_DERIVE_EVALS", None)
+            assert derive_evals_enabled(config_path=self.toml) is False
+
+    def test_truthy_env_enables(self) -> None:
+        for value in ("1", "true", "yes", "on"):
+            with patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": value}):
+                assert derive_evals_enabled(config_path=self.toml) is True, value
+
+    def test_toml_true_enables_when_env_absent(self) -> None:
+        self.toml.write_text("[loops.dream]\nderive_evals = true\n", encoding="utf-8")
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_DERIVE_EVALS", None)
+            assert derive_evals_enabled(config_path=self.toml) is True
+
+    def test_env_falsy_wins_over_toml_true(self) -> None:
+        self.toml.write_text("[loops.dream]\nderive_evals = true\n", encoding="utf-8")
+        with patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": "0"}):
+            assert derive_evals_enabled(config_path=self.toml) is False
+
+    def test_corrupt_toml_falls_back_to_default_off_never_raises(self) -> None:
+        self.toml.write_text("[loops.dream]\nderive_evals = = broken\n", encoding="utf-8")
+        with patch.dict("os.environ", {}, clear=False):
+            __import__("os").environ.pop("T3_DREAM_DERIVE_EVALS", None)
+            assert derive_evals_enabled(config_path=self.toml) is False
 
 
 class MemoryPhaseKillSwitchTestCase(TestCase):

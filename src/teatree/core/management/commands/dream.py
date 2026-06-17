@@ -163,7 +163,9 @@ class Command(TyperCommand):
         Runs only when proposals were requested. Each candidate clears the
         NON-BYPASSABLE anti-vacuity guard (:func:`teatree.loops.dream.promote.guard_can_fail`)
         or is rejected (no file written). A promotion failure is reported in the
-        summary line, never crashing the pass that already stamped success.
+        summary line, never crashing the pass that already stamped success. When the
+        default-OFF LLM derivation (#2447) is enabled, each candidate is additionally
+        synthesized into a full scenario and STAGED (never auto-committed).
         """
         if not propose_evals:
             return ""
@@ -176,9 +178,34 @@ class Command(TyperCommand):
             return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
         promoted = sum(1 for o in outcomes if o.promoted)
         rejected = len(outcomes) - promoted
+        derived = self._derive_evals(dry_run=dry_run)
+        if not outcomes:
+            return derived
+        return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s){derived}"
+
+    def _derive_evals(self, *, dry_run: bool) -> str:
+        """Stage LLM-derived full scenarios from the candidate queue (default OFF; never raises).
+
+        Runs only when the default-OFF ``derive_evals`` toggle is on (#2447). Each
+        candidate is synthesized into a full ``under_load`` scenario, teeth-checked,
+        and STAGED for a human/maker to ratify via a PR — never auto-committed to the
+        live suite. A failure is reported in the summary line, never crashing the pass.
+        """
+        from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415
+
+        if not derive_evals_enabled():
+            return ""
+        try:
+            from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415
+            from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
+
+            outcomes = llm_eval_proposer.stage_proposals_file(_default_proposals_path(), dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN eval derivation raised: {type(exc).__name__}: {exc}"
         if not outcomes:
             return ""
-        return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s)"
+        staged = sum(1 for o in outcomes if o.derived)
+        return f"; staged {staged} derived eval(s) for review, dropped {len(outcomes) - staged}"
 
     def _run_memory_promotion(self, *, dry_run: bool) -> str:
         """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
