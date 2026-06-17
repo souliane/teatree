@@ -78,7 +78,7 @@ class TestGetCIService:
 
     def test_resolves_service_from_repo_owning_overlay(self, tmp_path, monkeypatch):
         """Resolve the CI service via the repo's owning overlay when no overlay is active."""
-        subprocess.run([_GIT, "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+        subprocess.run([_GIT, "-C", str(tmp_path), "init", "-q", "-b", "main"], check=True, capture_output=True)
         subprocess.run(
             [_GIT, "-C", str(tmp_path), "remote", "add", "origin", "git@gitlab.com:group/repo.git"],
             check=True,

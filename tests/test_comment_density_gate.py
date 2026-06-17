@@ -332,7 +332,7 @@ class TestPrePushHook:
     def _init_repo(self, tmp_path: Path) -> Path:
         repo = tmp_path / "repo"
         repo.mkdir()
-        subprocess.run([GIT, "init", "-q"], cwd=repo, check=True)
+        subprocess.run([GIT, "init", "-q", "-b", "main"], cwd=repo, check=True)
         subprocess.run([GIT, "config", "user.email", "t@example.com"], cwd=repo, check=True)
         subprocess.run([GIT, "config", "user.name", "t"], cwd=repo, check=True)
         return repo

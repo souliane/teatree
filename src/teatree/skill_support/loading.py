@@ -297,16 +297,18 @@ class SkillLoadingPolicy:
         companion_skills: list[str] | None = None,
     ) -> list[str]:
         ordered: list[str] = []
-        overlay_skill = self._overlay_skill_for_context(
+        overlay_in_scope = self._overlay_in_scope(
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=overlay_active,
             lifecycle_skill=lifecycle_skill,
         )
-        if overlay_skill:
-            ordered.append(overlay_skill)
+        if overlay_in_scope:
+            skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
+            if skill_path:
+                ordered.append(skill_path)
         ordered.extend(self.detect_framework_skills(cwd))
-        if companion_skills:
+        if overlay_in_scope and companion_skills:
             ordered.extend(s for s in companion_skills if isinstance(s, str) and s)
         return ordered
 
@@ -321,17 +323,43 @@ class SkillLoadingPolicy:
         skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
         if not skill_path:
             return ""
-        if overlay_active:
-            return skill_path
-        if not lifecycle_skill:
+        if not SkillLoadingPolicy._overlay_in_scope(
+            cwd=cwd,
+            overlay_skill_metadata=overlay_skill_metadata,
+            overlay_active=overlay_active,
+            lifecycle_skill=lifecycle_skill,
+        ):
             return ""
+        return skill_path
+
+    @staticmethod
+    def _overlay_in_scope(
+        *,
+        cwd: Path,
+        overlay_skill_metadata: OverlaySkillMetadata,
+        overlay_active: bool,
+        lifecycle_skill: str,
+    ) -> bool:
+        """Whether an overlay repo is actually in scope for this task.
+
+        The overlay companion skills (and the overlay's own skill) are
+        required ONLY for overlay work — when the resolved overlay is active
+        for the session, or the cwd's git remote matches one of the overlay's
+        ``remote_patterns``. Teatree-core-only work (no overlay-active, no
+        matching remote) is NOT overlay work, so its companion-skill load
+        gate must not fire.
+        """
+        if overlay_active:
+            return True
+        if not lifecycle_skill:
+            return False
         patterns_object = overlay_skill_metadata.get("remote_patterns", [])
         if not isinstance(patterns_object, list):
-            return ""
+            return False
         patterns = [pattern for pattern in patterns_object if isinstance(pattern, str) and pattern]
         if not patterns:
-            return ""
-        return skill_path if _matches_any_remote(cwd, patterns) else ""
+            return False
+        return _matches_any_remote(cwd, patterns)
 
     @staticmethod
     def detect_framework_skills(cwd: Path) -> list[str]:

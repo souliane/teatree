@@ -18,7 +18,7 @@ _GIT = "git"
 def _init_repo(path: Path, origin_slug: str) -> Path:
     """Create a git repo at *path* with an ``origin`` pointing at *origin_slug*."""
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True)
+    subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True)
     subprocess.run(
         [_GIT, "-C", str(path), "remote", "add", "origin", f"git@github.com:{origin_slug}.git"],
         check=True,

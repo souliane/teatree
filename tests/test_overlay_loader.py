@@ -239,7 +239,7 @@ class TestInferOverlayForUrl:
 def _init_repo_with_origin(path: Path, origin_url: str) -> None:
     """Create a real git repo at ``path`` with ``origin`` set to ``origin_url``."""
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run([_GIT, "init", "-q"], cwd=path, check=True)
+    subprocess.run([_GIT, "init", "-q", "-b", "main"], cwd=path, check=True)
     subprocess.run([_GIT, "remote", "add", "origin", origin_url], cwd=path, check=True)
 
 
@@ -299,7 +299,7 @@ class TestGetOverlayForRepo:
     def test_repo_without_origin_returns_none(self, tmp_path):
         repo = tmp_path / "no-origin"
         repo.mkdir()
-        subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)
+        subprocess.run([_GIT, "init", "-q", "-b", "main"], cwd=repo, check=True)
         overlays = {"a": _RepoOverlay(["acme/widgets"])}
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
             assert get_overlay_for_repo(str(repo)) is None

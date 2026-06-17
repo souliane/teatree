@@ -554,7 +554,7 @@ class TestValidateMrMultipleOverlays:
         # the deny path (no regression in rejection when resolution is sharp).
         repo = tmp_path / "alpha"
         repo.mkdir()
-        subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)
+        subprocess.run([_GIT, "init", "-q", "-b", "main"], cwd=repo, check=True)
         subprocess.run([_GIT, "remote", "add", "origin", "git@github.com:acme/alpha.git"], cwd=repo, check=True)
         monkeypatch.chdir(repo)
         overlays = {

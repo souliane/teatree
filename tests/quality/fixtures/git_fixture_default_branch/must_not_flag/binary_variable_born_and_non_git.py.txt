@@ -1,0 +1,11 @@
+import subprocess
+
+
+def setup(p):
+    # A born branch via a binary-name variable is safe.
+    subprocess.run([_GIT, "init", "-q", "-b", "main", str(p)], check=True)
+    # A non-init verb whose -m message is literally "init" must not be read as
+    # the verb, even when the executable is a binary-name variable.
+    subprocess.run([GIT, "-C", str(p), "commit", "-q", "-m", "init"], check=True)
+    # A non-git binary that happens to take an "init" subcommand is not a git fixture.
+    subprocess.run([NODE, "init"], check=True)
