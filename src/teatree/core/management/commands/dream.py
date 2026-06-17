@@ -26,6 +26,9 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.backend_registry import get_backend_provider
+from teatree.core.overlay_loader import get_all_overlays
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -208,9 +211,6 @@ class Command(TyperCommand):
     @staticmethod
     def _teatree_backlog_host() -> "tuple[CodeHostBackend | None, str]":
         """Resolve the teatree backlog code host + repo slug for Pass-2 ticket filing."""
-        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
-
         repo = "souliane/teatree"
         provider = get_backend_provider()
         for overlay in get_all_overlays().values():
