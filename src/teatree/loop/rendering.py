@@ -24,7 +24,7 @@ from teatree.loop.rendering_classification import _ClassifiedActions, _classify_
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
 from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
 from teatree.loop.rendering_zones import _MAX_PER_STATE, _populate_overlay_zones, _render_action_line, _render_pr_group
-from teatree.loop.statusline import StatuslineEntry, StatuslineZones, ZoneItem, colorize_enabled
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, ZoneItem, colorize_enabled, live_loops_anchor
 
 __all__ = [
     "_ClassifiedActions",
@@ -108,8 +108,6 @@ def _populate_live_loops_anchor(zones: StatuslineZones, *, colorize: bool = Fals
     :func:`~teatree.loop.statusline.live_loops_anchor` is itself fail-open,
     so this wrapper exists only to do the append.
     """
-    from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
-
     zones.anchors.extend(live_loops_anchor(colorize=colorize))
 
 

@@ -68,9 +68,17 @@ _TACH = _REPO_ROOT / "tach.toml"
 # `queue_drain` / `loop_scoping`). `statusline_loops` / `statusline` /
 # `loop_cadences` / `loop_scoping` / `session_identity` become declared tach
 # nodes, dropping the count 36 -> 31.
+# A further PR-4 slice declares the `rendering` flat-file cluster (`rendering`
+# facade over `rendering_classification` / `rendering_dms` / `rendering_items` /
+# `rendering_permalinks` / `rendering_zones`) as tach nodes. The cluster was
+# eager-clean (every intra-loop edge pointed DOWN to declared leaves), so the
+# carve converts no edge structurally; the one win is hoisting the single
+# redundant deferred edge in `rendering.py` (`live_loops_anchor` from
+# `statusline`, already eagerly imported on the same module header) up to the
+# eager import, dropping the count 31 -> 30.
 # SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
 # declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 31
+_FROZEN_INTRA_LOOP_DEFERRED = 30
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:
@@ -403,3 +411,93 @@ class TestLoopStatuslineLoopsNode:
         source = (_LOOP_ROOT / "statusline_loops.py").read_text(encoding="utf-8")
         assert "teatree.loop.tick_piggyback" not in source
         assert "teatree.loop.queue_drain" not in source
+
+
+class TestLoopRenderingNode:
+    """The ``rendering`` flat-file cluster is declared as tach domain nodes (#2413 PR-4 slice).
+
+    The cluster (``rendering`` facade over ``rendering_classification`` /
+    ``rendering_dms`` / ``rendering_items`` / ``rendering_permalinks`` /
+    ``rendering_zones``) was eager-clean — every intra-loop edge already pointed
+    DOWN to already-declared nodes (``dispatch`` / ``statusline`` /
+    ``statusline_render`` / ``pr_ticket_index``) or to a sibling rendering file —
+    but lived inside the single ``teatree.loop`` node, so tach's acyclic guard
+    could not see it. Declaring each flat file as its own ``domain`` node makes
+    the within-cluster DAG enforced: a future back-edge (a rendering file
+    importing the orchestration top, or ``rendering_items`` importing the facade)
+    is now a tach failure, not an invisible cycle. The one redundant deferred
+    edge in ``rendering.py`` (``live_loops_anchor`` from ``statusline``, already
+    imported eagerly on the same module) is hoisted to the eager import, banking
+    the ratchet one step.
+    """
+
+    def test_rendering_cluster_files_are_domain_nodes(self) -> None:
+        for path in (
+            "teatree.loop.rendering",
+            "teatree.loop.rendering_classification",
+            "teatree.loop.rendering_dms",
+            "teatree.loop.rendering_items",
+            "teatree.loop.rendering_permalinks",
+            "teatree.loop.rendering_zones",
+        ):
+            assert _module_entry(path)["layer"] == "domain", path
+
+    def test_rendering_items_is_a_pure_intra_loop_leaf(self) -> None:
+        # `rendering_items` has no intra-loop dependency — it is the bottom of
+        # the rendering DAG (its only non-loop dep is `teatree.url_classify`).
+        loop_deps = {d for d in _depends_on("teatree.loop.rendering_items") if d.startswith("teatree.loop")}
+        assert loop_deps == set()
+
+    def test_no_rendering_file_depends_on_the_orchestration_top(self) -> None:
+        # No file in the rendering cluster may declare a dependency on the
+        # orchestration-top `teatree.loop` (the parent) — that is the back-edge
+        # the carve forbids structurally. Rendering is a pure DOWN leaf consumed
+        # only by `phases.render` / `tick_freshness` in the orchestration top.
+        for path in (
+            "teatree.loop.rendering",
+            "teatree.loop.rendering_classification",
+            "teatree.loop.rendering_dms",
+            "teatree.loop.rendering_items",
+            "teatree.loop.rendering_permalinks",
+            "teatree.loop.rendering_zones",
+        ):
+            assert "teatree.loop" not in _depends_on(path), path
+
+    def test_rendering_facade_reaches_only_declared_leaves(self) -> None:
+        # The facade depends on its sibling rendering files plus the already-
+        # declared `dispatch` / `statusline` / `pr_ticket_index` leaves — never
+        # the orchestration top.
+        loop_deps = {d for d in _depends_on("teatree.loop.rendering") if d.startswith("teatree.loop")}
+        assert loop_deps == {
+            "teatree.loop.dispatch",
+            "teatree.loop.pr_ticket_index",
+            "teatree.loop.statusline",
+            "teatree.loop.rendering_classification",
+            "teatree.loop.rendering_items",
+            "teatree.loop.rendering_permalinks",
+            "teatree.loop.rendering_zones",
+        }
+
+    def test_rendering_does_not_defer_import_the_statusline_facade(self) -> None:
+        # `live_loops_anchor` is reached via the eager `statusline` import on the
+        # module header; no function-scoped `from teatree.loop.statusline import`
+        # remains in `rendering.py` (the redundant deferral PR-4 hoists).
+        source = (_LOOP_ROOT / "rendering.py").read_text(encoding="utf-8")
+        offenders = [
+            line.strip()
+            for line in source.splitlines()
+            if line.lstrip().startswith("from teatree.loop.statusline import") and line != line.lstrip()
+        ]
+        assert offenders == [], f"rendering.py still defers a statusline import: {offenders}"
+
+    def test_parent_loop_declares_the_rendering_children(self) -> None:
+        deps = _depends_on("teatree.loop")
+        for child in (
+            "teatree.loop.rendering",
+            "teatree.loop.rendering_classification",
+            "teatree.loop.rendering_dms",
+            "teatree.loop.rendering_items",
+            "teatree.loop.rendering_permalinks",
+            "teatree.loop.rendering_zones",
+        ):
+            assert child in deps, child
