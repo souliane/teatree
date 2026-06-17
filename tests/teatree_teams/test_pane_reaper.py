@@ -14,7 +14,7 @@ from datetime import timedelta
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.teams.pane_reaper import reap_idle_panes, reapable_panes
 from teatree.teams.panes import PaneState, TeammatePane
 from teatree.teams.roles import TeamRole, team_claim_slot
@@ -26,6 +26,9 @@ def _ticket() -> Ticket:
 
 def _claimed_pane_task(*, idle_minutes_ago: float | None, end_session: bool) -> Task:
     """A task claimed under ``team:core-maker`` whose heartbeat is *idle_minutes_ago* old."""
+    # ``TeammatePane.spawn`` fails closed when teams is off; a live pane (the
+    # reaper's subject) only exists once the master switch is on.
+    ConfigSetting.objects.set_value("teams_enabled", value=True)
     ticket = _ticket()
     session = Session.objects.create(ticket=ticket, agent_id="a")
     task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
