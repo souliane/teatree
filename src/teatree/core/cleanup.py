@@ -16,8 +16,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.config import load_config
 from teatree.core import prek_hook
+from teatree.core._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
 from teatree.core.branch_classification import (
     BranchClassification,
     BranchCommit,
@@ -469,23 +472,6 @@ def _worktree_has_work_to_lose(wt_path: str, target: _EffectiveTarget) -> bool:
         return True
 
 
-def _reap_external_resources(overlay: "OverlayBase", worktree: Worktree, step_errors: list[str]) -> str:
-    """Run the overlay's external-resource reaper, returning a label suffix.
-
-    Appends a descriptive string to *step_errors* on failure (collect-and-
-    surface, never crash mid-teardown) and returns the joined outcomes as a
-    ``" — …"`` suffix for the cleanup label, or ``""`` when nothing was removed
-    or the reaper failed.
-    """
-    try:
-        reaped = overlay.reap_worktree_external_resources(worktree)
-    except Exception as exc:
-        logger.exception("external-resource reap failed for %s (%s)", worktree.repo_path, worktree.branch)
-        step_errors.append(f"external-resource reap failed for {worktree.branch}: {exc}")
-        return ""
-    return " — " + "; ".join(reaped) if reaped else ""
-
-
 def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_dirty: bool, force: bool) -> None:
     """KEEP a dirty worktree when ``keep_if_dirty`` (clean-all, #2243), else warn-and-proceed.
 
@@ -507,6 +493,61 @@ def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_d
         )
         raise RuntimeError(msg)
     logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
+
+
+def _resolve_overlay_or_none(worktree: Worktree) -> "OverlayBase | None":
+    """Resolve the worktree's overlay, or ``None`` when it is no longer registered.
+
+    A worktree whose ``overlay`` is absent from the registry (a foreign overlay
+    not installed here, or one since uninstalled/renamed) used to abort its own
+    teardown — ``get_overlay_for_worktree`` raised ``ImproperlyConfigured`` and
+    ``clean-all`` *skipped the row*, leaving the worktree, docker stack and DB
+    forever (the "clean-all under-reaps" pain). Returning ``None`` lets
+    :func:`cleanup_worktree` run the overlay-agnostic teardown with the #706/#835
+    data-loss guards intact, skipping only the overlay-specific steps.
+    """
+    try:
+        return get_overlay_for_worktree(worktree)
+    except ImproperlyConfigured as exc:
+        logger.warning(
+            "cleanup_worktree: overlay %r unavailable for %s (%s) — overlay-free teardown",
+            worktree.overlay,
+            worktree.repo_path,
+            exc,
+        )
+        return None
+
+
+def _drop_worktree_db(overlay: "OverlayBase | None", worktree: Worktree, step_errors: list[str]) -> None:
+    """Drop the worktree's database, surfacing (never raising) any failure.
+
+    An unregistered overlay can't resolve a custom PG role/host, so fall back to
+    the bare ``drop_db`` defaults (postgres/localhost). Best-effort: a failure is
+    recorded, never fatal.
+    """
+    if not worktree.db_name:
+        return
+    conn = worktree_pg_connection(worktree, overlay=overlay) if overlay is not None else ("", "", {})
+    db_user, db_host, db_env = conn
+    try:
+        drop_db(worktree.db_name, user=db_user, host=db_host, env=db_env or None)
+    except Exception as exc:
+        logger.exception("dropdb failed for %s (%s)", worktree.db_name, worktree.repo_path)
+        step_errors.append(f"dropdb failed for {worktree.db_name}: {exc}")
+
+
+def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree, step_errors: list[str]) -> None:
+    """Remove the worktree's postgres ``pass`` entry when the overlay opts in; no-op otherwise."""
+    if overlay is None or getattr(overlay.config, "teardown_removes_pass_entries", False) is not True:
+        return
+    ticket = worktree.ticket
+    if ticket is None:
+        return
+    try:
+        remove_postgres_pass_entry(ticket.ticket_number)
+    except Exception as exc:
+        logger.exception("pass-entry removal failed for %s", worktree.repo_path)
+        step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
 
 
 def cleanup_worktree(
@@ -559,7 +600,7 @@ def cleanup_worktree(
     """
     workspace = load_config().user.workspace_dir
     wt_path = _resolve_worktree_path(workspace, worktree)
-    overlay = get_overlay_for_worktree(worktree)
+    overlay = _resolve_overlay_or_none(worktree)
 
     _guard_or_warn_dirty_worktree(worktree, wt_path, keep_if_dirty=keep_if_dirty, force=force)
 
@@ -573,35 +614,17 @@ def cleanup_worktree(
     docker_compose_down(compose_project(worktree))
 
     step_errors: list[str] = []
-    for step in overlay.get_cleanup_steps(worktree):
-        try:
-            step.callable()
-        except Exception as exc:
-            logger.exception("cleanup step failed for %s: %s", worktree.repo_path, step.description)
-            step_errors.append(f"{step.description}: {exc}")
+    run_overlay_cleanup_steps(overlay, worktree, step_errors)
 
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene))
 
-    if worktree.db_name:
-        db_user, db_host, db_env = worktree_pg_connection(worktree, overlay=overlay)
-        try:
-            drop_db(worktree.db_name, user=db_user, host=db_host, env=db_env or None)
-        except Exception as exc:
-            logger.exception("dropdb failed for %s (%s)", worktree.db_name, worktree.repo_path)
-            step_errors.append(f"dropdb failed for {worktree.db_name}: {exc}")
-
-    if getattr(overlay.config, "teardown_removes_pass_entries", False) is True:
-        ticket = worktree.ticket
-        if ticket is not None:
-            try:
-                remove_postgres_pass_entry(ticket.ticket_number)
-            except Exception as exc:
-                logger.exception("pass-entry removal failed for %s", worktree.repo_path)
-                step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
+    _drop_worktree_db(overlay, worktree, step_errors)
+    _remove_overlay_pass_entry(overlay, worktree, step_errors)
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
-    label += _reap_external_resources(overlay, worktree, step_errors)
+    if overlay is not None:
+        label += reap_external_resources(overlay, worktree, step_errors)
 
     ticket_id = worktree.ticket.pk
     worktree.delete()

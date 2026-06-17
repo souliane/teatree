@@ -20,6 +20,7 @@ import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
 import teatree.core.management.commands._workspace_reap as ws_reap_mod
+import teatree.core.management.commands._workspace_stash as ws_stash_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
@@ -1906,19 +1907,23 @@ class TestWorkspaceCleanMerged(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_skips_worktree_whose_overlay_is_not_installed(self) -> None:
+    def test_reaps_merged_worktree_whose_overlay_is_not_installed(self) -> None:
         # A merged row for an overlay not installed in this environment must be
-        # SKIPPED per row, not abort the whole sweep (#2472).
+        # REAPED overlay-free (not skipped — the under-reaping that left stale
+        # worktrees behind), while the sweep still completes per-row (#2472).
         merged = Ticket.objects.create(
             overlay="t3-ghost",
             issue_url="https://example.com/issues/73",
             state=Ticket.State.MERGED,
         )
-        Worktree.objects.create(overlay="t3-ghost", ticket=merged, repo_path="repo", branch="ac-repo-73")
+        wt = Worktree.objects.create(overlay="t3-ghost", ticket=merged, repo_path="repo", branch="ac-repo-73")
 
         cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
 
-        assert any("SKIPPED" in c and "overlay" in c.lower() for c in cleaned)
+        assert not Worktree.objects.filter(pk=wt.pk).exists(), (
+            "foreign-overlay merged row must be reaped overlay-free, not skipped"
+        )
+        assert any("Cleaned" in c and "ac-repo-73" in c for c in cleaned)
 
 
 def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
@@ -2353,7 +2358,7 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
         assert "deleted-branch" in result[0]
@@ -2371,13 +2376,13 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert result == []
 
     def test_returns_empty_when_no_stashes(self) -> None:
         with patch.object(git_mod, "run", return_value=""):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
         assert result == []
 
     def test_skips_stash_without_on_keyword(self) -> None:
@@ -2392,7 +2397,7 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert result == []
 
@@ -2413,7 +2418,7 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert len(result) == 1
         assert "deleted-branch" in result[0]
@@ -2436,10 +2441,64 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert result == []
         assert not any(a[:2] == ["stash", "drop"] for a in calls)
+
+    def test_keeps_orphaned_stash_when_changes_not_merged(self) -> None:
+        # An orphaned stash whose branch is gone but whose changes are NOT captured
+        # upstream must be KEPT — dropping it is silent data loss (the #1913 FSM /
+        # dreaming-phase stashes). `git cherry` prints `+` for the unmerged commit.
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 unmerged work"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return "+ abc123def unmerged work"
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "Kept orphaned stash" in result[0]
+        assert "deleted-branch" in result[0]
+        assert not any(a[:2] == ["stash", "drop"] for a in calls), "must NOT drop an unmerged orphaned stash"
+
+    def test_drops_orphaned_stash_when_changes_already_merged(self) -> None:
+        # The symmetric case: an orphaned stash whose changes ARE captured upstream
+        # (`git cherry` prints `-`) is safe to drop — nothing is lost.
+        stash_output = "stash@{0}: WIP on deleted-branch: abc123 merged work"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            if args == ["rev-parse", "--abbrev-ref", "origin/HEAD"]:
+                return "origin/main"
+            if args[:1] == ["cherry"]:
+                return "- abc123def merged work"
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "already merged" in result[0]
+        assert ["stash", "drop", "stash@{0}"] in calls
 
     def test_keeps_detached_head_stash(self) -> None:
         # A stash taken on a detached HEAD reads "On (no branch): ..." — there
@@ -2457,7 +2516,7 @@ class TestDropOrphanedStashes(TestCase):
             return ""
 
         with patch.object(git_mod, "run", side_effect=fake_run):
-            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+            result = ws_stash_mod.drop_orphaned_stashes("/repo")
 
         assert result == []
         assert not any(a[:2] == ["stash", "drop"] for a in calls)
@@ -2466,17 +2525,17 @@ class TestDropOrphanedStashes(TestCase):
 class TestStashBranch(TestCase):
     def test_parses_wip_auto_stash(self) -> None:
         line = "stash@{0}: WIP on feature-x: abc123 init"
-        assert ws_cleanup_mod._stash_branch(line) == "feature-x"
+        assert ws_stash_mod._stash_branch(line) == "feature-x"
 
     def test_parses_explicit_message_stash(self) -> None:
         line = "stash@{2}: On feature-x: working on the parser"
-        assert ws_cleanup_mod._stash_branch(line) == "feature-x"
+        assert ws_stash_mod._stash_branch(line) == "feature-x"
 
     def test_unparseable_line_returns_empty(self) -> None:
-        assert ws_cleanup_mod._stash_branch("stash@{0}: Some unusual format") == ""
+        assert ws_stash_mod._stash_branch("stash@{0}: Some unusual format") == ""
 
     def test_detached_head_returns_empty(self) -> None:
-        assert ws_cleanup_mod._stash_branch("stash@{0}: On (no branch): detached work") == ""
+        assert ws_stash_mod._stash_branch("stash@{0}: On (no branch): detached work") == ""
 
 
 class TestDropOrphanDatabasesFailure(TestCase):
@@ -3468,13 +3527,18 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
             assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
 
-    def test_foreign_overlay_row_does_not_crash_and_other_rows_still_reaped(self) -> None:
-        """A row whose overlay is unregistered is skipped with a warning; the run completes.
+    def test_foreign_overlay_merged_row_is_reaped_overlay_free_not_skipped(self) -> None:
+        """A merged row whose overlay is unregistered is REAPED overlay-free, not skipped.
 
-        This is the documented crash: ``get_overlay_for_worktree`` raises
-        ``ImproperlyConfigured`` for a foreign/unregistered overlay, which the
-        old ``except RuntimeError`` did not catch — aborting the whole run. The
-        registered-overlay merged sibling must still be reaped in the same pass.
+        Skipping foreign/unregistered-overlay rows (the old #2472 behaviour) is
+        exactly what left hundreds of stale worktrees + their docker/DB behind:
+        a sibling product overlay's row reaped from a clone where only the teatree
+        overlay is installed could never be cleaned. ``cleanup_worktree`` now
+        resolves the overlay tolerantly and runs
+        the overlay-agnostic teardown, so a *merged* foreign-overlay worktree is
+        actually reaped — git worktree + branch removed, row deleted — while the
+        #706/#835 data-loss guards (all git-based) still protect unmerged work.
+        The crash-safety #2472 added is preserved: the run never aborts mid-sweep.
         """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
@@ -3488,11 +3552,52 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             cleaned, _docker, _dropped = self._run_clean_all(tmp)
 
             assert not Worktree.objects.filter(pk=good.pk).exists(), "registered merged row should be reaped"
-            assert Worktree.objects.filter(pk=foreign.pk).exists(), "foreign-overlay row must be kept, not crashed on"
-            assert foreign_path.is_dir(), "foreign worktree dir must survive"
-            assert any("overlay-uninstalled" in c and "not registered" in c for c in cleaned), (
-                f"expected a foreign-overlay skip warning, got: {cleaned!r}"
+            assert not Worktree.objects.filter(pk=foreign.pk).exists(), (
+                "foreign-overlay MERGED row must now be reaped overlay-free, not skipped"
             )
+            assert not foreign_path.is_dir(), "foreign worktree dir must be removed"
+            assert sum("Cleaned" in c for c in cleaned) == 2, (
+                f"both the registered and foreign merged rows should be cleaned, got: {cleaned!r}"
+            )
+
+    def test_foreign_overlay_unmerged_row_is_kept_by_data_loss_guard(self) -> None:
+        """The overlay-free reap still keeps an UNMERGED foreign-overlay worktree.
+
+        The symmetric guarantee to the merged-reap above: reaping foreign-overlay
+        rows must never bypass the #706 data-loss guard. A foreign-overlay
+        worktree carrying genuinely-unique unpushed work is KEPT (its dir and row
+        survive) — the guard runs on git state alone, so no overlay is required to
+        protect the work.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "unique.py").write_text("real unpushed work\n", encoding="utf-8")
+            _git(work, "add", "unique.py")
+            _git(work, "commit", "-q", "-m", "feat: unique unpushed work on a foreign overlay (#204)")
+            _git(work, "checkout", "-q", "main")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+
+            ticket = Ticket.objects.create(overlay="overlay-uninstalled", issue_url="https://example.com/issues/204")
+            wt = Worktree.objects.create(
+                overlay="overlay-uninstalled",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                state=Worktree.State.PROVISIONED,
+                extra={"clone_path": str(work), "worktree_path": str(wt_path)},
+            )
+
+            # Force the merged classifier so the reap is attempted; the data-loss
+            # guard is the only thing that may keep the unique unpushed work.
+            with patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True):
+                cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), "unmerged foreign-overlay row must be kept"
+            assert wt_path.is_dir(), "DATA LOSS: foreign-overlay worktree dir with unique work was removed"
+            assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
 
     def test_unclassifiable_sibling_repo_is_skipped_not_crashed(self) -> None:
         """A non-CREATED row whose sibling repo cannot be classified is skipped, not fatal.

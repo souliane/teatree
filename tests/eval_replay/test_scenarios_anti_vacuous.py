@@ -32,7 +32,8 @@ import pytest
 
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import discover_specs
-from teatree.eval.models import EvalSpec, Matcher
+from teatree.eval.matcher_vacuity import negative_only_specs
+from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
 from teatree.eval.report import evaluate
 from teatree.eval.sdk_runner import load_agent_definition
 
@@ -306,6 +307,68 @@ def test_noop_gate_flags_an_only_negative_scenario(tmp_path: Path) -> None:
             "the no-op gate must NOT flag a scenario with a positive matcher — a no-op "
             "transcript cannot satisfy a required tool call, so it is non-vacuous."
         )
+
+
+def test_no_scenario_has_a_negative_matcher_without_a_positive_anchor() -> None:
+    """Structural gate: a negative matcher must be paired with a positive anchor (#2441).
+
+    A scenario graded ONLY by negative matchers (``no_tool_call_matching``) is
+    vacuously satisfied by a no-op agent — a do-nothing run trivially never makes
+    the forbidden tool call, so the scenario reads green while guarding nothing.
+    The runtime ``_noop`` gate above
+    (:func:`test_no_scenario_is_satisfied_by_a_noop_transcript`) already catches
+    this by replaying every spec against a no-op transcript; this is the
+    *structural* sibling that makes the vacuous shape a fast, fixture-free RED.
+
+    A negative matcher is non-vacuous only when paired with a positive anchor — a
+    positive ``tool_call``/``any_of`` matcher or a ``final_state`` matcher that
+    forces the agent to *do* something the no-op cannot. The gate fails loud,
+    naming each offender, so the negative-only shape can never reach the suite
+    green.
+    """
+    offenders = negative_only_specs(discover_specs())
+    assert not offenders, (
+        "behavioral scenario(s) carry a negative matcher (`no_tool_call_matching`) but no "
+        "positive anchor, so a no-op agent satisfies them — they are vacuous. Pair each "
+        "negative matcher with a positive `tool_call`/`any_of`/`final_state` matcher that "
+        "requires the expected action for each:\n"
+        + "\n".join(f"  - {spec.name} ({spec.source_path.name})" for spec in offenders)
+    )
+
+
+def test_negative_only_gate_flags_an_only_negative_scenario() -> None:
+    """Anti-vacuity proof for the structural negative-pairing gate (#2441).
+
+    A synthetic scenario whose only matchers are NEGATIVE must be flagged by the
+    gate predicate; a scenario that pairs a negative with a positive anchor (and a
+    judge-only scenario carrying no matcher at all) must NOT. If the gate were
+    weakened — e.g. predicate reverted to ``return []`` — the first assertion
+    fails, so the proof exercises the real predicate, not a re-implementation.
+    """
+    negative = Matcher(kind="negative", tool="Bash", arg_path="command", operator="~", value="forbidden")
+    positive = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="git push")
+
+    only_negative = _fake_spec(name="__synthetic_negative_only__", matchers=(negative,))
+    paired_with_positive = _fake_spec(name="__synthetic_paired_positive__", matchers=(positive, negative))
+    paired_with_any_of = _fake_spec(
+        name="__synthetic_paired_any_of__", matchers=(AnyOf(alternatives=(positive,)), negative)
+    )
+    paired_with_final = _fake_spec(
+        name="__synthetic_paired_final__", matchers=(FinalStateMatcher(operator="~", value="(?i)done"), negative)
+    )
+    judge_only = _fake_spec(name="__synthetic_judge_only_vac__", matchers=())
+
+    flagged = negative_only_specs(
+        [only_negative, paired_with_positive, paired_with_any_of, paired_with_final, judge_only]
+    )
+    assert only_negative in flagged, (
+        "the negative-pairing gate must FLAG an only-negative scenario (a no-op agent satisfies it); "
+        "it did not — the vacuity guard is weakened."
+    )
+    assert paired_with_positive not in flagged, "a negative paired with a positive matcher must NOT be flagged."
+    assert paired_with_any_of not in flagged, "a negative paired with an any_of anchor must NOT be flagged."
+    assert paired_with_final not in flagged, "a negative paired with a final_state anchor must NOT be flagged."
+    assert judge_only not in flagged, "a judge-only (matcherless) scenario carries no negative matcher to pair."
 
 
 def test_every_declared_agent_section_resolves_against_its_skill() -> None:

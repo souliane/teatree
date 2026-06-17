@@ -10,8 +10,6 @@ import logging
 import sys
 from pathlib import Path
 
-from django.core.exceptions import ImproperlyConfigured
-
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.utils.run import run_allowed_to_fail
@@ -61,26 +59,22 @@ def reap_one_worktree(worktree: Worktree, *, interactive: bool, strict_hygiene: 
     bundle-and-reaped on a merged signal (#2243) — the data-loss guard the
     constraint requires for a live worktree.
 
-    Two failure modes are caught. A ``RuntimeError`` is the #706/#835/#1506/#2243
+    One failure mode is caught here. A ``RuntimeError`` is the #706/#835/#1506/#2243
     data-loss guards refusing genuinely-unsynced or uncommitted work; it is
     routed to :func:`resolve_unsynced_worktree`, which keeps the row and reports
-    it (or, interactively, offers push/abandon). An ``ImproperlyConfigured``
-    means the row's ``overlay`` is no longer registered — a foreign/unregistered
-    overlay, or a sibling-repo worktree whose overlay was uninstalled;
-    ``get_overlay_for_worktree`` raises it before any teardown step runs (the
-    documented crash that made ``clean-all`` unusable end to end). That row is
-    skipped with a warning and the run continues over the rest.
+    it (or, interactively, offers push/abandon).
+
+    A row whose ``overlay`` is no longer registered — a foreign/unregistered
+    overlay, or a sibling-repo worktree whose overlay was uninstalled — is no
+    longer skipped (the under-reaping that left hundreds of stale worktrees +
+    their docker/DB behind). :func:`cleanup_worktree` resolves the overlay
+    tolerantly and runs the overlay-agnostic teardown so the row is actually
+    reaped, with the same data-loss guards in force.
     """
     try:
         return str(cleanup_worktree(worktree, strict_hygiene=strict_hygiene, keep_if_dirty=True))
     except RuntimeError as exc:
         return resolve_unsynced_worktree(worktree, exc, interactive=interactive)
-    except ImproperlyConfigured as exc:
-        logger.warning("clean-all skipped %s: overlay %r unavailable (%s)", worktree.repo_path, worktree.overlay, exc)
-        return (
-            f"SKIPPED '{worktree.branch}': overlay {worktree.overlay!r} is not registered "
-            f"({exc}) — keeping the row. Re-register the overlay to reap it."
-        )
 
 
 def resolve_unsynced_worktree(worktree: Worktree, exc: RuntimeError, *, interactive: bool) -> str:
