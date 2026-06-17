@@ -29,6 +29,8 @@ from django_typer.management import TyperCommand, command
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from teatree.core.backend_protocols import CodeHostBackend
+
 
 class Command(TyperCommand):
     help = "Drive the idle-time memory-consolidation (dreaming) cron (#1933)."
@@ -145,9 +147,10 @@ class Command(TyperCommand):
         DreamRunMarker.objects.mark_succeeded(now)
         promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
         memory_phases = self._run_memory_phases(dry_run=dry_run)
+        memory_promote = self._run_memory_promotion(dry_run=dry_run)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}.",
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}{memory_promote}.",
         )
         return True
 
@@ -173,6 +176,48 @@ class Command(TyperCommand):
         if not outcomes:
             return ""
         return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s)"
+
+    def _run_memory_promotion(self, *, dry_run: bool) -> str:
+        """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
+
+        Runs only when the default-OFF ``memory_promote`` toggle is on, because it
+        FILES backlog tickets. Resolves the teatree backlog code host, triages every
+        untriaged ``ConsolidatedMemory`` row, files a deduped ``needs-triage`` ticket
+        for each core-generic gap, and retires any TICKETED memory whose linked ticket
+        has closed. A failure is reported in the summary line, never crashing the pass.
+        """
+        from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
+
+        if not memory_promote_enabled():
+            return ""
+        try:
+            from teatree.loops.dream import promote_memory  # noqa: PLC0415
+
+            host, repo = self._teatree_backlog_host()
+            if host is None:
+                return "; WARN memory promotion skipped — no teatree code host resolved"
+            filed = promote_memory.file_core_gap_tickets(host, repo=repo, dry_run=dry_run)
+            retired = [] if dry_run else promote_memory.retire_resolved_memories(host)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
+        new_tickets = sum(1 for o in filed if o.filed)
+        if not filed and not retired:
+            return ""
+        return f"; ticketed {new_tickets} core-gap memory(ies), retired {len(retired)}"
+
+    @staticmethod
+    def _teatree_backlog_host() -> "tuple[CodeHostBackend | None, str]":
+        """Resolve the teatree backlog code host + repo slug for Pass-2 ticket filing."""
+        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        repo = "souliane/teatree"
+        provider = get_backend_provider()
+        for overlay in get_all_overlays().values():
+            host = provider.get_code_host(overlay)
+            if host is not None:
+                return host, repo
+        return None, repo
 
     def _run_memory_phases(self, *, dry_run: bool) -> str:
         """Run the memory-file phases 4-6 over every discovered memory dir, fault-isolated.

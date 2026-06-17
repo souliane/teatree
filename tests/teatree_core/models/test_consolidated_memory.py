@@ -179,6 +179,81 @@ class TestManager(TestCase):
 
         assert result == [verified]
 
+
+class TestDispositionLadder(TestCase):
+    """Pass-2 (#2426) drains the ledger via a disposition ladder, never silently dropping BINDING."""
+
+    def test_default_disposition_is_untriaged(self) -> None:
+        assert _record().disposition == ConsolidatedMemory.Disposition.UNTRIAGED
+
+    def test_classify_user_specific_keeps_the_memory(self) -> None:
+        row = _record()
+        row.classify_user_specific()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+
+    def test_classify_core_gap_queues_for_ticketing(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+
+    def test_mark_ticketed_records_url_and_advances(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+        assert row.ticket_url == "https://github.com/souliane/teatree/issues/42"
+
+    def test_mark_ticketed_refuses_empty_url(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        with pytest.raises(ValueError, match="non-empty ticket URL"):
+            row.mark_ticketed("  ")
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+        assert row.ticket_url == ""
+
+    def test_retire_archives_the_prose(self) -> None:
+        row = _record()
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        row.retire("https://github.com/souliane/teatree/issues/42")
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert row.archive_path == "https://github.com/souliane/teatree/issues/42"
+        assert row.expired_at is not None
+
+    def test_retire_refuses_binding_row(self) -> None:
+        row = _record(is_binding=True)
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        with pytest.raises(BindingFeedbackError):
+            row.retire("archive/x.md")
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+
+
+class TestDispositionManager(TestCase):
+    def test_untriaged_returns_only_unclassified_rows(self) -> None:
+        fresh = _record("u1")
+        classified = _record("u2")
+        classified.classify_user_specific()
+        result = list(ConsolidatedMemory.objects.untriaged())
+        assert fresh in result
+        assert classified not in result
+
+    def test_awaiting_ticket_close_returns_only_ticketed_rows_with_url(self) -> None:
+        ticketed = _record("t1")
+        ticketed.classify_core_gap()
+        ticketed.mark_ticketed("https://github.com/souliane/teatree/issues/1")
+        gap_no_ticket = _record("t2")
+        gap_no_ticket.classify_core_gap()
+        result = list(ConsolidatedMemory.objects.awaiting_ticket_close())
+        assert ticketed in result
+        assert gap_no_ticket not in result
+
     def test_schema_count_counts_overlay_rows(self) -> None:
         _record("a", overlay="acme")
         _record("b", overlay="acme")
