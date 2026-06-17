@@ -7087,8 +7087,15 @@ Usage: t3 teatree config_setting import [OPTIONS]
  and unknown keys are skipped — only operational settings move. The upsert
  makes a re-run idempotent.
 
+ ``--no-clobber`` seeds only keys ABSENT from the store and leaves an
+ existing row untouched — the mode ``t3 setup`` runs on every update so a
+ value the user changed via ``config_setting set`` survives. Without it
+ (the default), a re-import refreshes every operational key from the file.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --no-clobber          Seed only keys absent from the store; never overwrite  │
+│                       an existing DB row.                                    │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -12,8 +12,11 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # approval gates, on_behalf_post_mode, repo_mode, the cadence/threshold dials,
 # … — are DB-home and live in the ConfigSetting store; a value for one of them
 # left in [teatree] / [overlays.<name>] is IGNORED on read. Set them with
-# `t3 <overlay> config_setting set` (see below), and migrate an existing config
-# once with `t3 <overlay> config_setting import`.
+# `t3 <overlay> config_setting set` (see below). `t3 setup` auto-migrates an
+# existing config into the store on every run (non-clobbering: it seeds only keys
+# absent from the store, so a value you later change via `config_setting set`
+# survives); `t3 <overlay> config_setting import` is the manual equivalent (it
+# refreshes every operational key from the file).
 [teatree]
 workspace_dir = "~/workspace"
 privacy = "strict"
@@ -64,7 +67,7 @@ t3 <overlay> config_setting set mode auto                                  # glo
 t3 <overlay> config_setting set require_human_approval_to_merge false --overlay myproject
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
-t3 <overlay> config_setting import                                         # one-time: migrate a pre-partition [teatree] block
+t3 <overlay> config_setting import                                         # manual one-time migrate (refreshes from file); `t3 setup` runs the non-clobbering auto-migration
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
