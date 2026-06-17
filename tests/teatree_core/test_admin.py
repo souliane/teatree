@@ -27,9 +27,20 @@ class TestLoopAdmin:
 
     def test_loop_admin_lists_key_columns(self) -> None:
         model_admin = admin.site._registry[Loop]
-        assert "name" in model_admin.list_display
-        assert "enabled" in model_admin.list_display
-        assert "delay_seconds" in model_admin.list_display
+        for column in ("name", "enabled", "action", "run_in_sub_agent", "description", "cadence"):
+            assert column in model_admin.list_display
+
+    def test_loop_admin_action_shows_script_or_prompt(self) -> None:
+        model_admin = admin.site._registry[Loop]
+        prompt_loop = Loop(name="demo-prompt", delay_seconds=60, prompt="do x")
+        script_loop = Loop(name="demo-script", delay_seconds=60, prompt="", script="run.py")
+        assert model_admin.action(prompt_loop) == "do x"
+        assert model_admin.action(script_loop) == "run.py"
+
+    def test_loop_admin_cadence_shows_human_label(self) -> None:
+        model_admin = admin.site._registry[Loop]
+        loop = Loop(name="demo-cadence", delay_seconds=60, prompt="do x")
+        assert model_admin.cadence(loop) == "every 60s"
 
     def test_loop_admin_allows_inline_enable_disable(self) -> None:
         model_admin = admin.site._registry[Loop]
