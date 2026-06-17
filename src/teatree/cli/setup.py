@@ -17,7 +17,7 @@ from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
-from teatree.self_update import current_editable_source, ensure_self_db_migrated
+from teatree.self_update import current_editable_source, ensure_self_db_migrated, seed_db_config_from_toml
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -603,6 +603,17 @@ def run(
     )
 
     self_db_unmigrated = ensure_self_db_migrated(quiet=True)
+
+    # The #938 dual-read migration (TODO-75): once the self-DB is migrated (so the
+    # ``ConfigSetting`` table exists), seed the DB config store from any operational
+    # keys still in ``~/.teatree.toml`` — global ``[teatree]`` keys into the global
+    # scope, ``[overlays.<name>]`` keys into that overlay's scope. ``--no-clobber``
+    # means it only seeds keys absent from the store, so a value the user set via
+    # ``config_setting set`` survives every later ``t3 setup``. Best-effort: a
+    # failure is a WARN, never fatal (the TOML stays readable, the resolver falls
+    # through), so the config seed never aborts setup.
+    if not self_db_unmigrated:
+        seed_db_config_from_toml()
 
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see

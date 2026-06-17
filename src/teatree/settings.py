@@ -63,6 +63,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Local-only: auto-login the admin dashboard as the superuser when DEBUG is
+    # on, so the single-user 127.0.0.1 admin needs no password. Inert off-DEBUG.
+    "teatree.core.middleware.LocalAdminAutoLoginMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]

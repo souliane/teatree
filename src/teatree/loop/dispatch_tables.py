@@ -128,6 +128,7 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
+    "backlog_sweep.",
     # #2190 the idle reaper + queue drainer route to mechanical handlers; their
     # bookkeeping signals must not flood the statusline (a slow drain emits a
     # backoff signal per due item per tick).
