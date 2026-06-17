@@ -144,6 +144,7 @@ Write failing test → Implement → Green → Refactor
 
 ### 3. Follow Conventions
 
+- **Full type annotations on every new function — do X, never Y.** Every new function and method carries modern type annotations on **all** parameters AND the return: `def slugify(title: str) -> str:`, `def load(path: Path) -> dict[str, int]:` — **never** a bare `def slugify(title):` or a missing `-> ...`. Use the modern lowercase generics (`list[str]`, `dict[str, int]`, `str | None`), not `typing.List` / `Optional`. `Any` only when interfacing with genuinely untyped third-party code. A pure helper is the easy case, so it is the strict case: it ships fully annotated.
 - Language/framework conventions from the project's convention skills (when loaded).
 - Repository-specific patterns take precedence over generic guidance.
 - Feature flag rules for new features (see [`references/multi-tenant-development.md`](references/multi-tenant-development.md)).

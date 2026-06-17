@@ -57,6 +57,14 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
         """Count of all consolidation rows recorded for *overlay*."""
         return self.filter(overlay=overlay).count()
 
+    def untriaged(self) -> "models.QuerySet[ConsolidatedMemory]":
+        """Rows the Pass-2 promote pass has not yet classified (the queue to drain)."""
+        return self.filter(disposition=ConsolidatedMemory.Disposition.UNTRIAGED)
+
+    def awaiting_ticket_close(self) -> "models.QuerySet[ConsolidatedMemory]":
+        """TICKETED rows whose linked teatree ticket may now be closed → retirable."""
+        return self.filter(disposition=ConsolidatedMemory.Disposition.TICKETED).exclude(ticket_url="")
+
 
 class ConsolidatedMemory(models.Model):
     """One distilled rule per member cluster — the consolidation ledger row.
@@ -75,11 +83,31 @@ class ConsolidatedMemory(models.Model):
         SUPERSEDED = "superseded", "Superseded"
         EXPIRED = "expired", "Expired"
 
+    class Disposition(models.TextChoices):
+        """Pass-2 (#2426) draining queue: where a consolidated rule's lesson belongs.
+
+        The ledger is a queue that DRAINS, not a pile that grows. ``UNTRIAGED`` is a
+        freshly-recorded row Pass 2 has not classified yet. ``USER_SPECIFIC_KEEP``
+        legitimately stays as memory (tone, local paths, per-user workflow).
+        ``CORE_GAP_NEEDS_TICKET`` is a generic/teatree-core lesson — a confession of
+        a workflow gap that must be fixed in code; ``TICKETED`` once a tracking issue
+        is filed (``ticket_url`` recorded); ``RESOLVED_RETIRED`` once the fix lands and
+        the memory is archived.
+        """
+
+        UNTRIAGED = "untriaged", "Untriaged"
+        USER_SPECIFIC_KEEP = "user_specific_keep", "User-specific (keep as memory)"
+        CORE_GAP_NEEDS_TICKET = "core_gap_needs_ticket", "Core gap (needs ticket)"
+        TICKETED = "ticketed", "Ticketed"
+        RESOLVED_RETIRED = "resolved_retired", "Resolved (retired)"
+
     cluster_key = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.CANDIDATE)
+    disposition = models.CharField(max_length=24, choices=Disposition.choices, default=Disposition.UNTRIAGED)
     rule = models.TextField()
     source_files = models.JSONField(default=list)
     durable_destination = models.CharField(max_length=512, blank=True, default="")
+    ticket_url = models.CharField(max_length=512, blank=True, default="")
     is_binding = models.BooleanField(default=False)
     member_count = models.PositiveIntegerField()
     max_member_weight = models.PositiveIntegerField()
@@ -180,6 +208,54 @@ class ConsolidatedMemory(models.Model):
         self.archive_path = archive_path.strip()
         self.expired_at = timezone.now()
         self.save(update_fields=["status", "archive_path", "expired_at", "updated_at"])
+
+    def classify_user_specific(self) -> None:
+        """Pass-2 triage → USER_SPECIFIC_KEEP: the lesson legitimately stays as memory.
+
+        Personal tone, local paths, per-user workflow — teatree cannot encode these,
+        so the row stays a memory safety net and is removed from the triage queue.
+        """
+        self.disposition = self.Disposition.USER_SPECIFIC_KEEP
+        self.save(update_fields=["disposition", "updated_at"])
+
+    def classify_core_gap(self) -> None:
+        """Pass-2 triage → CORE_GAP_NEEDS_TICKET: a generic lesson that must be fixed in code.
+
+        The row is a confession that teatree core has a workflow gap. Marking it
+        queues it for ticket-filing; the prose is retired once that fix lands.
+        """
+        self.disposition = self.Disposition.CORE_GAP_NEEDS_TICKET
+        self.save(update_fields=["disposition", "updated_at"])
+
+    def mark_ticketed(self, ticket_url: str) -> None:
+        """CORE_GAP_NEEDS_TICKET → TICKETED, recording the tracking issue's URL.
+
+        Refuses an empty URL: a ticketed disposition with no back-reference would
+        orphan the row with no way to retire it on the fix landing.
+        """
+        url = ticket_url.strip()
+        if not url:
+            msg = "mark_ticketed requires a non-empty ticket URL — a ticketed row needs a back-reference"
+            raise ValueError(msg)
+        self.disposition = self.Disposition.TICKETED
+        self.ticket_url = url
+        self.save(update_fields=["disposition", "ticket_url", "updated_at"])
+
+    def retire(self, archive_path: str) -> None:
+        """TICKETED → RESOLVED_RETIRED, archiving the prose now its fix has landed.
+
+        The end of the drain: the gap the memory confessed is closed in code, so the
+        prose is retired (archived, never silently dropped). Refuses a BINDING row —
+        binding feedback is load-bearing user doctrine, raising
+        :class:`BindingFeedbackError` rather than retiring it.
+        """
+        if self.is_binding:
+            msg = f"refusing to retire BINDING consolidated rule {self.pk} — binding feedback is never dropped"
+            raise BindingFeedbackError(msg)
+        self.disposition = self.Disposition.RESOLVED_RETIRED
+        self.archive_path = archive_path.strip()
+        self.expired_at = timezone.now()
+        self.save(update_fields=["disposition", "archive_path", "expired_at", "updated_at"])
 
     @property
     def can_prune_index_line(self) -> bool:
