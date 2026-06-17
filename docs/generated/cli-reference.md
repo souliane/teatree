@@ -3035,9 +3035,16 @@ Usage: t3 loop pending-spawn [OPTIONS]
  Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
  ``claim-next``, not this + ``spawn-claim``.
 
+ ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
+ reports work ONLY when a unit ``claim-next`` could actually claim,
+ so the Stop-hook self-pump stops re-offering a PENDING unit that a
+ full in-flight admit budget will always refuse.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit pending list as JSON.                                   │
-│ --help          Show this message and exit.                                  │
+│ --json                    Emit pending list as JSON.                         │
+│ --claimable-only          Report work ONLY when a claim could land (honour   │
+│                           the admit budget).                                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

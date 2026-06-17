@@ -117,6 +117,11 @@ def status_command() -> None:
 def pending_spawn_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit pending list as JSON."),
+    claimable_only: bool = typer.Option(
+        False,
+        "--claimable-only",
+        help="Report work ONLY when a claim could land (honour the admit budget).",
+    ),
 ) -> None:
     """List pending Tasks (read-only probe; legacy — prefer ``claim-next``).
 
@@ -128,6 +133,11 @@ def pending_spawn_command(
     and as a non-mutating "is there pending work?" probe (e.g. the
     Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
     ``claim-next``, not this + ``spawn-claim``.
+
+    ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
+    reports work ONLY when a unit ``claim-next`` could actually claim,
+    so the Stop-hook self-pump stops re-offering a PENDING unit that a
+    full in-flight admit budget will always refuse.
     """
     ensure_django()
 
@@ -136,6 +146,8 @@ def pending_spawn_command(
     kwargs: dict[str, bool] = {}
     if json_output:
         kwargs["json_output"] = True
+    if claimable_only:
+        kwargs["claimable_only"] = True
     call_command("loop_dispatch", "pending-spawn", **kwargs)
 
 

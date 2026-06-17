@@ -5653,18 +5653,18 @@ _SELF_PUMP_PREVIEW = 5
 
 
 def _consolidated_pending_work() -> list[dict]:
-    """Return the loop's pending-spawn work via ``t3 loop pending-spawn --json``.
+    """Return the loop's CLAIMABLE pending work via ``t3 loop pending-spawn``.
 
-    Pure read of the existing dispatch seam — no new state. ``[]`` on any
-    failure (no ``t3``, timeout, non-zero, malformed) so the self-pump
-    fails safe to "idle" rather than spinning on a broken read.
+    ``--claimable-only`` (TODO #100) makes the probe budget-aware so a unit
+    a full in-flight budget will refuse never re-arms the self-pump (the
+    un-advanceable re-offer). ``[]`` on any failure so it fails safe to idle.
     """
     t3_bin = shutil.which("t3")
     if not t3_bin:
         return []
     try:
         result = subprocess.run(  # noqa: S603
-            [t3_bin, "loop", "pending-spawn", "--json"],
+            [t3_bin, "loop", "pending-spawn", "--json", "--claimable-only"],
             capture_output=True,
             text=True,
             timeout=_SELF_PUMP_PENDING_TIMEOUT,
