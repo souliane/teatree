@@ -409,7 +409,8 @@ depends_on = [
   "teatree.loop.rendering_classification",
   "teatree.loop.rendering_permalinks",
   "teatree.loop.rendering_zones",
-  "teatree.loop.rendering"
+  "teatree.loop.rendering",
+  "teatree.loop.slack_answer"
 ]
 
 [[modules]]
@@ -603,6 +604,17 @@ depends_on = [
   "teatree.loop.rendering_items",
   "teatree.loop.rendering_permalinks",
   "teatree.loop.rendering_zones"
+]
+
+[[modules]]
+path = "teatree.loop.slack_answer"
+layer = "domain"
+depends_on = [
+  "teatree.backends.slack",
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loop.self_improve",
+  "teatree.loop.statusline"
 ]
 
 [[modules]]

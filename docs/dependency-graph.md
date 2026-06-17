@@ -195,6 +195,7 @@ graph TD
     teatree.loop --> teatree.loop.rendering_permalinks
     teatree.loop --> teatree.loop.rendering_zones
     teatree.loop --> teatree.loop.rendering
+    teatree.loop --> teatree.loop.slack_answer
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.session_identity --> teatree.core.session_identity
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
@@ -272,6 +273,11 @@ graph TD
     teatree.loop.rendering --> teatree.loop.rendering_items
     teatree.loop.rendering --> teatree.loop.rendering_permalinks
     teatree.loop.rendering --> teatree.loop.rendering_zones
+    teatree.loop.slack_answer --> teatree.backends.slack
+    teatree.loop.slack_answer --> teatree.core
+    teatree.loop.slack_answer --> teatree.core.models
+    teatree.loop.slack_answer --> teatree.loop.self_improve
+    teatree.loop.slack_answer --> teatree.loop.statusline
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
