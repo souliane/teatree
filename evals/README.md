@@ -1109,7 +1109,13 @@ Supported matcher operators:
   prevent the scenario from being satisfied vacuously by a no-op
   transcript.
 - `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` — no matching
-  tool call may exist.
+  tool call may exist. A negative matcher MUST be paired with a positive
+  anchor (a `tool_call` / `any_of` / `final_state` matcher) in the same
+  `expect` list — a negative-only scenario is satisfied by a no-op agent and
+  guards nothing. `tests/eval_replay/test_scenarios_anti_vacuous.py`
+  (`test_no_scenario_has_a_negative_matcher_without_a_positive_anchor`,
+  predicate in `teatree.eval.matcher_vacuity`) makes the unpaired shape a
+  fast structural RED, alongside the runtime no-op gate.
 - `any_of: [ <tool_call branch>, ... ]` — a disjunction of positive
   `tool_call` branches; the entry passes when **any** branch holds. Use it
   to pin a rule that a documented set of equally-valid actions satisfies —
