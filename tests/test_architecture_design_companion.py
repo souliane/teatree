@@ -2,7 +2,7 @@
 
 Verifies that:
 - the skill file exists at the expected path with the expected frontmatter
-- the seven architectural checks are enumerated in the ARCHITECTURE.md template
+- the nine architectural checks are enumerated in the ARCHITECTURE.md template
 - the ``requires:`` graph wires it into ``code``, ``ticket``, and ``retro``
 - transitive resolution loads ``architecture-design`` whenever any of the three implementer skills loads
 """
@@ -24,6 +24,8 @@ EXPECTED_TEMPLATE_SECTIONS = [
     "5. Dependency direction",
     "6. Test surface",
     "7. Resilience invariants",
+    "8. Identity and key normalization",
+    "9. Behavior preservation / capability deletion",
 ]
 
 
@@ -48,7 +50,7 @@ class TestSkillFile:
         assert triggers is not None
         assert "writing-plans" in triggers["companions"]
 
-    def test_template_enumerates_seven_sections(self) -> None:
+    def test_template_enumerates_all_nine_sections(self) -> None:
         body = SKILL_PATH.read_text(encoding="utf-8")
         for section in EXPECTED_TEMPLATE_SECTIONS:
             assert section in body, f"ARCHITECTURE.md template missing section: {section}"
