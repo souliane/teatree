@@ -132,14 +132,22 @@ installed editable from a clone; the eval harness ships inside it.
   and passes `--require-executed` UNCONDITIONALLY, so a missing binary/key fails
   the job loud instead of an all-skipped green. The deterministic lanes are gated
   by prek per push + pytest per PR, not re-run here. See "Triggering" below.
-  **Lane fan-out ([#2492](https://github.com/souliane/teatree/issues/2492)).** The
-  full ~68-scenario x 3-trial suite does not fit a single `2 x 80min` job budget,
-  so a `prepare` job computes the lane matrix (`scripts/eval/lane_matrix.py`: every
-  permitted lane for the scheduled/default run, or the one explicit `lane` input)
-  and the `eval` job fans OUT — ONE matrix leg per lane (`clean_room` /
-  `under_load`), each metering one lane that fits, in parallel. `fail-fast: false`
-  keeps each lane's verdict independent. Each leg `t3 eval run --lane "$EVAL_LANE"`
-  and uploads a per-lane `eval-report-<lane>` artifact.
+  **Lane+shard fan-out ([#2492](https://github.com/souliane/teatree/issues/2492)).**
+  The full 181-scenario x 3-trial suite (`clean_room` 167 / `under_load` 14) does
+  not fit a single `2 x 80min` job budget, and the catalog is not evenly split —
+  one leg per *lane* leaves a 167-scenario `clean_room` leg that hits the same
+  wall. So a `prepare` job computes a `{lane, shard}` matrix
+  (`scripts/eval/lane_matrix.py`: every permitted lane for the scheduled/default
+  run, or the one explicit `lane` input, each split into `ceil(count / 14)`
+  contiguous shards — a deterministic partition by scenario name, none dropped or
+  duplicated). The `eval` job fans OUT — ONE matrix leg per SHARD, each metering at
+  most 14 scenarios (the proven-to-fit size) that fits the budget, in parallel
+  (`clean_room` → 12 shards, `under_load` → 1). `fail-fast: false` keeps each leg's
+  verdict independent. Each leg runs
+  `t3 eval run --lane "$EVAL_LANE" --shard "$EVAL_SHARD"` and uploads a per-shard
+  `eval-report-<lane>-<index>-<total>` artifact. `--shard` resolves through
+  `teatree.eval.lane_shard.filter_specs_by_shard`, the single chokepoint the CLI
+  flag and the CI matrix both use.
 
 ## Invocation
 
