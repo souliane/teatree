@@ -1,59 +1,102 @@
-"""Run the named regression-detector semgrep rules and parse their findings.
+"""Run the named regression-detector ast-grep rules and parse their findings.
 
-semgrep is not a teatree runtime dependency (its dep tree conflicts with the
-project's): it is SHA-pinned in ``.pre-commit-config.yaml`` and invoked through
-its isolated pre-commit env. Here it is invoked through ``uvx semgrep@<floor>``
-so the conformance test (and any caller) runs the SAME pinned engine without
-adding semgrep to the project lock.
+ast-grep is not a teatree runtime dependency: it is pinned (``ASTGREP_PIN``) and
+resolved hermetically through ``uvx --from ast-grep-cli==<pin> ast-grep`` (the
+same engine the ac-django convention hooks use), falling back to a system
+``ast-grep``/``sg`` on PATH. Here it is invoked so the conformance test (and any
+caller) runs the SAME pinned engine without adding ast-grep to the project lock.
 
-``SEMGREP_VERSION_FLOOR`` is the minimum that parses the codebase's own PEP 695
-``type`` statements (1.139.0 silently drops a whole file's analysis on the first
-``type`` alias, masking real findings). A future bump fails an explicit test
-rather than a silent CI no-op.
+A future pin bump fails the explicit ``test_engine_is_invocable`` pin rather than
+a silent CI no-op.
+
+The scan is restricted to the rule ids declared under the config directory
+(``--filter``) so ast-grep's built-in ``unused-suppression`` lint — which fires
+on every ``# ast-grep-ignore`` comment left for an *unrelated* ruleset (the
+ac-django hooks) — never leaks into the regression findings.
 """
 
 import json
 import shutil
 from pathlib import Path
 
+import yaml
+
 from teatree.quality.regression_catalog import repo_root
 from teatree.utils.run import run_allowed_to_fail
 
-SEMGREP_VERSION_FLOOR = "1.165.0"
+ASTGREP_PIN = "0.42.3"
 
 
-class SemgrepUnavailableError(RuntimeError):
+class AstGrepUnavailableError(RuntimeError):
     def __init__(self, reason: str) -> None:
-        super().__init__(f"semgrep engine unavailable: {reason}")
+        super().__init__(f"ast-grep engine unavailable: {reason}")
 
 
-def _semgrep_argv() -> list[str]:
-    if shutil.which("semgrep") is not None:
-        return ["semgrep"]
+def _astgrep_argv() -> list[str]:
     if shutil.which("uvx") is not None:
-        return ["uvx", f"semgrep@{SEMGREP_VERSION_FLOOR}"]
-    reason = "neither 'semgrep' nor 'uvx' is on PATH"
-    raise SemgrepUnavailableError(reason)
+        return ["uvx", "--from", f"ast-grep-cli=={ASTGREP_PIN}", "ast-grep"]
+    for binary in ("ast-grep", "sg"):
+        if shutil.which(binary) is not None:
+            return [binary]
+    reason = "neither 'uvx' nor a system 'ast-grep'/'sg' is on PATH"
+    raise AstGrepUnavailableError(reason)
 
 
-def semgrep_invocable() -> bool:
+def astgrep_invocable() -> bool:
     try:
-        argv = _semgrep_argv()
-    except SemgrepUnavailableError:
+        argv = _astgrep_argv()
+    except AstGrepUnavailableError:
         return False
     result = run_allowed_to_fail([*argv, "--version"], expected_codes=None, timeout=180)
     return result.returncode == 0
 
 
+def _declared_rule_ids(config_dir: Path) -> tuple[str, ...]:
+    ids: list[str] = []
+    for rule_file in sorted(config_dir.glob("*.yml")):
+        loaded = yaml.safe_load(rule_file.read_text(encoding="utf-8"))
+        rule_id = loaded.get("id") if isinstance(loaded, dict) else None
+        if isinstance(rule_id, str):
+            ids.append(rule_id)
+    return tuple(ids)
+
+
 def scan_findings(config_dir: Path, root: Path | None = None) -> list[dict]:
     base = root or repo_root()
-    result = run_allowed_to_fail(
-        [*_semgrep_argv(), "scan", "--config", str(config_dir), "--json", "--quiet"],
-        expected_codes=None,
-        cwd=base,
-        timeout=600,
-    )
-    if not result.stdout.strip():
+    rule_ids = _declared_rule_ids(config_dir)
+    if not rule_ids:
+        reason = f"no ast-grep rules under {config_dir}"
+        raise AstGrepUnavailableError(reason)
+    sgconfig = _sgconfig_for(config_dir)
+    cmd = [
+        *_astgrep_argv(),
+        "scan",
+        "--config",
+        str(sgconfig),
+        "--filter",
+        "|".join(rule_ids),
+        "--json",
+    ]
+    result = run_allowed_to_fail(cmd, expected_codes=None, cwd=base, timeout=600)
+    stripped = result.stdout.strip()
+    if not stripped:
         reason = f"no JSON output (stderr: {result.stderr.strip()})"
-        raise SemgrepUnavailableError(reason)
-    return json.loads(result.stdout)["results"]
+        raise AstGrepUnavailableError(reason)
+    matches = json.loads(stripped)
+    return [_normalize(match) for match in matches]
+
+
+def _sgconfig_for(config_dir: Path) -> Path:
+    sgconfig = config_dir.parent / "sgconfig.yml"
+    if sgconfig.is_file():
+        return sgconfig
+    reason = f"no sgconfig.yml beside {config_dir}"
+    raise AstGrepUnavailableError(reason)
+
+
+def _normalize(match: dict) -> dict:
+    return {
+        "check_id": match.get("ruleId", ""),
+        "path": match.get("file", ""),
+        "start": {"line": match["range"]["start"]["line"]},
+    }

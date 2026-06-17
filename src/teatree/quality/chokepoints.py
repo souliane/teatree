@@ -8,8 +8,8 @@ protected symbol is called from a module outside its ``allowed_modules``.
 
 This mirrors ``catalog.py`` / ``regression_catalog.py``: schema-validate at load
 time, :class:`ChokepointError` carries the offending entry id. It is orthogonal
-to tach (the import graph) and semgrep (intra-body code shapes) — this layer
-owns call-site authorization only.
+to tach (the import graph) and the ast-grep regression rules (intra-body code
+shapes) — this layer owns call-site authorization only.
 
 ``match_kind`` is the only DSL and has exactly two values. ``module_attr`` is a
 module-qualified attribute call whose receiver is a bare ``Name`` equal to
