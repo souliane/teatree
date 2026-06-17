@@ -10,7 +10,7 @@ from rich.console import Console
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
 from teatree.cli.eval.all_command import all_lanes
-from teatree.cli.eval.app_helpers import require_effort, require_spec
+from teatree.cli.eval.app_helpers import reject_unsupported_run_output, require_effort, require_spec
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
@@ -253,6 +253,17 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "pool cuts wall-clock from Nxlatency to ~latency). Default 1 = sequential."
         ),
     ),
+    transcript_html: Path | None = typer.Option(
+        None,
+        "--transcript-html",
+        help=(
+            "Write a self-contained per-trial TRANSCRIPT report (each scenario's per-trial "
+            "PASS/FAIL plus the agent's reasoning + tool calls) to this path — the durable, "
+            "uploadable artifact a maintainer reads to diagnose a red lane. Produced from THIS "
+            "run's results (no suite re-run, no ledger), so it survives the --no-persist "
+            "ephemeral-container CI path. Supported on a --trials run (the metered CI shape)."
+        ),
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -315,6 +326,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             backend=backend,
             require_executed=require_executed,
             parallel=parallel,
+            transcript_html=transcript_html,
         ),
         docker=docker,
         metered=metered,
@@ -328,9 +340,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         warn_local_metered(metered=metered)
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
-    if output_format == "html" and (trials > 1 or models is not None):
-        typer.echo("--format html is only supported for a single-trial run (not --trials/--models)", err=True)
-        raise typer.Exit(code=2)
+    reject_unsupported_run_output(
+        output_format=output_format, transcript_html=transcript_html, trials=trials, models=models
+    )
     specs = filter_specs_by_lane(discover_specs(), lane) if name is None else [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the metered lane, of course we want it executed." The sdk backend
@@ -383,6 +395,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
             effort=effort_level,
+            transcript_html=transcript_html,
         )
         return
     try:
@@ -401,6 +414,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
     renderers = {"json": render_json, "html": render_html}
     typer.echo(renderers.get(output_format, render_text)(results))
+    # The per-trial transcript artifact for the single-trial path: one trial, so
+    # the existing per-scenario render_html (verdict + transcript + failed
+    # matchers) IS the report. Written from THIS run's results — no re-run — and
+    # BEFORE any guard/gate can exit, so a red run still drops the artifact.
+    if transcript_html is not None:
+        transcript_html.write_text(render_html(results), encoding="utf-8")
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     executed = sum(1 for r in results if not r.skipped)
