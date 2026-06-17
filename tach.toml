@@ -403,7 +403,13 @@ depends_on = [
   "teatree.loop.dispatch_reducer",
   "teatree.loop.dispatch_gates",
   "teatree.loop.dispatch",
-  "teatree.loop.self_improve"
+  "teatree.loop.self_improve",
+  "teatree.loop.rendering_items",
+  "teatree.loop.rendering_dms",
+  "teatree.loop.rendering_classification",
+  "teatree.loop.rendering_permalinks",
+  "teatree.loop.rendering_zones",
+  "teatree.loop.rendering"
 ]
 
 [[modules]]
@@ -541,6 +547,62 @@ depends_on = [
   "teatree.utils",
   "teatree.loop.scanners",
   "teatree.loop.statusline_render"
+]
+
+[[modules]]
+path = "teatree.loop.rendering_items"
+layer = "domain"
+depends_on = ["teatree.url_classify"]
+
+[[modules]]
+path = "teatree.loop.rendering_dms"
+layer = "domain"
+depends_on = ["teatree.loop.dispatch"]
+
+[[modules]]
+path = "teatree.loop.rendering_classification"
+layer = "domain"
+depends_on = [
+  "teatree.loop.dispatch",
+  "teatree.loop.rendering_dms",
+  "teatree.loop.rendering_items",
+  "teatree.loop.statusline"
+]
+
+[[modules]]
+path = "teatree.loop.rendering_permalinks"
+layer = "domain"
+depends_on = [
+  "teatree.loop.dispatch",
+  "teatree.loop.rendering_classification"
+]
+
+[[modules]]
+path = "teatree.loop.rendering_zones"
+layer = "domain"
+depends_on = [
+  "teatree.url_classify",
+  "teatree.loop.rendering_classification",
+  "teatree.loop.rendering_dms",
+  "teatree.loop.rendering_items",
+  "teatree.loop.statusline",
+  "teatree.loop.statusline_render"
+]
+
+[[modules]]
+path = "teatree.loop.rendering"
+layer = "domain"
+depends_on = [
+  "teatree.config",
+  "teatree.core",
+  "teatree.core.models",
+  "teatree.loop.dispatch",
+  "teatree.loop.pr_ticket_index",
+  "teatree.loop.statusline",
+  "teatree.loop.rendering_classification",
+  "teatree.loop.rendering_items",
+  "teatree.loop.rendering_permalinks",
+  "teatree.loop.rendering_zones"
 ]
 
 [[modules]]

@@ -189,6 +189,12 @@ graph TD
     teatree.loop --> teatree.loop.dispatch_gates
     teatree.loop --> teatree.loop.dispatch
     teatree.loop --> teatree.loop.self_improve
+    teatree.loop --> teatree.loop.rendering_items
+    teatree.loop --> teatree.loop.rendering_dms
+    teatree.loop --> teatree.loop.rendering_classification
+    teatree.loop --> teatree.loop.rendering_permalinks
+    teatree.loop --> teatree.loop.rendering_zones
+    teatree.loop --> teatree.loop.rendering
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
     teatree.loop.session_identity --> teatree.core.session_identity
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
@@ -242,6 +248,30 @@ graph TD
     teatree.loop.self_improve --> teatree.utils
     teatree.loop.self_improve --> teatree.loop.scanners
     teatree.loop.self_improve --> teatree.loop.statusline_render
+    teatree.loop.rendering_items --> teatree.url_classify
+    teatree.loop.rendering_dms --> teatree.loop.dispatch
+    teatree.loop.rendering_classification --> teatree.loop.dispatch
+    teatree.loop.rendering_classification --> teatree.loop.rendering_dms
+    teatree.loop.rendering_classification --> teatree.loop.rendering_items
+    teatree.loop.rendering_classification --> teatree.loop.statusline
+    teatree.loop.rendering_permalinks --> teatree.loop.dispatch
+    teatree.loop.rendering_permalinks --> teatree.loop.rendering_classification
+    teatree.loop.rendering_zones --> teatree.url_classify
+    teatree.loop.rendering_zones --> teatree.loop.rendering_classification
+    teatree.loop.rendering_zones --> teatree.loop.rendering_dms
+    teatree.loop.rendering_zones --> teatree.loop.rendering_items
+    teatree.loop.rendering_zones --> teatree.loop.statusline
+    teatree.loop.rendering_zones --> teatree.loop.statusline_render
+    teatree.loop.rendering --> teatree.config
+    teatree.loop.rendering --> teatree.core
+    teatree.loop.rendering --> teatree.core.models
+    teatree.loop.rendering --> teatree.loop.dispatch
+    teatree.loop.rendering --> teatree.loop.pr_ticket_index
+    teatree.loop.rendering --> teatree.loop.statusline
+    teatree.loop.rendering --> teatree.loop.rendering_classification
+    teatree.loop.rendering --> teatree.loop.rendering_items
+    teatree.loop.rendering --> teatree.loop.rendering_permalinks
+    teatree.loop.rendering --> teatree.loop.rendering_zones
     teatree.loops --> teatree.config
     teatree.loops --> teatree.core
     teatree.loops --> teatree.loop
