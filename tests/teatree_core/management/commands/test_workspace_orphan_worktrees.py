@@ -214,6 +214,30 @@ class TestSnapshotThenReap(_OrphanWorktreeFixture):
         assert any("snapshot did not materialise" in line for line in results)
 
 
+class TestReapsSquashMergedOrphan(_OrphanWorktreeFixture):
+    def test_squash_merged_orphan_with_deleted_remote_branch_is_reaped_under_keep(self) -> None:
+        """A single-commit branch squash-merged into main, its remote branch deleted on merge.
+
+        The dominant teatree case. ``--not --remotes`` still reports the commit (the squash
+        produced a NEW SHA), but ``is_squash_merged`` (patch-id ``git cherry``) sees the work
+        captured upstream — so the orphan is recoverable and REAPED, not kept.
+        """
+        wt_path = self._add_orphan("squashed-feat", files={"feature.txt": "the feature"})
+
+        # Squash the branch's single commit into main with a new SHA, push, and delete
+        # the remote branch — exactly what a forge squash-merge leaves behind.
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+        _run_git("merge", "-q", "--squash", "squashed-feat", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: the feature (#1)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+
+        results = self._reap(reap_unsynced="keep")
+
+        assert not wt_path.exists(), "squash-merged orphan survived despite work being on main"
+        assert str(wt_path) not in self._registered_paths()
+        assert any("Reaped orphan worktree (work already on remote)" in line for line in results), results
+
+
 class TestTrackedWorktreeNeverReapedAsOrphan(_OrphanWorktreeFixture):
     def test_db_tracked_worktree_is_excluded_from_orphan_reaping(self) -> None:
         """A worktree WITH a DB row is not an orphan — the row-driven reaper owns it."""

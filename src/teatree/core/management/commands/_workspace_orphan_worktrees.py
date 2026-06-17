@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Literal
 
 from teatree.core.clone_paths import resolve_clone_path
-from teatree.core.management.commands._workspace_cleanup import is_clean_ignored
+from teatree.core.management.commands._workspace_cleanup import is_clean_ignored, is_squash_merged
 from teatree.core.models import Worktree
 from teatree.core.worktree_snapshot import capture_worktree_snapshot
 from teatree.utils import git
@@ -94,20 +94,31 @@ def _candidate_clones(workspace: Path) -> set[str]:
 
 
 def _branch_has_unique_work(repo: str, branch: str, wt_path: str) -> bool:
-    """Whether ``branch`` carries commits absent from every remote (data loss on removal).
+    """Whether ``branch`` carries unmerged work absent from every remote (data loss on removal).
 
-    The #706 primitive: a non-empty result means the commits exist on NO remote,
-    so a clean ``git worktree remove`` would destroy them. A named branch is
-    probed from the shared object store (``repo``); a detached HEAD is meaningful
-    only in the worktree dir, so it is probed there. Fails CLOSED — an
-    inconclusive probe (corrupt repo, unknown ref) reads as "has unique work" so
-    the worktree is kept, never reaped on uncertainty.
+    The #706 primitive (``commits_absent_from_all_remotes``) reports a commit as
+    "absent" whenever its SHA is on no remote. A squash-merge rewrites the
+    branch's commits into ONE new SHA on the default branch and the source branch
+    is typically deleted on merge — the dominant teatree case — so the original
+    commit is absent-from-all-remotes by SHA even though its WORK is shipped.
+    Treating that as unique work wrongly keeps a resolved orphan. So a branch
+    counts as unique unpushed work only when its commits are absent from every
+    remote AND :func:`is_squash_merged` (patch-id ``git cherry``) does NOT find
+    the work captured on ``origin/<default>``.
+
+    A named branch is probed from the shared object store (``repo``); a detached
+    HEAD is meaningful only in the worktree dir, so it is probed there. Fails
+    CLOSED — an inconclusive absence probe (corrupt repo, unknown ref) reads as
+    "has unique work" so the worktree is kept, never reaped on uncertainty.
     """
     probe_repo = wt_path if branch == git.DETACHED_HEAD else repo
     try:
-        return bool(git.commits_absent_from_all_remotes(probe_repo, branch))
+        absent = bool(git.commits_absent_from_all_remotes(probe_repo, branch))
     except CommandFailedError:
         return True
+    if not absent:
+        return False
+    return not (branch != git.DETACHED_HEAD and is_squash_merged(repo, branch, git.default_branch(repo)))
 
 
 def _is_dirty(wt_path: str) -> bool:
