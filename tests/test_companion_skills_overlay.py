@@ -58,10 +58,20 @@ class TestOverlayConfigCompanionSkillsField:
         assert second.companion_skills == []
 
 
+# An overlay whose remote_patterns match the cwd → the prompt-hook path resolves
+# the overlay as in-scope, so its companion skills are required. Without a
+# matching remote, the overlay is NOT in scope and the companions are withheld.
+_IN_SCOPE_OVERLAY_META = {"skill_path": "t3:acme", "remote_patterns": ["*acme*"]}
+
+
 class TestSelectForPromptHookEmitsCompanionSkills:
     """``select_for_prompt_hook`` emits the overlay's ``companion_skills``."""
 
-    def test_prompt_hook_includes_overlay_companion_skills(self, tmp_path: Path) -> None:
+    def test_prompt_hook_includes_overlay_companion_skills(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "teatree.skill_support.loading._matches_any_remote",
+            lambda _cwd, _patterns: True,
+        )
         config = _config_with_companions(["ac-django", "ac-python"])
         trigger_index: list[dict[str, object]] = [
             {"skill": "code", "companions": [], "requires": []},
@@ -70,7 +80,7 @@ class TestSelectForPromptHookEmitsCompanionSkills:
         result = policy.select_for_prompt_hook(
             cwd=tmp_path,
             intent="code",
-            overlay_skill_metadata={},
+            overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
             loaded_skills=set(),
             trigger_index=trigger_index,
             companion_skills=config.companion_skills,
@@ -81,9 +91,14 @@ class TestSelectForPromptHookEmitsCompanionSkills:
     def test_prompt_hook_dedupes_overlay_companions_with_framework_detect(
         self,
         tmp_path: Path,
+        monkeypatch,
     ) -> None:
         # Even if framework detection would also pick ``ac-django`` (manage.py
         # present), the overlay-declared companion must not appear twice.
+        monkeypatch.setattr(
+            "teatree.skill_support.loading._matches_any_remote",
+            lambda _cwd, _patterns: True,
+        )
         (tmp_path / "manage.py").touch()
         config = _config_with_companions(["ac-django", "ac-python"])
         trigger_index: list[dict[str, object]] = [
@@ -93,7 +108,7 @@ class TestSelectForPromptHookEmitsCompanionSkills:
         result = policy.select_for_prompt_hook(
             cwd=tmp_path,
             intent="code",
-            overlay_skill_metadata={},
+            overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
             loaded_skills=set(),
             trigger_index=trigger_index,
             companion_skills=config.companion_skills,

@@ -371,6 +371,93 @@ def test_overlay_remote_no_match(tmp_path: Path, monkeypatch):
     assert result == ""
 
 
+# ── overlay-companion skills are scoped to overlay work ─────────────
+
+
+_OVERLAY_META = {"skill_path": "t3:acme", "remote_patterns": ["*acme-product*"]}
+_COMPANIONS = ["t3-acme-review", "acme-conventions"]
+
+
+def test_companion_skills_required_when_overlay_active(tmp_path: Path):
+    # Overlay work in scope (overlay_active) → companion skills ARE required,
+    # alongside the overlay's own skill.
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_runtime_phase(
+        cwd=tmp_path,
+        phase="coding",
+        overlay_skill_metadata=_OVERLAY_META,
+        companion_skills=_COMPANIONS,
+    )
+    assert "t3:acme" in result.skills
+    assert "t3-acme-review" in result.skills
+    assert "acme-conventions" in result.skills
+
+
+def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, monkeypatch):
+    # Overlay-repo intent (the cwd's remote matches the overlay's patterns) →
+    # the overlay skill AND its companion skills are required.
+    monkeypatch.setattr(
+        "teatree.skill_support.loading._matches_any_remote",
+        lambda _cwd, _patterns: True,
+    )
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        intent="code",
+        overlay_skill_metadata=_OVERLAY_META,
+        loaded_skills=set(),
+        companion_skills=_COMPANIONS,
+    )
+    assert "t3:acme" in result.skills
+    assert "t3-acme-review" in result.skills
+    assert "acme-conventions" in result.skills
+
+
+def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkeypatch):
+    # Teatree-core-only intent: overlay NOT active and the cwd's remote does NOT
+    # match the overlay's patterns. The overlay companion skills must NOT be
+    # required — they are scoped to overlay work, not core work.
+    monkeypatch.setattr(
+        "teatree.skill_support.loading._matches_any_remote",
+        lambda _cwd, _patterns: False,
+    )
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        intent="code",
+        overlay_skill_metadata=_OVERLAY_META,
+        loaded_skills=set(),
+        companion_skills=_COMPANIONS,
+    )
+    assert "t3:acme" not in result.skills
+    assert "t3-acme-review" not in result.skills
+    assert "acme-conventions" not in result.skills
+    # The framework/lifecycle skill is unaffected — core work still gets `code`.
+    assert "code" in result.skills
+
+
+def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkeypatch):
+    # Framework skills are detected from the cwd, not gated on overlay scope:
+    # a teatree-core dir with a Django manage.py still yields `ac-django` even
+    # though the overlay companions are correctly withheld.
+    (tmp_path / "manage.py").touch()
+    monkeypatch.setattr(
+        "teatree.skill_support.loading._matches_any_remote",
+        lambda _cwd, _patterns: False,
+    )
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        intent="code",
+        overlay_skill_metadata=_OVERLAY_META,
+        loaded_skills=set(),
+        companion_skills=_COMPANIONS,
+    )
+    assert "ac-django" in result.skills
+    assert "t3-acme-review" not in result.skills
+    assert "acme-conventions" not in result.skills
+
+
 # ── detect_framework_skills ─────────────────────────────────────────
 
 
