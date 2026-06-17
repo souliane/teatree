@@ -21,6 +21,7 @@ def _args(**overrides: object) -> RunDockerArgs:
     base: dict[str, object] = {
         "name": None,
         "lane": None,
+        "shard": None,
         "output_format": "text",
         "max_turns": None,
         "max_budget_usd": 1.0,

@@ -34,6 +34,7 @@ from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
 from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs
+from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.report import evaluate, render_html, render_json, render_text
@@ -90,6 +91,16 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "Run only scenarios in this lane (clean_room | under_load). Omit to run every lane "
             "(default, unchanged). The cheap PR-path gate and the weekly metered lane read the "
             "same catalog but pass different --lane subsets."
+        ),
+    ),
+    shard: str | None = typer.Option(
+        None,
+        "--shard",
+        help=(
+            "Run only the index/total shard of the (lane-filtered) catalog, e.g. '2/6'. A "
+            "deterministic partition by scenario name — every scenario in exactly one shard, none "
+            "dropped or duplicated. The weekly metered lane shards a large lane (clean_room ~167) "
+            "into budget-safe legs; omit (default) to run the whole lane unchanged."
         ),
     ),
     output_format: str = typer.Option(
@@ -309,6 +320,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         RunDockerArgs(
             name=name,
             lane=lane,
+            shard=shard,
             output_format=output_format,
             max_turns=max_turns,
             max_budget_usd=max_budget_usd,
@@ -333,7 +345,15 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     reject_unsupported_run_output(
         output_format=output_format, transcript_html=transcript_html, trials=trials, models=models
     )
-    specs = filter_specs_by_lane(discover_specs(), lane) if name is None else [require_spec(name)]
+    if name is None:
+        specs = filter_specs_by_lane(discover_specs(), lane)
+        try:
+            specs = filter_specs_by_shard(specs, shard)
+        except ShardSpecError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
+    else:
+        specs = [require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the fresh-run lane, of course we want it executed." The sdk
     # backend (and the always-fresh-run --trials/--models lanes) arm the

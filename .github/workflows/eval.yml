@@ -14,8 +14,23 @@
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
 #     lookback window since the last run — nothing new to test, no API spend.
-#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk).
-#     ALWAYS runs (force) — the no-PR guard is bypassed for a manual run.
+#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk)
+#     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
+#     bypassed for a manual run.
+#
+# LANE+SHARD FAN-OUT (souliane/teatree#2492):
+#   The FULL 181-scenario x 3-trial suite does not finish in a single 2x80min
+#   budget. The catalog is NOT evenly split: clean_room is 167 scenarios and
+#   under_load is 14, so fanning out ONE leg per lane still leaves a 167-scenario
+#   clean_room leg (~92% of the suite) that hits the same 80min wall. So the
+#   `prepare` job computes a `{lane, shard}` matrix (`scripts/eval/lane_matrix.py`):
+#   each lane is split into ceil(count / 14) contiguous shards — a deterministic
+#   partition by scenario name (every scenario in exactly one shard, none dropped
+#   or duplicated). The `eval` job fans OUT one matrix leg per SHARD, each leg
+#   metering at most 14 scenarios (the proven-to-fit under_load size) — under_load
+#   stays one shard (1/1), clean_room becomes 12 shards of ~14. Full coverage,
+#   parallel wall-clock. `fail-fast: false` keeps each leg's verdict independent
+#   (a red shard never cancels the others).
 #
 # The "nothing new to test" skip is a PRE-CHECK that decides whether to invoke
 # the eval at all — it is NOT a skip-as-pass inside the eval. Once the eval IS
@@ -82,20 +97,17 @@ on:
         type: string
 
 jobs:
-  # GATE (weekly + on-demand): the metered AI behavioral-eval suite. The Claude
-  # CLI install is asserted and `--require-executed` is passed unconditionally,
-  # so a missing binary / all-skipped run fails RED instead of passing green.
-  eval:
+  # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
+  # no-PR guard / manual force) and (b) computes the per-leg {lane, shard} matrix.
+  # The full 181-scenario x 3-trial suite (clean_room 167 / under_load 14) cannot
+  # finish in a single 2x80min budget (#2492), and a single 167-scenario clean_room
+  # leg hits the same wall — so the eval job below fans OUT across SHARDS: one leg
+  # per shard, each metering at most 14 scenarios (the proven-to-fit size).
+  prepare:
     runs-on: ubuntu-latest
-    # FAIL LOUD on a hang. Without a job-level cap a wedge ANYWHERE outside the
-    # retry-wrapped eval step (a stuck report render, a hung docker build/daemon)
-    # runs to GitHub's 6h default with no signal — and an in-progress job's log
-    # blob is never exposed, so a hang looks identical to a slow run for hours.
-    # The eval step is bounded to 80min x 2 attempts (160min worst case);
-    # 180min caps the whole job just above that (plus the report/upload steps)
-    # so a real hang is killed and surfaced as a red, diagnosable run instead of
-    # an indefinite stall.
-    timeout-minutes: 180
+    outputs:
+      run_eval: ${{ steps.gate.outputs.run_eval }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
@@ -104,7 +116,6 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
         with:
           python-version: "3.13"
-      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
       - name: Sync dependencies (retry on transient network failure)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         with:
@@ -137,17 +148,74 @@ jobs:
               echo "run_eval=false" >> "$GITHUB_OUTPUT"
             fi
           fi
+      # Compute the {lane, shard} matrix the eval job fans out over. Empty `lane`
+      # input (scheduled runs and the default manual run) = every permitted lane,
+      # sharded into budget-safe legs (clean_room 167 → 12 shards, under_load 14 →
+      # 1 shard). An explicit `lane` input shards only that lane. An unknown lane
+      # fails loud here rather than producing an empty matrix. The lane input is
+      # routed through an `env:` var (never inlined into the shell) and validated
+      # by lane_matrix.py against PERMITTED_LANES.
+      - name: Compute the lane+shard matrix
+        id: matrix
+        env:
+          EVAL_LANE: ${{ inputs.lane || '' }}
+        run: |
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Lane+shard matrix: $MATRIX"
+
+  # GATE (weekly + on-demand): the metered AI behavioral-eval suite, fanned out
+  # ONE {lane, shard} per matrix leg (#2492). The Claude CLI install is asserted
+  # and `--require-executed` is passed unconditionally, so a missing binary /
+  # all-skipped run fails RED instead of passing green.
+  eval:
+    needs: prepare
+    if: needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # `fail-fast: false` so a red shard does not cancel the other shards
+      # mid-run — each leg's verdict is independent signal.
+      fail-fast: false
+      # `include` with the prepare job's `{lane, shard}` objects: each leg meters
+      # exactly its lane's `index/total` shard (≤ 14 scenarios), so EVERY leg fits
+      # the budget — not just under_load.
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    # FAIL LOUD on a hang. Without a job-level cap a wedge ANYWHERE outside the
+    # retry-wrapped eval step (a stuck report render, a hung docker build/daemon)
+    # runs to GitHub's 6h default with no signal — and an in-progress job's log
+    # blob is never exposed, so a hang looks identical to a slow run for hours.
+    # The eval step is bounded to 80min x 2 attempts (160min worst case);
+    # 180min caps the whole job just above that (plus the report/upload steps)
+    # so a real hang is killed and surfaced as a red, diagnosable run instead of
+    # an indefinite stall. Each leg now meters ONE shard (≤ 14 scenarios), which
+    # fits the budget.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
       # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
       # it. A missing binary must FAIL the job (the runner would otherwise skip
       # every scenario and report a decorative green). `claude --version` is the
       # post-install assertion that turns an install failure into a red job.
       - name: Install and assert the Claude CLI
-        if: steps.gate.outputs.run_eval == 'true'
         run: |
           npm install -g @anthropic-ai/claude-code
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
-        if: steps.gate.outputs.run_eval == 'true'
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
       # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
@@ -168,52 +236,62 @@ jobs:
       # write failure (the report lands in $RUNNER_TEMP via the docker runner's
       # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
-      # (reasoning + tool calls) so a maintainer can diagnose a red under_load lane.
+      # (reasoning + tool calls) so a maintainer can diagnose a red shard.
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
-        if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
-          EVAL_LANE: ${{ inputs.lane || '' }}
+          # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
+          # per-shard subset is at most 14 scenarios — the proven-to-fit under_load
+          # size — and fits the 2x80min budget where the full 181 (and a single
+          # 167-scenario clean_room leg) did not (#2492). The matrix values come from
+          # the prepare job's validated plan, never raw input — so `lane` is always a
+          # permitted lane and `shard` is always a valid index/total.
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
         with:
-          # The FULL metered suite is ~68 scenarios x 3 trials, each a real
-          # metered `claude` SDK call — it does not fit a 30min attempt, and each
-          # retry re-runs the WHOLE suite from scratch (`--no-persist`, no resume),
-          # so a too-tight timeout just truncates+repeats the same partial work
-          # every attempt and never completes (the observed "hang"). 80min per
-          # attempt lets the suite finish; 2 attempts keep ONE transient-failure
-          # retry (the whole point of the retry wrapper — an AI/network flake is
-          # retried, not red-failed) without a third truncating pass. 2x80=160min
-          # sits under the 180min job cap. The per-scenario RUN/DONE progress lines
-          # (multi_trial.py) plus the job-level `timeout-minutes` make a genuine
-          # stall diagnosable (last RUN line = the wedged scenario) and fail loud
-          # rather than re-burning spend indefinitely.
+          # A single shard is ≤ 14 scenarios x 3 trials, each a real metered
+          # `claude` SDK call. Each retry re-runs the whole leg from scratch
+          # (`--no-persist`, no resume), so a too-tight timeout just truncates and
+          # repeats partial work every attempt and never completes (the observed
+          # "hang"). 80min per attempt lets ONE shard finish comfortably; 2 attempts
+          # keep ONE transient-failure retry (the whole point of the retry wrapper —
+          # an AI/network flake is retried, not red-failed) without a third
+          # truncating pass. 2x80=160min sits under the 180min job cap. The
+          # per-scenario RUN/DONE progress lines (multi_trial.py) plus the job-level
+          # `timeout-minutes` make a genuine stall diagnosable (last RUN line = the
+          # wedged scenario) and fail loud rather than re-burning spend indefinitely.
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
-          # EVAL_LANE empty (scheduled runs and the default manual run) = every lane,
-          # today's behaviour. A manual run may pass `under_load` to meter only the
-          # behavioural-drift lane (the cheap PR-path anti-vacuity gate reads the same
-          # catalog deterministically). The lane flag is only appended when set.
-          # `--transcript-html` writes to $RUNNER_TEMP (always writable; the report
-          # is dropped before the eval's own non-zero exit, so a red lane is still
-          # captured). The retry re-runs the whole `command`, so the file is simply
-          # overwritten with the last attempt's results — no staleness.
+          # `--lane "$EVAL_LANE" --shard "$EVAL_SHARD"` scopes the leg to its one
+          # lane's one shard. `--transcript-html` writes to $RUNNER_TEMP (always
+          # writable; the report is dropped before the eval's own non-zero exit, so a
+          # red shard is still captured). The retry re-runs the whole `command`, so
+          # the file is simply overwritten with the last attempt's results — no
+          # staleness.
           command: |
-            LANE_FLAG=""
-            if [ -n "$EVAL_LANE" ]; then LANE_FLAG="--lane $EVAL_LANE"; fi
-            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG \
+            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" \
+              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --gate-under-load-ratchet --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
-      # Publish the per-trial transcript report THIS run emitted as a job artifact.
-      # `if: always()` so a red run still publishes it (the report is exactly what a
+      # Publish the per-trial transcript report THIS leg emitted as a job artifact.
+      # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
-      # the job's exit code). No render step — the artifact was written by the run.
+      # the leg's exit code). No render step — the artifact was written by the run.
+      # The name is per-lane-and-shard so parallel matrix legs never collide on one
+      # artifact (the `/` in the shard token is replaced — artifact names forbid it).
+      - name: Compute a filesystem-safe artifact suffix
+        id: artifact
+        env:
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
+        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
       - name: Upload the per-trial transcript report
-        if: always() && steps.gate.outputs.run_eval == 'true'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: eval-report
+          name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn

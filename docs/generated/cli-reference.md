@@ -1670,6 +1670,21 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     the same catalog but     │
 │                                                     pass different --lane    │
 │                                                     subsets.                 │
+│ --shard                                    TEXT     Run only the index/total │
+│                                                     shard of the             │
+│                                                     (lane-filtered) catalog, │
+│                                                     e.g. '2/6'. A            │
+│                                                     deterministic partition  │
+│                                                     by scenario name — every │
+│                                                     scenario in exactly one  │
+│                                                     shard, none dropped or   │
+│                                                     duplicated. The weekly   │
+│                                                     metered lane shards a    │
+│                                                     large lane (clean_room   │
+│                                                     ~167) into budget-safe   │
+│                                                     legs; omit (default) to  │
+│                                                     run the whole lane       │
+│                                                     unchanged.               │
 │ --format                                   TEXT     Report format: text,     │
 │                                                     json, or html            │
 │                                                     (single-trial; html is a │
