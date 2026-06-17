@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -596,6 +597,70 @@ class TestStopHookFailsSafeWithoutTeatree:
 
         assert result is None
         assert _decision(capsys) == {}
+
+
+class TestConsolidatedPendingWorkIsClaimAware:
+    """TODO #100: the self-pump's work probe must be claim/budget-aware.
+
+    The self-pump re-offered the SAME unit every interval because its
+    probe (``t3 loop pending-spawn``) reported EVERY dispatchable PENDING
+    task regardless of the admit budget, while ``claim-next`` refuses once
+    the in-flight WIP hits the ceiling. So a unit held back by a full
+    budget showed as "pending work" forever and the pump re-offered it,
+    never advancing. The probe must invoke ``--claimable-only`` so it
+    answers "is there a unit a claim could actually take?".
+    """
+
+    def _run_with_fake_t3(
+        self, monkeypatch: pytest.MonkeyPatch, *, stdout: str, returncode: int = 0
+    ) -> tuple[list[dict], list[str]]:
+        captured: list[str] = []
+
+        def _fake_run(cmd: list[str], **_kwargs: object) -> SimpleNamespace:
+            captured.extend(cmd)
+            return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+        monkeypatch.setattr(router.shutil, "which", lambda _name: "/usr/bin/t3")
+        monkeypatch.setattr(router.subprocess, "run", _fake_run)
+        result = router._consolidated_pending_work()
+        return result, captured
+
+    def test_probe_passes_claimable_only_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The must-not-re-offer contract: the probe is invoked with
+        # --claimable-only so a budget-blocked unit never re-arms the pump.
+        _result, cmd = self._run_with_fake_t3(
+            monkeypatch,
+            stdout=json.dumps([{"task_id": 1, "subagent": "x", "phase": "coding", "issue_url": "u"}]),
+        )
+        assert cmd[:2] == ["/usr/bin/t3", "loop"]
+        assert "pending-spawn" in cmd
+        assert "--claimable-only" in cmd
+
+    def test_empty_claimable_result_makes_owner_not_pump(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ADVANCE-OR-STOP: when the budget-aware probe reports nothing
+        # claimable (budget exhausted), the owner does NOT re-offer — the
+        # session stops instead of looping on the un-advanceable unit.
+        _own_loop("owner-1")
+        self._run_with_fake_t3(monkeypatch, stdout="[]")  # primes which/run fakes
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_claimable_work_still_pumps(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Control: a genuinely claimable unit still pumps — the fix narrowed
+        # the probe, it did not disable the pump.
+        _own_loop("owner-1")
+        stdout = json.dumps([{"task_id": 5, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        monkeypatch.setattr(router.shutil, "which", lambda _name: "/usr/bin/t3")
+        monkeypatch.setattr(router.subprocess, "run", lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=stdout))
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
 
 
 class TestWiredIntoRouter:
