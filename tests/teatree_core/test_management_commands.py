@@ -394,9 +394,50 @@ class TestTasksListSession(TestCase):
 
         assert rows == []
 
+    @override_settings(**COMMAND_SETTINGS)
+    def test_session_view_does_not_read_the_stale_harness_todo_store(self) -> None:
+        # The harness TaskCreate/TaskUpdate list is the agent's LIVE in-memory
+        # list and a CLI subprocess can only read a stale on-disk snapshot
+        # (`~/.claude/tasks/<session>/*.json`) that lags the live session. The
+        # CLI must NOT pretend to show the harness TODO list — it scopes the
+        # teatree DB Task rows only, so `/t3:todos` builds the harness half from
+        # the live TaskList tool instead. The session view must therefore never
+        # feed harness-store rows into the renderer (no `harness_todos`), which
+        # goes RED on the old view that read the stale store and rendered it.
+        with tempfile.TemporaryDirectory() as tasks_dir:
+            session_dir = Path(tasks_dir) / "claude-abc"
+            session_dir.mkdir()
+            (session_dir / "1.json").write_text(
+                json.dumps({"id": "1", "subject": "STALE harness todo on disk", "status": "pending"}),
+                encoding="utf-8",
+            )
+            env = {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": "", "CLAUDE_TASKS_DIR": tasks_dir}
+            captured: dict[str, object] = {}
+
+            def _capture(rows: object, **kwargs: object) -> None:
+                captured["rows"] = rows
+                captured["kwargs"] = kwargs
+
+            with (
+                patch.dict("os.environ", env),
+                patch.object(tasks_cmd, "render_session_view", _capture),
+            ):
+                ticket = Ticket.objects.create(overlay="test")
+                mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+                Task.objects.create(ticket=ticket, session=mine, phase="coding", execution_reason="real db task")
+                call_command("tasks", "list", "--session")
+
+        kwargs = cast("dict[str, object]", captured.get("kwargs", {}))
+        assert "harness_todos" not in kwargs, "the session view must not read/pass the stale harness TODO store"
+
 
 class TestSessionTodoRendering(TestCase):
-    """The session-scoped renderer prints two labeled sections, never merged."""
+    """The session-scoped renderer prints the teatree tasks only, grouped by status.
+
+    The harness TODO list is NOT rendered here — it is the agent's live
+    in-memory ``TaskList`` state, which a CLI subprocess cannot read. ``/t3:todos``
+    builds that half from the live ``TaskList`` harness tool.
+    """
 
     @staticmethod
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -420,60 +461,39 @@ class TestSessionTodoRendering(TestCase):
             claimed_by="",
         )
 
-    def test_groups_both_lists_under_separate_headings(self) -> None:
+    def test_groups_teatree_tasks_by_status_and_omits_harness_section(self) -> None:
         out = io.StringIO()
         rows = [
             self._row(1, status="pending", reason="write the gate"),
             self._row(2, status="claimed", reason="run the suite"),
             self._row(3, status="completed", reason="read the model"),
         ]
-        session_view.render_session_todos(
-            rows,
-            harness_todos=[("pending", "draft the helper"), ("completed", "open the PR")],
-            session_id="claude-abc",
-            stream=out,
-        )
+        session_view.render_session_view(rows, session_id="claude-abc", stream=out)
         printed = out.getvalue()
-        assert "harness TODOs" in printed
+        # The harness-TODO section never renders here (the CLI cannot read the
+        # live harness list); only the teatree-tasks section does.
+        assert "harness TODO" not in printed
         assert "teatree tasks" in printed
-        # harness TODOs section heading precedes the teatree tasks heading.
-        assert printed.index("harness TODOs") < printed.index("teatree tasks")
         assert "pending" in printed
         assert "in_progress" in printed
         assert "completed" in printed
         assert "write the gate" in printed
         assert "run the suite" in printed
-        assert "draft the helper" in printed
-        assert "open the PR" in printed
-
-    def test_harness_todos_render_without_teatree_tasks(self) -> None:
-        out = io.StringIO()
-        session_view.render_session_todos(
-            [],
-            harness_todos=[("in_progress", "fix the capture path")],
-            session_id="claude-abc",
-            stream=out,
-        )
-        printed = out.getvalue()
-        assert "harness TODOs" in printed
-        assert "fix the capture path" in printed
-        assert "teatree tasks" not in printed
 
     def test_no_active_session_is_explicit(self) -> None:
         out = io.StringIO()
-        session_view.render_session_todos([], harness_todos=[], session_id="", stream=out)
+        session_view.render_session_view([], session_id="", stream=out)
         assert "No active harness session" in out.getvalue()
 
-    def test_empty_session_says_no_todos(self) -> None:
+    def test_empty_session_says_no_teatree_tasks(self) -> None:
         out = io.StringIO()
-        session_view.render_session_todos([], harness_todos=[], session_id="claude-abc", stream=out)
-        assert "No todos for this session" in out.getvalue()
+        session_view.render_session_view([], session_id="claude-abc", stream=out)
+        assert "No teatree tasks for this session" in out.getvalue()
 
     def test_task_id_uses_distinct_prefix_not_bare_hash(self) -> None:
         out = io.StringIO()
-        session_view.render_session_todos(
+        session_view.render_session_view(
             [self._row(7, status="pending", ticket_id=42, reason="do it")],
-            harness_todos=[],
             session_id="claude-abc",
             stream=out,
         )
@@ -484,12 +504,10 @@ class TestSessionTodoRendering(TestCase):
 
     def test_ticket_title_renders_inline(self) -> None:
         # #2092: the ``ticket #N`` on a todo line must carry the ticket title
-        # inline, never a bare ``#N`` the reader can't interpret. Asserting the
-        # title text appears goes RED on the pre-fix renderer.
+        # inline, never a bare ``#N`` the reader can't interpret.
         out = io.StringIO()
-        session_view.render_session_todos(
+        session_view.render_session_view(
             [self._row(7, status="pending", ticket_id=42, ticket_title="fix the broken widget", reason="do it")],
-            harness_todos=[],
             session_id="claude-abc",
             stream=out,
         )
@@ -498,12 +516,11 @@ class TestSessionTodoRendering(TestCase):
         assert "ticket #42 (fix the broken widget)" in printed
 
     def test_no_ticket_title_renders_plain_id(self) -> None:
-        # A todo whose ticket has no title degrades to the plain ``#N`` (no
+        # A task whose ticket has no title degrades to the plain ``#N`` (no
         # empty parens), still namespace-qualified.
         out = io.StringIO()
-        session_view.render_session_todos(
+        session_view.render_session_view(
             [self._row(7, status="pending", ticket_id=42, ticket_title="", reason="do it")],
-            harness_todos=[],
             session_id="claude-abc",
             stream=out,
         )
@@ -513,9 +530,8 @@ class TestSessionTodoRendering(TestCase):
 
     def test_same_number_task_and_ticket_render_distinctly(self) -> None:
         out = io.StringIO()
-        session_view.render_session_todos(
+        session_view.render_session_view(
             [self._row(5, status="pending", ticket_id=5, reason="collision case")],
-            harness_todos=[],
             session_id="claude-abc",
             stream=out,
         )
@@ -526,7 +542,12 @@ class TestSessionTodoRendering(TestCase):
 
 
 class TestReadHarnessTodos(TestCase):
-    """The harness TODO list is read from the harness task store, with a legacy fallback."""
+    """``read_harness_todos`` is the best-effort disk reader for HOOK consumers.
+
+    It backs the PreCompact recovery snapshot and the statusline materialiser
+    (which cannot call the live ``TaskList`` tool); it is NOT used by the
+    interactive ``/t3:todos`` CLI view, which would lag the live session.
+    """
 
     def test_reads_from_harness_task_store(self) -> None:
         with tempfile.TemporaryDirectory() as tasks_dir:
