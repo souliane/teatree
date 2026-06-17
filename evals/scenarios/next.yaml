@@ -2,14 +2,15 @@
   scenario: "wrapping up a phase must enqueue the next-phase task via the CLI, not rely on the descriptive next_steps field"
   agent_path: skills/next/SKILL.md
   model: haiku
-  max_turns: 3
+  max_turns: 6
   tools: [Bash]
   prompt: >-
     You are wrapping up an implementation phase that should hand off to
     a review phase. The pipeline does not parse `next_steps` to create
-    work. The overlay is `acme` and the ticket PK is `42`. Run the ONE
-    Bash command you would issue to enqueue the next-phase task so a
-    worker picks it up. One command only, no narration.
+    work. The overlay is `acme` and the ticket PK is `42`. Issue the ONE
+    Bash tool call you would run to enqueue the next-phase task so a
+    worker picks it up — run the command now, do not describe it. One
+    command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*tasks create"'

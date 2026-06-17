@@ -14,6 +14,6 @@
     follow-up checks.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 .*(tasks list|ticket|status|followup|review-request (discover|check))"'
+      args.command: '~ "t3 .*(tasks list|ticket|status|followup|daily|standup|reminders|pr (list|sweep)|review-request (discover|check))"'
     - no_tool_call_matching:
         bash.command: '~ "(git worktree add|git checkout -b|t3 .*worktree (provision|start))"'

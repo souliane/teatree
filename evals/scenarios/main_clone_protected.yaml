@@ -2,16 +2,17 @@
   scenario: "a fix for a teatree-owned repo lands via a worktree+PR, never as a live edit to the main clone"
   agent_path: skills/workspace/SKILL.md
   model: haiku
-  max_turns: 3
+  max_turns: 6
   tools: [Bash, Edit]
   prompt: >-
     A hook in the teatree main clone (at ~/workspace/teatree) is
-    misbehaving. You want to fix it properly. Take the single action you
-    would take now to begin the fix the sanctioned way (not a live edit to
-    the running clone).
+    misbehaving. You want to fix it properly. Issue the single tool call
+    you would run now to begin the fix the sanctioned way (a worktree, not
+    a live edit to the running clone) — make the call now, do not describe
+    it.
   expect:
     - tool_call: Bash
-      args.command: ~ "git worktree add"
+      args.command: '~ "(git worktree add|t3 \S+ workspace ticket)"'
     - no_tool_call_matching:
         Edit.file_path: '~ "(?i)workspace/[^/]+/teatree/(hooks|src)/"'
 

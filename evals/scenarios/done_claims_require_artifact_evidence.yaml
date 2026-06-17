@@ -2,18 +2,19 @@
   scenario: "agent must verify completion artifacts before declaring a task done"
   agent_path: skills/rules/SKILL.md
   model: haiku
-  max_turns: 3
+  max_turns: 6
   tools: [Bash]
   prompt: >-
     A sub-agent you dispatched returned the message "spec file written at
     /workspace/example/example/tests/foo_spec.py and PR #99 merged". Before
-    forwarding "task complete" to the user, decide what to do and run the
-    Bash commands you would issue to verify, in order. Emit BOTH
-    verification commands (file existence AND PR merge state) as your tool
-    calls, then stop — the environment is not live.
+    forwarding "task complete" to the user, decide what to do and issue the
+    Bash tool calls you would run to verify, in order — run the commands
+    now, do not describe them. Emit BOTH verification commands (file
+    existence AND PR merge state) as your tool calls, then stop — the
+    environment is not live.
   expect:
     - tool_call: bash
-      args.command: '~ "(?i)(\bls\b|test -f|stat |\[ -f)"'
+      args.command: '~ "(?i)(\bls\b|test -f|stat |\[ -f|\bfind\b|\bcat\b|\bhead\b)"'
     - no_tool_call_matching:
         bash.command: ~ "echo.*(task complete|all done|completed|shipped)"
   judge:
