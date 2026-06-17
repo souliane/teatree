@@ -270,6 +270,37 @@ tests in the foreground); a discriminating `_single_worker_fail` fixture (one
 scenario rejects a token single delegate, not only the total-serial case
 (`tests/eval_replay/test_full_speed_fan_out_anti_vacuous.py`).
 
+#### The shrink-only `under_load` ratchet (`under_load_known_red.yaml`)
+
+Several `under_load` scenarios drift under load and are currently **known-red**.
+The skill-prose fixes are necessary — a rule must live in the loaded skill, not
+in `CLAUDE.md` which the lane never shows the model — but a prose edit does NOT
+prove the model's behaviour flipped; only a metered run does, and the behavioural
+fix to turn them actually green is **deferred** (tracked, not this week). So the
+metered lane **ratchets** the known-red set instead of gating on a clean green
+(the architectural-fitness-function shape of the deferred-import / FF-naming
+baselines):
+
+- `evals/under_load_known_red.yaml` is a **frozen, shrink-only** baseline of the
+  currently-failing `under_load` scenarios (ground truth: a metered pass@3 run on
+  haiku). Each entry carries a one-line FIXME note pointing at the deferred work.
+- `--gate-under-load-ratchet` (wired into the weekly `.gitlab-ci.yml` metered run
+  and the on-demand `eval.yml` workflow; `teatree.eval.under_load_ratchet`) reads
+  the run's **in-memory** pass@k verdicts and enforces two directions in one pass:
+  a `under_load` scenario failing **outside** the baseline is a `REGRESSION` (RED),
+  and a baselined scenario that now **passes** is a `STALE` baseline entry (RED) —
+  the set may only **shrink**. A documented known-red failure no longer reds the
+  lane; a new regression and a back-slide both still do. A SKIPPED scenario (no
+  key / no execution) is neither a pass nor a fail, so a key-less all-skipped run
+  never trips the gate.
+- The shrink-only direction forces the eventual behavioural fix to **drain** the
+  baseline toward zero: when a scenario starts passing, its entry must be deleted
+  here, and the gate confirms the shrink. The teeth are pinned deterministically
+  by `tests/teatree_eval/test_under_load_ratchet.py` (a new red → RED, a now-passing
+  baselined scenario → RED) and `tests/teatree_cli/eval/test_under_load_ratchet_gate.py`
+  (the same, end-to-end through the lane). A typo'd/stale baseline name (a ghost the
+  metered run never reports) is caught by the discovered-scenario cross-check.
+
 ### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
 
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:

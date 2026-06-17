@@ -204,7 +204,8 @@ jobs:
             LANE_FLAG=""
             if [ -n "$EVAL_LANE" ]; then LANE_FLAG="--lane $EVAL_LANE"; fi
             uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" $LANE_FLAG \
-              --require-executed --docker --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
+              --require-executed --gate-under-load-ratchet --docker \
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
       # Publish the per-trial transcript report THIS run emitted as a job artifact.
       # `if: always()` so a red run still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
