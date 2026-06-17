@@ -10,7 +10,7 @@ import teatree.core.signals as signals_mod
 from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
-from tests.teatree_core._on_behalf_gate_helpers import on_behalf_gate_off
+from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -185,7 +185,7 @@ class TestSlackReactionsOnTransition(TestCase):
             called.append((t, name))
             return 1
 
-        with on_behalf_gate_off(), _patch_transition_publisher(_fake):
+        with mode_immediate_cm(), _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -199,7 +199,7 @@ class TestSlackReactionsOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with on_behalf_gate_off(), _patch_transition_publisher(_boom):
+        with mode_immediate_cm(), _patch_transition_publisher(_boom):
             ticket.mark_merged()
             ticket.save()
 
@@ -214,7 +214,7 @@ class TestSlackReactionsOnTransition(TestCase):
             names.append(name)
             return 0
 
-        with on_behalf_gate_off(), _patch_transition_publisher(_record):
+        with mode_immediate_cm(), _patch_transition_publisher(_record):
             ticket.rework()
             ticket.save()
 
@@ -228,7 +228,7 @@ class TestSlackReactionsOnTransition(TestCase):
         original = reaction_dispatch._publisher
         reaction_dispatch._publisher = None
         try:
-            with on_behalf_gate_off():
+            with mode_immediate_cm():
                 ticket.mark_merged()
                 ticket.save()
         finally:
@@ -269,7 +269,7 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append((pull_request,))
             return 1
 
-        with on_behalf_gate_off(), _patch_approval_publisher(_fake):
+        with mode_immediate_cm(), _patch_approval_publisher(_fake):
             pr.approve()
             pr.save()
 
@@ -326,7 +326,7 @@ class TestApprovalReactionOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with on_behalf_gate_off(), _patch_approval_publisher(_boom):
+        with mode_immediate_cm(), _patch_approval_publisher(_boom):
             pr.approve()
             pr.save()
 
@@ -338,7 +338,7 @@ class TestApprovalReactionOnTransition(TestCase):
         calls: list[object] = []
 
         with (
-            on_behalf_gate_off(),
+            mode_immediate_cm(),
             _patch_approval_publisher(lambda p: calls.append(p) or 0),
         ):
             pr.mark_merged()
@@ -379,7 +379,7 @@ class TestApprovalReactionOnTransition(TestCase):
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={})
         # No patching — the real code path must not raise (even with the
         # gate on, the transition itself must always succeed).
-        with on_behalf_gate_off():
+        with mode_immediate_cm():
             ticket.mark_merged()
             ticket.save()
         ticket.refresh_from_db()
@@ -407,7 +407,7 @@ class TestApprovalReactionOnTransition(TestCase):
         )
         assert row is not None
 
-        with on_behalf_gate_off(), _patch_approval_publisher(lambda _pr: 1):
+        with mode_immediate_cm(), _patch_approval_publisher(lambda _pr: 1):
             pr.approve()
             pr.save()
 
