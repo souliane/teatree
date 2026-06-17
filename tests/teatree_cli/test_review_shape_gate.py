@@ -2,10 +2,13 @@
 
 When a review is posted on a colleague's MR (the MR's author is NOT the
 current identity), the binding rule from the review skill is **single
-terse INLINE Nit:-prefixed comment** — never a multi-section
-Problem/Fix/Verification dump. The previous safety-net was a memory
-entry (a guideline an agent could forget). The structural gate enforces
-it deterministically before the GitLab API call hits.
+terse INLINE comment that keeps the finding's own severity label**
+(``HIGH (correctness): ...``, ``MED: ...``, ``LOW: ...``, or a bare
+``Nit:`` only for a genuinely trivial item) — never a multi-section
+Problem/Fix/Verification dump and never a blanket downgrade of every
+finding to ``Nit:``. The previous safety-net was a memory entry (a
+guideline an agent could forget). The structural gate enforces it
+deterministically before the GitLab API call hits.
 
 Shape rule (post-#1159): refuse when the body exceeds
 ``COLLEAGUE_PROSE_CAP_PARAGRAPHS`` paragraphs (blank-line separated)
@@ -144,7 +147,14 @@ class TestColleagueMRShapeGate:
         assert code == 1, f"expected refuse, got code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
         assert "paragraph" in msg, f"steering must name the breach concretely: {msg!r}"
-        assert "Nit:" in msg
+        # The steering must NOT downgrade every finding to a bare "Nit:" — a
+        # HIGH/MED finding keeps its own severity label (souliane/teatree#1114
+        # severity-label fix). The example command shows a severity-labelled
+        # inline note, never a "Nit:"-prefixed one.
+        assert "Re-post as an inline Nit:-prefixed comment" not in msg
+        assert '"Nit: ..."' not in msg
+        assert "severity label" in msg
+        assert "HIGH (correctness): ..." in msg
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
 
     def test_legitimate_three_sentence_finding_passes(self) -> None:
@@ -194,7 +204,8 @@ class TestColleagueMRShapeGate:
 
         Issue #1159 loosens the gate but preserves its anti-abuse intent.
         A 27-sentence dump exceeds the word-count cap and must still be
-        refused with the steering message pointing at the inline Nit form.
+        refused with the steering message pointing at a terse severity-
+        labelled inline note.
         """
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
@@ -209,6 +220,10 @@ class TestColleagueMRShapeGate:
         assert code == 1, f"27-sentence dump must be refused: code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
         assert "word" in msg, f"steering must name the word-count breach: {msg!r}"
+        # The remediation keeps the finding's own severity label rather than
+        # downgrading everything to a bare "Nit:".
+        assert "Re-post as an inline Nit:-prefixed comment" not in msg
+        assert "severity label" in msg
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
 
     def test_inline_nit_comment_accepted(self) -> None:
@@ -533,6 +548,42 @@ class TestShapeGateFailOpenAndCarveOuts:
         )
         assert "inline note" in msg
         assert "paragraph" in msg
+
+    def test_steering_keeps_severity_label_not_blanket_nit(self) -> None:
+        """The refusal keeps the finding's severity label, not a blanket ``Nit:``.
+
+        souliane/teatree#1114 severity-label fix: the gate previously told
+        the agent to "Re-post as an inline Nit:-prefixed comment", which
+        downgraded a HIGH/MED finding to the nonsensical "Nit (MED)". The
+        steering must instead instruct a terse inline note that KEEPS the
+        finding's own severity label (``HIGH (correctness): ...``, ``MED:
+        ...``, ``LOW: ...``) and reserve a bare ``Nit:`` only for genuinely
+        trivial items. The example command shows a severity-labelled note.
+        """
+        from teatree.cli.review.shape_gate import check_review_shape  # noqa: PLC0415
+
+        class _ColleagueAPI:
+            def get_json(self, _endpoint: str) -> dict[str, object]:
+                return {"author": {"username": _AUTHOR_CAROL}}
+
+            def current_username(self) -> str:
+                return _AUTHOR_ALICE
+
+        body = " ".join(["word"] * 250)
+        for inline in (True, False):
+            msg = check_review_shape(
+                api=cast("Any", _ColleagueAPI()),
+                encoded_repo="org%2Frepo",
+                mr=7,
+                body=body,
+                inline=inline,
+            )
+            assert "Re-post as an inline Nit:-prefixed comment" not in msg
+            assert '"Nit: ..."' not in msg
+            assert "severity label" in msg
+            assert "HIGH (correctness): ..." in msg
+            # A bare "Nit:" survives only as the reserved trivial-item example.
+            assert "trivial" in msg.lower()
 
     def test_mr_level_note_over_word_cap_is_refused(self) -> None:
         """An MR-level note over the 200-word cap is refused.

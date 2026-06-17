@@ -75,8 +75,7 @@ class TestGitHubWebhookView(TestCase):
             reverse("teatree:github_webhook"),
             data=body,
             content_type="application/json",
-            HTTP_X_GITHUB_EVENT="ping",
-            HTTP_X_GITHUB_DELIVERY="ping-1",
+            headers={"x-github-event": "ping", "x-github-delivery": "ping-1"},
         )
 
         assert response.status_code == 401
@@ -99,9 +98,7 @@ class TestGitHubWebhookViewWithoutSecret(TestCase):
             reverse("teatree:github_webhook"),
             data=b"{}",
             content_type="application/json",
-            HTTP_X_GITHUB_EVENT="ping",
-            HTTP_X_GITHUB_DELIVERY="x",
-            HTTP_X_HUB_SIGNATURE_256="sha256=x",
+            headers={"x-github-event": "ping", "x-github-delivery": "x", "x-hub-signature-256": "sha256=x"},
         )
 
         assert response.status_code == 503
