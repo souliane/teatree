@@ -92,8 +92,14 @@ while read -r local_ref local_sha _remote_ref _remote_sha; do
 
   # A foreign OPEN MR backs this branch. Allow only with an explicit
   # co-authoring override token in the push range's commit messages.
-  if git log --format='%B' "${local_sha}" 2>/dev/null \
-    | grep -qiE '\[push-to-foreign-mr-ok:'; then
+  # Capture the log into a variable and match it with a here-string (no pipe):
+  # a `git log | grep -q` pipeline is a SIGPIPE hazard under `set -o pipefail` —
+  # grep -q exits on the first match and closes the pipe, so git log dies with
+  # 141 and pipefail propagates that non-zero status, making the `if` false even
+  # though the token WAS present (a load-dependent flake). The here-string has no
+  # producer process to receive SIGPIPE, so the match is deterministic.
+  push_range_messages=$(git log --format='%B' "${local_sha}" 2>/dev/null || true)
+  if grep -qiE '\[push-to-foreign-mr-ok:' <<<"${push_range_messages}"; then
     continue
   fi
 
