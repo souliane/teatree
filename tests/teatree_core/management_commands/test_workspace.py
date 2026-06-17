@@ -1180,7 +1180,8 @@ class TestCleanAllReapUnsyncedFlag(TestCase):
             return []
 
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
             patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
         ):
             call_command("workspace", "clean-all")
@@ -1203,7 +1204,8 @@ class TestCleanAllReapUnsyncedFlag(TestCase):
             return ["Reaped orphan worktree (snapshot at /tmp/x): feat (/tmp/wt)"]
 
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
             patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all", "--reap-unsynced", "snapshot"))
