@@ -37,6 +37,8 @@ from django.core.exceptions import SuspiciousOperation
 from django.db.utils import OperationalError
 from django.utils import timezone
 
+from teatree.loop.loop_cadences import drain_cadence_seconds
+
 logger = logging.getLogger(__name__)
 
 _STALE_THRESHOLD_DEFAULT_HOURS = 24
@@ -234,12 +236,3 @@ def _piggyback_drain_queue() -> None:
     if not LoopLease.objects.acquire("loop-drain-queue", owner=owner, lease_seconds=drain_cadence_seconds()):
         return
     expire_then_drain()
-
-
-def drain_cadence_seconds() -> int:
-    """The ``loop-drain-queue`` throttle window (``T3_QUEUE_DRAIN_CADENCE``, default 30s, floor 10)."""
-    raw = os.environ.get("T3_QUEUE_DRAIN_CADENCE", "30").strip() or "30"
-    try:
-        return max(10, int(raw))
-    except ValueError:
-        return 30
