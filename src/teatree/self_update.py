@@ -212,10 +212,42 @@ def ensure_self_db_migrated(*, quiet: bool = False) -> bool:
     return False
 
 
+def seed_db_config_from_toml() -> None:
+    """Seed the DB config store from ``~/.teatree.toml`` — the #938 auto-migration (TODO-75).
+
+    Runs ``python -m teatree config_setting import --no-clobber`` in the *running*
+    interpreter so it targets the exact self-DB the runtime ``t3`` resolves (the
+    #126 rule the self-DB migrate follows), with the same stripped
+    ``DJANGO_SETTINGS_MODULE`` env (#959). ``--no-clobber`` is load-bearing:
+    ``t3 setup`` runs on every update, so the migration must only seed keys absent
+    from the store and never overwrite a value the user has since changed via
+    ``config_setting set``.
+
+    Best-effort, NOT fail-closed: a failure is a single WARN and the function
+    returns. The TOML remains readable and the dual-read resolver falls through to
+    the dataclass default, so a failed config seed must not abort ``t3 setup`` —
+    unlike the self-DB migrate, which is fail-closed because the merge gate (#870)
+    depends on it.
+    """
+    result = run_allowed_to_fail(
+        _self_db_migrate_cmd("config_setting", "import", "--no-clobber"),
+        env=_self_db_migrate_env(),
+        expected_codes=None,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output)"
+        typer.echo(f"WARN  config DB seed skipped — {detail}")
+        return
+    summary = result.stdout.strip().splitlines()
+    if summary:
+        typer.echo(f"OK    config DB store: {summary[-1].strip()}")
+
+
 __all__ = [
     "ReinstallResult",
     "SubprocessRunner",
     "current_editable_source",
     "ensure_self_db_migrated",
     "reinstall_running_editable",
+    "seed_db_config_from_toml",
 ]
