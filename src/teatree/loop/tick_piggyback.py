@@ -33,48 +33,25 @@ import logging
 import os
 import uuid
 
+from teatree.loop.loop_cadences import _LOOP_OWNER_TTL_DEFAULT
+from teatree.loop.loop_cadences import loop_owner_ttl_seconds as _loop_owner_ttl_seconds
+from teatree.loop.loop_cadences import self_improve_cadence_seconds as _self_improve_cadence_seconds
+from teatree.loop.loop_cadences import slack_answer_cadence_seconds as _slack_answer_cadence_seconds
+
 logger = logging.getLogger(__name__)
 
-
-def _slack_answer_cadence_seconds() -> int:
-    """The ``loop-slack-answer`` throttle window (``T3_SLACK_ANSWER_CADENCE``, default 20s, floor 15)."""
-    raw = os.environ.get("T3_SLACK_ANSWER_CADENCE", "20").strip() or "20"
-    try:
-        return max(15, int(raw))
-    except ValueError:
-        return 20
-
-
-def _self_improve_cadence_seconds() -> int:
-    """The ``loop-self-improve`` throttle window (``T3_SELF_IMPROVE_CHEAP_CADENCE``, default 1800s, floor 60)."""
-    raw = os.environ.get("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800").strip() or "1800"
-    try:
-        return max(60, int(raw))
-    except ValueError:
-        return 1800
-
-
-_LOOP_OWNER_TTL_DEFAULT = 1800
-
-
-def _loop_owner_ttl_seconds() -> int:
-    """The persistent ``loop-owner`` claim TTL (``T3_LOOP_OWNER_TTL``, default 1800s, floor 60).
-
-    Lives here next to its sibling per-loop cadence readers (the
-    ``teatree.loop`` layer) so the statusline's per-loop next-tick
-    countdown (#1400) and the ``loop_tick`` owner-claim can both reach it
-    without ``teatree.loop`` importing back into ``teatree.core.management``.
-    A blank or non-integer override degrades to the default rather than
-    crashing the tick; the 60s floor keeps a fat-fingered tiny TTL from
-    making the owner lapse mid-tick.
-    """
-    raw = os.environ.get("T3_LOOP_OWNER_TTL", str(_LOOP_OWNER_TTL_DEFAULT)).strip()
-    if not raw:
-        return _LOOP_OWNER_TTL_DEFAULT
-    try:
-        return max(60, int(raw))
-    except ValueError:
-        return _LOOP_OWNER_TTL_DEFAULT
+# The four pure-`os.environ` cadence readers moved DOWN to the
+# `teatree.loop.loop_cadences` leaf (#2413 PR-4) so the statusline loop-line can
+# reach them without deferring an import UP into this orchestration-top module.
+# Re-exported here under their established private names so the `loop_tick` /
+# `loops_tick` management commands and the existing tests keep their import path.
+__all__ = [
+    "_LOOP_OWNER_TTL_DEFAULT",
+    "_loop_owner_ttl_seconds",
+    "_self_improve_cadence_seconds",
+    "_slack_answer_cadence_seconds",
+    "run_piggyback_cycles",
+]
 
 
 def _piggyback_slack_answer() -> None:

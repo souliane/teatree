@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
 from django_bootstrap import bootstrap_teatree_django
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields
@@ -3277,37 +3278,19 @@ def _emit_banned_term_deny(
 def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
     """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
 
-    ``scan_text`` returns either a configured banned term or a fail-closed
-    marker (an unresolvable body, an unavailable scanner). For a real term this
-    returns ``None`` so the caller takes the destination-aware banned-term path.
-
-    For the two unreadable-body markers the decision is destination-aware: an
-    UNREADABLE body file (a ``git commit -F <path>`` whose file does not exist
-    at cold-hook scan time, a missing ``--body-file``) OR an UNAVAILABLE body
-    source (an unexpanded ``$VAR`` / a stdin body, #2369) hard-blocks on a PUBLIC
-    surface — an unscanned body must never slip into public history — but a
-    ``git commit`` landing in a PRIVATE repo (or a pure private gh/glab post) is
-    not a public surface, so the unread body cannot leak and the gate downgrades
-    to a warn (#1415). The payload-driven carve-out fails closed on the sentinel,
-    so a body-INDEPENDENT private-destination check decides it here. The
-    SCANNER-unavailable marker stays hard-blocking on every surface (#1954).
+    Thin router wrapper over ``banned_terms_marker.resolve_marker`` (which owns the
+    destination-aware logic + rationale). For a real configured term it returns
+    ``None`` so the caller takes its own destination-aware banned-term path. For a
+    fail-closed marker the verdict is either a downgrade-to-warn (write the stderr
+    line, return ``False``) or a hard-block (``emit_pretooluse_deny``).
     """
-    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
-
-    marker_message = banned_terms_scanner.marker_deny_message(term)
-    if marker_message is None:
+    verdict = _resolve_banned_terms_marker(term, command, cwd_repo)
+    if not verdict.is_marker:
         return None
-    unreadable_body_markers = {
-        banned_terms_scanner.UNRESOLVABLE_BODY_MARKER,
-        banned_terms_scanner.UNAVAILABLE_BODY_SOURCE_MARKER,
-    }
-    if term in unreadable_body_markers and publish_surface.command_targets_private_only(command, cwd_repo):
-        sys.stderr.write(
-            "WARNING: banned-terms gate (#1415) — could not read the commit/post body, but the "
-            "destination is a private repo; downgraded to warn. A private-repo body is not a public leak.\n"
-        )
+    if verdict.warning is not None:
+        sys.stderr.write(verdict.warning)
         return False
-    return emit_pretooluse_deny(marker_message)
+    return emit_pretooluse_deny(verdict.deny_message or "")
 
 
 def _run_banned_terms_pretool(data: dict) -> bool:

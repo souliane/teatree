@@ -151,7 +151,8 @@ depends_on = [
   "teatree.slack_mrkdwn",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
-  "teatree.core.models"
+  "teatree.core.models",
+  "teatree.core.session_identity"
 ]
 
 [[modules]]
@@ -161,6 +162,11 @@ depends_on = []
 
 [[modules]]
 path = "teatree.core.models.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.session_identity"
 layer = "domain"
 depends_on = []
 
@@ -380,6 +386,11 @@ depends_on = [
   "teatree.messaging",
   "teatree.loop_enabled",
   "teatree.teams",
+  "teatree.loop.loop_cadences",
+  "teatree.loop.session_identity",
+  "teatree.loop.loop_scoping",
+  "teatree.loop.statusline",
+  "teatree.loop.statusline_loops",
   "teatree.loop.statusline_palette",
   "teatree.loop.statusline_render",
   "teatree.loop.url_specificity",
@@ -404,6 +415,37 @@ depends_on = []
 path = "teatree.loop.statusline_render"
 layer = "domain"
 depends_on = ["teatree.loop.statusline_palette"]
+
+[[modules]]
+path = "teatree.loop.loop_cadences"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.loop.session_identity"
+layer = "domain"
+depends_on = ["teatree.core.session_identity"]
+
+[[modules]]
+path = "teatree.loop.loop_scoping"
+layer = "domain"
+depends_on = ["teatree.core.loop_lease_manager", "teatree.loop.session_identity"]
+
+[[modules]]
+path = "teatree.loop.statusline_loops"
+layer = "domain"
+depends_on = [
+  "teatree.config",
+  "teatree.core",
+  "teatree.loop.loop_cadences",
+  "teatree.loop.loop_scoping",
+  "teatree.loop.statusline_palette"
+]
+
+[[modules]]
+path = "teatree.loop.statusline"
+layer = "domain"
+depends_on = ["teatree.loop.statusline_loops", "teatree.loop.statusline_render"]
 
 [[modules]]
 path = "teatree.loop.url_specificity"
@@ -552,7 +594,7 @@ depends_on = ["teatree.core", "teatree.notify", "teatree.backends"]
 [[modules]]
 path = "teatree.outbound_claim"
 layer = "integration"
-depends_on = ["teatree.core"]
+depends_on = ["teatree.core.models", "teatree.core.session_identity"]
 
 [[modules]]
 path = "teatree.slack_mrkdwn"

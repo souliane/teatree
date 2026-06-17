@@ -1,16 +1,28 @@
-"""The ``tasks list --session`` view: harness TODOs + teatree tasks.
+"""The ``tasks list --session`` view: the session-scoped teatree tasks.
 
-Two distinct stores render here under separate headings, never merged. A
-*teatree task* is a row in the DB-backed ``Task`` model. A *harness TODO*
-is the agent harness's own working list (the ``TaskCreate`` /
-``TaskUpdate`` items, formerly ``TodoWrite``).
+This view renders **only** the teatree *tasks* — rows in the DB-backed
+``Task`` model — scoped to the current harness session, grouped pending /
+in_progress / completed.
 
-The harness TODO list is read from the harness task store
-(``CLAUDE_TASKS_DIR`` / ``~/.claude/tasks/<session>/*.json``), the
-authoritative source: the legacy ``TodoWrite`` PostToolUse capture stopped
-firing once the harness migrated to the ``TaskCreate`` / ``TaskUpdate``
-tools, which bypass ``PostToolUse`` entirely. The legacy state file is a
-fallback for any harness build still emitting ``TodoWrite``.
+It deliberately does NOT render the *harness TODO* list (the agent harness's
+own ``TaskCreate`` / ``TaskUpdate`` items). That list lives in the harness's
+live, in-memory session state, and the Task tools bypass ``PreToolUse`` /
+``PostToolUse`` hooks (a known harness regression — see
+``docs/claude-code-internals.md`` § 9), so a ``t3`` CLI subprocess can only
+read a stale on-disk snapshot (``~/.claude/tasks/<session>/*.json``) that lags
+the live session and is never reliably in sync. ``/t3:todos`` therefore builds
+the harness half **dynamically from the live ``TaskList`` harness tool** — not
+from this CLI. Keeping the CLI's session view scoped to the teatree ``Task``
+rows means it can never masquerade as the live session todo list.
+
+``read_harness_todos`` (and its store readers) remain here for the **hook**
+consumers that genuinely cannot call the live ``TaskList`` tool — the
+PreCompact recovery snapshot and the statusline materialiser
+(``hook_router.handle_track_todos`` / ``_write_recovery_snapshot``). Those are
+best-effort, point-in-time captures inside a hook subprocess; a lagging disk
+read is the only option there and an acceptable one (a snapshot is a moment in
+time anyway). The fix is to keep that best-effort disk read OUT of the
+interactive ``/t3:todos`` path, where the agent can and must read the live list.
 """
 
 import os
@@ -48,6 +60,56 @@ _TODO_GROUPS: list[tuple[str, tuple[str, ...]]] = [
     ("in_progress", ("claimed",)),
     ("completed", ("completed", "failed")),
 ]
+
+
+def render_session_view(
+    rows: list[TaskRow],
+    *,
+    session_id: str,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the session's teatree tasks, grouped pending / in_progress / completed.
+
+    Only the teatree ``Task`` rows render here — the harness TODO list is built
+    from the live ``TaskList`` harness tool by ``/t3:todos``, never from this
+    CLI (a subprocess can only read a stale on-disk snapshot of it).
+    """
+    console = Console(file=stream) if stream is not None else Console()
+    if not session_id:
+        console.print("[dim]No active harness session — cannot scope teatree tasks to a session.[/dim]")
+        return
+    if not rows:
+        console.print("[dim]No teatree tasks for this session.[/dim]")
+        return
+
+    _render_teatree_tasks_section(rows, console=console)
+
+
+def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> None:
+    rows_by_status: dict[str, list[TaskRow]] = {}
+    for row in rows:
+        rows_by_status.setdefault(row["status"], []).append(row)
+    console.print(f"[bold]teatree tasks[/] ({len(rows)})")
+    for group, statuses in _TODO_GROUPS:
+        group_rows = [row for status in statuses for row in rows_by_status.get(status, [])]
+        if not group_rows:
+            continue
+        style = STATUS_STYLES.get(statuses[0], "")
+        console.print(f"  [bold {style}]{group}[/] ({len(group_rows)})" if style else f"  {group}")
+        for row in group_rows:
+            phase = f" {row['phase']}" if row["phase"] else ""
+            reason = row["execution_reason"] or "-"
+            ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
+            console.print(f"    task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
+
+
+# ── Harness TODO store readers — for HOOK consumers only ─────────────────────
+#
+# These read a best-effort, point-in-time disk snapshot of the harness TODO
+# list. They exist for the PreCompact recovery snapshot and the statusline
+# materialiser, which run inside a hook subprocess and genuinely cannot call the
+# live ``TaskList`` harness tool. They are deliberately NOT used by the
+# interactive ``/t3:todos`` path — see this module's docstring.
 
 
 def _harness_tasks_dir() -> pathlib.Path:
@@ -119,83 +181,16 @@ def _read_legacy_todowrite_state(session_id: str) -> list[tuple[str, str]]:
 
 
 def read_harness_todos(session_id: str) -> list[tuple[str, str]]:
-    """Read the current session's harness TODO list as ``(status, text)``.
+    """Read the session's harness TODO list as ``(status, text)`` — HOOK consumers only.
 
-    Prefers the harness task store; falls back to the legacy ``TodoWrite`` state
-    file. Empty session id (no resolvable harness session) yields an empty list.
+    A best-effort, point-in-time disk snapshot for the PreCompact recovery
+    snapshot and the statusline materialiser. Prefers the harness task store;
+    falls back to the legacy ``TodoWrite`` state file. Empty session id (no
+    resolvable harness session) yields an empty list.
+
+    Do NOT use this for the interactive ``/t3:todos`` list — it lags the live
+    session. The agent builds that list from the live ``TaskList`` harness tool.
     """
     if not session_id:
         return []
     return _read_harness_todos_from_store(session_id) or _read_legacy_todowrite_state(session_id)
-
-
-def render_session_todos(
-    rows: list[TaskRow],
-    *,
-    harness_todos: list[tuple[str, str]],
-    session_id: str,
-    stream: IO[str] | None = None,
-) -> None:
-    """Render the session's harness TODOs and teatree tasks as two labeled sections.
-
-    The harness TODO list (harness ``TaskCreate`` items) and the teatree tasks
-    (DB-backed ``Task`` rows) are distinct stores; each renders under its own
-    heading, grouped pending / in_progress / completed.
-    """
-    console = Console(file=stream) if stream is not None else Console()
-    if not session_id:
-        console.print("[dim]No active harness session — cannot scope todos to a session.[/dim]")
-        return
-    if not rows and not harness_todos:
-        console.print("[dim]No todos for this session.[/dim]")
-        return
-
-    _render_harness_todos_section(harness_todos, console=console)
-    _render_teatree_tasks_section(rows, console=console)
-
-
-def _render_harness_todos_section(harness_todos: list[tuple[str, str]], *, console: Console) -> None:
-    if not harness_todos:
-        return
-    console.print(f"[bold]harness TODOs[/] ({len(harness_todos)})")
-    for group, statuses in _TODO_GROUPS:
-        group_todos = [text for status, text in harness_todos if _todo_group(status) == group]
-        if not group_todos:
-            continue
-        style = STATUS_STYLES.get(statuses[0], "")
-        console.print(f"  [bold {style}]{group}[/] ({len(group_todos)})" if style else f"  {group}")
-        for text in group_todos:
-            console.print(f"    todo: {text}")
-
-
-def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> None:
-    if not rows:
-        return
-    rows_by_status: dict[str, list[TaskRow]] = {}
-    for row in rows:
-        rows_by_status.setdefault(row["status"], []).append(row)
-    console.print(f"[bold]teatree tasks[/] ({len(rows)})")
-    for group, statuses in _TODO_GROUPS:
-        group_rows = [row for status in statuses for row in rows_by_status.get(status, [])]
-        if not group_rows:
-            continue
-        style = STATUS_STYLES.get(statuses[0], "")
-        console.print(f"  [bold {style}]{group}[/] ({len(group_rows)})" if style else f"  {group}")
-        for row in group_rows:
-            phase = f" {row['phase']}" if row["phase"] else ""
-            reason = row["execution_reason"] or "-"
-            ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
-            console.print(f"    task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
-
-
-def _todo_group(status: str) -> str:
-    """Map a harness TODO status to a display group key.
-
-    The harness already speaks ``pending`` / ``in_progress`` / ``completed``;
-    any unknown status falls under ``pending`` so it is never silently dropped.
-    """
-    normalized = status.strip().lower()
-    for group, _statuses in _TODO_GROUPS:
-        if normalized == group:
-            return group
-    return "completed" if normalized in {"done", "complete"} else "pending"

@@ -59,9 +59,18 @@ _TACH = _REPO_ROOT / "tach.toml"
 # already eager-clean (every intra-loop edge pointed DOWN, zero deferred
 # up-edges), so the carve converts NO deferred edge — the count stays 36. The
 # win is structural: tach's acyclic guard now applies WITHIN those clusters.
-# SHRINK-ONLY: lower this as PR-4 converts the `statusline_loops` deferred
-# up-edges into declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 36
+# PR-4 severs the `statusline_loops` back-edge: the four pure-`os.environ`
+# cadence readers (`_slack_answer_cadence_seconds` / `_self_improve_cadence_seconds`
+# / `_loop_owner_ttl_seconds` / `drain_cadence_seconds`) move DOWN into the new
+# `teatree.loop.loop_cadences` leaf, and `statusline_loops` reaches the cadence
+# readers + `loop_scoping` via eager DOWN edges to declared leaves instead of the
+# five deferred up-edges into the orchestration top (`tick_piggyback` /
+# `queue_drain` / `loop_scoping`). `statusline_loops` / `statusline` /
+# `loop_cadences` / `loop_scoping` / `session_identity` become declared tach
+# nodes, dropping the count 36 -> 31.
+# SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
+# declared tach sub-node edges; never raise it.
+_FROZEN_INTRA_LOOP_DEFERRED = 31
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:
@@ -317,3 +326,80 @@ class TestLoopSelfImproveNode:
 
     def test_parent_loop_declares_self_improve(self) -> None:
         assert "teatree.loop.self_improve" in _depends_on("teatree.loop")
+
+
+class TestLoopStatuslineLoopsNode:
+    """The ``statusline_loops`` back-edge is severed and declared (#2413 PR-4).
+
+    ``statusline_loops`` (the dedicated loop-line dashboard, a low presentation
+    module) used to defer-import UP into the orchestration top — the four cadence
+    readers on ``tick_piggyback`` / ``queue_drain`` and the ``loop_scoping`` slot
+    filter — so ``statusline`` could not be a declared node (any eager edge into
+    it would surface the cycle). PR-4 extracts the four pure ``os.environ``
+    cadence readers into the ``teatree.loop.loop_cadences`` leaf; ``statusline_loops``
+    now reaches them, ``loop_scoping``, and the ``statusline_palette`` leaf via
+    eager DOWN edges, so the whole ``statusline`` facade is declarable and the
+    back-edge is structurally forbidden, not merely deferred out of sight.
+    """
+
+    def test_loop_cadences_is_a_pure_leaf_node(self) -> None:
+        entry = _module_entry("teatree.loop.loop_cadences")
+        assert entry["layer"] == "domain"
+        assert entry.get("depends_on", []) == []
+
+    def test_session_identity_is_an_intra_loop_leaf_node(self) -> None:
+        # The loop-side re-export of the session identity primitive — `loop_scoping`
+        # reaches it for `current_session_id`. It only re-exports from
+        # `teatree.core.session_identity`, so it has NO intra-loop dependency.
+        entry = _module_entry("teatree.loop.session_identity")
+        assert entry["layer"] == "domain"
+        loop_deps = {d for d in _depends_on("teatree.loop.session_identity") if d.startswith("teatree.loop")}
+        assert loop_deps == set()
+
+    def test_loop_scoping_is_a_leaf_over_session_identity(self) -> None:
+        entry = _module_entry("teatree.loop.loop_scoping")
+        assert entry["layer"] == "domain"
+        deps = set(_depends_on("teatree.loop.loop_scoping"))
+        assert "teatree.loop.session_identity" in deps
+        # `loop_scoping` never reaches the orchestration-top parent.
+        assert "teatree.loop" not in deps
+
+    def test_statusline_loops_depends_only_on_declared_leaves(self) -> None:
+        entry = _module_entry("teatree.loop.statusline_loops")
+        assert entry["layer"] == "domain"
+        loop_deps = {d for d in _depends_on("teatree.loop.statusline_loops") if d.startswith("teatree.loop")}
+        assert loop_deps == {
+            "teatree.loop.statusline_palette",
+            "teatree.loop.loop_cadences",
+            "teatree.loop.loop_scoping",
+        }
+        # The severed back-edges: `statusline_loops` NEVER depends on the
+        # orchestration-top cadence homes nor the parent node.
+        assert "teatree.loop.tick_piggyback" not in loop_deps
+        assert "teatree.loop.queue_drain" not in loop_deps
+        assert "teatree.loop" not in loop_deps
+
+    def test_statusline_facade_depends_on_the_two_render_leaves(self) -> None:
+        entry = _module_entry("teatree.loop.statusline")
+        assert entry["layer"] == "domain"
+        deps = set(_depends_on("teatree.loop.statusline"))
+        assert deps == {"teatree.loop.statusline_loops", "teatree.loop.statusline_render"}
+
+    def test_parent_loop_declares_the_new_children(self) -> None:
+        deps = _depends_on("teatree.loop")
+        for child in (
+            "teatree.loop.loop_cadences",
+            "teatree.loop.session_identity",
+            "teatree.loop.loop_scoping",
+            "teatree.loop.statusline_loops",
+            "teatree.loop.statusline",
+        ):
+            assert child in deps, child
+
+    def test_statusline_loops_does_not_defer_import_the_orchestration_top(self) -> None:
+        # The four cadence readers + the loop_scoping filter are now eager DOWN
+        # edges; no `statusline_loops` line may function-scope-import the
+        # `tick_piggyback` / `queue_drain` cadence homes (the severed cycle).
+        source = (_LOOP_ROOT / "statusline_loops.py").read_text(encoding="utf-8")
+        assert "teatree.loop.tick_piggyback" not in source
+        assert "teatree.loop.queue_drain" not in source

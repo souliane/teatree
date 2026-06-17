@@ -13,12 +13,7 @@ from rich.table import Table
 from teatree.agents.headless import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.core.management.commands.tasks_session_view import (
-    STATUS_STYLES,
-    TaskRow,
-    read_harness_todos,
-    render_session_todos,
-)
+from teatree.core.management.commands.tasks_session_view import STATUS_STYLES, TaskRow, render_session_view
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.ref_render import short_title
@@ -295,13 +290,15 @@ class Command(TyperCommand):
         status: str | None,
         execution_target: str | None,
     ) -> list[TaskRow]:
-        """Print the current session's lists in two labeled sections.
+        """Print the current session's teatree tasks, grouped by status.
 
-        The teatree ``Task`` model rows (DB-backed lifecycle tasks scoped to the
-        active harness session via ``Session.agent_id``) and the harness TODO
-        list (the harness ``TaskCreate`` / ``TaskUpdate`` items) are distinct
-        stores and render under separate headings — never merged into one
-        ambiguous list.
+        Renders only the teatree ``Task`` rows (DB-backed lifecycle tasks scoped
+        to the active harness session via ``Session.agent_id``). It does NOT
+        render the harness TODO list: that list is the agent's live in-memory
+        ``TaskCreate`` / ``TaskUpdate`` state, which a CLI subprocess cannot read
+        (it can only see a stale on-disk snapshot that lags the live session).
+        ``/t3:todos`` builds the harness half from the live ``TaskList`` harness
+        tool instead, so this view never masquerades as the live session list.
         """
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415
 
@@ -312,10 +309,8 @@ class Command(TyperCommand):
         if execution_target:
             qs = qs.filter(execution_target=execution_target)
         rows = [_task_row(task) for task in qs]
-        harness_todos = read_harness_todos(session_id)
-        render_session_todos(
+        render_session_view(
             rows,
-            harness_todos=harness_todos,
             session_id=session_id,
             stream=cast("IO[str]", self.stdout),
         )

@@ -16,6 +16,7 @@ import dataclasses
 from scripts.eval.corpus_gen.catalog import RECURRING
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
+from scripts.eval.corpus_gen.todos_scenario import todos_scenarios
 
 # scenario name -> the ``## `` sections of its agent_path SKILL.md it exercises.
 _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
@@ -84,7 +85,7 @@ def _assert_sections_resolve(name: str, agent_path: str, sections: tuple[str, ..
         raise ValueError(msg) from exc
 
 
-ALL_SCENARIOS: list[Scenario] = [_with_agent_sections(s) for s in (*RECURRING, *PER_SKILL)]
+ALL_SCENARIOS: list[Scenario] = [_with_agent_sections(s) for s in (*RECURRING, *PER_SKILL, *todos_scenarios())]
 
 
 def _assert_unique_names(scenarios: list[Scenario]) -> None:
