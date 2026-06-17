@@ -328,7 +328,7 @@ _GIT = shutil.which("git") or "git"
 
 
 def _git_origin(path: Path, origin_url: str) -> str:
-    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
     subprocess.run([_GIT, "-C", str(path), "remote", "add", "origin", origin_url], check=True, capture_output=True)
     return str(path)
 
@@ -419,7 +419,7 @@ class TestCodeHostForRepoFromOverlay:
         """A TOML overlay + a repo with no origin remote → the GitHub-first default."""
         path = tmp_path / "no-origin"
         path.mkdir()
-        subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+        subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
         cfg = _toml_only_config(
             {"private-x": {"path": "~/workspace/private-x", "github_token_ref": "github/private-x/pat"}},
         )
