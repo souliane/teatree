@@ -16,7 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.config import TeamsDisplay, UserSettings
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 from teatree.loop.global_scanner_factories import _pane_reaper_scanner
 from teatree.loop.scanners.pane_reaper import PaneReaperScanner
 from teatree.teams.panes import PaneState, TeammatePane
@@ -24,6 +24,10 @@ from teatree.teams.roles import TeamRole, team_claim_slot
 
 
 def _idle_pane_task() -> Task:
+    # ``TeammatePane.spawn`` fails closed when teams is off; a live pane (the
+    # reaper scanner's subject) only exists once the master switch is on. The
+    # scanner's own ``teams_enabled`` constructor arg is independent of this.
+    ConfigSetting.objects.set_value("teams_enabled", value=True)
     ticket = Ticket.objects.create(overlay="", issue_url=f"https://example.com/issues/{uuid.uuid4().hex}")
     session = Session.objects.create(ticket=ticket, agent_id="a")
     task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
@@ -49,6 +53,7 @@ class TestPaneReaperScannerEnabled(TestCase):
         assert pane.refreshed_state() == PaneState.STOPPED
 
     def test_keeps_a_fresh_pane(self) -> None:
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
         ticket = Ticket.objects.create(overlay="", issue_url=f"https://example.com/issues/{uuid.uuid4().hex}")
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
@@ -127,6 +132,7 @@ class TestPaneReaperScannerDisplayTeardown(TestCase):
         return _idle_pane_task()
 
     def _second_live_pane(self) -> Task:
+        ConfigSetting.objects.set_value("teams_enabled", value=True)
         ticket = Ticket.objects.create(overlay="x", issue_url=f"https://example.com/issues/{uuid.uuid4().hex}")
         session = Session.objects.create(ticket=ticket, agent_id="b")
         task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
