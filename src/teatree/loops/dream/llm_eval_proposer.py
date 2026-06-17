@@ -9,14 +9,22 @@ context (saturated to the documented ``under_load`` envelope floor), discriminat
 positive + negative matchers, and a judge rubric — expressed in the existing
 :class:`~teatree.eval.models.EvalSpec` / matcher shapes.
 
-The non-negotiable gate is unchanged and shared: a synthesized spec is run through
-the SAME deterministic teeth check the hand-authored evals use
-(:func:`teatree.loops.dream.promote.guard_can_fail`): its matchers MUST grade the
-known-bad (drift-recommitting) transcript RED and the compliant (delegating)
-transcript GREEN. A synthesized spec that fails the teeth check is DROPPED with a
-logged reason, never staged — "self-anti-vacuous" is a property the generator must
-satisfy, not a hope. The synthesizer is the only injected seam, so a test drives
-both accept and reject branches with a FAKE synthesizer and no live LLM.
+The non-negotiable gate is deterministic, but it grades against transcripts
+synthesized FROM THE CANDIDATE — not against ``promote``'s FIXED session.py-edit /
+Task-delegate transcripts. The synthesizer emits, alongside its matchers, the
+candidate's own drift tool-call shape (``fail_tool_call``) and the compliant shape
+(``pass_tool_call``); the teeth check seeds a ``_fail`` transcript with the cited
+mistake's actual tool call and a ``_pass`` with the compliant one, then runs the
+SAME real grader (:func:`teatree.eval.report.evaluate`) the suite uses: the
+matchers MUST grade the candidate-derived drift transcript RED and the compliant
+one GREEN. Grading against ``promote``'s fixed transcripts instead would ACCEPT a
+spec whose matchers are unrelated to the candidate's own drift (a mislabeled
+scenario) and REJECT a correctly-targeted one — the teeth check proves the
+matchers reject the SPECIFIC drift the candidate cites. A synthesized spec that
+fails the teeth check is DROPPED with a logged reason, never staged —
+"self-anti-vacuous" is a property the generator must satisfy, not a hope. The
+synthesizer is the only injected seam, so a test drives both accept and reject
+branches with a FAKE synthesizer and no live LLM.
 
 Blast radius: even a proven spec is never autonomously committed to
 ``evals/scenarios`` on main. :func:`stage_derived_evals` writes to a STAGING area
@@ -28,7 +36,7 @@ a re-author.
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
@@ -37,7 +45,7 @@ import yaml
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec
 from teatree.eval.models import UNDER_LOAD_LANE, AnyOf, EvalSpec, FinalStateMatcher, Matcher
-from teatree.loops.dream.promote import guard_can_fail
+from teatree.loops.dream._teeth_check import ToolCallShape, teeth_check_against_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +70,13 @@ class SynthesizedSpec:
     synthesized spec is validated exactly as an on-disk one. ``expect`` entries are
     the heterogeneous matcher mappings the loader parses (``tool_call`` /
     ``no_tool_call_matching`` / ``any_of`` / ``final_state``).
+
+    ``fail_tool_call`` / ``pass_tool_call`` are the candidate's OWN drift and
+    compliant tool-call shapes (``{"name": ..., "input": {...}}``) the teeth check
+    seeds its ``_fail`` / ``_pass`` transcripts from. They make the gate prove the
+    matchers reject the SPECIFIC drift the candidate cites — not ``promote``'s fixed
+    session.py-edit transcripts, which would mis-grade a candidate whose drift has a
+    different tool-call shape.
     """
 
     scenario_name: str
@@ -70,6 +85,8 @@ class SynthesizedSpec:
     context_preamble: str
     prompt: str
     expect: list[Mapping[str, object]]
+    fail_tool_call: ToolCallShape = field(default_factory=lambda: ToolCallShape(name="", input={}))
+    pass_tool_call: ToolCallShape = field(default_factory=lambda: ToolCallShape(name="", input={}))
     judge_rubric: str = ""
 
 
@@ -197,11 +214,14 @@ def derive_eval_from_candidate(
 
     Calls the injected *synthesizer* to produce a complete scenario from the
     candidate + its cited transcript slice, parses it through the real loader, then
-    runs the SHARED non-bypassable teeth check
-    (:func:`teatree.loops.dream.promote.guard_can_fail`) against the synthesized
-    spec: it must grade the known-bad transcript RED and the compliant one GREEN. A
-    synthesizer error, an unparsable spec, or a failed teeth check all DROP the
-    candidate (``derived=False``) — never a crash, never a staged unproven spec.
+    runs the candidate-DERIVED teeth check (:func:`_teeth_check_against_candidate`):
+    the synthesized matchers must grade a ``_fail`` transcript seeded with the
+    candidate's OWN cited drift RED and a ``_pass`` transcript seeded with the
+    compliant shape GREEN. This proves the matchers reject the SPECIFIC drift the
+    candidate cites — grading against ``promote``'s fixed session.py-edit transcripts
+    instead would mis-grade any candidate whose drift has a different tool-call
+    shape. A synthesizer error, an unparsable spec, or a failed teeth check all DROP
+    the candidate (``derived=False``) — never a crash, never a staged unproven spec.
     """
     name = str(candidate.get("scenario_name") or "")
     if not name:
@@ -214,10 +234,12 @@ def derive_eval_from_candidate(
     except Exception as exc:  # noqa: BLE001 — a bad synthesis is a drop, never a crash.
         return DerivationOutcome(scenario_name=name, derived=False, reason=f"synthesis failed: {exc}")
 
-    guard = guard_can_fail(candidate, spec_builder=lambda _c: spec)
-    if not guard.can_fail:
-        return DerivationOutcome(scenario_name=name, derived=False, reason=f"DROPPED (anti-vacuity): {guard.reason}")
-    return DerivationOutcome(scenario_name=name, derived=True, reason=guard.reason, spec=spec)
+    teeth = teeth_check_against_candidate(
+        spec, fail_tool_call=synthesized.fail_tool_call, pass_tool_call=synthesized.pass_tool_call
+    )
+    if not teeth.can_fail:
+        return DerivationOutcome(scenario_name=name, derived=False, reason=f"DROPPED (anti-vacuity): {teeth.reason}")
+    return DerivationOutcome(scenario_name=name, derived=True, reason=teeth.reason, spec=spec)
 
 
 def stage_derived_evals(
@@ -383,7 +405,8 @@ _SYNTH_SYSTEM_PROMPT = (
     "drift rule, the cited real mistake, and a session slice, emit discriminating "
     "matchers: a POSITIVE for the corrected behaviour and a NEGATIVE for the drift. "
     "Use ONLY the existing matcher shapes; never invent a rule the slice cannot "
-    "ground."
+    "ground. Also emit the cited drift's ACTUAL tool-call shape and the compliant "
+    "tool-call shape so the gate can prove your matchers reject the cited drift."
 )
 
 _SYNTH_PROMPT_TEMPLATE = (
@@ -393,9 +416,12 @@ _SYNTH_PROMPT_TEMPLATE = (
     "context_preamble (a polluted session prefix synthesized from the slice below), "
     "prompt (the user request that triggers the drift), expect (a JSON list of "
     "matcher objects — each a tool_call/args entry, a no_tool_call_matching entry, "
-    "an any_of of tool_call entries, or a final_state entry), and judge_rubric (a "
-    "one-sentence PASS-iff rubric). The matchers MUST reject the drift and accept "
-    "the corrected behaviour.\n\n"
+    "an any_of of tool_call entries, or a final_state entry), fail_tool_call (a "
+    'JSON object {{"name": <tool>, "input": {{...}}}} for the cited DRIFT action '
+    "your NEGATIVE matcher must reject), pass_tool_call (the same shape for the "
+    "COMPLIANT action your matchers must accept), and judge_rubric (a one-sentence "
+    "PASS-iff rubric). The matchers MUST reject fail_tool_call and accept "
+    "pass_tool_call.\n\n"
     "Drift rule: {drift_rule}\n"
     "Cited real mistake: {seed_citation}\n\n"
     "Session slice:\n{slice}"
@@ -403,7 +429,7 @@ _SYNTH_PROMPT_TEMPLATE = (
 
 _SYNTH_WATCHDOG_SECONDS = 5 * 60
 _SYNTH_MODEL = "claude-haiku-4-5"
-_REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect")
+_REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect", "fail_tool_call", "pass_tool_call")
 
 
 def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
@@ -478,6 +504,8 @@ def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> Synthesized
     if not isinstance(expect, list) or not expect:
         msg = "synthesized scenario has no matchers"
         raise ValueError(msg)
+    fail_tool_call = _require_tool_call(payload["fail_tool_call"], "fail_tool_call")
+    pass_tool_call = _require_tool_call(payload["pass_tool_call"], "pass_tool_call")
     return SynthesizedSpec(
         scenario_name=str(payload["scenario_name"] or candidate.get("scenario_name") or ""),
         scenario_description=str(payload.get("scenario_description") or ""),
@@ -485,8 +513,28 @@ def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> Synthesized
         context_preamble=str(payload["context_preamble"]),
         prompt=str(payload["prompt"]),
         expect=[entry for entry in expect if isinstance(entry, Mapping)],
+        fail_tool_call=fail_tool_call,
+        pass_tool_call=pass_tool_call,
         judge_rubric=str(payload.get("judge_rubric") or ""),
     )
+
+
+def _require_tool_call(value: object, key: str) -> ToolCallShape:
+    """Validate a synthesized tool-call shape (``{"name": <tool>, "input": {...}}``).
+
+    The teeth check seeds its candidate-derived ``_fail`` / ``_pass`` transcripts
+    from these, so a malformed shape (no ``name``) is fatal — the candidate DROPS
+    rather than teeth-checking against an empty transcript that fails nothing.
+    """
+    if not isinstance(value, Mapping):
+        value = {}
+    fields = {str(field_key): field_value for field_key, field_value in value.items()}
+    name = str(fields.get("name") or "")
+    if not name:
+        msg = f"synthesized scenario has a malformed {key} (need a tool-call with a name)"
+        raise ValueError(msg)
+    tool_input = fields.get("input")
+    return ToolCallShape(name=name, input=dict(tool_input) if isinstance(tool_input, Mapping) else {})
 
 
 __all__ = [
