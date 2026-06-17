@@ -34,7 +34,7 @@ _CONFIG_PATHS = [
     "pyproject.toml",
     ".github/workflows/ci.yml",
     ".pre-commit-config.yaml",
-    ".semgrep/blocking/foo.yml",
+    ".ast-grep/blocking/foo.yml",
     "uv.lock",
     "Dockerfile",
     "dev/Dockerfile.test",

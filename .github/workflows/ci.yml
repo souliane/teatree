@@ -307,15 +307,17 @@ jobs:
 
   # ── 4. Signal & ratchet checks (mix of advisory + ratchet gate) ────────────
 
-  # NOTE: the former ``semgrep-regressions`` advisory job is removed. The
-  # named regression-detector layer is now fully BLOCKING (all rules live in
-  # ``.semgrep/blocking/``; ``.semgrep/warn/`` no longer exists), and the
-  # blocking set is enforced on every push/PR via the prek step in the ``lint``
-  # job (``.pre-commit-config.yaml`` ``semgrep-regressions`` alias,
-  # ``--config=.semgrep/blocking --error``). The advisory job scanned the
-  # now-absent ``.semgrep/warn`` (semgrep exits 0 on a missing config, and the
-  # trailing ``|| true`` swallowed any non-zero), so it was a no-op fake-green
-  # gate — deleting it loses no coverage.
+  # NOTE: the former ``semgrep-regressions`` advisory job was removed (#2128).
+  # The named regression-detector layer is fully BLOCKING and was migrated off
+  # semgrep to ast-grep in souliane/teatree#87: all rules live in
+  # ``.ast-grep/blocking/`` (the ``.semgrep`` tree no longer exists), and the
+  # blocking set is enforced on every push/PR via the prek ``regression-rules``
+  # hook in the ``lint`` job (``.pre-commit-config.yaml`` ->
+  # ``scripts/hooks/check_regression_rules.py``, the pinned ast-grep engine over
+  # ``.ast-grep/blocking``, exit non-zero on a finding). The deleted advisory job
+  # scanned the now-absent ``.semgrep/warn`` (semgrep exits 0 on a missing config,
+  # and the trailing ``|| true`` swallowed any non-zero), so it was a no-op
+  # fake-green gate — deleting it lost no coverage.
 
   # ADVISORY: reports near-duplicate test functions and test-to-source ratio;
   # default mode exits 0 (warn-only); flip to "block" in pyproject.toml to gate.

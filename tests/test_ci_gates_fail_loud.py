@@ -37,15 +37,18 @@ def _precommit_hooks() -> list[dict[str, Any]]:
     return hooks
 
 
-class TestSemgrepRegressionsJobIsGone:
-    """Fix #1: the no-op advisory ``semgrep-regressions`` job is deleted.
+class TestRegressionRulesGateIsEnforced:
+    """The blocking regression set rides a prek gate that fails CI on a finding.
 
-    The job scanned ``.semgrep/warn`` — a directory that no longer exists (all
-    rules promoted to ``.semgrep/blocking``). semgrep exits 0 on a missing
-    config and the trailing ``|| true`` swallowed any non-zero, so the job was
-    a no-op that always passed. The blocking set is enforced via prek; the
-    advisory job loses no coverage. It must stay gone so a fake-green scan
-    cannot silently reappear.
+    History: the advisory ``semgrep-regressions`` CI job scanned the now-absent
+    ``.semgrep/warn`` (semgrep exits 0 on a missing config; a trailing ``|| true``
+    swallowed any non-zero — a no-op fake-green job, #2128), so it was deleted and
+    the blocking set was enforced via prek. souliane/teatree#87 then migrated the
+    blocking rules off semgrep to ast-grep: they now ride the ``regression-rules``
+    prek hook, which runs the pinned ast-grep engine over ``.ast-grep/blocking``
+    and exits non-zero on a finding (or exit 2 — fail-loud — when the engine is
+    absent). These pins keep both the deleted fake-green job and the absent-dir
+    scan from silently reappearing, and keep the new gate present and blocking.
     """
 
     def test_no_semgrep_regressions_ci_job(self) -> None:
@@ -55,41 +58,43 @@ class TestSemgrepRegressionsJobIsGone:
             "the blocking set is enforced via the prek step in the lint job."
         )
 
-    def test_no_ci_step_scans_the_absent_warn_dir(self) -> None:
+    def test_no_ci_step_scans_an_absent_dir(self) -> None:
         joined = " ".join(cmd for job in _load_ci_jobs().values() for cmd in _job_run_commands(job))
-        assert ".semgrep/warn" not in joined, (
-            "No CI step may scan .semgrep/warn — the directory does not exist, so "
-            "the scan is a no-op that exits 0 (fake-green)."
-        )
+        for absent in (".semgrep/warn", ".semgrep/blocking", ".semgrep"):
+            assert absent not in joined, (
+                f"No CI step may scan {absent} — the .semgrep tree was removed in the ast-grep "
+                "migration (souliane/teatree#87); scanning it is a no-op that exits 0 (fake-green)."
+            )
 
     def test_blocking_set_is_enforced_via_prek(self) -> None:
-        # Deleting the advisory job loses no coverage only because the blocking
-        # set rides the prek step with --error (fails CI on a finding).
-        blocking_hooks = [
+        # The blocking set rides the prek `regression-rules` hook, which runs the
+        # ast-grep regression scan and exits non-zero on a finding (fails CI).
+        gate_hooks = [
             hook
             for hook in _precommit_hooks()
-            if hook.get("alias") == "semgrep-regressions"
-            and ".semgrep/blocking" in " ".join(str(a) for a in hook.get("args", []))
+            if hook.get("id") == "regression-rules" and "check_regression_rules.py" in str(hook.get("entry", ""))
         ]
-        assert blocking_hooks, "The blocking regression set must be enforced via a prek semgrep-regressions hook."
-        for hook in blocking_hooks:
-            args = " ".join(str(a) for a in hook.get("args", []))
-            assert "--error" in args, "The blocking semgrep hook must pass --error so a finding fails CI."
+        assert gate_hooks, (
+            "The blocking regression set must be enforced via the prek `regression-rules` hook "
+            "(scripts/hooks/check_regression_rules.py)."
+        )
+        for hook in gate_hooks:
+            assert hook.get("always_run") is True, "The regression-rules gate must always_run so a finding fails CI."
 
-    def test_no_prek_hook_scans_absent_warn_dir(self) -> None:
-        # The semgrep-regressions-warn hook scanned .semgrep/warn (deleted in #2128).
-        # semgrep exits 0 on a missing config; the || true swallowed any non-zero —
-        # a fake-green scan. Restoring a hook targeting .semgrep/warn would silently
-        # pass on every run. This test is RED if that hook reappears.
-        warn_hooks = [
+    def test_no_prek_hook_scans_the_removed_semgrep_tree(self) -> None:
+        # The semgrep blocking config (.semgrep/blocking) and the deleted warn dir
+        # (.semgrep/warn) were both removed by the ast-grep migration. Any prek hook
+        # still targeting either would be a stale reference (and .warn a fake-green
+        # no-op). This test is RED if such a hook reappears.
+        stale_hooks = [
             hook
             for hook in _precommit_hooks()
-            if ".semgrep/warn" in str(hook.get("entry", ""))
-            or ".semgrep/warn" in " ".join(str(a) for a in hook.get("args", []))
+            for token in (".semgrep/warn", ".semgrep/blocking")
+            if token in str(hook.get("entry", "")) or token in " ".join(str(a) for a in hook.get("args", []))
         ]
-        assert not warn_hooks, (
-            "No prek hook may scan .semgrep/warn — the directory does not exist. "
-            f"Offending hooks: {[h.get('alias') or h.get('id') for h in warn_hooks]}"
+        assert not stale_hooks, (
+            "No prek hook may scan the removed .semgrep tree (souliane/teatree#87). "
+            f"Offending hooks: {[h.get('alias') or h.get('id') for h in stale_hooks]}"
         )
 
 

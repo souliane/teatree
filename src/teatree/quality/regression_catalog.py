@@ -1,7 +1,7 @@
 """Load the named regression-detector manifest from YAML into typed entries.
 
 The source of truth is ``regression_rules.yaml`` next to this module; each entry
-points at one ``.semgrep/<status>/<id>.yaml`` rule file. This mirrors
+points at one ``.ast-grep/<status>/<id>.yml`` rule file. This mirrors
 ``catalog.py`` (the anti-pattern catalog loader): schema-validate at load time,
 ``RegressionCatalogError`` carries the offending entry id.
 
@@ -10,6 +10,9 @@ A ``blocking`` rule's bug is already fixed (zero findings on the current tree â€
 ``BLOCKING_NOW`` sentinel rather than a tracking issue. A ``warn`` rule's bug is
 still open, so it MUST name a ``souliane/teatree#<n>`` tracking issue; the fix PR
 flips it to blocking.
+
+The detector engine is ast-grep (``teatree.quality.regression_scan``); each rule
+file is a single-rule ast-grep YAML (``id`` + ``language`` + ``rule``).
 """
 
 import dataclasses
@@ -72,22 +75,17 @@ def load_manifest(path: Path | None = None) -> tuple[RegressionRule, ...]:
     return rules
 
 
-def load_semgrep_rule_ids(rule_path: Path) -> tuple[str, ...]:
+def load_astgrep_rule_ids(rule_path: Path) -> tuple[str, ...]:
     try:
         loaded = yaml.safe_load(rule_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
-        raise RegressionCatalogError(None, f"{rule_path}: invalid semgrep YAML: {exc}") from exc
-    if not isinstance(loaded, Mapping) or "rules" not in loaded:
-        raise RegressionCatalogError(None, f"{rule_path}: semgrep file must be a mapping with a 'rules' list")
-    rules = loaded["rules"]
-    if not isinstance(rules, list) or not rules:
-        raise RegressionCatalogError(None, f"{rule_path}: 'rules' must be a non-empty list")
-    ids: list[str] = []
-    for rule in rules:
-        if not isinstance(rule, Mapping) or not isinstance(rule.get("id"), str):
-            raise RegressionCatalogError(None, f"{rule_path}: every semgrep rule needs a string 'id'")
-        ids.append(cast("str", rule["id"]))
-    return tuple(ids)
+        raise RegressionCatalogError(None, f"{rule_path}: invalid ast-grep YAML: {exc}") from exc
+    if not isinstance(loaded, Mapping) or "rule" not in loaded:
+        raise RegressionCatalogError(None, f"{rule_path}: ast-grep file must be a mapping with a 'rule' block")
+    rule_id = loaded.get("id")
+    if not isinstance(rule_id, str) or not rule_id.strip():
+        raise RegressionCatalogError(None, f"{rule_path}: an ast-grep rule needs a string 'id'")
+    return (rule_id,)
 
 
 def _parse_rule(item: object) -> RegressionRule:
@@ -115,11 +113,11 @@ def _check_issue(issue: str, status: str, entry_id: str) -> None:
 
 
 def _check_file_placement(file: str, status: str, entry_id: str) -> None:
-    expected_dir = f".semgrep/{status}/"
+    expected_dir = f".ast-grep/{status}/"
     if not file.startswith(expected_dir):
         raise RegressionCatalogError(entry_id, f"a {status} rule's file must live under {expected_dir}")
-    if not file.endswith(f"{entry_id}.yaml"):
-        raise RegressionCatalogError(entry_id, "the rule file name must match the entry id (<id>.yaml)")
+    if not file.endswith(f"{entry_id}.yml"):
+        raise RegressionCatalogError(entry_id, "the rule file name must match the entry id (<id>.yml)")
 
 
 def _required_str(entry: Mapping[str, Any], key: str, entry_id: str | None) -> str:
