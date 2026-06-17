@@ -24,6 +24,7 @@ class RunDockerArgs:
 
     name: str | None
     lane: str | None
+    shard: str | None
     output_format: str
     max_turns: int | None
     max_budget_usd: float
@@ -53,6 +54,7 @@ class RunDockerArgs:
         return [
             [self.name] if self.name is not None else [],
             ["--lane", self.lane] if self.lane is not None else [],
+            ["--shard", self.shard] if self.shard is not None else [],
             ["--format", self.output_format] if self.output_format != "text" else [],
             ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
         ]
