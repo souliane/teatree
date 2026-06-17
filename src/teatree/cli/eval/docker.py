@@ -36,6 +36,11 @@ _AUTH_ENV_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 #: Env marker set on the container so the in-container ``t3 eval`` re-invocation
 #: runs the metered/benchmark command in-process instead of re-routing to docker.
 IN_CONTAINER_ENV_VAR = "T3_EVAL_IN_CONTAINER"
+#: Fixed container mount point for the WRITABLE artifacts directory. The repo is
+#: mounted ``:ro`` (a metered run must never mutate the working tree), so a run
+#: that emits an artifact (the per-trial transcript report) writes it here, on a
+#: separate bind-mount, where it lands back on the host for upload.
+ARTIFACTS_MOUNT = "/artifacts"
 
 
 def _auth_passthrough_flags() -> list[str]:
@@ -66,7 +71,19 @@ def _build_image(root: Path) -> int:
     return run_streamed(["docker", "build", "-t", DOCKER_IMAGE, "-f", _DOCKERFILE, "."], cwd=root, check=False)
 
 
-def _run_in_image(root: Path, eval_args: list[str]) -> int:
+def _artifacts_mount_flags(artifacts_dir: Path | None) -> list[str]:
+    """Bind-mount *artifacts_dir* WRITABLE at :data:`ARTIFACTS_MOUNT`, or nothing.
+
+    The repo mount is ``:ro``; a run that emits an artifact writes it into this
+    separate writable bind-mount, so the file lands on the host for upload. No
+    flag is added when the run emits no artifact.
+    """
+    if artifacts_dir is None:
+        return []
+    return ["-v", f"{artifacts_dir}:{ARTIFACTS_MOUNT}"]
+
+
+def _run_in_image(root: Path, eval_args: list[str], *, artifacts_dir: Path | None = None) -> int:
     return run_streamed(
         [
             "docker",
@@ -86,6 +103,7 @@ def _run_in_image(root: Path, eval_args: list[str]) -> int:
             *_auth_passthrough_flags(),
             "-v",
             f"{root}:/app:ro",
+            *_artifacts_mount_flags(artifacts_dir),
             DOCKER_IMAGE,
             "uv",
             "run",
@@ -98,7 +116,7 @@ def _run_in_image(root: Path, eval_args: list[str]) -> int:
     )
 
 
-def run_eval_in_docker(eval_args: list[str]) -> int:
+def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = None) -> int:
     """Build (if needed) and run the eval gate inside the CI image; return its exit code.
 
     For the metered ``sdk`` lane, resolve ``CLAUDE_CODE_OAUTH_TOKEN`` first (env
@@ -107,6 +125,11 @@ def run_eval_in_docker(eval_args: list[str]) -> int:
     authenticates in-container — the metered run just works without a manual
     ``export``. The free / subscription lanes never authenticate ``claude``, so the
     secret store is not touched for them.
+
+    ``artifacts_dir`` (when set) is bind-mounted WRITABLE at
+    :data:`ARTIFACTS_MOUNT` so an in-container run that emits an artifact (the
+    per-trial transcript report) writes it there and the file lands back on the
+    host — the repo mount itself is ``:ro``.
     """
     if shutil.which("docker") is None:
         raise DockerUnavailableError
@@ -117,4 +140,4 @@ def run_eval_in_docker(eval_args: list[str]) -> int:
         build_code = _build_image(root)
         if build_code != 0:
             return build_code
-    return _run_in_image(root, eval_args)
+    return _run_in_image(root, eval_args, artifacts_dir=artifacts_dir)

@@ -1924,6 +1924,25 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     ~latency). Default 1 =   │
 │                                                     sequential.              │
 │                                                     [default: 1]             │
+│ --transcript-html                          PATH     Write a self-contained   │
+│                                                     per-trial TRANSCRIPT     │
+│                                                     report (each scenario's  │
+│                                                     per-trial PASS/FAIL plus │
+│                                                     the agent's reasoning +  │
+│                                                     tool calls) to this path │
+│                                                     — the durable,           │
+│                                                     uploadable artifact a    │
+│                                                     maintainer reads to      │
+│                                                     diagnose a red lane.     │
+│                                                     Produced from THIS run's │
+│                                                     results (no suite        │
+│                                                     re-run, no ledger), so   │
+│                                                     it survives the          │
+│                                                     --no-persist             │
+│                                                     ephemeral-container CI   │
+│                                                     path. Supported on a     │
+│                                                     --trials run (the        │
+│                                                     metered CI shape).       │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -7110,14 +7129,18 @@ Usage: t3 teatree config_setting list [OPTIONS]
 ```
 Usage: t3 teatree config_setting import [OPTIONS]
 
- Seed the DB store from the operational ```` toml keys (one-time migration).
+ Seed the DB store from the operational toml keys (one-time migration).
 
  The dual-read migration step (#938): every ```` key that is a
  registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
- registry's parser and upserted into the store, so existing installs move
- their operational config into the DB. Bootstrap-file-only keys
- (``private_repos`` / ``DATABASE_URL`` / …) and unknown keys are skipped —
- only operational settings move. The upsert makes a re-run idempotent.
+ registry's parser and upserted into the GLOBAL store, and every operational
+ key under an ```` table is upserted into THAT overlay's
+ scope — the DB twin of the per-overlay TOML override (#1775). So an install
+ with both a global ``mode`` and a per-overlay ``mode = "auto"`` migrates both
+ tiers in one pass. Bootstrap-file-only keys (``private_repos`` /
+ ``DATABASE_URL`` / …), the overlay's own ``path`` / ``url`` discovery keys,
+ and unknown keys are skipped — only operational settings move. The upsert
+ makes a re-run idempotent.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

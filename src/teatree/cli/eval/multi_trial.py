@@ -9,6 +9,7 @@ single-pass grade.
 import json
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import typer
 from claude_agent_sdk.types import EffortLevel
@@ -27,6 +28,7 @@ from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_tex
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
+from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.sdk_runner import MAX_BUDGET_USD
 
@@ -87,6 +89,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
     effort: EffortLevel | None = None,
+    transcript_html: Path | None = None,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed.
 
@@ -94,6 +97,12 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     ``METERED_DEFAULT_EFFORT`` calibration). It is the runner-wide default applied
     to scenarios that declare no ``model@effort`` of their own; a scenario's own
     tag still wins at the runner's per-scenario seam.
+
+    ``transcript_html`` is a writable path to drop a self-contained per-trial
+    transcript report at — the durable, uploadable artifact a maintainer reads to
+    diagnose a red lane. It is written from THIS run's in-memory results (no suite
+    re-run, no ledger), so it survives the ``--no-persist`` ephemeral-container
+    CI path where nothing reaches the host run-history.
     """
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
@@ -142,6 +151,12 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
                 continue
             status = "PASS" if r.ok else "FAIL"
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
+    # Drop the per-trial transcript artifact BEFORE any guard/gate can exit the
+    # process — the report is exactly what a maintainer reads to triage the
+    # failure those guards are about to surface, so it must be written even when
+    # the run is about to exit non-zero.
+    if transcript_html is not None:
+        transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )

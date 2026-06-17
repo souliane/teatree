@@ -66,6 +66,14 @@ class PassAtKResult:
     #: MAIN-model and AUXILIARY token usage summed across every trial.
     main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
     aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: The per-trial :class:`~teatree.eval.report.ScenarioResult` objects, in trial
+    #: order — the load-bearing per-trial EVIDENCE (each trial's transcript:
+    #: ``run.text_blocks`` reasoning + ``run.tool_calls`` + the matcher verdicts) a
+    #: maintainer reads to diagnose a red lane. The aggregate counters above are
+    #: derived from these, but they are summed/collapsed; this keeps the raw
+    #: per-trial trajectories so the transcript report (``--transcript-html``) can
+    #: show, per trial, what the agent actually did. Empty for a skipped scenario.
+    trial_results: tuple[ScenarioResult, ...] = ()
 
     @property
     def pass_rate(self) -> float:
@@ -111,8 +119,10 @@ def run_pass_at_k(
     billed_model: str | None = None
     cap_reason = ""
     fell_back: bool | None = None
+    trial_results: list[ScenarioResult] = []
     for _ in range(k):
         result = runner(spec)
+        trial_results.append(result)
         cost_usd += result.run.cost_usd
         usage += result.run.usage
         main_cost_usd += result.run.main_cost_usd
@@ -144,6 +154,7 @@ def run_pass_at_k(
         aux_cost_usd=aux_cost_usd,
         main_usage=main_usage,
         aux_usage=aux_usage,
+        trial_results=tuple(trial_results),
     )
 
 

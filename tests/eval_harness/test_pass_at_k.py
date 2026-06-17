@@ -200,3 +200,37 @@ class TestRunPassAtK:
         assert result.passes == 2
         assert result.terminal_reason == ""  # the clean miss carries no cap reason
         assert result.ok  # pass@k noise tolerance preserved
+
+
+class TestRetainsPerTrialResults:
+    """The aggregate must retain each trial's ScenarioResult — the transcript evidence.
+
+    The counters are summed/collapsed, but the per-trial transcript report (the
+    ``--transcript-html`` artifact) needs the raw per-trial trajectories. Dropping
+    them leaves a maintainer with only a pass-count and no way to see WHAT the
+    agent did on a failing trial.
+    """
+
+    def test_keeps_one_result_per_trial_in_order(self) -> None:
+        spec = _spec()
+        result = run_pass_at_k(spec, _sequence_runner(spec, [True, False, True]), k=3, require="any")
+        assert len(result.trial_results) == 3
+        assert [r.passed for r in result.trial_results] == [True, False, True]
+
+    def test_each_retained_result_carries_its_trial_transcript(self) -> None:
+        spec = _spec()
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            run = EvalRun(
+                spec_name=spec.name,
+                tool_calls=(),
+                text_blocks=("I will run the command.",),
+                terminal_reason="success",
+                is_error=False,
+                raw_stdout="",
+                raw_stderr="",
+            )
+            return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=False)
+
+        result = run_pass_at_k(spec, _run, k=2, require="any")
+        assert all("I will run the command." in r.run.text_blocks for r in result.trial_results)
