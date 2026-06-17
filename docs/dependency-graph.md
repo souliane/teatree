@@ -46,6 +46,7 @@ graph TD
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
+    teatree.core --> teatree.core.session_identity
     teatree.core.loop_lease_manager --> teatree.utils
     teatree.core.managers --> teatree.config
     teatree.core.managers --> teatree.utils
@@ -189,7 +190,7 @@ graph TD
     teatree.loop --> teatree.loop.dispatch
     teatree.loop --> teatree.loop.self_improve
     teatree.loop.statusline_render --> teatree.loop.statusline_palette
-    teatree.loop.session_identity --> teatree.core
+    teatree.loop.session_identity --> teatree.core.session_identity
     teatree.loop.loop_scoping --> teatree.core.loop_lease_manager
     teatree.loop.loop_scoping --> teatree.loop.session_identity
     teatree.loop.statusline_loops --> teatree.config
@@ -259,7 +260,8 @@ graph TD
     teatree.messaging --> teatree.core
     teatree.messaging --> teatree.notify
     teatree.messaging --> teatree.backends
-    teatree.outbound_claim --> teatree.core
+    teatree.outbound_claim --> teatree.core.models
+    teatree.outbound_claim --> teatree.core.session_identity
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.settings --> teatree.timeouts
@@ -276,6 +278,7 @@ graph TD
     teatree.overlay_init
     teatree.core.modelkit
     teatree.core.models.errors
+    teatree.core.session_identity
     teatree.core.session_handover_manager
     teatree.backends.errors
     teatree.backends.types

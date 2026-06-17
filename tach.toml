@@ -151,7 +151,8 @@ depends_on = [
   "teatree.slack_mrkdwn",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
-  "teatree.core.models"
+  "teatree.core.models",
+  "teatree.core.session_identity"
 ]
 
 [[modules]]
@@ -161,6 +162,11 @@ depends_on = []
 
 [[modules]]
 path = "teatree.core.models.errors"
+layer = "domain"
+depends_on = []
+
+[[modules]]
+path = "teatree.core.session_identity"
 layer = "domain"
 depends_on = []
 
@@ -418,7 +424,7 @@ depends_on = []
 [[modules]]
 path = "teatree.loop.session_identity"
 layer = "domain"
-depends_on = ["teatree.core"]
+depends_on = ["teatree.core.session_identity"]
 
 [[modules]]
 path = "teatree.loop.loop_scoping"
@@ -588,7 +594,7 @@ depends_on = ["teatree.core", "teatree.notify", "teatree.backends"]
 [[modules]]
 path = "teatree.outbound_claim"
 layer = "integration"
-depends_on = ["teatree.core"]
+depends_on = ["teatree.core.models", "teatree.core.session_identity"]
 
 [[modules]]
 path = "teatree.slack_mrkdwn"
