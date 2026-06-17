@@ -91,6 +91,8 @@ Dispatch one worker sub-agent per ticket, all in parallel. Each worker:
 
 The orchestrator (main conversation) fans out all (a) workers simultaneously, collects results as they land, and merges PRs in dependency-aware order (see § Merge serialization below). It holds no per-ticket implementation context. Fan-out is clamped to `max_concurrent_auto_starts` so a wave never exceeds the per-overlay auto-start budget.
 
+**Dispatch with the ticket scope you already have — never stall a wave to ask for issue URLs.** A worker needs only the ticket id and its scope (the module/file paths and the one-line ask) to start; the WORKER resolves its own worktree and the canonical ticket URL inside its run (`t3 <overlay> workspace ticket <id>`). The orchestrator does NOT pre-resolve a forge URL per ticket before it can dispatch. So when a `full`/`boost` directive hands you a backlog of identified tickets (e.g. `TODO-7`, `TODO-9`, `TODO-11` with their file paths), the right move is to **issue the parallel `Agent`/`Task` dispatches NOW** — one per ticket, carrying the id + scope — not to reply "give me the GitHub/GitLab issue URLs first". Asking for a URL you don't strictly need to dispatch is the serial-stall this dial bans; a missing URL is a thing the worker fetches, not a blocker on the fan-out.
+
 Each worker dispatch prompt MUST open with:
 
 ```text
@@ -128,6 +130,8 @@ Agent(team_name="<team>", name="core-maker", model="opus", prompt="<role brief>"
 # Agent(team_name="<team>", name="core-maker", model="sonnet", prompt="...")   # banned
 # Agent(team_name="<team>", name="core-maker", prompt="...")                   # banned: model omitted
 ```
+
+**Spawning a teammate is a real `Agent` tool call — never narrate, echo, or shell it.** Issue the actual `Agent(...)` tool invocation. Do NOT print the spawn as text, do NOT wrap it in a Bash `cat <<'EOF' … Agent(…) … EOF` heredoc, and do NOT reply "I don't have an Agent tool" — when the task is to spawn a standing teammate, the `Agent` tool is the action, and a `Bash`/`echo` rendering of it is a non-action that spawns nothing. One `Agent` call with `model="opus"`, then stop.
 
 `model="opus"` is a required parameter of every teammate spawn, not a budget knob — omitting it or downgrading to `sonnet`/`haiku` is the banned path. A teammate is long-lived — it claims a unit, works it across many turns, waits on CI, picks up the next unit — so a `sonnet` teammate hits its compaction threshold mid-task and silently loses the context it was carrying (the diff, the plan, the half-written test). `sonnet` is for explicit one-off **non-team** sub-agents (a quick read-only fetch, a throwaway grep), never a standing teammate; `fable` stays banned for team mates (too token-expensive, reserved for honesty-critical verification). The tier is a required, fixed parameter of a teammate spawn, not a budget knob — downgrading a mate to save tokens is a false economy, because the compacted mate re-reads everything and redoes work. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`).
 

@@ -263,6 +263,48 @@ class CostBoundsGate:
         return result.failed
 
 
+class UnderLoadRatchetGate:
+    """The shrink-only ratchet over the metered ``under_load`` known-red baseline.
+
+    The ``under_load`` lane measures behavioural drift under context pressure;
+    several scenarios are known-red and the behavioural fix is deferred. Rather
+    than gating on a clean green (which a prose edit cannot honestly claim), this
+    gate ratchets the failing set against the CHECKED-IN
+    ``evals/under_load_known_red.yaml`` baseline:
+
+    * a failing under_load scenario NOT in the baseline is a REGRESSION (RED);
+    * a baselined scenario that now PASSES must be REMOVED — the set is shrink-only
+    (RED until the file is updated).
+
+    It reads the IN-MEMORY pass@k results (not a persisted record), so it runs in
+    the ephemeral ``--no-persist`` Docker CI path exactly as on the host. A SKIPPED
+    scenario is neither a pass nor a fail, so a key-less all-skipped run never trips
+    the gate.
+    """
+
+    @staticmethod
+    def check(results: list[PassAtKResult], *, specs: list[EvalSpec], enabled: bool) -> bool:
+        """Ratchet the under_load failing/passing sets against the baseline; print violations; True if any."""
+        if not enabled:
+            return False
+        from teatree.eval.models import UNDER_LOAD_LANE  # noqa: PLC0415
+        from teatree.eval.under_load_ratchet import check_under_load_ratchet, load_under_load_known_red  # noqa: PLC0415
+
+        under_load_names = {spec.name for spec in specs if spec.lane == UNDER_LOAD_LANE}
+        failing = [r.spec_name for r in results if r.spec_name in under_load_names and not r.skipped and not r.ok]
+        passing = [r.spec_name for r in results if r.spec_name in under_load_names and not r.skipped and r.ok]
+        baseline = load_under_load_known_red()
+        result = check_under_load_ratchet(failing, passing, baseline)
+        for violation in result.violations:
+            typer.echo(violation.render())
+        if not result.failed:
+            typer.echo(
+                f"under_load ratchet: OK — {len(failing)} known-red failing within the "
+                f"baseline of {result.baseline_size}, nothing to shrink, no new regression."
+            )
+        return result.failed
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` flag through the persist+gate tail.
     results: list[ScenarioResult],

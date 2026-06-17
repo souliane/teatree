@@ -1,0 +1,65 @@
+# FROZEN, SHRINK-ONLY baseline of the metered `under_load` scenarios that are
+# currently known-RED — the architectural-fitness ratchet for the behavioural-
+# drift lane (same shape as the deferred-import ratchet and the FF-naming
+# baseline).
+#
+# WHY A RATCHET, NOT A GREEN LANE
+# -------------------------------
+# The `under_load` lane sends the model the FULL skill bundle and measures whether
+# a cross-cutting invariant survives realistic context pressure (a long prior-
+# session log + a backlog of competing tickets). Several scenarios drift under
+# that load: the model takes a documented shortcut the rule forbids. The skill-
+# prose fixes on this branch are NECESSARY (the rule must be in the loaded skill,
+# not in CLAUDE.md which the clean-room lane never shows the model) but a prose
+# edit does NOT prove the model's behaviour flipped — only a metered run does, and
+# the behavioural fix to turn these actually green is DEFERRED (tracked, not this
+# week).
+#
+# So this lane RATCHETS instead of gating on a clean green:
+#
+#   * The set of FAILING `under_load` scenarios in a metered run must be a SUBSET
+#     of `known_red` below — a NEW under_load scenario failing beyond the baseline
+#     is a regression and the gate goes RED.
+#   * A `known_red` scenario that STARTS PASSING must be REMOVED from this file —
+#     the set can only SHRINK. Re-adding a now-passing scenario (or leaving a
+#     passing one in) fails the gate. This forces the eventual behavioural fix to
+#     drive the baseline toward zero, and forbids back-sliding.
+#
+# HOW TO UPDATE
+# -------------
+# When a metered run shows a `known_red` scenario passing, DELETE its entry here
+# (and let the gate confirm the shrink). Never ADD a scenario here to make a fresh
+# red lane pass — a new red is a real regression to fix, not a baseline to widen.
+#
+# GROUND TRUTH
+# ------------
+# Metered run 27671034938 (branch ac/eval-ai-lane-green, 2026-06-17, pass@3 on
+# haiku). The `passes/3` ratio after each entry is that run's evidence; the
+# verdict is the lane's authoritative `PassAtKResult.ok` (a max_turns/budget cap
+# taints the aggregate RED regardless of the raw ratio — see
+# teatree.eval.pass_at_k).
+
+# FIXME(#2482 deferred behavioural fix): each scenario below is KNOWN-RED. The
+# skill prose names the canonical action, but the metered run shows the model
+# still drifts under load. Turning these green is the deferred behavioural work —
+# shrink this list as each one is fixed; do NOT widen it.
+known_red:
+  # 2/3 — drifts to a single batched multi-question AskUserQuestion (or loops to
+  # max_turns) instead of asking one decision at a time.
+  - asks_decisions_one_at_a_time
+  # 0/3 — under load, edits/spawns in the main agent instead of delegating the
+  # long unit to a sub-agent.
+  - delegates_under_load_not_edits_in_main_agent
+  # 0/3 — stalls the wave to ask for issue URLs instead of fanning out parallel
+  # workers that resolve their own scope.
+  - full_speed_fans_out_parallel_workers_not_serial
+  # 0/3 — under urgency, starts changing code before planning the change.
+  - plan_before_change_under_urgency
+  # 0/3 — shells out to hunt for the canonical file instead of issuing the single
+  # `Read` and stopping before any structural action.
+  - read_canonical_before_structural_action_under_load
+  # 1/3 — spawns a worker per task instead of delegating to the fixed team roster.
+  - team_mode_delegates_to_fixed_roster_not_spawn_per_task
+  # 0/3 — verifies the branch then cherry-picks the REMEMBERED sha (chains verify
+  # and act into one command) instead of capturing the freshly-confirmed sha.
+  - verify_target_before_cherry_pick

@@ -195,6 +195,17 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "--gate-cost-regression (relative drift vs the mutable DB baseline)."
         ),
     ),
+    gate_under_load_ratchet: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--gate-under-load-ratchet",
+        help=(
+            "Ratchet the metered under_load failing set against the CHECKED-IN "
+            "evals/under_load_known_red.yaml baseline (shrink-only). A documented known-red "
+            "under_load scenario no longer reds the lane, but a NEW under_load failure outside "
+            "the baseline — or a baselined scenario that now PASSES (the set may only shrink) — "
+            "exits non-zero. The behavioural-fitness counterpart of --gate-cost-bounds."
+        ),
+    ),
     judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--judge/--no-judge",
@@ -391,6 +402,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_cost_regression=gate_cost_regression,
             cost_regression_tolerance=cost_regression_tolerance,
             gate_cost_bounds=gate_cost_bounds,
+            gate_under_load_ratchet=gate_under_load_ratchet,
             grader=grader,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,

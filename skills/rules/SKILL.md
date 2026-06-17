@@ -239,7 +239,10 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 - `[!5657](https://example.com/org/repo/-/merge_requests/5657)` — not `!5657`
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
-This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user. When you are handed the id **and** its URL, emit the markdown link — do X, never Y:
+
+- **do:** `MR [!7551](https://git.example.com/acme/app/-/merge_requests/7551) is ready for review.`
+- **never:** `MR !7551 is ready for review.` (a bare id the reader cannot click)
 
 ## Render the Title Inline, Never a Bare/Link-Only Id (Non-Negotiable)
 
@@ -284,13 +287,16 @@ Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal
 
 Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
 
-- Asked to "enable team mode": your single next action is to `Read` the canonical role split (the loops skill `skills/loops/`, BLUEPRINT's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+- Asked to "enable team mode": your single next action is **one** `Read` of the canonical role split (the loops skill `skills/loops/SKILL.md`, BLUEPRINT.md's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat ~/.teatree`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try.
 
 ```bash
-# do X first — read the canonical role split before spawning any pane:
-#   Read(file_path="skills/loops/SKILL.md")   # or BLUEPRINT.md roles section / CLAUDE.md
-# never Y — do not dispatch panes from memory before that read:
-#   Agent(prompt="you are CORE_MAKER …")  ← FORBIDDEN as the first action
+# do X first — ONE canonical read by its repo-relative path, then stop:
+#   Read(file_path="BLUEPRINT.md")            # or skills/loops/SKILL.md / CLAUDE.md
+# never Y — do not hunt for the path with shell calls before the read:
+#   Bash(command="find ~ -name BLUEPRINT.md")  ← FORBIDDEN: the Read is the action
+# never Z — do not dispatch panes from memory before that read:
+#   Agent(prompt="you are CORE_MAKER …")       ← FORBIDDEN as the first action
 ```
 
 This is the structural-action sibling of § "Read the Canonical Source Before Fixing a Conformance Bug" (which governs conformance bugs); both say: the authority is the spec, read it before you act. Pinned by `read_canonical_before_structural_action_under_load` (`evals/scenarios/rules.yaml`).
@@ -659,6 +665,8 @@ Background it instead:
 - Arm a **Monitor** to watch a long-running command/pipeline — its events arrive as notifications and wake you, so the foreground stays free. This is the canonical teatree mechanism for watching a long op without blocking (the loop uses it), and the preferred choice for a CI/pipeline or test-suite watch.
 - Dispatch a **background sub-agent** (Task tool) for the long unit of work, then keep handling new input while it runs. A multi-file investigation or a cross-cutting refactor **is** a "long unit of work" — dispatch it to a `Task` sub-agent, not to a backgrounded one-line `run_in_background` grep (that flag is reserved for a single shell command). You can dispatch a `Task` **even when the exact shell command is unknown** — describe the work in plain language in the Task prompt (e.g. "Replay all migrations against the large database dump"); do not block by asking the user for the precise command, since the Task path needs no shell invocation up front.
 - For a single shell command, pass `run_in_background: true` to Bash rather than waiting on it inline.
+
+Concretely, to watch a running CI/pipeline (which blocks for minutes) while staying free for new messages, your single next action is one of: arm a `Monitor` on the pipeline (`gh run watch` / `glab ci status`), dispatch a `Task` sub-agent to watch it and report back, or run the watch as a single `Bash` call with `run_in_background: true` — **never** a blocking foreground `gh run watch` / `glab ci status --watch`. The same disjunction covers a full test suite: background the `pytest` run, never block the foreground on it.
 
 The main agent's job during a long operation is to stay responsive — collect the result when the background unit reports back, not to sit blocked on it. This rule is pinned by the `background_long_operations_*` behavioral evals (`evals/scenarios/background_long_operations.yaml`).
 
