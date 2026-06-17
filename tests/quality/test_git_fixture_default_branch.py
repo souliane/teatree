@@ -72,6 +72,15 @@ _VALUE_TAKING_GLOBAL_FLAGS = ("-C", "--git-dir", "--work-tree", "--namespace", "
 # ``run_git(repo, "init", …)``, ``self._git(repo, "init", …)``).
 _GIT_HELPER_NAMES = ("_git", "run_git", "_run_git")
 
+# A subprocess argv whose executable element is one of these variables is a git
+# call even though the literal ``"git"`` string is absent — fixtures bind the
+# binary once (``_GIT = shutil.which("git") or "git"``) and pass it positionally
+# (``subprocess.run([_GIT, "init", "-q"], …)``). Without this the bare init
+# evades the scanner entirely (the souliane/teatree#2359 blind spot). Compared
+# case-folded and leading-underscore-stripped, so ``_GIT`` / ``GIT`` / ``git_bin``
+# all match.
+_GIT_BINARY_VAR_NAMES = ("git", "git_bin")
+
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "git_fixture_default_branch"
 _MUST_FLAG = sorted((_FIXTURES / "must_flag").glob("*.py.txt"))
 _MUST_NOT_FLAG = sorted((_FIXTURES / "must_not_flag").glob("*.py.txt"))
@@ -100,12 +109,30 @@ def _call_args(node: ast.Call) -> list[str | None]:
     return [_arg_value(a) for a in node.args]
 
 
+def _is_git_binary_var(node: ast.expr) -> bool:
+    """Whether *node* is a ``Name`` bound to the git binary (``_GIT``, ``GIT``, ``git_bin``).
+
+    Fixtures resolve the binary once and pass it positionally, so the argv's
+    executable element is a variable rather than the literal ``"git"`` — case-
+    insensitive so ``_GIT`` / ``GIT`` and the lower-case helper bindings match.
+    """
+    return isinstance(node, ast.Name) and node.id.lower().lstrip("_") in _GIT_BINARY_VAR_NAMES
+
+
 def _git_list_args(node: ast.List) -> list[str | None] | None:
-    """Arg vector after the literal ``"git"`` element, or ``None`` if not a git vector."""
+    """Arg vector after the git executable element, or ``None`` if not a git vector.
+
+    The executable is either the literal ``"git"`` string anywhere in the list,
+    or — when the list leads with one — a ``Name`` bound to the git binary
+    (``[_GIT, "init", …]``). The latter is the souliane/teatree#2359 blind spot:
+    a bare init built with a binary-name variable carries no ``"git"`` literal.
+    """
     elems = [_arg_value(e) for e in node.elts]
-    if "git" not in elems:
-        return None
-    return elems[elems.index("git") + 1 :]
+    if "git" in elems:
+        return elems[elems.index("git") + 1 :]
+    if node.elts and _is_git_binary_var(node.elts[0]):
+        return elems[1:]
+    return None
 
 
 def _has_born_or_bare_flag(args: list[str | None]) -> bool:
@@ -269,6 +296,27 @@ class TestScanner:
         src = 'subprocess.run(["git", "init", "-q", str(p)], check=True)\n'
         findings = scan_source(src, Path("x.py"))
         assert len(findings) == 1
+
+    def test_bare_init_with_git_binary_variable_is_flagged(self) -> None:
+        src = 'subprocess.run([_GIT, "init", "-q", str(p)], check=True)\n'
+        findings = scan_source(src, Path("x.py"))
+        assert len(findings) == 1
+
+    def test_bare_init_with_git_binary_variable_and_runtime_dash_c_is_flagged(self) -> None:
+        src = 'subprocess.run([_GIT, "-C", str(p), "init", "-q"], check=True)\n'
+        assert len(scan_source(src, Path("x.py"))) == 1
+
+    def test_born_init_with_git_binary_variable_is_not_flagged(self) -> None:
+        src = 'subprocess.run([_GIT, "init", "-q", "-b", "main", str(p)], check=True)\n'
+        assert scan_source(src, Path("x.py")) == []
+
+    def test_git_binary_variable_commit_with_init_message_is_not_flagged(self) -> None:
+        src = 'subprocess.run([GIT, "-C", str(p), "commit", "-q", "-m", "init"], check=True)\n'
+        assert scan_source(src, Path("x.py")) == []
+
+    def test_non_git_binary_variable_list_is_not_flagged(self) -> None:
+        src = 'subprocess.run([NODE, "init"], check=True)\n'
+        assert scan_source(src, Path("x.py")) == []
 
     def test_init_with_dash_b_is_not_flagged(self) -> None:
         src = 'subprocess.run(["git", "init", "-q", "-b", "main", str(p)], check=True)\n'

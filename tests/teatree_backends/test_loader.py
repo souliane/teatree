@@ -31,7 +31,7 @@ _GIT = shutil.which("git") or "git"
 
 def _git_repo_with_origin(path: Path, origin_url: str) -> str:
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
     subprocess.run(
         [_GIT, "-C", str(path), "remote", "add", "origin", origin_url],
         check=True,
@@ -323,5 +323,5 @@ class TestGetCodeHostForRepo:
         _stub_token(overlay, gitlab="gl-tok")
         path = tmp_path / "no-origin"
         path.mkdir()
-        subprocess.run([_GIT, "-C", str(path), "init", "-q"], check=True, capture_output=True)
+        subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
         assert isinstance(get_code_host_for_repo(overlay, str(path)), GitLabCodeHost)
