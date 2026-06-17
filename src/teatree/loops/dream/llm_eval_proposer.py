@@ -214,7 +214,8 @@ def derive_eval_from_candidate(
 
     Calls the injected *synthesizer* to produce a complete scenario from the
     candidate + its cited transcript slice, parses it through the real loader, then
-    runs the candidate-DERIVED teeth check (:func:`_teeth_check_against_candidate`):
+    runs the candidate-DERIVED teeth check
+    (:func:`teatree.loops.dream._teeth_check.teeth_check_against_candidate`):
     the synthesized matchers must grade a ``_fail`` transcript seeded with the
     candidate's OWN cited drift RED and a ``_pass`` transcript seeded with the
     compliant shape GREEN. This proves the matchers reject the SPECIFIC drift the
