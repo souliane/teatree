@@ -5,7 +5,6 @@ stays under the module-health LOC cap. Functions are kept private (``_``
 prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
-import re
 from contextlib import suppress
 from fnmatch import fnmatch
 from pathlib import Path
@@ -459,47 +458,6 @@ def prune_branches(repo: str) -> list[str]:
 # ``" on "`` both missed the capital-``On`` (explicit-message) form entirely and
 # mis-parsed any stash whose message contained the word "on", dropping stashes
 # that still belonged to an existing branch.
-_STASH_BRANCH_RE = re.compile(r"^stash@\{\d+\}:\s+(?:WIP on|On)\s+(?P<branch>[^:]+):")
-
-
-def _stash_branch(line: str) -> str:
-    """Return the branch a ``git stash list`` line belongs to, or ``""`` if unparsable.
-
-    A stash taken on a detached HEAD reads ``On (no branch): ...`` — there is no
-    owning branch to compare against, so it is reported as unparsable and the
-    stash is kept rather than reaped.
-    """
-    match = _STASH_BRANCH_RE.match(line)
-    if not match:
-        return ""
-    branch = match.group("branch").strip()
-    return "" if branch == "(no branch)" else branch
-
-
-def drop_orphaned_stashes(repo: str) -> list[str]:
-    """Drop stashes whose branch no longer exists."""
-    stash_list = git.run(repo=repo, args=["stash", "list"])
-    if not stash_list:
-        return []
-
-    existing = {
-        line.strip().removeprefix("* ").removeprefix("+ ")
-        for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
-    }
-
-    cleaned: list[str] = []
-    entries = stash_list.splitlines()
-    for i in range(len(entries) - 1, -1, -1):
-        line = entries[i]
-        branch = _stash_branch(line)
-        if not branch or branch in existing:
-            continue
-        git.run(repo=repo, args=["stash", "drop", f"stash@{{{i}}}"])
-        cleaned.append(f"Dropped orphaned stash: {line.split(':')[0]} (was on {branch})")
-
-    return cleaned
-
-
 def drop_orphan_databases() -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree."""
     from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415

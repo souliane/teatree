@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from teatree.core.models import Loop, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import ConfigSetting, Loop, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 
 
 @admin.register(Ticket)
@@ -58,3 +58,12 @@ class LoopAdmin(admin.ModelAdmin):
     @staticmethod
     def cadence(obj: Loop) -> str:
         return obj.cadence_label
+
+
+@admin.register(ConfigSetting)
+class ConfigSettingAdmin(admin.ModelAdmin):
+    list_display = ("key", "scope", "value", "updated_at")
+    list_editable = ("value",)
+    list_filter = ("scope",)
+    search_fields = ("key", "scope")
+    readonly_fields = ("created_at", "updated_at")

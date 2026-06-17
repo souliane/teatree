@@ -323,6 +323,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "eval_local_disabled": _parse_strict_bool,
     "eval_local_skill": _parse_strict_str,
     "eval_local_cadence_hours": _parse_strict_int,
+    "backlog_sweep_disabled": _parse_strict_bool,
+    "backlog_sweep_skill": _parse_strict_str,
+    "backlog_sweep_cadence_hours": _parse_strict_int,
+    "ask_before_backlog_sweep_closes": _parse_strict_bool,
     "dogfood_smoke_disabled": _parse_strict_bool,
     "dogfood_smoke_skill": _parse_strict_str,
     "dogfood_smoke_cadence_hours": _parse_strict_int,
@@ -733,6 +737,26 @@ class UserSettings:
     eval_local_disabled: bool = False
     eval_local_skill: str = "eval"
     eval_local_cadence_hours: int = 168
+    # #2419 Periodic backlog-sweep scanner — DEFAULT-OFF (kill switch ships
+    # ON) with a weekly cadence (168h). Companion to the `backlog-sweep`
+    # skill: once the sweep's verdicts prove trustworthy the loop fires a
+    # low-frequency `backlog_sweep` task that triages the issue backlog
+    # (superseded / stale / regressive / still-valid against current
+    # `main`). The sweep is destructive-capable — it can propose closing
+    # issues — so unlike the always-on news/eval scanners the kill switch
+    # defaults ON: the scanner stays inert until the user sets
+    # ``backlog_sweep_disabled = false`` in ``[teatree]`` (or per-overlay).
+    backlog_sweep_disabled: bool = True
+    backlog_sweep_skill: str = "backlog-sweep"
+    backlog_sweep_cadence_hours: int = 168
+    # #2419 Ask-gate for backlog-sweep issue closes. When true (default),
+    # the backlog-sweep skill must NOT mass-close issues unattended — it
+    # records each close proposal with its citation and surfaces the batch
+    # to the user, closing only on explicit approval. Only the
+    # high-confidence merged-PR-superseded class auto-closes. Default ON:
+    # an unattended wrong close destroys backlog signal, the failure mode
+    # this gate forecloses. Per-overlay overridable.
+    ask_before_backlog_sweep_closes: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
     # window so the loop exercises the active overlay's provision path

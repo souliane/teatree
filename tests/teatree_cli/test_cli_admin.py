@@ -1,5 +1,6 @@
 """Tests for the top-level ``t3 admin`` command (run the Django admin)."""
 
+import sys
 from unittest.mock import patch
 
 import typer
@@ -7,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from typer.testing import CliRunner
 
-from teatree.cli.admin import admin
+from teatree.cli.admin import _run_server, admin
 
 runner = CliRunner()
 
@@ -65,6 +66,18 @@ class AdminServerLaunchTestCase(TestCase):
         result, run_server, _browser = _invoke("--no-browser", "--host", "192.168.1.5", "--port", "9001")
         assert result.exit_code == 0
         run_server.assert_called_once_with("192.168.1.5", 9001)
+
+
+class AdminServerCommandTestCase(TestCase):
+    def test_run_server_uses_current_interpreter_not_bare_python(self) -> None:
+        # A bare "python" resolves via PATH to whatever shim is first (e.g. a
+        # pyenv python with no teatree) → "No module named teatree". The
+        # subprocess must use the interpreter running this CLI.
+        with patch("teatree.utils.run.run_streamed") as run_streamed:
+            _run_server("127.0.0.1", 8000)
+        cmd = run_streamed.call_args.args[0]
+        assert cmd[0] == sys.executable
+        assert cmd[1:] == ["-m", "teatree", "runserver", "127.0.0.1:8000"]
 
 
 class AdminBrowserTestCase(TestCase):

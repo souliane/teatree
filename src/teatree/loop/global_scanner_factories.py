@@ -17,6 +17,7 @@ from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
 from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
+    BacklogSweepScanner,
     EvalLocalScanner,
     IdleStackReaperScanner,
     LocalStackQueueDrainerScanner,
@@ -302,6 +303,36 @@ def _eval_local_scanner() -> EvalLocalScanner | None:
     )
 
 
+def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
+    """Build a global backlog-sweep scanner from teatree-core config (#2419).
+
+    DEFAULT-OFF: ``backlog_sweep_disabled`` defaults *true*, so this
+    builder returns ``None`` until the user opts in. The sweep is
+    destructive-capable (it can propose closing issues), so unlike the
+    always-on news/eval scanners the kill switch ships ON.
+
+    The overlay-anchor identity is resolved via
+    :func:`teatree.config.discover_active_overlay`, falling back to the
+    canonical overlay name (``t3-teatree``) when no overlay is registered
+    — mirroring :func:`_scanning_news_scanner`.
+
+    ``ask_before_backlog_sweep_closes`` (default true) is the ask-gate
+    flag threaded into the scanner so the queued task instructs the
+    skill to record close proposals for approval instead of mass-closing.
+    """
+    settings = load_config().user
+    if settings.backlog_sweep_disabled:
+        return None
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    return BacklogSweepScanner(
+        overlay_name=overlay_name,
+        skill=settings.backlog_sweep_skill,
+        cadence_hours=settings.backlog_sweep_cadence_hours,
+        require_approval=settings.ask_before_backlog_sweep_closes,
+    )
+
+
 def build_default_jobs(
     *,
     backends: list[OverlayBackends] | None = None,
@@ -322,9 +353,17 @@ def build_default_jobs(
     # task is anchored on the `teatree` overlay placeholder ticket so
     # the dispatcher routes through the standard pending-task pipeline.
     # #1191 / #1308 — global teatree-CORE scanners (news + provision smoke).
+    # #2419 backlog-sweep is a global teatree-CORE scanner too, but ships
+    # DEFAULT-OFF (its kill switch defaults ON): the builder returns None
+    # until the user opts in, so the ``if s`` filter naturally excludes it.
     jobs.extend(
         _ScannerJob(scanner=s, overlay="")
-        for s in (_scanning_news_scanner(), _dogfood_smoke_scanner(), _eval_local_scanner())
+        for s in (
+            _scanning_news_scanner(),
+            _dogfood_smoke_scanner(),
+            _eval_local_scanner(),
+            _backlog_sweep_scanner(),
+        )
         if s
     )
     # #1249 Self-update scanner — fast-forwards the editable teatree

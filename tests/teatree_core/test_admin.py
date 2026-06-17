@@ -7,7 +7,18 @@ disabled there.
 
 from django.contrib import admin
 
-from teatree.core.models import Loop
+from teatree.core.models import ConfigSetting, Loop
+
+
+class TestConfigSettingAdmin:
+    def test_config_setting_registered_in_admin(self) -> None:
+        assert ConfigSetting in admin.site._registry
+
+    def test_config_setting_admin_lists_and_edits_value(self) -> None:
+        model_admin = admin.site._registry[ConfigSetting]
+        assert "key" in model_admin.list_display
+        assert "scope" in model_admin.list_display
+        assert "value" in model_admin.list_editable
 
 
 class TestLoopAdmin:
