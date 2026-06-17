@@ -65,13 +65,13 @@ Run `/loop /t3:speed boost`. Each wave:
 
 The classification each wave is **agent judgment in prose** (the bucketing below), never a Python scanner.
 
-## `boost` — one parallel-backlog-blast wave
+## `boost` — one parallel wave, session TODO list FIRST
 
-An explicit burst across the pending backlog. This is the former `/t3:full-speed` behaviour, unchanged.
+An explicit burst that **starts from the session TODO list** — the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and blast every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first. (This is the former `/t3:full-speed` behaviour.)
 
 ### Classify before dispatching
 
-Before spawning any worker, sort every open, assigned ticket into exactly one bucket:
+Before spawning any worker, sort every open item — **session TODO items first, then (only once the TODO list is done) every open, assigned forge ticket** — into exactly one bucket:
 
 | Bucket | Criteria | Action |
 |--------|----------|--------|

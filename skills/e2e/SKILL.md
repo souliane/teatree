@@ -24,6 +24,8 @@ Playwright-based end-to-end testing for overlay target applications. Covers writ
 
 **Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
 
+**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e [run|external] --target dev`) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit).
+
 Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
 ## Claude in Chrome connectivity
@@ -124,6 +126,13 @@ await expect(total).toHaveText('€ 1,250');    // and the value is read from th
 
 Prefer `getByLabel`/`getByRole` (which resolve only a present element) over reading a number off a store/model getter that coerces a missing field to `0`. If the only available probe is a getter that defaults, add the visibility assertion alongside it so the "absent field" and "field shows the default value" cases can never be confused.
 
+**Choose the assertion standard the AC's truth-model actually supports — exact-value golden vs structural invariant.** When a ticket ships a reference/golden artifact (a worked example, an expected schedule, a reference PDF), match the assertion to whether the system can reproduce that reference *exactly* or only *approximately*:
+
+- **Exact-value golden** only when the reference is authoritative AND the code can reproduce it bit-for-bit. Then assert the precise values cell by cell.
+- **Structural invariants** when the system legitimately approximates the reference (a calculator that uses a different day-count basis, a renderer that rounds differently). Here a cell-by-cell euro golden can pass *only* by widening tolerance over the very values the fix changes — which re-encodes the bug behind a loosened bar. Assert the structural truths instead (no phantom row, balance is monotone, the step pattern holds, the discriminators between variants differ, the schedule is complete).
+
+Never pin the code-under-test's own unvalidated output as the "expected" baseline — that certifies whatever it currently does, including the defect. And when a reference/golden artifact exists, the coverage standard is the **full** reference (the whole table, every AC), not a one- or two-row spot-check. (This is the e2e expression of the same standard in `t3:review`; choose exact-where-reproducible, structural-where-approximating, and don't grade the code with its own output.)
+
 **Access-control / role-gated E2E (Non-Negotiable):** Before asserting behaviour on any access-controlled or role-gated page, resolve the test account's REAL identity — role and group memberships — from the app's own API (e.g. `/api/me/`) and assert the expected outcome FROM that identity. The exempt/restrict contract is derived from the guard source code (what the guard actually checks), not from a ticket description or relayed narrative about which role a user supposedly has. Precondition assertion before behaviour assertion makes the test non-vacuous: if the role check fails, the test fails at the precondition rather than silently passing on an unexpected identity.
 
 **Resolve E2E credentials from the project's documented credential map by role (Non-Negotiable).** The project's overlay skill carries a credential table keyed by ROLE (not email). Before declaring a missing-credential blocker, look up the account in that table by role — the username is often a code constant, and the password is resolved from the secret store using the documented key. Do NOT grep the secret store by account email and conclude "no credentials found" — the store entry is keyed by the documented role path, not the login email.
@@ -142,6 +151,13 @@ const password = requireEnv('E2E_BROKERAGE_PASSWORD');   // throws if the secret
 The username may be a published code constant; the password (and any tenant/host that is a secret) always comes from env via this guard. `t3 <overlay> e2e` injects the documented secret into the run env; a spec that hard-codes the value bypasses that path and the secret store entirely.
 
 **Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in templates to find its host, then check the routing module for the URL path.
+
+**Seed prerequisite data through the API, drive only the behaviour-under-test through the browser (Non-Negotiable).** Do NOT click through a multi-step UI wizard to set up the entity a test needs (a loan request, an order, an account) — create it programmatically via API/fixture helpers, then open the browser **only** for the one page/interaction the test actually asserts. A heavy SPA can load its resource cache from 100+ endpoints sequentially (minutes per navigation on local Docker), so browser-driven setup turns a fast test into a multi-minute hang and a flake source — multiple sessions have burned hours clicking a wizard the API could have seeded in seconds. Setting up prerequisites this way is sanctioned fixture setup (§ "Dual-Env Testing" → sub-pattern 1), not faking: the data path stays real and the asserted UI behaviour is still produced by the real code path. Practical companions to the API-seed approach:
+
+- **Make fixtures self-contained — never depend on the raw dump's incidental state** (a flag, a price catalog, an activation that a snapshot may or may not carry); seed exactly what the test needs so a re-run is reproducible.
+- **Wrap fixture creation that uses `select_for_update`-style row locks in a transaction** so the seed commits atomically.
+- **Assign seeded entities to the authenticated test user's own scope** (broker/org/role) — an entity owned by a different user is invisible to the API the spec calls and yields a misleading 404/empty result.
+- Bump the per-`describe` `timeout` for any flow that still must navigate to a slow detail page (the resource-cache cold-load is real even when setup is API-seeded).
 
 **Mocking — stub with the error status the failure-path expects, not `200`.** When stubbing an API call in an Angular/NgRx app to exercise the empty/failure path (e.g. a "no results" alert, a retry gate, a fall-through navigation), return the status the failure effect listens for — typically `404`, sometimes `500` — rather than `200 []`. A `200` dispatches the success Action and short-circuits the path under test (the success effect navigates away or stores the empty list as a successful result). Match the status to the effect: inspect the relevant `createEffect(...)` block, find which HTTP error the `catchError` branch maps to the failure Action, and stub that status.
 
@@ -249,6 +265,11 @@ t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
 
 The manifest is the single input. Build it once, then run that command — re-running is always safe (each run merges its env over the prior note state, § "Post Testing Evidence on the Ticket").
 
+**A test plan posted to a colleague-facing ticket is evidence of real testing — never an admission of not testing (Non-Negotiable).** A note posted on the user's behalf to a colleague/product ticket MUST reflect testing actually performed on the real (deployed) environment with real evidence. **NEVER** post a public note containing "unable to test", "blocked", "DEV verification pending", "could not verify", "not automatable", or any equivalent — to the user's colleagues that reads as incompetence and is humiliating. The gate before any on-behalf post is one question: *did I actually verify this on the real env, with real evidence?* If no, do not post.
+
+- Hit a blocker (missing credential, unpinned object id, wrong tenant, a field not exposed)? **Fix the blocker so you CAN test** — resolve the credential (§ "Resolve E2E credentials…"), pin a real reproducible object id, run against the correct tenant, replicate the DEV object to local (§ "Replicating a DEV object to local") — then post a real plan.
+- If, after genuine effort, you truly cannot test, post **nothing public**. Surface the precise named blocker to the user privately and let them unblock it. A "couldn't test" public note is strictly worse than no note. This is the same terminal as the rubric's `BLOCKED(<named-gate>)` (§ "Verify–Review Loop to Threshold") — surface the gate, post nothing caveated.
+
 **The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's `Dev | Local` evidence table, so the test plan is steps-plus-evidence, not bare images. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
 
 ```jsonc
@@ -292,6 +313,13 @@ Flags (all keyword-only):
 | `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
 | `--title` | no | overrides the `## Test Plan — <title>` heading |
 | `--mrs` | no | MR/PR URL(s) (repeat or comma-separate) — supplements the manifest's `mrs` |
+| `--template` | no | body template: `capture-matrix` (default) / `browser-click-first` / `link-api`; overrides the manifest's. Pick it from the AC's modality (below). |
+
+**Pick the `--template` from the AC's modality (§ "Modality — classify each AC").** The flag is how the modality classification becomes the actual note shape:
+
+- `capture-matrix` (default) — the side-by-side `Dev | Local` red-boxed screenshot table. Use for **UI-feature** ACs where screenshots are the per-step compare-against reference. This template runs the red-box pixel gate (below), so every image must carry the highlight.
+- `link-api` — links + code blocks per workflow, **no table, no images**. Use for **route-guard / RBAC / redirect / backend-boundary** ACs (a URL to navigate + an expected redirect/HTTP status, or a `curl` transcript) — the evidence is the URL and the request/response, not a screenshot. Because it carries no images, it skips the red-box gate entirely, so it is also the correct shape when the proof is a status code or golden-data check with no single visible element to box.
+- `browser-click-first` — numbered manual steps with inline screenshots, for a click-through a human reproduces.
 
 ### Manifest shape
 
@@ -393,6 +421,14 @@ await page.screenshot({ path: 'artifacts/<TICKET>/dev/step1.png' });
 ```
 
 Capture the red-boxed shot only after the settle (visible + network idle) above — a red box around a not-yet-rendered element is no more evidence than a blank page.
+
+**The red-box gate is a real pixel-count check — self-check before posting, not after a rejected post.** `t3 <overlay> e2e post-test-plan` rejects a `capture-matrix` image whose saturated-red pixel count is below the gate's minimum (`teatree.core.test_plan_validation._saturated_red_pixel_count`; a real highlighted crop clears it comfortably while a hidden-state / absence shot or a pre-red-box capture reads ~0 and is rejected). Two adjacent gates trip silently if you assemble carelessly:
+
+- **A hidden-state or "element absent" screenshot has no red box to draw, so it scores ~0 and is rejected.** If an AC's evidence is the *absence* of an element, that AC's modality is `link-api` (a status/redirect), not a boxed screenshot — don't try to post an unboxed shot.
+- **Byte-identical-image dedup (md5):** no two byte-identical images may appear in one manifest, and a `dev/` and `local/` capture of the same state can come out byte-identical — include each distinct state once, or ensure the two sides' bytes actually differ.
+- **A re-run replaces a whole side, not one workflow:** supplying a `dev` (or `local`) block replaces that ENTIRE side — commits, `missing_on_dev`, and ALL its workflows. To update one workflow on a side, re-send every workflow for that side or the others vanish (workflows are keyed by name; `steps` persist across runs).
+
+On the slower DEV stack the injected red box can render as ~0 px for a visible-element assertion even when the element is on screen (a timing/scroll/crop race the local stack doesn't hit). Mitigate by `scrollIntoViewIfNeeded()`, waiting for the outline to actually apply, and cropping so the outline is inside the captured region — before the screenshot, not after.
 
 Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
 
