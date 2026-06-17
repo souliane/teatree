@@ -63,25 +63,26 @@ Do this — never patch one site and move on:
 
 ## Verify a Recalled SHA Before Any Destructive Git
 
-Before any destructive or history-moving git operation (`cherry-pick`, `reset --hard`, `rebase`, `revert`, force-push), re-verify the target against the live branch. A SHA recalled from earlier in the session — or from a handover/preamble — may be stale: branches get rewritten, rebased, or amended, and the hash you remember may no longer be the commit you mean.
+Before any destructive or history-moving git operation (`cherry-pick`, `reset --hard`, `rebase`, `revert`, force-push), re-verify the target against the live branch. A SHA recalled from earlier in the session — or from a handover/preamble — may be stale: branches get rewritten, rebased, or amended, and the hash you remember may no longer be the commit you mean. **Treat the recalled SHA as presumed-stale: the branch name in the live request is the authority, not the hash you remember.**
 
 Do this — never act on a remembered hash:
 
-1. **Read the source branch to find the real, current SHA first:**
+1. **Read the source branch named in the live request to find the real, current SHA first** — a *separate* read whose OUTPUT you then read, never a one-liner that pipes straight into the destructive command:
 
    ```bash
-   git log --oneline feature/ruff-baseline      # find the commit on its actual branch
+   git log --oneline feature/ruff-baseline      # find the commit on its actual branch; READ the SHA it prints
    git show feature/ruff-baseline:<n>           # or inspect by branch-relative ref
    git rev-parse feature/ruff-baseline          # resolve the branch tip live
    ```
 
-2. **Only then** run the destructive command against the SHA you just confirmed:
+2. **Only then**, in a *new* command, run the destructive operation against the SHA you just read from that output:
 
    ```bash
-   git cherry-pick <sha-confirmed-from-the-log-above>
+   git cherry-pick <sha-just-read-from-the-log-above>   # the NEW SHA, not the remembered one
    ```
 
-3. **Never** `git cherry-pick <sha-recalled-from-context>` directly — a hash from polluted or aged context is a guess until the live branch confirms it.
+3. **Never** `git cherry-pick <sha-recalled-from-context>` directly — a hash from polluted or aged context is a guess until the live branch confirms it. The current SHA on the branch is frequently NOT the one you recalled; cherry-pick the one the log just printed.
+4. **Never chain the verify and the act into one command** (`git log <branch> … && git cherry-pick <recalled-sha>`, or `git log -1 <recalled-sha> && git cherry-pick <recalled-sha>`). Chaining reuses the remembered hash you set out to distrust and bypasses the whole point: you must SEE the live SHA in the log output and pass THAT to cherry-pick in a deliberate second step.
 
 ## Dependencies
 

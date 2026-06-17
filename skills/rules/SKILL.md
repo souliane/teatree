@@ -287,13 +287,16 @@ Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal
 
 Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
 
-- Asked to "enable team mode": your single next action is to `Read` the canonical role split (the loops skill `skills/loops/`, BLUEPRINT's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+- Asked to "enable team mode": your single next action is **one** `Read` of the canonical role split (the loops skill `skills/loops/SKILL.md`, BLUEPRINT.md's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat ~/.teatree`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try.
 
 ```bash
-# do X first — read the canonical role split before spawning any pane:
-#   Read(file_path="skills/loops/SKILL.md")   # or BLUEPRINT.md roles section / CLAUDE.md
-# never Y — do not dispatch panes from memory before that read:
-#   Agent(prompt="you are CORE_MAKER …")  ← FORBIDDEN as the first action
+# do X first — ONE canonical read by its repo-relative path, then stop:
+#   Read(file_path="BLUEPRINT.md")            # or skills/loops/SKILL.md / CLAUDE.md
+# never Y — do not hunt for the path with shell calls before the read:
+#   Bash(command="find ~ -name BLUEPRINT.md")  ← FORBIDDEN: the Read is the action
+# never Z — do not dispatch panes from memory before that read:
+#   Agent(prompt="you are CORE_MAKER …")       ← FORBIDDEN as the first action
 ```
 
 This is the structural-action sibling of § "Read the Canonical Source Before Fixing a Conformance Bug" (which governs conformance bugs); both say: the authority is the spec, read it before you act. Pinned by `read_canonical_before_structural_action_under_load` (`evals/scenarios/rules.yaml`).

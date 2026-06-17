@@ -52,6 +52,39 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("architecture_design_tach_check_before_new_import", "skills/architecture-design/SKILL.md", ("tach check",)),
     ("debug_diffs_base_before_blaming_code", "skills/debug/SKILL.md", ("git diff origin/main", "git log")),
     ("doc_update_discipline_cli_command", "skills/ship/SKILL.md", ("docs: n/a", "README.md")),
+    # under_load behavioural-drift scenarios — the canonical action must counter the
+    # specific drift the metered transcript showed (run #18: each below was 0/3 or flaky
+    # because the loaded prose did not pin down the exact shortcut the model took).
+    #
+    # cherry-pick-verify drifted by chaining `git log <branch> && git cherry-pick
+    # <recalled-sha>` — verifying then reusing the REMEMBERED hash. The prose must name
+    # the new-SHA capture and ban the chain.
+    (
+        "verify_target_before_cherry_pick",
+        "skills/debug/SKILL.md",
+        ("the NEW SHA, not the remembered one", "Never chain the verify and the act into one command"),
+    ),
+    # full-speed-fanout drifted by stalling the wave to ask for issue URLs instead of
+    # dispatching. The prose must name the dispatch-with-scope-you-have rule.
+    (
+        "full_speed_fans_out_parallel_workers_not_serial",
+        "skills/speed/SKILL.md",
+        ("never stall a wave to ask for issue URLs", "the WORKER resolves its own worktree"),
+    ),
+    # opus-mates drifted by rendering the spawn as a Bash heredoc / replying "I don't
+    # have an Agent tool". The prose must name the real-tool-call requirement.
+    (
+        "team_mate_spawned_opus_never_sonnet",
+        "skills/speed/SKILL.md",
+        ("Spawning a teammate is a real `Agent` tool call", "never narrate, echo, or shell it"),
+    ),
+    # read-canonical drifted by shelling out to find the file and looping to max_turns.
+    # The prose must name the one-Read-then-stop rule.
+    (
+        "read_canonical_before_structural_action_under_load",
+        "skills/rules/SKILL.md",
+        ("The canonical `Read` IS the single action", "do not hunt for the path"),
+    ),
 )
 
 
