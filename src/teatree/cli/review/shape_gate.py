@@ -1,9 +1,12 @@
 """Colleague-MR review-shape gate (souliane/teatree#1114, loosened in #1159).
 
 The binding rule from the review skill is **single terse INLINE
-``Nit:``-prefixed comment** on a colleague's MR. The previous safety-net
-was a memory entry (a guideline an agent could forget). This module is
-the structural enforcement: every ``ReviewService`` publishing method
+comment that keeps the finding's own severity label**
+(``HIGH (correctness): ...``, ``MED: ...``, ``LOW: ...``, or a bare
+``Nit:`` only for a genuinely trivial item) on a colleague's MR. The
+previous safety-net was a memory entry (a guideline an agent could
+forget). This module is the structural enforcement: every
+``ReviewService`` publishing method
 that takes a body routes through :func:`check_review_shape` before the
 GitLab API call. When the gate refuses, the API call is never attempted
 and no receipt DM (``notify_user_on_behalf_post``) fires for a blocked
@@ -139,7 +142,7 @@ def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a d
 
     The steering error names the concrete breach (paragraph count or
     word count) so the agent knows exactly what to tighten, and points
-    at the inline ``Nit:`` form that satisfies the rule.
+    at the terse severity-labelled inline form that satisfies the rule.
     """
     if allow_long_review:
         return ""
@@ -175,12 +178,22 @@ def _steering_error(*, inline: bool, breach: str, cap: str) -> str:
     "inline note" vs "MR-level prose" surface name. Both forms point
     at the canonical ``t3 review post-comment ... --file ... --line ...``
     invocation, since that is the satisfying shape in either case.
+
+    The remediation instructs a **terse inline note that KEEPS the
+    finding's own severity label** (``HIGH (correctness): ...``, ``MED:
+    ...``, ``LOW: ...``) — NOT a blanket downgrade to ``Nit:``. Telling
+    the agent to "re-post as a Nit:" turned a genuine HIGH/MED finding
+    into the nonsensical "Nit (MED)" on a colleague's live MR
+    (souliane/teatree#1114 severity-label fix). A bare ``Nit:`` is
+    reserved for a genuinely trivial item (style, naming preference).
     """
     surface = "inline note" if inline else "MR-level prose"
     return (
         f"Refusing colleague-MR on-behalf post: {breach} {surface} exceeds the "
-        f"{cap}. Re-post as an inline Nit:-prefixed comment on the exact file:line "
-        '(see skills/review § "Single terse inline nit"):\n'
-        '  t3 review post-comment <repo> <mr> "Nit: ..." --file <path> --line <N>\n'
+        f"{cap}. Re-post as a terse inline comment on the exact file:line that "
+        "KEEPS the finding's own severity label (e.g. `HIGH (correctness): ...`, "
+        "`MED: ...`, `LOW: ...`); reserve a bare `Nit:` only for genuinely trivial "
+        'items (see skills/review § "Single terse inline finding"):\n'
+        '  t3 review post-comment <repo> <mr> "HIGH (correctness): ..." --file <path> --line <N>\n'
         "Or, if approving, run `t3 review approve <repo> <mr>` (no body needed)."
     )
