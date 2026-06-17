@@ -34,12 +34,12 @@ class TestLoopsListText(django.test.TestCase):
         assert "daily 08:00" in line
 
     def test_disabled_loop_marked_disabled(self) -> None:
-        Loop.objects.create(name="demo-off", delay_seconds=60, enabled=False)
+        Loop.objects.create(name="demo-off", delay_seconds=60, prompt="do x", enabled=False)
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-off"))
         assert "disabled" in line
 
     def test_never_run_interval_loop_renders_due(self) -> None:
-        Loop.objects.create(name="demo-new", delay_seconds=60)
+        Loop.objects.create(name="demo-new", delay_seconds=60, prompt="do x")
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-new"))
         assert "last —" in line
         assert "next due" in line
@@ -48,7 +48,9 @@ class TestLoopsListText(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True)
 class TestLoopsListJson(django.test.TestCase):
     def test_json_interval_loop_shape(self) -> None:
-        Loop.objects.create(name="demo-json", delay_seconds=120, last_run_at=timezone.now() - dt.timedelta(seconds=30))
+        Loop.objects.create(
+            name="demo-json", delay_seconds=120, prompt="do x", last_run_at=timezone.now() - dt.timedelta(seconds=30)
+        )
         payload = json.loads(_run("--json"))
         demo = next(e for e in payload["loops"] if e["name"] == "demo-json")
         assert demo["enabled"] is True

@@ -35,10 +35,29 @@ class PullRequestAdmin(admin.ModelAdmin):
 
 @admin.register(Loop)
 class LoopAdmin(admin.ModelAdmin):
-    list_display = ("name", "enabled", "delay_seconds", "daily_at", "last_run_at", "updated_at")
-    list_editable = ("enabled", "delay_seconds", "daily_at")
+    list_display = (
+        "name",
+        "enabled",
+        "action",
+        "run_in_sub_agent",
+        "description",
+        "cadence",
+        "last_run_at",
+        "updated_at",
+    )
+    list_editable = ("enabled",)
     search_fields = ("name",)
     readonly_fields = ("last_run_at", "created_at", "updated_at")
+
+    @admin.display(description="action")
+    @staticmethod
+    def action(obj: Loop) -> str:
+        return obj.script or obj.prompt
+
+    @admin.display(description="cadence")
+    @staticmethod
+    def cadence(obj: Loop) -> str:
+        return obj.cadence_label
 
 
 @admin.register(ConfigSetting)

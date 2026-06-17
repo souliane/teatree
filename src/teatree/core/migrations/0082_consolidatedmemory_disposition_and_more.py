@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0078_seed_loops"),
+        ("core", "0081_loop_prompt_xor_script"),
     ]
 
     operations = [
