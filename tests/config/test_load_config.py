@@ -77,35 +77,6 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
     assert load_config(config_path).user.agent_signature is False
 
 
-def test_db_home_key_in_teatree_table_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # A DB-home key left in [teatree] is IGNORED on read (its home is the DB),
-    # but the drop must be VISIBLE — a loud WARN naming the key + the migration
-    # path, never a silent no-op (#1775 in-PR add C).
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, '[teatree]\nmode = "auto"\nrepo_mode = "solo"\n')
-    with caplog.at_level("WARNING", logger="teatree.config"):
-        load_config(config_path)
-    warnings = "\n".join(r.getMessage() for r in caplog.records)
-    assert "mode" in warnings
-    assert "repo_mode" in warnings
-    assert "config_setting import" in warnings
-
-
-def test_db_home_key_in_overlay_table_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # A DB-home key under [overlays.<name>] is ignored on read just like the
-    # global table — the WARN must name the overlay-scoped key too.
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nrequire_human_approval_to_merge = false\n',
-    )
-    with caplog.at_level("WARNING", logger="teatree.config"):
-        load_config(config_path)
-    warnings = "\n".join(r.getMessage() for r in caplog.records)
-    assert "require_human_approval_to_merge" in warnings
-    assert "myproj" in warnings
-
-
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
     # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
@@ -120,6 +91,92 @@ def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCa
         load_config(config_path)
     warnings = "\n".join(r.getMessage() for r in caplog.records if "ignored on read" in r.getMessage().lower())
     assert warnings == ""
+
+
+class TestDbHomeTomlConflictWarning(TestCase):
+    """The #1775 DB-home-key-in-TOML warning is QUIET by default.
+
+    After the migration cleaned the TOML of DB-homed keys, the load path used
+    to emit one WARNING per DB-home key present in the file (~100 lines per
+    command — unusable noise). The contract is now: a DB-home key that lives
+    correctly in the DB (and is absent from / agrees with the TOML) is silent;
+    a genuine conflict (the key set to a *different* value in BOTH the TOML and
+    the DB store) warns, aggregated to a single line.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        self.caplog = caplog
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def _load_and_collect(self) -> list[str]:
+        with self.caplog.at_level("WARNING", logger="teatree.config"):
+            load_config(self.config_path)
+        return [r.getMessage() for r in self.caplog.records if "ignored on read" in r.getMessage().lower()]
+
+    def test_clean_db_home_config_produces_zero_warnings(self) -> None:
+        # The core fix: a TOML that carries NO DB-home key (every DB-home setting
+        # lives in the DB store, where it belongs) emits ZERO per-key warnings,
+        # even with many DB rows present.
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("repo_mode", "solo")
+        ConfigSetting.objects.set_value("contribute", value=True)
+        _write_toml(self.config_path, '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n')
+        assert self._load_and_collect() == []
+
+    def test_db_home_key_in_toml_without_db_row_is_silent(self) -> None:
+        # A DB-home key still in the TOML but with NO DB row is being migrated
+        # away — it is no longer a per-key warning (the noise the fix removes).
+        _write_toml(self.config_path, '[teatree]\nmode = "auto"\nrepo_mode = "solo"\n')
+        assert self._load_and_collect() == []
+
+    def test_db_home_key_in_toml_agreeing_with_db_is_silent(self) -> None:
+        # Present in BOTH toml and DB but the values AGREE — not a conflict, silent.
+        ConfigSetting.objects.set_value("mode", "auto")
+        _write_toml(self.config_path, '[teatree]\nmode = "auto"\n')
+        assert self._load_and_collect() == []
+
+    def test_genuine_conflict_warns_once(self) -> None:
+        # Present in BOTH toml and DB with DIFFERING values: the TOML value is
+        # silently ignored (the DB is its home), so the conflict is surfaced.
+        ConfigSetting.objects.set_value("mode", "interactive")
+        _write_toml(self.config_path, '[teatree]\nmode = "auto"\n')
+        warnings = self._load_and_collect()
+        # Aggregated to a single line — never one warning per offending key.
+        assert len(warnings) == 1
+        assert "mode" in warnings[0]
+        assert "config_setting import" in warnings[0]
+
+    def test_multiple_conflicts_aggregate_to_one_line(self) -> None:
+        # Many conflicting keys collapse to ONE warning naming each key — never
+        # ~100 lines, one per key (the regression this fix targets).
+        ConfigSetting.objects.set_value("mode", "interactive")
+        ConfigSetting.objects.set_value("repo_mode", "collaborative")
+        ConfigSetting.objects.set_value("contribute", value=False)
+        _write_toml(
+            self.config_path,
+            '[teatree]\nmode = "auto"\nrepo_mode = "solo"\ncontribute = true\n',
+        )
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "mode" in warnings[0]
+        assert "repo_mode" in warnings[0]
+        assert "contribute" in warnings[0]
+
+    def test_overlay_scoped_conflict_warns_once(self) -> None:
+        # An overlay-scoped DB row conflicting with [overlays.<name>] is surfaced
+        # against that overlay's DB scope, aggregated to a single line.
+        ConfigSetting.objects.set_value("require_human_approval_to_merge", value=True, scope="myproj")
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nrequire_human_approval_to_merge = false\n',
+        )
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "require_human_approval_to_merge" in warnings[0]
+        assert "myproj" in warnings[0]
 
 
 class TestDbHomeGlobalResolution(TestCase):

@@ -217,10 +217,14 @@ partition so an existing install's DB-home keys keep applying (they are otherwis
 ignored on read).
 
 A DB-home key left in `[teatree]` / `[overlays.<name>]` after the migration is
-ignored on read, but no longer silently: `load_config` emits one `WARNING`
-(logger `teatree.config`) per offending key naming the key, its TOML location, and
-the `config_setting set` / `import` path — so the dropped value is visible rather
-than a confusing no-op.
+ignored on read. This is loud only when it actually **conflicts** with the store:
+`load_config` warns (logger `teatree.config`) for a DB-home key set to a value that
+DIFFERS from its `ConfigSetting` row — the one case where the silently-ignored TOML
+value disagrees with what is in effect. All such conflicts collapse into a SINGLE
+`WARNING` naming every offending key, its TOML location, and the `config_setting
+import` path. A DB-home key that is absent from the store (being migrated away) or
+that agrees with it resolves to the same effective value and stays silent — so a
+cleaned config emits zero per-key noise rather than one line per DB-homed key.
 
 Bootstrap-readable settings (`DATABASE_URL` / data-dir / `DJANGO_SETTINGS_MODULE`
 / the offline `private_repos` allowlist) are explicitly out of scope — they must
