@@ -4,9 +4,9 @@ Reuses ``dev/Dockerfile.test`` (the image the CI test job builds) so a container
 run reproduces CI's environment exactly. The fresh-run AI lane (``t3 eval run
 --backend sdk``) and ``t3 eval benchmark`` default to running IN the container —
 the reproducible gate must never accidentally run a model on the host. The free /
-deterministic lanes stay host-default; ``t3 eval benchmark --local`` is the
-explicit host escape hatch for a quick check. No PyPI — the image installs the
-working tree via the mounted repo and ``uv``.
+deterministic lanes stay host-default; ``--local`` is the explicit host escape
+hatch for durable-history gates or quick checks. No PyPI — the image installs
+the working tree via the mounted repo and ``uv``.
 
 The fresh-run AI lane drives the in-process ``claude-agent-sdk`` (NOT ``claude -p``)
 inside the container, authenticated by the subscription's ``CLAUDE_CODE_OAUTH_TOKEN``

@@ -9,9 +9,8 @@ compare to fable@medium on pass-rate and cost".
 
 The benchmark is metered, so it defaults to running IN the CI container
 (``dev/Dockerfile.test``) — a metered run must never accidentally bill the host.
-``--local`` is the explicit host escape (a quick check, NOT the reproducible
-gate); the ``T3_EVAL_IN_CONTAINER=1`` marker the docker runner sets makes the
-in-container re-invocation run in-process.
+``--local`` is the explicit host escape; the ``T3_EVAL_IN_CONTAINER=1`` marker
+the docker runner sets makes the in-container re-invocation run in-process.
 """
 
 import typer
@@ -94,8 +93,8 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     ``--trials k`` (each cell's score becomes a k-trial pass-rate).
 
     The benchmark is metered, so it defaults to running in the CI container; pass
-    ``--local`` for a quick host check (NOT the reproducible gate). The container
-    is ephemeral, so a Docker-routed run is forced ``--no-persist``.
+    ``--local`` for an explicit host run. The container is ephemeral, so a
+    Docker-routed run is forced ``--no-persist``.
     """
     if should_route_to_docker(metered=True, local=local):
         _dispatch_to_docker(

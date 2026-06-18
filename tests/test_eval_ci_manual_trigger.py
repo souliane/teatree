@@ -4,8 +4,8 @@ The metered ``claude -p`` suite lives in a standalone workflow
 (``.github/workflows/eval.yml`` / a GitLab schedule + manual job) so a PR
 pipeline neither runs nor displays a metered-eval check. These tests pin the
 weekly schedule and the on-demand manual trigger on both mirrors: GitHub
-``schedule`` + ``workflow_dispatch`` (with an optional backend input), and a
-GitLab schedule + ``when: manual`` eval job.
+``schedule`` + ``workflow_dispatch`` (with the SDK backend fixed in the
+workflow command), and a GitLab schedule + ``when: manual`` eval job.
 """
 
 from pathlib import Path
@@ -58,11 +58,15 @@ class TestGitHubEvalTriggers:
             f"The metered eval must run weekly (a pinned day-of-week), not daily; got {crons}."
         )
 
-    def test_backend_input_defaults_to_sdk(self) -> None:
+    def test_backend_is_fixed_to_sdk_for_trials(self) -> None:
         inputs = cast("dict[str, Any]", _gh_on()["workflow_dispatch"]["inputs"])
-        assert inputs["backend"]["default"] == "sdk", (
-            "The optional `backend` input should default to sdk (the metered CI path)."
+        assert "backend" not in inputs, "`--trials 3` is always a fresh metered SDK run."
+
+        commands = "\n".join(
+            step.get("with", {}).get("command", "") for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"])
         )
+        assert "--trials 3" in commands
+        assert "--backend sdk" in commands
 
     def test_eval_job_runs_the_suite(self) -> None:
         for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"]):
