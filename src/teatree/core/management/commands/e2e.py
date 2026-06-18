@@ -409,8 +409,7 @@ class Command(TyperCommand):
             frontend_url,
             headed=headed,
             target=resolved_target,
-            compose_project=worktree_compose_project,
-            env_cache_override=env_cache_override,
+            context=_runners.make_e2e_env_context(test_path, worktree_compose_project, env_cache_override),
         )
 
         self.stdout.write(f"  Running from: {private_tests_path}")

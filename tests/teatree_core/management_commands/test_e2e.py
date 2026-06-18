@@ -537,6 +537,16 @@ class TestE2eExternal(TestCase):
         overrides.
         """
         with tempfile.TemporaryDirectory() as tmp:
+            captured_env_caches: list[dict[str, str]] = []
+
+            def get_e2e_env_extras(self: object, env_cache: dict[str, str]) -> dict[str, str]:
+                _ = self
+                captured_env_caches.append(dict(env_cache))
+                return {
+                    "CUSTOMER": env_cache.get("WT_VARIANT", ""),
+                    "SPEC_PATH_SEEN": env_cache.get("T3_E2E_TEST_PATH", ""),
+                }
+
             tmp_path = Path(tmp)
             backend_wt_dir = tmp_path / "backend-worktree"
             backend_wt_dir.mkdir()
@@ -588,16 +598,30 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
+                patch.object(import_string(FULL_OVERLAY), "get_e2e_env_extras", get_e2e_env_extras),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 os.environ.pop("BASE_URL", None)
                 result = cast(
                     "str",
-                    call_command("e2e", "external", target="local", linked_to=backend_ticket.pk),
+                    call_command(
+                        "e2e",
+                        "external",
+                        test_path="tests/specs/loan-flow.spec.ts",
+                        target="local",
+                        linked_to=backend_ticket.pk,
+                    ),
                 )
 
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
+            assert captured_env_caches == [
+                {
+                    "WT_VARIANT": "tenant-child",
+                    "TICKET_DIR": str(backend_wt_dir.parent),
+                    "T3_E2E_TEST_PATH": "tests/specs/loan-flow.spec.ts",
+                },
+            ]
             # Frontend discovered via the linked backend worktree's project.
             assert env["BASE_URL"] == "http://localhost:62674"
             # COMPOSE_PROJECT_NAME points at the backend worktree's project,
@@ -607,6 +631,7 @@ class TestE2eExternal(TestCase):
             # the linked backend worktree's, so overlay-derived extras (e.g.
             # CUSTOMER=<variant>) reach the spec.
             assert env["CUSTOMER"] == "tenant-child"
+            assert env["SPEC_PATH_SEEN"] == "tests/specs/loan-flow.spec.ts"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
