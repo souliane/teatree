@@ -76,6 +76,10 @@ class Loop(models.Model):
                 condition=models.Q(prompt="", script__gt="") | models.Q(prompt__gt="", script=""),
                 name="loop_prompt_xor_script",
             ),
+            models.CheckConstraint(
+                condition=models.Q(script="") | models.Q(delay_seconds__isnull=False),
+                name="loop_script_requires_delay",
+            ),
         ]
 
     def __str__(self) -> str:

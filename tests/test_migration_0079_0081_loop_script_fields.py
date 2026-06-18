@@ -15,6 +15,7 @@ from django.test import TransactionTestCase
 class LoopScriptFieldMigrationTest(TransactionTestCase):
     _PRE_SEED = ("core", "0077_loop")
     _SEED = ("core", "0078_seed_loops")
+    _SCRIPT_FIELDS = ("core", "0079_loop_script_fields")
     _AFTER_BACKFILL = ("core", "0080_loop_backfill_prompt_script")
     _HEAD = ("core", "0081_loop_prompt_xor_script")
 
@@ -55,6 +56,20 @@ class LoopScriptFieldMigrationTest(TransactionTestCase):
         dispatch = loop.objects.get(name="dispatch")
         assert dispatch.prompt == ""
         assert dispatch.script == "src/teatree/loops/run.py"
+        self._restore_head()
+
+    def test_backfill_leaves_custom_loop_present_before_0080_unchanged(self) -> None:
+        self._migrate(self._PRE_SEED)
+        apps = self._migrate(self._SCRIPT_FIELDS)
+        loop = apps.get_model("core", "Loop")
+        loop.objects.create(name="custom_user_loop", prompt="Run my custom loop.", delay_seconds=42)
+
+        apps = self._migrate(self._AFTER_BACKFILL)
+        custom_loop = apps.get_model("core", "Loop").objects.get(name="custom_user_loop")
+
+        assert custom_loop.prompt == "Run my custom loop."
+        assert custom_loop.script == ""
+        assert custom_loop.delay_seconds == 42
         self._restore_head()
 
     def test_reverse_to_seed_state_restores_every_prompt(self) -> None:
