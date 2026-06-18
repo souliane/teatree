@@ -8,6 +8,7 @@ directory, and building the Playwright environment dict.
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -53,6 +54,25 @@ class E2eSpecsResolutionError(RuntimeError):
     def no_private_tests(cls) -> "E2eSpecsResolutionError":
         msg = "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
         return cls(msg, exit_code=1)
+
+
+@dataclass(frozen=True)
+class E2eEnvContext:
+    test_path: str = ""
+    compose_project: str | None = None
+    env_cache_override: dict[str, str] | None = None
+
+
+def make_e2e_env_context(
+    test_path: str,
+    compose_project: str | None,
+    env_cache_override: dict[str, str] | None,
+) -> E2eEnvContext:
+    return E2eEnvContext(
+        test_path=test_path,
+        compose_project=compose_project,
+        env_cache_override=env_cache_override,
+    )
 
 
 def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
@@ -129,8 +149,7 @@ def build_e2e_env(
     *,
     headed: bool,
     target: str,
-    compose_project: str | None = None,
-    env_cache_override: dict[str, str] | None = None,
+    context: E2eEnvContext | None = None,
 ) -> dict[str, str]:
     """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
 
@@ -142,32 +161,39 @@ def build_e2e_env(
     ``process.env.T3_E2E_TARGET === 'dev'`` instead of re-deriving the target
     from a ``BASE_URL`` host regex.
 
-    *compose_project* is the teatree-managed docker-compose project of the
-    resolved worktree (``compose_project(worktree)``) for a local target. It
-    is exported as ``COMPOSE_PROJECT_NAME`` — the variable ``docker compose``
-    natively honours — so a spec that resolves the backend via a bare
-    ``docker compose port web 8000`` / ``docker compose exec -T web`` (run
-    from the backend repo dir, no ``-p``) deterministically targets the
-    teatree stack whose ``web`` container has the restored-Postgres
-    ``DATABASE_URL`` injected, instead of defaulting to the directory
-    basename and missing it. ``None`` (dev target) leaves it unset.
+    *context.test_path* is the selected Playwright spec path. When present, it is
+    threaded into the env cache visible to overlays as
+    ``T3_E2E_TEST_PATH`` so overlay manifests can derive per-spec extras.
+
+    *context.compose_project* is the teatree-managed docker-compose project
+    of the resolved worktree (``compose_project(worktree)``) for a local
+    target. It is exported as ``COMPOSE_PROJECT_NAME`` — the variable
+    ``docker compose`` natively honours — so a spec that resolves the backend
+    via a bare ``docker compose port web 8000`` / ``docker compose exec -T
+    web`` (run from the backend repo dir, no ``-p``) deterministically
+    targets the teatree stack whose ``web`` container has the
+    restored-Postgres ``DATABASE_URL`` injected, instead of defaulting to the
+    directory basename and missing it. ``None`` (dev target) leaves it unset.
 
     Overlay-specific env vars (e.g. ``CUSTOMER``) come from
     :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``,
-    ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME`` and ``CI``.
+    ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH`` and ``CI``.
     """
     env = {**os.environ}
+    context = context or E2eEnvContext()
     if frontend_url is not None:
         env["BASE_URL"] = frontend_url
     env["T3_E2E_TARGET"] = target
-    if compose_project:
-        env["COMPOSE_PROJECT_NAME"] = compose_project
+    if context.compose_project:
+        env["COMPOSE_PROJECT_NAME"] = context.compose_project
 
-    if env_cache_override is not None:
-        env_cache = env_cache_override
+    if context.env_cache_override is not None:
+        env_cache = context.env_cache_override
     else:
         envfile = _find_env_cache(_get_user_cwd())
         env_cache = _parse_env_file(envfile) if envfile is not None else {}
+    if context.test_path:
+        env_cache = {**env_cache, "T3_E2E_TEST_PATH": context.test_path}
     for key, value in get_overlay().get_e2e_env_extras(env_cache).items():
         env.setdefault(key, value)
 
