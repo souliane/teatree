@@ -158,6 +158,32 @@ def persist_matrix_run(
 DEFAULT_COST_REGRESSION_TOLERANCE = 0.20
 
 
+def require_persist_for_history_gates(
+    *,
+    persist: bool,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
+) -> None:
+    if persist:
+        return
+    enabled = [
+        flag
+        for flag, active in (
+            ("--baseline", baseline),
+            ("--gate-regressions", gate_regressions),
+            ("--gate-cost-regression", gate_cost_regression),
+            ("--gate-cost-bounds", gate_cost_bounds),
+        )
+        if active
+    ]
+    if not enabled:
+        return
+    typer.echo(f"{enabled[0]} requires --persist; remove --no-persist or drop {enabled[0]}.", err=True)
+    raise typer.Exit(code=2)
+
+
 class RegressionGates:
     """Per-model baseline diffs that turn a regressed run RED at the CLI boundary.
 
@@ -323,9 +349,16 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     Returns ``True`` when the process should exit non-zero: any scenario
     failed, OR a score regression, OR a cost regression beyond tolerance, OR a
     declarative cost-bounds violation (over ceiling / configured-but-uncosted).
-    With ``--no-persist`` the gates have no durable record to read and are
-    skipped — only the scenario pass/fail decides the exit.
+    With ``--no-persist`` durable-history gates are rejected before this point:
+    silently skipping them would turn a requested gate into a no-op.
     """
+    require_persist_for_history_gates(
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
     regressed = False
     cost_regressed = False
     cost_bounds_failed = False
@@ -357,7 +390,7 @@ def render_transcript_text(manifest: list[dict[str, str]]) -> str:
         (
             f"scenario: {entry['scenario']}  (model {entry['model']})\n"
             f"  agent:        {entry['agent_path']}\n"
-            f"  capture to:   {entry['transcript_path']}  (via `t3 eval capture-subagent {entry['scenario']}`)\n"
+            f"  capture to:   {entry['transcript_path']}\n"
             f"  prompt:       {entry['prompt']}\n"
         )
         for entry in manifest

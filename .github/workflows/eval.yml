@@ -14,7 +14,7 @@
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
 #     lookback window since the last run — nothing new to test, no API spend.
-#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk)
+#   * workflow_dispatch — manual, on-demand, always on the sdk backend
 #     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
 #     bypassed for a manual run.
 #
@@ -44,9 +44,9 @@
 #   run inside the ephemeral `--docker` container this workflow uses (the
 #   in-container run is forced `--no-persist`). The cost gate is wired into the
 #   PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), where the ledger
-#   lives on the runner — keeping the cost gate weekly/manual and off the per-PR
-#   path. A maintainer can also run it on the host against the accumulated
-#   ledger: `t3 eval run --backend sdk --gate-cost-bounds`.
+#   lives on the runner via `--local` — keeping the cost gate weekly/manual and
+#   off the per-PR path. A maintainer can also run it on the host against the
+#   accumulated ledger: `t3 eval run --backend sdk --local --gate-cost-bounds`.
 #
 # AUTH — CLAUDE_CODE_OAUTH_TOKEN (the everywhere-portable path)
 #   The metered backend authenticates from `CLAUDE_CODE_OAUTH_TOKEN`, the
@@ -85,11 +85,6 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
-      backend:
-        description: "AI-lane backend for the manual run (sdk = metered in-process Agent SDK)."
-        required: false
-        default: sdk
-        type: string
       lane:
         description: "Eval lane subset to run (clean_room | under_load); empty = every lane."
         required: false
@@ -222,9 +217,10 @@ jobs:
       # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
       # CLAUDE_CODE_OAUTH_TOKEN is forwarded in via docker's `-e` pass-through.
-      # `--backend` keeps CI on the metered in-process Agent-SDK path explicitly (sdk default;
-      # a workflow_dispatch run may override it via the backend input). Auth is the
-      # OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) — the June-15-safe everywhere path.
+      # `--backend sdk` keeps CI on the metered in-process Agent-SDK path explicitly.
+      # This workflow always runs `--trials 3`, which cannot be served by the
+      # transcript backend, so there is intentionally no backend input. Auth is
+      # the OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) — the June-15-safe everywhere path.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
@@ -241,7 +237,6 @@ jobs:
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
           # per-shard subset is at most 14 scenarios — the proven-to-fit under_load
           # size — and fits the 2x80min budget where the full 181 (and a single
@@ -272,7 +267,7 @@ jobs:
           # the file is simply overwritten with the last attempt's results — no
           # staleness.
           command: |
-            uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" \
+            uv run t3 eval run --trials 3 --require any --backend sdk \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --gate-under-load-ratchet --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html"

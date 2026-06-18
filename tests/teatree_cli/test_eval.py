@@ -513,7 +513,7 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha (3/3 trials" in result.output
 
@@ -532,14 +532,18 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "all", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--require", "all", "--no-persist"]
+            )
         assert result.exit_code == 1
         assert "FAIL alpha (1/2 trials" in result.output
 
     def test_bad_require_exits_code_2(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "most", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--require", "most", "--no-persist"]
+            )
         assert result.exit_code == 2
         assert "unknown --require" in result.output
 
@@ -556,7 +560,9 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--format", "json", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--format", "json", "--no-persist"]
+            )
         assert result.exit_code == 0, result.output
         output = result.output
         payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
@@ -579,7 +585,7 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--no-persist"])
         assert result.exit_code != 0, result.output
         assert "SKIP alpha" in result.output
         assert "executed 0" in result.output
@@ -648,7 +654,9 @@ class TestEvalRequireExecuted:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _SkippingRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--require-executed", "--no-persist"]
+            )
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
@@ -660,7 +668,7 @@ class TestEvalRequireExecuted:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _SkippingRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--no-persist"])
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
@@ -677,7 +685,9 @@ class TestEvalRequireExecuted:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _PassingRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--require-executed", "--no-persist"]
+            )
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
 
@@ -782,17 +792,14 @@ class TestEvalBackend:
         assert str(tmp_path / "worktree_first.jsonl") in result.output
         assert "prepare-transcript" in result.output
 
-    def test_trials_with_default_backend_warns_metered(self, tmp_path: Path) -> None:
-        # `--trials` forces the fresh-run sdk runner even under the transcript
-        # default; the user is told so.
+    def test_trials_with_default_backend_is_rejected(self) -> None:
+        # `--trials` cannot be served from a single saved transcript. The caller
+        # must opt into the fresh metered lane explicitly with `--backend sdk`.
         specs = [_spec("alpha")]
-        with (
-            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
-        ):
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
-        assert result.exit_code == 0, result.output
-        assert "fresh-run in-process Agent-SDK runner" in result.output
+        assert result.exit_code == 2, result.output
+        assert "pass --backend sdk" in result.output
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1049,6 +1056,45 @@ class TestEvalCostBoundsGate:
         run_docker.assert_not_called()
         assert "ephemeral container" in result.output
 
+    def test_no_persist_is_rejected_for_cost_bounds(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _cost_runner(0.05)),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--gate-cost-bounds", "--no-persist"])
+        assert result.exit_code == 2, result.output
+        assert "--gate-cost-bounds requires --persist" in result.output
+
+    def test_gitlab_weekly_cost_bounds_command_runs_on_host_with_local_escape(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        body = "default_margin: 0.25\nscenarios:\n  alpha:\n    bound_usd: 1.00\n"
+        command = [
+            "eval",
+            "run",
+            "--trials",
+            "3",
+            "--require",
+            "any",
+            "--backend",
+            "sdk",
+            "--local",
+            "--require-executed",
+            "--gate-cost-bounds",
+            "--gate-under-load-ratchet",
+        ]
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _cost_runner(0.05)),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker") as run_docker,
+            self._bounds_file(tmp_path, body),
+        ):
+            result = CliRunner().invoke(app, command)
+        assert result.exit_code == 0, result.output
+        run_docker.assert_not_called()
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
@@ -1059,7 +1105,9 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku", "--no-persist"]
+            )
         assert result.exit_code == 0, result.output
         assert "opus" in result.output
         assert "haiku" in result.output
@@ -1073,7 +1121,7 @@ class TestEvalModelMatrix:
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
         ):
             result = CliRunner().invoke(
-                app, ["eval", "run", "--models", "opus,haiku", "--format", "json", "--no-persist"]
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku", "--format", "json", "--no-persist"]
             )
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["models"] == ["opus", "haiku"]
@@ -1092,7 +1140,9 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _FailOnHaiku),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku", "--no-persist"]
+            )
         assert result.exit_code == 1, result.output
         assert "opus: 1 passed" in result.output
         assert "haiku: 0 passed, 1 failed" in result.output
@@ -1100,7 +1150,7 @@ class TestEvalModelMatrix:
     def test_empty_models_exits_code_2(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", " , ", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--models", " , ", "--no-persist"])
         assert result.exit_code == 2
         assert "--models was empty" in result.output
 
@@ -1111,7 +1161,7 @@ class TestEvalModelMatrix:
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku"])
             history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
         assert payload["runs"][0]["model"] == "opus,haiku"
@@ -1123,7 +1173,7 @@ class TestEvalModelMatrix:
             patch("teatree.eval.backends.SdkInProcessRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(
-                app, ["eval", "run", "--models", "opus,haiku", "--require-executed", "--no-persist"]
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku", "--require-executed", "--no-persist"]
             )
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
@@ -1136,9 +1186,18 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _SkippingRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus,haiku", "--no-persist"]
+            )
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
+
+    def test_no_persist_is_rejected_for_history_gates(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--gate-regressions", "--no-persist"])
+        assert result.exit_code == 2, result.output
+        assert "--gate-regressions requires --persist" in result.output
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1154,7 +1213,15 @@ class TestEvalModelVariantMatrix:
         ):
             result = CliRunner().invoke(
                 app,
-                ["eval", "run", "--models", "claude-opus-4-8@xhigh,claude-fable-5@medium", "--no-persist"],
+                [
+                    "eval",
+                    "run",
+                    "--backend",
+                    "sdk",
+                    "--models",
+                    "claude-opus-4-8@xhigh,claude-fable-5@medium",
+                    "--no-persist",
+                ],
             )
         assert result.exit_code == 0, result.output
         assert "claude-opus-4-8@xhigh" in result.output
@@ -1167,7 +1234,7 @@ class TestEvalModelVariantMatrix:
             patch("teatree.eval.backends.SdkInProcessRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--models", "opus@xhigh,opus@medium"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--models", "opus@xhigh,opus@medium"])
             history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
         assert payload["runs"][0]["model"] == "opus@xhigh,opus@medium"
@@ -1175,7 +1242,9 @@ class TestEvalModelVariantMatrix:
     def test_unknown_effort_exits_code_2_with_known_levels(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus@turbo", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus@turbo", "--no-persist"]
+            )
         assert result.exit_code == 2
         assert "unknown effort 'turbo'" in result.output
         assert "xhigh" in result.output
@@ -1183,7 +1252,9 @@ class TestEvalModelVariantMatrix:
     def test_html_format_is_rejected_for_a_matrix_run(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--format", "html", "--no-persist"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus", "--format", "html", "--no-persist"]
+            )
         assert result.exit_code == 2
         assert "only supported for a single-trial run" in result.output
 
@@ -1508,7 +1579,7 @@ class TestMatrixCostRegressionGate:
             patch("teatree.eval.backends.SdkInProcessRunner", _Cheap),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--models", model, "--baseline"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--models", model, "--baseline"])
 
     def test_models_lane_fails_on_a_cost_blowup(self) -> None:
         self._cheap_baseline("opus")
@@ -1521,7 +1592,9 @@ class TestMatrixCostRegressionGate:
             patch("teatree.eval.backends.SdkInProcessRunner", _Spendy),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--gate-cost-regression"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus", "--gate-cost-regression"]
+            )
         assert result.exit_code == 1, result.output
         assert "COST REGRESSED" in result.output
 
@@ -1532,7 +1605,9 @@ class TestMatrixCostRegressionGate:
             patch("teatree.eval.backends.SdkInProcessRunner", _CostRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus", "--gate-cost-regression"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--models", "opus", "--gate-cost-regression"]
+            )
         # cost fell (0.05 < 0.10), no regression
         assert result.exit_code == 0, result.output
         assert "COST REGRESSED" not in result.output
@@ -1546,7 +1621,7 @@ class TestMatrixCostRegressionGate:
             patch("teatree.eval.backends.SdkInProcessRunner", _Cheap),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--baseline"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--baseline"])
 
         class _Spendy(_CostRunner):
             cost = 1.00
@@ -1556,7 +1631,9 @@ class TestMatrixCostRegressionGate:
             patch("teatree.eval.backends.SdkInProcessRunner", _Spendy),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--gate-cost-regression"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "2", "--gate-cost-regression"]
+            )
         assert result.exit_code == 1, result.output
         assert "COST REGRESSED" in result.output
 
@@ -1564,15 +1641,16 @@ class TestMatrixCostRegressionGate:
 class TestPrepareTranscript:
     def test_emits_prompt_and_transcript_path(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]
-        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+        with patch("teatree.cli.eval.prepare_transcript.discover_specs", return_value=specs):
             result = CliRunner().invoke(app, ["eval", "prepare-transcript", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "alpha" in result.output
         assert str(tmp_path / "alpha.jsonl") in result.output
+        assert "capture-subagent" not in result.output
 
     def test_json_format_lists_manifest(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]
-        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+        with patch("teatree.cli.eval.prepare_transcript.discover_specs", return_value=specs):
             result = CliRunner().invoke(
                 app,
                 ["eval", "prepare-transcript", "--format", "json", "--transcript-dir", str(tmp_path)],
@@ -2029,7 +2107,7 @@ class TestEvalRunDocker:
 
     def test_forwards_scenario_name_and_trials(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
-            CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3", "--docker"])
+            CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--trials", "3", "--docker"])
         assert run_docker.call_args.args[0] == [
             "run",
             "alpha",
@@ -2041,6 +2119,8 @@ class TestEvalRunDocker:
             "3",
             "--require",
             "any",
+            "--backend",
+            "sdk",
             "--no-persist",
         ]
 
@@ -2063,7 +2143,9 @@ class TestEvalRunDocker:
 
     def test_forwards_under_load_ratchet_gate_into_the_container(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
-            CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--gate-under-load-ratchet", "--docker"])
+            CliRunner().invoke(
+                app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--gate-under-load-ratchet", "--docker"]
+            )
         assert "--gate-under-load-ratchet" in run_docker.call_args.args[0]
 
     def test_propagates_container_exit_code(self) -> None:
@@ -2114,7 +2196,7 @@ class TestEvalRunMeteredDockerByDefault:
             patch.dict("os.environ", {}, clear=True),
             patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker,
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3"])
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--trials", "3"])
         assert result.exit_code == 0, result.output
         run_docker.assert_called_once()
 

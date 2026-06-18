@@ -99,7 +99,7 @@ installed editable from a clone; the eval harness ships inside it.
   env, never the command line. To break the
   re-route loop, the docker runner sets `T3_EVAL_IN_CONTAINER=1` on the
   container — the metered command runs in-process when that marker is present.
-  Run the metered lane locally with:
+  Run the metered lane through the default container with:
 
   ```bash
   CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --require-executed
@@ -107,13 +107,13 @@ installed editable from a clone; the eval harness ships inside it.
 
   (no `--docker` needed — it is the default; `--docker` is still accepted to
   force the container for the transcript lane too).
-- **`benchmark --local` — the explicit host escape (a quick check, NOT the gate).**
-  `t3 eval benchmark --local` runs the fresh-run lane on the host for a fast local
-  check. It prints a loud WARNING: a host run is not the reproducible regression
-  gate (the host's login state biases the result and isolation strips subscription
-  auth) — use Docker / CI for regression. With docker missing, the run raises
-  `DockerUnavailableError` with guidance, so it is impossible to ACCIDENTALLY run
-  the fresh-run lane on the host.
+- **`--local` — the explicit host escape.** `t3 eval run --backend sdk --local`
+  and `t3 eval benchmark --local` run the fresh-run lane on the host. Use it for
+  durable-history gates that must persist/read the runner DB (for example the
+  GitLab weekly cost-bounds gate), or for a fast host check. It prints a loud
+  WARNING so the host path is never accidental. With docker missing, the default
+  fresh-run route raises `DockerUnavailableError` with guidance, so it is
+  impossible to ACCIDENTALLY run the fresh-run lane on the host.
 
 - **Prek (deterministic gates).** The two deterministic lanes are wired into
   prek under their explicit names: the sub-second `eval-skill-triggers` hook
@@ -164,9 +164,9 @@ t3 eval run --format json                   # JSON output
 t3 eval run --format html > report.html     # self-contained HTML report (single-trial; inline CSS, no external assets)
 t3 eval run worktree_first --max-turns 5    # override max_turns
 t3 eval run --no-persist                     # run without recording to the ledger
-t3 eval run --trials 3                        # pass@k: 3 trials, pass if any passes
-t3 eval run --trials 3 --require all          # pass^k: regression gate, all must pass
-t3 eval run --models opus,sonnet,haiku        # model-regression matrix (per-model columns)
+t3 eval run --backend sdk --trials 3          # pass@k: 3 trials, pass if any passes
+t3 eval run --backend sdk --trials 3 --require all  # pass^k: regression gate, all must pass
+t3 eval run --backend sdk --models opus,sonnet,haiku  # model-regression matrix (per-model columns)
 t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge
 t3 eval run --baseline                        # persist + mark this run as its model's baseline
 t3 eval run --gate-regressions               # persist + fail on a drop vs each model's baseline
@@ -218,7 +218,7 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `transcript` (default) | $0 extra (reuses a recorded run) | local / manual | grades an already-recorded `<scenario>.jsonl` transcript off disk — runs no model |
-| `sdk` | subscription-covered (NOT API-billed) | CI (standalone `eval.yml`) + local `--backend sdk` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for a host check) |
+| `sdk` | subscription-covered (NOT API-billed) | CI (standalone `eval.yml`) + local `--backend sdk` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for durable-history gates / host checks) |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -378,16 +378,15 @@ model, so it DEFAULTS to running inside the CI container (`dev/Dockerfile.test`)
 exactly like `t3 eval run` / `t3 eval benchmark`. `--free-only` runs only the
 host-safe deterministic lanes (no model) and stays on the host.
 
-`--trials`/`--models` always force the fresh-run `sdk` runner regardless of
-`--backend` (a multi-trial / matrix run cannot be served from a single saved
-transcript); combining them with the `transcript` default prints a one-line
-notice on stderr.
+`--trials`/`--models` require the fresh-run `sdk` runner (a multi-trial / matrix
+run cannot be served from a single saved transcript). Combining them with the
+`transcript` default is an explicit usage error; pass `--backend sdk`.
 
 **CI stays on the fresh-run path explicitly.** The standalone eval jobs in
 `.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
-the budgeted Agent-SDK path while LOCAL defaults to `transcript`. (CI also passes
-`--trials 3`, which already forces the sdk runner; the explicit `--backend sdk` is
-the debuggable statement of that intent.) `--require-executed` is passed
+the budgeted Agent-SDK path while LOCAL defaults to `transcript`. CI also passes
+`--trials 3`, so the explicit `--backend sdk` is required and debuggable.
+`--require-executed` is passed
 unconditionally so a missing CLI/key fails the job loud — never an all-skipped
 green.
 
@@ -570,10 +569,11 @@ scenario NOT listed is un-bounded. The gate engine is the pure, unit-tested
 CLI wiring (`cli/eval/run_modes.py::CostBoundsGate`) reads the just-persisted
 run's `EvalRunRecord.costs_by_scenario()`. It needs the durable ledger, so —
 like `--gate-cost-regression`/`--baseline` — it is rejected at the `--docker`
-boundary (the ephemeral container is `--no-persist`); it is wired into the
-PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), keeping the cost gate
-weekly/manual and off the per-PR path. Run it on the host against the accumulated
-ledger with `t3 eval run --backend sdk --gate-cost-bounds`.
+boundary (the ephemeral container is `--no-persist`) and with explicit
+`--no-persist`. It is wired into the PERSISTED metered path in `.gitlab-ci.yml`
+with `--local`, keeping the cost gate weekly/manual and off the per-PR path. Run
+it on the host against the accumulated ledger with
+`t3 eval run --backend sdk --local --gate-cost-bounds`.
 
 ### Model matrix
 

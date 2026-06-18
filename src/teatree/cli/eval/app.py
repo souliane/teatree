@@ -1,6 +1,5 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
-import json
 import sys
 from pathlib import Path
 
@@ -9,7 +8,12 @@ from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
-from teatree.cli.eval.app_helpers import reject_unsupported_run_output, require_effort, require_spec
+from teatree.cli.eval.app_helpers import (
+    reject_unsupported_run_output,
+    require_effort,
+    require_sdk_backend_for_fresh_run,
+    require_spec,
+)
 from teatree.cli.eval.audit import audit
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.capture_subagent import capture_subagent
@@ -18,16 +22,17 @@ from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
+from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
+from teatree.cli.eval.prepare_transcript import prepare_transcript
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     RunGuards,
-    build_transcript_manifest,
     finalize_single_run,
     make_grader,
-    render_transcript_text,
+    require_persist_for_history_gates,
 )
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
@@ -224,8 +229,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "already-recorded run by grading its on-disk transcript, $0 extra; see "
             "`t3 eval prepare-transcript`) or 'sdk' (RUN the model fresh in-process via the "
             "Agent SDK, subscription-covered (CLAUDE_CODE_OAUTH_TOKEN), NOT API-billed; runs "
-            "in-container via --docker locally or in the standalone eval.yml CI job). --trials "
-            "and --models always use the fresh-run sdk runner regardless of this flag."
+            "in-container by default or directly on the host with --local). --trials and "
+            "--models require --backend sdk."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -249,6 +254,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Force running inside the CI image (dev/Dockerfile.test) for ANY backend. The sdk "
             "lane ALREADY defaults to the container; this forces it for the transcript lane too."
+        ),
+    ),
+    local: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--local",
+        help=(
+            "Run the fresh sdk lane directly on the host instead of Docker. Use for durable-history "
+            "gates that must persist/read the runner DB; otherwise Docker remains the reproducible path."
         ),
     ),
     parallel: int = typer.Option(
@@ -290,7 +303,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     (which spawns the ``claude`` CLI as its child), authed by the subscription's
     ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
     explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
-    always use the fresh-run ``sdk`` runner regardless of ``--backend``.
+    require the fresh-run ``sdk`` runner and reject the transcript backend.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -304,6 +317,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     token authenticates the SDK's ``claude`` child inside a clean container and
     never lands on the command line.
 
+    ``--local`` is the explicit host escape for durable-history gates that must
+    persist/read the runner DB, or for a quick host check.
+
     ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
     I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
     Nxlatency toward ~latency). Default 1 = today's sequential behaviour.
@@ -316,6 +332,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     effort_level = require_effort(effort)
     max_turns = resolve_max_turns_override(max_turns)
     metered = backend == SDK_BACKEND or trials > 1 or models is not None
+    require_sdk_backend_for_fresh_run(backend=backend, trials=trials, models=models)
+    require_persist_for_history_gates(
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
     route_to_docker_if_needed(
         RunDockerArgs(
             name=name,
@@ -335,12 +359,15 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             transcript_html=transcript_html,
         ),
         docker=docker,
+        local=local,
         metered=metered,
         baseline=baseline,
         gate_regressions=gate_regressions,
         gate_cost_regression=gate_cost_regression,
         gate_cost_bounds=gate_cost_bounds,
     )
+    if local:
+        warn_local_metered(metered=metered)
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     reject_unsupported_run_output(
@@ -363,13 +390,6 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # the transcript backend's legitimate pre-transcript all-skip.
     sdk_metered = backend == SDK_BACKEND or trials > 1 or models is not None
     require_executed = require_executed or sdk_metered
-    if (trials > 1 or models is not None) and backend == TRANSCRIPT_BACKEND:
-        typer.echo(
-            "note: --trials/--models force the fresh-run in-process Agent-SDK runner "
-            "(subscription-covered); the 'transcript' default does not apply to multi-trial / "
-            "matrix runs",
-            err=True,
-        )
     if models is not None:
         run_model_matrix_lane(
             specs,
@@ -453,34 +473,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         sys.exit(1)
 
 
-@eval_app.command("prepare-transcript")
-def prepare_transcript(
-    name: str | None = typer.Argument(None, help="Scenario name to prepare (omit to prepare all)."),
-    transcript_dir: Path | None = typer.Option(
-        None,
-        "--transcript-dir",
-        help="Where `t3 eval capture-subagent` writes each <scenario>.jsonl transcript (default: cwd).",
-    ),
-    output_format: str = typer.Option("text", "--format", help="Manifest format: text or json."),
-) -> None:
-    """Emit the per-scenario prompts for a LOCAL transcript-backend eval run.
-
-    The eval CLI is a plain process with no in-session ``Agent`` tool, so it
-    cannot itself drive a subscription-covered turn. This command prints, per
-    scenario, the agent definition, prompt, and the transcript path the
-    ``transcript`` backend will read. The ``/t3:running-evals`` skill is the
-    in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
-    prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
-    sub-agent's JSONL to that path, and finally grades with
-    ``t3 eval run --backend transcript``.
-    """
-    ensure_django()
-    require_valid_format(output_format)
-    specs = discover_specs() if name is None else [require_spec(name)]
-    manifest = build_transcript_manifest(specs, transcript_dir or Path.cwd())
-    typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_transcript_text(manifest))
-
-
+eval_app.command("prepare-transcript")(prepare_transcript)
 eval_app.command("history")(history_command)
 
 

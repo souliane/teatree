@@ -22,6 +22,7 @@ from teatree.cli.eval.run_modes import (
     UnderLoadRatchetGate,
     persist_matrix_run,
     persist_pass_at_k_run,
+    require_persist_for_history_gates,
     with_model,
 )
 from teatree.eval.backends import SDK_BACKEND, EvalRunner, make_runner
@@ -109,6 +110,13 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
+    require_persist_for_history_gates(
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
     runner = make_runner(
         SDK_BACKEND,
         max_turns_override=max_turns,
@@ -219,6 +227,13 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     a scenario's own) still win over this lane default at the runner's seam.
     """
     model_list = parse_model_tags(models)
+    require_persist_for_history_gates(
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
     runner = make_runner(
         SDK_BACKEND,
         max_turns_override=max_turns,

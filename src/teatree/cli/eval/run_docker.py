@@ -113,6 +113,7 @@ def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-hi
     args: RunDockerArgs,
     *,
     docker: bool,
+    local: bool,
     metered: bool,
     baseline: bool,
     gate_regressions: bool,
@@ -126,7 +127,7 @@ def route_to_docker_if_needed(  # noqa: PLR0913 — each kwarg is one durable-hi
     ``--no-persist``, then the run is dispatched into the container (which exits
     the process).
     """
-    if not (docker or should_route_to_docker(metered=metered, local=False)):
+    if not (docker or should_route_to_docker(metered=metered, local=local)):
         return
     run_in_docker_or_exit(
         args,

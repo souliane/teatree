@@ -1367,8 +1367,8 @@ Usage: t3 eval benchmark [OPTIONS]
  ``--trials k`` (each cell's score becomes a k-trial pass-rate).
 
  The benchmark is metered, so it defaults to running in the CI container; pass
- ``--local`` for a quick host check (NOT the reproducible gate). The container
- is ephemeral, so a Docker-routed run is forced ``--no-persist``.
+ ``--local`` for an explicit host run. The container is ephemeral, so a
+ Docker-routed run is forced ``--no-persist``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --models                            TEXT     Comma-separated model@effort │
@@ -1637,7 +1637,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
  (which spawns the ``claude`` CLI as its child), authed by the subscription's
  ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
  explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
- always use the fresh-run ``sdk`` runner regardless of ``--backend``.
+ require the fresh-run ``sdk`` runner and reject the transcript backend.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -1651,6 +1651,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
  the
  token authenticates the SDK's ``claude`` child inside a clean container and
  never lands on the command line.
+
+ ``--local`` is the explicit host escape for durable-history gates that must
+ persist/read the runner DB, or for a quick host check.
 
  ``--parallel N`` runs N scenarios concurrently (each SDK scenario run is
  I/O-bound, so a bounded worker pool cuts the suite's wall-clock from
@@ -1852,13 +1855,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     subscription-covered     │
 │                                                     (CLAUDE_CODE_OAUTH_TOKE… │
 │                                                     NOT API-billed; runs     │
-│                                                     in-container via         │
-│                                                     --docker locally or in   │
-│                                                     the standalone eval.yml  │
-│                                                     CI job). --trials and    │
-│                                                     --models always use the  │
-│                                                     fresh-run sdk runner     │
-│                                                     regardless of this flag. │
+│                                                     in-container by default  │
+│                                                     or directly on the host  │
+│                                                     with --local). --trials  │
+│                                                     and --models require     │
+│                                                     --backend sdk.           │
 │                                                     [default: transcript]    │
 │ --transcript-dir                           PATH     Directory of             │
 │                                                     <scenario>.jsonl         │
@@ -1886,6 +1887,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     the container; this      │
 │                                                     forces it for the        │
 │                                                     transcript lane too.     │
+│ --local                                             Run the fresh sdk lane   │
+│                                                     directly on the host     │
+│                                                     instead of Docker. Use   │
+│                                                     for durable-history      │
+│                                                     gates that must          │
+│                                                     persist/read the runner  │
+│                                                     DB; otherwise Docker     │
+│                                                     remains the reproducible │
+│                                                     path.                    │
 │ --parallel                                 INTEGER  Run this many scenarios  │
 │                                                     concurrently (each SDK   │
 │                                                     scenario run is          │
@@ -1929,11 +1939,7 @@ Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
  The eval CLI is a plain process with no in-session ``Agent`` tool, so it
  cannot itself drive a subscription-covered turn. This command prints, per
  scenario, the agent definition, prompt, and the transcript path the
- ``transcript`` backend will read. The ``/t3:running-evals`` skill is the
- in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
- prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
- sub-agent's JSONL to that path, and finally grades with
- ``t3 eval run --backend transcript``.
+ ``transcript`` backend will read.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to prepare (omit to prepare all).          │

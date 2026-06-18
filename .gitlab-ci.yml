@@ -63,7 +63,10 @@ variables:
     - uv run python -m teatree migrate --no-input
     # `--backend sdk` keeps CI on the metered claude -p path explicitly (auth via
     # CLAUDE_CODE_OAUTH_TOKEN); LOCAL `t3 eval run` defaults to the subscription
-    # backend (no API spend). Mirrors the GitHub eval workflow.
+    # backend (no API spend). Mirrors the GitHub eval workflow's fresh lane.
+    # `--local` is intentional here: the cost-bounds gate must persist/read the
+    # runner DB on this host, while the default Docker route is ephemeral and
+    # rejects durable-history gates.
     # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a
     # collected-but-all-skipped run exits non-zero, so the suite can never pass
     # green with zero behavioral coverage (souliane/teatree#1811).
@@ -79,7 +82,7 @@ variables:
     # but a NEW under_load failure outside the baseline — or a baselined scenario
     # that now PASSES — fails the run loud. It reads the IN-MEMORY results, so it
     # is weekly/manual like the cost gate, off the per-MR path.
-    - uv run t3 eval run --trials 3 --require any --backend sdk --require-executed --gate-cost-bounds --gate-under-load-ratchet
+    - uv run t3 eval run --trials 3 --require any --backend sdk --local --require-executed --gate-cost-bounds --gate-under-load-ratchet
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.
