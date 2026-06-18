@@ -330,6 +330,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             models=models,
             backend=backend,
             require_executed=require_executed,
+            gate_under_load_ratchet=gate_under_load_ratchet,
             parallel=parallel,
             transcript_html=transcript_html,
         ),
