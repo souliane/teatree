@@ -44,7 +44,7 @@ class TestLoopAdditiveFields(TestCase):
         assert loop.overlay == ""
 
     def test_script_only_loop_round_trips(self) -> None:
-        Loop.objects.create(name="demo-script", prompt="", script="src/teatree/loops/run.py")
+        Loop.objects.create(name="demo-script", delay_seconds=60, prompt="", script="src/teatree/loops/run.py")
         reloaded = Loop.objects.get(name="demo-script")
         assert reloaded.script == "src/teatree/loops/run.py"
         assert reloaded.prompt == ""
@@ -59,7 +59,7 @@ class TestLoopAdditiveFields(TestCase):
 
 
 class TestLoopNullableDelay(TestCase):
-    """``delay_seconds`` is nullable so a script loop need not carry an interval."""
+    """``delay_seconds`` is nullable for prompt loops that run every tick."""
 
     def test_delay_seconds_may_be_null(self) -> None:
         Loop.objects.create(name="demo-null", prompt="do x", delay_seconds=None)
@@ -111,6 +111,10 @@ class TestLoopPromptScriptXor(TestCase):
     def test_db_constraint_rejects_neither(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
             Loop.objects.create(name="demo-neither-db", delay_seconds=60, prompt="", script="")
+
+    def test_db_constraint_rejects_script_without_delay(self) -> None:
+        with pytest.raises(IntegrityError), transaction.atomic():
+            Loop.objects.create(name="demo-script-no-delay-db", delay_seconds=None, prompt="", script="run.py")
 
 
 class TestLoopIntervalCadence(TestCase):
