@@ -551,6 +551,10 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         _ = env_cache
         return {}
 
+    def get_e2e_run_provenance(self, spec_path: str) -> str:
+        """Manifest entry id (e.g. CI lane) for *spec_path*, recorded on the run (#272); ``""`` default."""
+        return ""
+
     def get_e2e_preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
         _ = customer, base_url
         return []

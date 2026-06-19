@@ -159,7 +159,7 @@ class Command(TyperCommand):
         MVP runs an already-present workspace as-is and records the run's
         SHA-set + result to the durable recipe keyed by ``issue_url``.
         """
-        from teatree.core.e2e_workitem import record_run, resolve_environment  # noqa: PLC0415
+        from teatree.core.e2e_workitem import record_run, resolve_environment, resolve_run_provenance  # noqa: PLC0415
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.utils import git  # noqa: PLC0415
 
@@ -189,15 +189,15 @@ class Command(TyperCommand):
             except Exception:  # noqa: BLE001
                 per_repo_shas[repo] = ""
 
-        primary_dir = next(iter(resolution.repo_dirs.values()))
-        os.environ["T3_ORIG_CWD"] = primary_dir
+        os.environ["T3_ORIG_CWD"] = next(iter(resolution.repo_dirs.values()))
+        provenance = resolve_run_provenance(get_overlay(), opts.test_path)
 
         try:
             result = self._dispatch_runner(opts)
         except SystemExit as exc:
-            record_run(ticket, result="red", per_repo_shas=per_repo_shas)
+            record_run(ticket, result="red", per_repo_shas=per_repo_shas, provenance=provenance)
             raise SystemExit(exc.code) from exc
-        record_run(ticket, result="green", per_repo_shas=per_repo_shas)
+        record_run(ticket, result="green", per_repo_shas=per_repo_shas, provenance=provenance)
         return result
 
     def _dispatch_runner(self, opts: DispatchOptions) -> str:

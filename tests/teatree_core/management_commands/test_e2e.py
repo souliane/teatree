@@ -29,6 +29,7 @@ from tests.teatree_core.management_commands._overlays import (
     _UNCONFIGURED_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
+    PROVENANCE_OVERLAY,
     SETTINGS,
     _patch_overlays,
 )
@@ -355,6 +356,74 @@ class TestE2eRunWorkItem(TestCase):
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
         assert recipe.last_run["per_repo_shas"] == {"backend": ""}
+
+    def _provision_workspace(self, issue: str) -> Ticket:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(str(d), ignore_errors=True))
+        wt_dir = d / "backend"
+        self._make_repo(wt_dir)
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://github.com/o/r/issues/{issue}")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feat",
+            extra={"worktree_path": str(wt_dir)},
+        )
+        return ticket
+
+    @_patch_overlays(PROVENANCE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_green_run_records_spec_path_and_overlay_resolved_manifest_entry(self) -> None:
+        ticket = self._provision_workspace("272")
+        spec = "e2e/specs/tenant-a/workflow/feature-x.spec.ts"
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
+            call_command("e2e", "run", "272", test_path=spec)
+
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["result"] == "green"
+        assert recipe.last_run["spec_path"] == spec
+        assert recipe.last_run["manifest_entry"] == "feature-x-lane"
+
+    @_patch_overlays(PROVENANCE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_failed_run_also_records_spec_provenance(self) -> None:
+        ticket = self._provision_workspace("273")
+        spec = "e2e/specs/tenant-b/workflow/feature-y.spec.ts"
+
+        with (
+            patch.object(e2e_mod.Command, "_dispatch_runner", side_effect=SystemExit(3)),
+            pytest.raises(SystemExit),
+        ):
+            call_command("e2e", "run", "273", test_path=spec)
+
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["result"] == "red"
+        assert recipe.last_run["spec_path"] == spec
+        assert recipe.last_run["manifest_entry"] == "feature-y-lane"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_without_manifest_records_no_manifest_entry(self) -> None:
+        ticket = self._provision_workspace("274")
+        spec = "e2e/specs/misc/smoke.spec.ts"
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
+            call_command("e2e", "run", "274", test_path=spec)
+
+        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["spec_path"] == spec
+        assert "manifest_entry" not in recipe.last_run
 
 
 class TestE2eExternal(TestCase):

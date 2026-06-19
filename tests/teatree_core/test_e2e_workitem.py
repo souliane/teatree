@@ -15,7 +15,15 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.e2e_workitem import E2ERecipe, RepoEntry, load_recipe, record_run, resolve_environment, save_recipe
+from teatree.core.e2e_workitem import (
+    E2ERecipe,
+    RepoEntry,
+    RunProvenance,
+    load_recipe,
+    record_run,
+    resolve_environment,
+    save_recipe,
+)
 from teatree.core.models import Ticket, Worktree
 
 _GIT = shutil.which("git") or "git"
@@ -238,6 +246,55 @@ class ProvenanceTests(TestCase):
         recipe = load_recipe(self.ticket)
         assert recipe.last_run is not None
         assert recipe.last_run["env"] == "dev"
+
+    def test_spec_path_provenance_is_recorded(self) -> None:
+        record_run(
+            self.ticket,
+            result="green",
+            per_repo_shas={"r": "s"},
+            provenance=RunProvenance(
+                spec_path="e2e/specs/tenant-a/workflow/feature-x.spec.ts",
+                manifest_entry="tenant-a-workflow",
+            ),
+        )
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert recipe.last_run["spec_path"] == "e2e/specs/tenant-a/workflow/feature-x.spec.ts"
+        assert recipe.last_run["manifest_entry"] == "tenant-a-workflow"
+
+    def test_spec_provenance_recorded_on_a_failed_run_too(self) -> None:
+        record_run(
+            self.ticket,
+            result="red",
+            per_repo_shas={"r": "bad"},
+            provenance=RunProvenance(
+                spec_path="e2e/specs/tenant-b/workflow/feature-y.spec.ts",
+                manifest_entry="tenant-b-workflow",
+            ),
+        )
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert recipe.last_run["result"] == "red"
+        assert recipe.last_run["spec_path"] == "e2e/specs/tenant-b/workflow/feature-y.spec.ts"
+        assert recipe.last_run["manifest_entry"] == "tenant-b-workflow"
+
+    def test_spec_provenance_keys_absent_when_not_supplied(self) -> None:
+        record_run(self.ticket, result="green", per_repo_shas={"r": "s"})
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert "spec_path" not in recipe.last_run
+        assert "manifest_entry" not in recipe.last_run
+
+    def test_empty_spec_provenance_is_not_recorded(self) -> None:
+        record_run(self.ticket, result="green", per_repo_shas={"r": "s"}, provenance=RunProvenance())
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert "spec_path" not in recipe.last_run
+        assert "manifest_entry" not in recipe.last_run
 
 
 class GitHelpersTests(TestCase):

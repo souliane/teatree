@@ -322,6 +322,15 @@ class E2ELastRunSerialized(TypedDict, total=False):
     # dev-after-merge run does not satisfy it. Absent on rows recorded before
     # #88; the gate treats a missing env conservatively as not-local.
     env: str
+    # Run provenance for vanilla-spec suites (#272): the exact spec path that
+    # ran and the overlay-resolved manifest entry id (e.g. a CI lane). Recorded
+    # so a run is reproducible from the DB record alone after the workspace is
+    # cleaned. Overlay-agnostic plain strings — core never parses them; an
+    # overlay with no per-spec manifest leaves both absent. Empty values are
+    # dropped rather than stored, so a run with no spec context is
+    # indistinguishable from a pre-#272 row.
+    spec_path: str
+    manifest_entry: str
 
 
 class E2ERecipeSerialized(TypedDict, total=False):
