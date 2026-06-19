@@ -11,8 +11,9 @@ hatch; ignores cadence; ``--dry-run`` does everything except writing rows).
 ``t3 dream tick`` is the cron entry point; it runs only when the dream cadence
 has elapsed — schedule it ~04:00 (decoupled from the live 12-minute loop).
 
-The distillation engine itself is a follow-up PR; this scaffold ships the CLI,
-the off-live-tick cron, and the 48h staleness alarm (``t3 doctor``).
+The CLI, the off-live-tick cron, and the 48h staleness alarm (``t3 doctor``) are
+the thin surface; the distillation engine (phases 1-3) and the file-side phases
+4-6 live behind the ``dream`` management command.
 """
 
 import typer

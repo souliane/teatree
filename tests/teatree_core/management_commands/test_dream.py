@@ -531,6 +531,65 @@ class DreamZeroMembersFailLoudTestCase(TestCase):
         assert marker.last_succeeded_at is not None
 
 
+class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):
+    """A 0-transcript pass must still run the file-side phases 4-6 (#2547).
+
+    ``enumerate_members`` finds 0 transcript members on a pass where no recent
+    session ran, but the memory ``.md`` files on disk are unchanged — the
+    file-side maintenance (cross-link / re-index / decay) operates on
+    ``discover_memory_dirs`` and is independent of the transcript extract. A
+    0-member pass must still run those phases, while keeping the consolidation
+    pass attempted-not-succeeded (staleness stays active — no distillation
+    happened). The memory dir is a TMP fixture; the real ``~/.claude`` is never
+    touched.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+
+    def _zero_member_tick(self, stdout: StringIO) -> None:
+        zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_result),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "",
+                    "T3_DREAM_REINDEX": "",
+                    "T3_DREAM_DECAY": "",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_zero_members_still_cross_links_and_reindexes(self) -> None:
+        stdout = StringIO()
+        self._zero_member_tick(stdout)
+        out = stdout.getvalue()
+        # Phases 4-5 ran over the on-disk memory set despite 0 transcript members.
+        assert "cross-linked" in out
+        assert "re-indexed" in out
+        assert (self.memdir / "MEMORY.md").is_file()
+        assert "[[mem_b]]" in (self.memdir / "mem_a.md").read_text(encoding="utf-8")
+
+    def test_zero_members_keeps_pass_attempted_not_succeeded(self) -> None:
+        # The consolidation pass found nothing to distil — staleness stays active.
+        self._zero_member_tick(StringIO())
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_attempted_at is not None
+        assert marker.last_succeeded_at is None
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is True
+
+
 class DreamEmptyBatchSummaryTestCase(TestCase):
     """A batch that distils 0 clusters from non-empty input is surfaced in the summary (#1933)."""
 
