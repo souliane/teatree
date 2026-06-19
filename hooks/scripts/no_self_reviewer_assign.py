@@ -73,6 +73,9 @@ _API_REVIEWER_FIELD_RE = re.compile(r"\b(?:reviewer_ids|reviewers|requested_revi
 # ``gh api .../requested_reviewers`` lists the requested reviewers).
 _API_WRITE_METHOD_RE = re.compile(r"(?:--method[ =]+|-X[ =]?)(?P<m>[A-Za-z]+)")
 _API_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# A body-field flag — ``-f``/``--field``/``--raw-field``/``-F`` — which the
+# GitHub CLI uses to turn a default GET into a POST (implied write).
+_API_BODY_FIELD_RE = re.compile(r"(?:--raw-field|--field|-[fF])\b")
 # Per-call escape, mirroring the other gates' ``[…-ok: <reason>]`` tokens.
 _REVIEWER_OK_RE = re.compile(r"\[reviewer-ok:\s*(\S[^\]]*?)\s*\]")
 
@@ -137,7 +140,7 @@ def _api_call_writes_reviewer(skeleton: str) -> bool:
     if method_match:
         return method_match.group("m").upper() in _API_WRITE_METHODS
     # No explicit method: a body-field flag implies POST (gh api convention).
-    return bool(re.search(r"(?:--raw-field|--field|-[fF])\b", skeleton))
+    return bool(_API_BODY_FIELD_RE.search(skeleton))
 
 
 def _bash_assigns_reviewer(command: str) -> bool:

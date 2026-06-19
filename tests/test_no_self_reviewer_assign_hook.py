@@ -103,6 +103,9 @@ class TestAllowsNonReviewerSurfaces:
             # gh pr create/edit WITHOUT a reviewer flag is fine.
             "gh pr create --title 'fix: x' --body 'b'",
             "gh pr edit 12 --add-label needs-review",
+            # -R (capital, the repo flag) must NOT be read as the -r reviewer
+            # short-flag — guards a future regex broadening from re-colliding.
+            "gh pr create --title 'fix: x' -R souliane/teatree --body 'b'",
             # Requesting review via the approval channel is the sanctioned path.
             "glab mr view 7624",
             # The literal phrase embedded in a commit message is not an assignment.
