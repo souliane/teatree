@@ -1,9 +1,11 @@
 import tempfile
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 from django.test import TestCase
 
+import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import ProvisionStep, RunCommands
 from teatree.core.runners.service_launch import ServiceLauncher
@@ -66,8 +68,9 @@ class ServiceLauncherTests(TestCase):
         goes RED — the second launch executes the command instead of refusing.
         """
         launcher = ServiceLauncher(self.worktree, "frontend", overlay=self.overlay)
-        # Hold the exact per-(worktree, service) lock to simulate a build in flight.
-        with singleton(launcher._lock_name()):
+        # Isolate the lock dir from other xdist workers running the same test, then
+        # hold the exact per-(worktree, service) lock to simulate a build in flight.
+        with patch.object(singleton_mod, "DATA_DIR", Path(self._tmp.name)), singleton(launcher._lock_name()):
             result = launcher.run()
         assert not result.ok
         assert "already in flight" in result.detail
@@ -78,7 +81,7 @@ class ServiceLauncherTests(TestCase):
     def test_single_flight_allows_different_service_concurrently(self) -> None:
         """Holding the frontend lock must NOT block a different service on the same worktree."""
         held = ServiceLauncher(self.worktree, "frontend", overlay=self.overlay)
-        with singleton(held._lock_name()):
+        with patch.object(singleton_mod, "DATA_DIR", Path(self._tmp.name)), singleton(held._lock_name()):
             result = ServiceLauncher(self.worktree, "backend", overlay=self.overlay).run()
         assert result.ok
 

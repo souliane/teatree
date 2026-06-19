@@ -8,9 +8,45 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
-from teatree.core.worktree_env import CACHE_FILENAME, write_env_cache
+from teatree.core.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
 
 logger = logging.getLogger(__name__)
+
+
+def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> bool:
+    """Re-provision the DB when a ``provisioned`` worktree's DB is gone (#1038).
+
+    An interrupted provision (killed between the FSM flip to PROVISIONED and the
+    DB import) leaves a worktree whose ``db_name`` is set, whose overlay declares
+    a DB import strategy, but whose Postgres DB was never created — so a later
+    ``start`` fails its runtime probe with "database does not exist". This detects
+    that exact gap and re-runs the idempotent provision runner to recreate the DB.
+
+    Returns ``True`` when a re-provision ran and succeeded, ``False`` when nothing
+    needed healing (no DB strategy, no ``db_name``, DB already present, or an
+    unresolvable connection probe — fail-safe: an ambiguous probe never triggers
+    a needless re-import). Raises ``RuntimeError`` when the re-provision itself
+    fails, so the caller can surface a hard failure rather than start a broken
+    stack.
+    """
+    from teatree.utils.db import db_exists  # noqa: PLC0415
+
+    if not worktree.db_name or overlay.get_db_import_strategy(worktree) is None:
+        return False
+    try:
+        user, host, env = worktree_pg_connection(worktree, overlay=overlay)
+        if db_exists(worktree.db_name, user=user, host=host, env=env or None):
+            return False
+    except Exception:  # noqa: BLE001 — fail-safe: an unresolvable probe must never trigger a re-import
+        logger.debug("DB existence probe inconclusive for %s — skipping heal", worktree.db_name)
+        return False
+    logger.info("DB %s missing for provisioned worktree — re-provisioning before start", worktree.db_name)
+    result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+    worktree.refresh_from_db()
+    if not result.ok:
+        msg = f"DB re-provision failed for {worktree.repo_path}: {result.detail}"
+        raise RuntimeError(msg)
+    return True
 
 
 def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
@@ -105,7 +141,6 @@ class WorktreeProvisionRunner(RunnerBase):
         return RunnerResult(ok=True, detail=f"{len(report.steps)} step(s) ok")
 
     def _run_db_import(self) -> bool:
-        from teatree.core.worktree_env import worktree_pg_connection  # noqa: PLC0415
         from teatree.utils.db import db_exists  # noqa: PLC0415
 
         worktree = self.worktree

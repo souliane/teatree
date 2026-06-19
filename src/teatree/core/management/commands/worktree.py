@@ -29,6 +29,7 @@ from teatree.core.runners import (
     WorktreeStartRunner,
     WorktreeTeardownRunner,
     WorktreeVerifyRunner,
+    heal_missing_provisioned_db,
 )
 from teatree.core.worktree_env import CACHE_FILENAME, compose_project
 from teatree.docker.build import ensure_base_image
@@ -215,39 +216,20 @@ class Command(TyperCommand):
         return hint
 
     def _heal_missing_provisioned_db(self, worktree: Worktree, overlay: OverlayBase) -> None:
-        """Re-provision the DB when a ``provisioned`` worktree's DB is gone (#1038).
+        """Heal a ``provisioned`` worktree whose DB was never created (#1038).
 
-        An interrupted provision (killed between the FSM flip to PROVISIONED and
-        the DB import) leaves a worktree whose ``db_name`` is set, whose overlay
-        declares a DB import strategy, but whose Postgres DB was never created.
-        Starting it then fails the runtime probe with "database does not exist".
-        This detects that exact gap and re-runs the idempotent provision runner to
-        create the DB before the start proceeds. No-op for overlays with no DB
-        strategy, worktrees with no ``db_name``, or when the DB already exists; a
-        probe error (psql/CLI absent) is treated as "do not heal" so a transient
-        failure never triggers a needless re-import.
+        Thin CLI wrapper over :func:`heal_missing_provisioned_db`: reports the
+        re-provision to the operator and turns a heal failure into ``SystemExit(1)``.
         """
-        from teatree.utils.db import db_exists  # noqa: PLC0415
-
-        if not worktree.db_name or overlay.get_db_import_strategy(worktree) is None:
-            return
-        from teatree.core.worktree_env import worktree_pg_connection  # noqa: PLC0415
-
-        user, host, env = worktree_pg_connection(worktree, overlay=overlay)
         try:
-            if db_exists(worktree.db_name, user=user, host=host, env=env or None):
-                return
-        except (FileNotFoundError, OSError):
-            return
-        self.stdout.write(
-            f"  DB '{worktree.db_name}' is missing for a provisioned worktree "
-            "(interrupted provision?) — re-provisioning the DB before start."
-        )
-        result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
-        worktree.refresh_from_db()
-        if not result.ok:
-            self.stderr.write(f"  DB re-provision failed: {result.detail}")
-            raise SystemExit(1)
+            if heal_missing_provisioned_db(worktree, overlay):
+                self.stdout.write(
+                    f"  DB '{worktree.db_name}' was missing for a provisioned worktree "
+                    "(interrupted provision?) — re-provisioned before start."
+                )
+        except RuntimeError as exc:
+            self.stderr.write(f"  {exc}")
+            raise SystemExit(1) from exc
 
     def _check_readiness_probes(self, worktree: Worktree, overlay: OverlayBase) -> None:
         """Run overlay readiness probes; raise SystemExit(1) on any failure.

@@ -303,6 +303,11 @@ class Command(TyperCommand):
             if not can_proceed(wt.start_services):
                 self.stdout.write(f"  Skipping {wt.repo_path} (state: {wt.state}, not ready to start)")
                 continue
+            # #1038: heal a sibling whose interrupted provision left no DB so the
+            # multi-repo start doesn't die on "database does not exist". Skip only
+            # the worktree whose heal failed — never abort the whole ticket.
+            if _wh.heal_db_or_record_failure(wt, overlay, failures, self.stdout.write):
+                continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
             commands = list(overlay.get_run_commands(wt))
             with transaction.atomic():

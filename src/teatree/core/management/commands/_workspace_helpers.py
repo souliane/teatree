@@ -2,16 +2,22 @@
 
 Split from :mod:`workspace` to keep the command module under the per-
 module LOC cap. Covers the DSLR-snapshot-in-use guard shared by
-``clean-all``, the variant-mismatch refusal used by ``ticket``, and the
+``clean-all``, the variant-mismatch refusal used by ``ticket``, the
 overlay-name resolution helper that ``ticket`` leans on when
-``T3_OVERLAY_NAME`` is missing on a multi-overlay install.
+``T3_OVERLAY_NAME`` is missing on a multi-overlay install, and the
+interrupted-provision DB heal used by ``start`` (#1038).
 """
 
 import os
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
+from teatree.core.runners import heal_missing_provisioned_db
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 
 def dslr_tenants_in_use() -> set[str]:
@@ -84,3 +90,27 @@ def reject_variant_mismatch(write_err: Callable[[str], None], ticket: Ticket, va
             f"Use `t3 <overlay> ticket switch` or create a new ticket scope."
         )
         raise SystemExit(2)
+
+
+def heal_db_or_record_failure(
+    wt: Worktree,
+    overlay: "OverlayBase",
+    failures: list[str],
+    write_out: Callable[[str], object],
+) -> bool:
+    """Heal a sibling worktree whose interrupted provision left no DB (#1038).
+
+    Wraps :func:`teatree.core.runners.heal_missing_provisioned_db` for the
+    multi-repo ``workspace start`` loop: a re-provision is reported, a heal
+    failure is recorded against ``failures`` (per-worktree isolation — one bad
+    repo never aborts the whole ticket). Returns ``True`` when the caller should
+    SKIP starting this worktree (its heal failed), ``False`` to proceed.
+    """
+    try:
+        if heal_missing_provisioned_db(wt, overlay):
+            write_out(f"  Re-provisioned missing DB for {wt.repo_path} before start.")
+    except RuntimeError as exc:
+        write_out(f"  {exc}")
+        failures.append(wt.repo_path)
+        return True
+    return False

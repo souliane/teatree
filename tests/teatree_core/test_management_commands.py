@@ -15,6 +15,7 @@ import teatree.core.management.commands.tasks as tasks_cmd
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
@@ -219,7 +220,9 @@ class TestHealMissingProvisionedDb(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
-                patch.object(worktree_cmd, "WorktreeProvisionRunner", return_value=reprovision) as mock_runner,
+                patch.object(
+                    worktree_provision_mod, "WorktreeProvisionRunner", return_value=reprovision
+                ) as mock_runner,
                 patch("teatree.utils.db.db_exists", return_value=False),
                 patch.object(worktree_cmd, "reap_stale_local_stacks"),
                 patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),
@@ -239,7 +242,7 @@ class TestHealMissingProvisionedDb(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
-                patch.object(worktree_cmd, "WorktreeProvisionRunner") as mock_runner,
+                patch.object(worktree_provision_mod, "WorktreeProvisionRunner") as mock_runner,
                 patch("teatree.utils.db.db_exists", return_value=True),
                 patch.object(worktree_cmd, "reap_stale_local_stacks"),
                 patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),

@@ -64,6 +64,7 @@ class TestWorktreeStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.return_value = [
                 _failing_probe("translations-loaded", reason="raw key visible"),
             ]
@@ -92,6 +93,7 @@ class TestWorktreeStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.return_value = [_passing_probe("backend-up")]
 
             mock_runner = MagicMock()
@@ -117,6 +119,7 @@ class TestWorktreeStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.return_value = []
 
             mock_runner = MagicMock()
@@ -225,6 +228,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.side_effect = probes_for
 
             mock_runner = MagicMock()
@@ -258,6 +262,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.return_value = [_passing_probe("backend-up")]
 
             mock_runner = MagicMock()
@@ -290,6 +295,7 @@ class TestWorkspaceStartChainsProbes(TestCase):
 
             mock_overlay = MagicMock()
             mock_overlay.get_run_commands.return_value = {}
+            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_readiness_probes.return_value = []
 
             mock_runner = MagicMock()
