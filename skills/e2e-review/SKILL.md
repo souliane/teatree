@@ -25,6 +25,19 @@ A spec earns approval when a green run actually proves the user-facing behaviour
 
 Most E2E review findings reduce to that test. A spec that asserts on a CSS class proves nothing about the user. A spec padded with `waitForTimeout` goes green by luck and red by load. A spec that depends on yesterday's leftover data is green until it isn't. Read each spec asking the question, then group what you find under the principles below.
 
+## Test the ticket, not the MR diff
+
+An E2E test verifies a **ticket's** acceptance criteria, not a single MR's diff. A ticket is frequently multi-repo — the same change often lands as a backend MR, a frontend MR, a microservice change, translations, and external config, all closing one ticket. Before designing or judging the test, gather the **whole** ticket and **all** its linked MRs across every repo it touches; the diff in front of you is one input, not the whole story.
+
+Reading the MR diff too closely is a known trap: it biases the test toward asserting *what the code does now* instead of *what the ticket requires* — a vacuous test that passes regardless of whether the feature is correct. Build the test against the **spec / acceptance criteria** and the business-domain behaviour, never against the current behaviour of the MR under review.
+
+- **Start from the ticket, not the diff.** Read the ticket and its acceptance criteria first; enumerate the end-to-end user flow the ticket promises, then check the test covers *that* flow.
+- **Gather every linked MR across every repo** before judging coverage — a ticket whose test only exercises the FE diff misses the BE/microservice/translation/config halves of the same flow.
+- **A test written from the diff is the failure mode to catch.** If an assertion mirrors the MR's current output rather than the ticket's stated requirement, it certifies the implementation instead of verifying it — flag it the same way you'd flag a golden master captured from the code-under-test's own output (§ 6).
+- **The MR diff is an input to understanding, not the unit of test.** Test the holistic user flow the ticket promises, across every repo it touches.
+
+This is why the rubric scores **AC coverage** (§ "E2E Confidence Rubric"): "every acceptance criterion has a backing assertion" only means something if the criteria came from the ticket, not from the diff.
+
 ## 1. Behaviour over implementation
 
 Playwright's first best practice is to test what the end user sees, not how the app is built internally ([best-practices](https://playwright.dev/docs/best-practices)). The reviewer's job is to catch specs that have quietly bound themselves to implementation.
