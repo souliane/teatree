@@ -42,7 +42,8 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
 from django_bootstrap import bootstrap_teatree_django
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
-from mr_cli_fields import extract_cli_mr_fields
+from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
+from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -2173,20 +2174,8 @@ _API_FIELD_RE = re.compile(
     r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
     re.DOTALL,
 )
-# The MR TARGET repo flag — ``-R <slug>`` / ``--repo <slug>`` on ``glab mr``
-# (owner/repo, optionally host-qualified). The slug runs to the next whitespace;
-# an optional surrounding quote is tolerated.
-_MR_TARGET_REPO_FLAG_RE = re.compile(r"""(?:-R|--repo)[ =]+['"]?(?P<slug>[^\s'"]+)['"]?""")
-# ``glab api .../projects/<url-encoded-namespace>/merge_requests…`` — the
-# namespace is URL-encoded (``acme-group%2Fwidget``); decoded below. A leading
-# slash is optional (``glab api projects/…`` vs ``/api/v4/projects/…``).
-_GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests")
-# ``gh api repos/<owner>/<repo>/pulls…`` — the slug is the two path segments
-# after ``repos/``.
-_GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
-
-
-# MR title/description value parsing moved to mr_cli_fields (module health).
+# MR title/description value parsing and TARGET-repo slug parsing moved to
+# mr_cli_fields (module health) — see extract_cli_mr_fields / extract_mr_target_repo.
 
 
 def _extract_api_mr_fields(command: str) -> tuple[str, str] | None:
@@ -2287,41 +2276,6 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     return None
 
 
-def _extract_mr_target_repo(data: dict) -> str | None:
-    """Return the MR's TARGET repo slug (``owner/repo``), or ``None`` if absent.
-
-    Parses the target from whichever surface the gate watches so the validator
-    can be keyed to the MR's target overlay instead of the agent's cwd. The
-    ``-R``/``--repo`` flag on ``glab mr`` gives the slug directly; the
-    ``glab api .../projects/<ns>/merge_requests…`` namespace is URL-decoded
-    (``acme-group%2Fwidget`` → ``acme-group/widget``); a ``gh api
-    repos/<owner>/<repo>/pulls…`` path yields the two segments after ``repos/``.
-
-    ``None`` when no target is parseable — the validator then keeps its
-    cwd-keyed resolution (the established never-lockout fallback).
-    """
-    tool_name = data.get("tool_name", "")
-    if tool_name != "Bash":
-        return None
-    command = data.get("tool_input", {}).get("command", "")
-
-    flag_match = _MR_TARGET_REPO_FLAG_RE.search(command)
-    if flag_match:
-        return flag_match.group("slug")
-
-    project_match = _GLAB_API_PROJECT_RE.search(command)
-    if project_match:
-        from urllib.parse import unquote  # noqa: PLC0415
-
-        return unquote(project_match.group("ns"))
-
-    gh_api_match = _GH_API_REPO_RE.search(command)
-    if gh_api_match:
-        return gh_api_match.group("slug")
-
-    return None
-
-
 def _mr_validate_argv() -> list[str] | None:
     """Resolve the command that validates MR metadata.
 
@@ -2406,7 +2360,11 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     if fields is None:
         return False
     title, description = fields
-    target_repo = _extract_mr_target_repo(data)
+    target_repo = (
+        extract_mr_target_repo(data.get("tool_input", {}).get("command", ""))
+        if data.get("tool_name") == "Bash"
+        else None
+    )
 
     argv = _mr_validate_argv()
     if argv is None:
@@ -8435,6 +8393,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_unknown_repo_push,
         handle_block_raw_review_post,
         handle_validate_mr_metadata,
+        handle_block_self_reviewer_assign,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,

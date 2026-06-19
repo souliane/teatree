@@ -1,10 +1,12 @@
 """``glab mr create``/``update`` title & description extraction for the gate.
 
 Split out of ``hook_router.py`` by concern (module health): the ``glab mr`` CLI
-inline / file / dynamic-value title & description parsing and its helpers. The
-gate handler (``handle_validate_mr_metadata``), the out-of-band
-``glab api``/``gh api`` surface, and the target-repo parsing stay in the router;
-the router delegates the CLI surface here via :func:`extract_cli_mr_fields`.
+inline / file / dynamic-value title & description parsing and its helpers, plus
+the MR TARGET-repo slug parsing (:func:`extract_mr_target_repo`). The gate
+handler (``handle_validate_mr_metadata``) and the out-of-band
+``glab api``/``gh api`` field surface stay in the router; the router delegates
+the CLI title/description surface here via :func:`extract_cli_mr_fields` and the
+target-repo parsing via :func:`extract_mr_target_repo`.
 
 A bare sibling module (like ``unknown_repo_push_gate``): the router puts its own
 dir on ``sys.path`` so ``from mr_cli_fields import …`` resolves both as the live
@@ -13,10 +15,11 @@ hook and when imported as ``hooks.scripts.hook_router`` in tests.
 
 import re
 from pathlib import Path
+from urllib.parse import unquote
 
 # The MR-mutation verb itself — ``glab mr create``/``update``. Matched against
 # the command with quoted spans and heredoc bodies stripped (see
-# :func:`_strip_quoted_and_heredoc`) so it fires only on a REAL invocation, not
+# :func:`strip_quoted_and_heredoc`) so it fires only on a REAL invocation, not
 # on the phrase merely embedded in a ``git commit -m '… glab mr create …'``
 # message, a doc string, or a heredoc body.
 _MR_OP_RE = re.compile(r"\bglab\s+mr\s+(create|update)\b")
@@ -57,7 +60,7 @@ _MSG_FILE_FLAG_RE = re.compile(
 )
 
 
-def _strip_quoted_and_heredoc(command: str) -> str:
+def strip_quoted_and_heredoc(command: str) -> str:
     """Command with heredoc bodies and quoted spans removed — for verb DETECTION.
 
     Heredoc bodies first (line-structured, and a quoted delimiter would confuse
@@ -147,7 +150,7 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
 
     ``None`` means "not an MR mutation to validate" — either the command does
     not actually invoke ``glab mr create/update`` (the verb only appears inside a
-    quoted arg / heredoc body — see :func:`_strip_quoted_and_heredoc`), or it is
+    quoted arg / heredoc body — see :func:`strip_quoted_and_heredoc`), or it is
     one but must be skipped (never-lockout). A tuple is validated.
 
     Skips when the hook cannot resolve a field statically — an unexpanded
@@ -160,7 +163,7 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
     stricter both-fields contract — an empty title/description on a create is
     exactly the bad metadata the gate must catch (#119).
     """
-    op_match = _MR_OP_RE.search(_strip_quoted_and_heredoc(command))
+    op_match = _MR_OP_RE.search(strip_quoted_and_heredoc(command))
     if op_match is None:
         return None
     operation = op_match.group(1)
@@ -180,3 +183,44 @@ def extract_cli_mr_fields(command: str) -> tuple[str, str] | None:
         elif not desc_present:
             description = f"{title}\n\n## What\n-"
     return title, description
+
+
+# The MR TARGET repo flag — ``-R <slug>`` / ``--repo <slug>`` on ``glab mr``
+# (owner/repo, optionally host-qualified). The slug runs to the next whitespace;
+# an optional surrounding quote is tolerated.
+_MR_TARGET_REPO_FLAG_RE = re.compile(r"""(?:-R|--repo)[ =]+['"]?(?P<slug>[^\s'"]+)['"]?""")
+# ``glab api .../projects/<url-encoded-namespace>/merge_requests…`` — the
+# namespace is URL-encoded (``acme-group%2Fwidget``); decoded below. A leading
+# slash is optional (``glab api projects/…`` vs ``/api/v4/projects/…``).
+_GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests")
+# ``gh api repos/<owner>/<repo>/pulls…`` — the slug is the two path segments
+# after ``repos/``.
+_GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
+
+
+def extract_mr_target_repo(command: str) -> str | None:
+    """Return the MR's TARGET repo slug (``owner/repo``), or ``None`` if absent.
+
+    Parses the target from whichever surface the gate watches so the validator
+    can be keyed to the MR's target overlay instead of the agent's cwd. The
+    ``-R``/``--repo`` flag on ``glab mr`` gives the slug directly; the
+    ``glab api .../projects/<ns>/merge_requests…`` namespace is URL-decoded
+    (``acme-group%2Fwidget`` → ``acme-group/widget``); a ``gh api
+    repos/<owner>/<repo>/pulls…`` path yields the two segments after ``repos/``.
+
+    ``None`` when no target is parseable — the validator then keeps its
+    cwd-keyed resolution (the established never-lockout fallback).
+    """
+    flag_match = _MR_TARGET_REPO_FLAG_RE.search(command)
+    if flag_match:
+        return flag_match.group("slug")
+
+    project_match = _GLAB_API_PROJECT_RE.search(command)
+    if project_match:
+        return unquote(project_match.group("ns"))
+
+    gh_api_match = _GH_API_REPO_RE.search(command)
+    if gh_api_match:
+        return gh_api_match.group("slug")
+
+    return None

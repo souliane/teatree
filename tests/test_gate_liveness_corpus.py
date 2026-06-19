@@ -342,6 +342,27 @@ def _mr_meta_mcp_allow(ctx: GateContext) -> dict:
     }
 
 
+# block-self-reviewer-assign (PreToolUse): a reviewer-assignment surface denies;
+# a metadata-only edit / a GET read of the reviewer list allows. The gate
+# decides purely from the command — no t3 subprocess.
+
+
+def _reviewer_assign_bash_deny(ctx: GateContext) -> dict:
+    return _bash("glab mr update 7624 --reviewer WouterLachat")
+
+
+def _reviewer_assign_bash_allow(ctx: GateContext) -> dict:
+    return _bash("glab mr update 12 --add-label needs-review")
+
+
+def _reviewer_assign_mcp_deny(ctx: GateContext) -> dict:
+    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 7624, "reviewer": "WouterLachat"}}
+
+
+def _reviewer_assign_mcp_allow(ctx: GateContext) -> dict:
+    return {"tool_name": "mcp__glab__glab_mr_update", "tool_input": {"iid": 7624, "title": "fix: x (proj#1)"}}
+
+
 # block-ai-signature (PreToolUse Bash): a commit carrying a banned trailer
 # routes to the AI-sig scanner; rc!=0 denies, a clean commit (no payload) allows.
 
@@ -711,6 +732,22 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__glab__glab_mr_create",
         deny_input=_mr_meta_mcp_deny,
         allow_input=_mr_meta_mcp_allow,
+    ),
+    GateRow(
+        gate_id="block-self-reviewer-assign-bash",
+        handler=router.handle_block_self_reviewer_assign,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_reviewer_assign_bash_deny,
+        allow_input=_reviewer_assign_bash_allow,
+    ),
+    GateRow(
+        gate_id="block-self-reviewer-assign-mcp",
+        handler=router.handle_block_self_reviewer_assign,
+        event="PreToolUse",
+        matched="mcp__glab__glab_mr_update",
+        deny_input=_reviewer_assign_mcp_deny,
+        allow_input=_reviewer_assign_mcp_allow,
     ),
     GateRow(
         gate_id="block-ai-signature",

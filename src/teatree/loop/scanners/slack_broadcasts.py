@@ -317,6 +317,15 @@ class SlackBroadcastsScanner:
         mentioned = {match.group(1) for match in _SLACK_MENTION_RE.finditer(text)}
         if self.user_slack_id not in mentioned:
             return []
+        open_states = _open_subset(states)
+        if self._all_authored_by_me(open_states):
+            # You never assign a reviewer on your own MR — reviewers must NEVER
+            # be directly assigned on the user's own GitLab MRs. Mirrors the
+            # own-author skip in ``_apply_classification`` (#1384); without it a
+            # broadcast that @-mentions the user on the user's OWN MR emitted a
+            # ``review_request_in_slack`` pickup that mechanically assigned a
+            # reviewer on it (forbidden).
+            return []
         return [
             ScanSignal(
                 kind="review_request_in_slack",
@@ -331,7 +340,7 @@ class SlackBroadcastsScanner:
                     "broadcast_id": row.pk,
                 },
             )
-            for state in _open_subset(states)
+            for state in open_states
         ]
 
     def _apply_classification(

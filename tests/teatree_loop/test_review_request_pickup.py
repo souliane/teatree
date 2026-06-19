@@ -122,6 +122,36 @@ class ReviewRequestPickupTests(TestCase):
         signals = scanner.scan()
         assert not any(s.kind == "review_request_in_slack" for s in signals)
 
+    def test_mention_on_own_authored_mr_does_not_emit_pickup_signal(self) -> None:
+        # Even when the user is @-mentioned on a broadcast, an MR authored BY the
+        # user must NEVER produce a reviewer-assignment pickup — you do not assign
+        # a reviewer on your own MR (sibling of the _apply_classification own-author
+        # skip). Guards against the regression where reviewers were assigned on the
+        # user's own GitLab MRs.
+        messaging = FakeMessaging()
+        text = f"<@{USER_SLACK_ID}> can you review {MR_OPEN}?"
+        messages = {CHANNEL: [{"text": text, "ts": TS}]}
+
+        def fetch(*, channel: str) -> list[RawAPIDict]:
+            return list(messages.get(channel, []))
+
+        def classifier(urls):
+            # Every open MR in the broadcast is authored by the current user.
+            return [MrState(url=url, merged=False, approved=False, author_username=USERNAME) for url in urls]
+
+        scanner = SlackBroadcastsScanner(
+            backend=messaging,
+            channels=[CHANNEL],
+            fetch_channel_history=fetch,
+            classify_mrs=classifier,
+            overlay="test",
+            user_slack_id=USER_SLACK_ID,
+            reviewer_username=USERNAME,
+            current_gitlab_username=USERNAME,
+        )
+        signals = scanner.scan()
+        assert not any(s.kind == "review_request_in_slack" for s in signals)
+
     def test_dispatcher_routes_pickup_to_assign_gitlab_reviewer(self) -> None:
         signal = ScanSignal(
             kind="review_request_in_slack",
