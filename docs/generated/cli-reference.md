@@ -4611,19 +4611,27 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ ticket        Create or update a ticket and trigger worktree provisioning.   │
-│ provision     Provision every worktree in the current ticket workspace.      │
-│ start         Start docker for every worktree in the current ticket          │
-│               workspace.                                                     │
-│ ready         Run readiness probes for every worktree in the ticket          │
-│               workspace.                                                     │
-│ teardown      Tear down every worktree in the current ticket workspace.      │
-│ finalize      Squash worktree commits and rebase on the default branch.      │
-│ doctor        Detect state drift across every store; optionally fix it.      │
-│ clean-merged  Tear down every worktree whose ticket is already MERGED.       │
-│ clean-all     Prune merged worktrees, stale branches, orphaned stashes,      │
-│               orphan DBs, old DSLR snapshots.                                │
-│ list-orphans  List orphan branches (commits not on main, no open PR).        │
+│ ticket          Create or update a ticket and trigger worktree provisioning. │
+│ provision       Provision every worktree in the current ticket workspace.    │
+│ start           Start docker for every worktree in the current ticket        │
+│                 workspace.                                                   │
+│ ready           Run readiness probes for every worktree in the ticket        │
+│                 workspace.                                                   │
+│ teardown        Tear down every worktree in the current ticket workspace.    │
+│ finalize        Squash worktree commits and rebase on the default branch.    │
+│ doctor          Detect state drift across every store; optionally fix it.    │
+│ clean-merged    Tear down every worktree whose ticket is already MERGED.     │
+│ clean-all       Prune merged worktrees, stale branches, orphaned stashes,    │
+│                 orphan DBs, old DSLR snapshots.                              │
+│ list-orphans    List orphan branches (commits not on main, no open PR).      │
+│ landscape       Survey in-flight PRs/MRs and local unsynced work before      │
+│                 planning (read-only).                                        │
+│ reap-stale      Tear down ABANDONED docker stacks no live worktree owns      │
+│                 (age-guarded).                                               │
+│ reclaim-disk    Reclaim disk via zero-data-loss docker prunes (builder +     │
+│                 dangling images + unreferenced volumes).                     │
+│ stamp-identity  Stamp the repo's local git identity to the GitHub noreply    │
+│                 form (public-push safety).                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4866,6 +4874,87 @@ Usage: t3 teatree workspace list-orphans [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace landscape`
+
+```
+Usage: t3 teatree workspace landscape [OPTIONS]
+
+ Survey what is already in flight or settled before planning (#2541).
+
+ The intake landscape survey the ``/t3:ticket`` step runs and the planner
+ consumes: the operator's open PRs/MRs, the local worktrees carrying
+ uncommitted or unpushed work, and a per-issue close/merge/supersede
+ recommendation against the in-flight PR landscape. Forge or git probes
+ that cannot complete degrade to ``warnings`` rather than aborting — a
+ missed in-flight branch is worse than a noisy warning. Emits a
+ JSON-serialisable survey so the planner plans against reality instead of
+ re-deriving it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace reap-stale`
+
+```
+Usage: t3 teatree workspace reap-stale [OPTIONS]
+
+ Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207).
+
+ The on-demand twin of the automatic pre-start/pre-provision sweep: an
+ unowned compose project is reaped only when its newest container
+ lifecycle event is older than the threshold, so a parallel session's
+ fresh hand-rolled stack is never touched. ``clean-all`` remains the
+ blunt deep clean (every unowned project, regardless of age).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --min-age-minutes                    INTEGER  Override the stale threshold   │
+│                                               (minutes); 0 uses the          │
+│                                               configured                     │
+│                                               stale_stack_min_age_minutes.   │
+│                                               [default: 0]                   │
+│ --dry-run            --no-dry-run             List the stacks that would be  │
+│                                               reaped without removing.       │
+│                                               [default: no-dry-run]          │
+│ --help                                        Show this message and exit.    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace reclaim-disk`
+
+```
+Usage: t3 teatree workspace reclaim-disk [OPTIONS]
+
+ Free disk via the three safe Docker prunes, then STOP — engine:
+ ``teatree.docker.reclaim`` (#2246).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      Plan the reclaim set without removing         │
+│                                anything.                                     │
+│                                [default: no-dry-run]                         │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace stamp-identity`
+
+```
+Usage: t3 teatree workspace stamp-identity [OPTIONS]
+
+ Stamp the scoped noreply git identity onto an existing souliane clone (#762).
+
+ Fixes public souliane/* clones/worktrees created before the
+ provisioner source-fix (new worktrees are stamped at creation).
+ Idempotent. Refuses non-souliane / private remotes so the private overlay's
+ legitimate real-identity attribution is never touched.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        TEXT  [default: .]                                             │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5690,12 +5779,22 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 
+ Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
+
+ An optional ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring
+ ``complete --note``) so the audit trail records WHY the task was cancelled
+ — the cancel transition is otherwise indistinguishable from any other
+ failure (#2559). A blank/whitespace reason records no attempt (no empty
+ audit row); the cancellation itself is unchanged.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  [required]                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --confirm    --no-confirm      [default: no-confirm]                         │
-│ --help                         Show this message and exit.                   │
+│ --confirm    --no-confirm          [default: no-confirm]                     │
+│ --reason                     TEXT  Audit-trail reason recorded on a          │
+│                                    TaskAttempt (e.g. 'superseded by !6219'). │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
