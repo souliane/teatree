@@ -135,7 +135,7 @@ class TestMain:
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)  # noqa: S607
 
     def _init_repo(self, tmp_path):
-        self._git(tmp_path, "init", "-q")
+        self._git(tmp_path, "init", "-q", "-b", "main")
         self._git(tmp_path, "config", "user.email", "t@example.com")
         self._git(tmp_path, "config", "user.name", "t")
         return tmp_path
