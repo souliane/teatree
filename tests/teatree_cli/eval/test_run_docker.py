@@ -31,7 +31,6 @@ def _args(**overrides: object) -> RunDockerArgs:
         "models": None,
         "backend": "sdk",
         "require_executed": True,
-        "gate_under_load_ratchet": False,
         "parallel": 1,
     }
     base.update(overrides)
@@ -52,10 +51,6 @@ class TestTranscriptHtmlPassthrough:
         # The container is ephemeral, so the run stays --no-persist regardless of
         # the new artifact flag — the artifact is the durable output, not the ledger.
         assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
-
-    def test_forwards_under_load_ratchet_gate(self) -> None:
-        passthrough = _args(gate_under_load_ratchet=True).passthrough()
-        assert "--gate-under-load-ratchet" in passthrough
 
 
 class TestDispatchMountsHostParentDir:

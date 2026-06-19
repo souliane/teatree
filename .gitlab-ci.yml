@@ -76,13 +76,11 @@ variables:
     # metered $0 — fails the weekly run loud. It reads the just-persisted run
     # (no `--docker` here, so the ledger is on the runner), keeping the cost gate
     # weekly/manual, off the per-MR path.
-    # `--gate-under-load-ratchet` ratchets the metered under_load failing set
-    # against the CHECKED-IN `evals/under_load_known_red.yaml` baseline (shrink-
-    # only): a documented known-red under_load scenario no longer reds the lane,
-    # but a NEW under_load failure outside the baseline — or a baselined scenario
-    # that now PASSES — fails the run loud. It reads the IN-MEMORY results, so it
-    # is weekly/manual like the cost gate, off the per-MR path.
-    - uv run t3 eval run --trials 3 --require any --backend sdk --local --require-executed --gate-cost-bounds --gate-under-load-ratchet
+    # There is NO known-red allowance and NO shrink-only ratchet: every eval lane
+    # — clean_room and under_load alike — must be GREEN. A failing under_load
+    # behavioural-drift scenario reds the run outright, exactly like any clean_room
+    # failure; `run --trials k` exits non-zero on ANY red scenario.
+    - uv run t3 eval run --trials 3 --require any --backend sdk --local --require-executed --gate-cost-bounds
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.

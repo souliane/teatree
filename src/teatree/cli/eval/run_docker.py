@@ -34,7 +34,6 @@ class RunDockerArgs:
     models: str | None
     backend: str
     require_executed: bool
-    gate_under_load_ratchet: bool
     parallel: int
     transcript_html: Path | None = None
 
@@ -67,7 +66,6 @@ class RunDockerArgs:
             ["--models", self.models] if self.models is not None else [],
             ["--backend", self.backend] if self.backend != TRANSCRIPT_BACKEND else [],
             ["--require-executed"] if self.require_executed else [],
-            ["--gate-under-load-ratchet"] if self.gate_under_load_ratchet else [],
             ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
         ]

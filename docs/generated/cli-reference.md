@@ -1814,24 +1814,6 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     --gate-cost-regression   │
 │                                                     (relative drift vs the   │
 │                                                     mutable DB baseline).    │
-│ --gate-under-load-ratc…                             Ratchet the metered      │
-│                                                     under_load failing set   │
-│                                                     against the CHECKED-IN   │
-│                                                     evals/under_load_known_… │
-│                                                     baseline (shrink-only).  │
-│                                                     A documented known-red   │
-│                                                     under_load scenario no   │
-│                                                     longer reds the lane,    │
-│                                                     but a NEW under_load     │
-│                                                     failure outside the      │
-│                                                     baseline — or a          │
-│                                                     baselined scenario that  │
-│                                                     now PASSES (the set may  │
-│                                                     only shrink) — exits     │
-│                                                     non-zero. The            │
-│                                                     behavioural-fitness      │
-│                                                     counterpart of           │
-│                                                     --gate-cost-bounds.      │
 │ --judge                    --no-judge               Grade scenarios that opt │
 │                                                     in (a `judge:` block)    │
 │                                                     with an LLM judge in     │

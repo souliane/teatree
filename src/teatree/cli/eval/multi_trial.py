@@ -19,7 +19,6 @@ from teatree.cli.eval.run_modes import (
     CostBoundsGate,
     RegressionGates,
     RunGuards,
-    UnderLoadRatchetGate,
     persist_matrix_run,
     persist_pass_at_k_run,
     require_persist_for_history_gates,
@@ -28,7 +27,7 @@ from teatree.cli.eval.run_modes import (
 from teatree.eval.backends import SDK_BACKEND, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
-from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec
+from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.report import ScenarioResult, evaluate
@@ -86,7 +85,6 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     gate_cost_regression: bool = False,
     cost_regression_tolerance: float = DEFAULT_COST_REGRESSION_TOLERANCE,
     gate_cost_bounds: bool = False,
-    gate_under_load_ratchet: bool = False,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
     require_executed: bool = False,
@@ -186,19 +184,11 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
             record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
         )
         cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
-    # The under_load ratchet reads the IN-MEMORY results, not a persisted record,
-    # so it runs identically in the ephemeral --no-persist Docker CI path. When the
-    # ratchet is armed it REPLACES the blanket "any under_load scenario failing →
-    # RED" with "any under_load scenario failing OUTSIDE the known-red baseline →
-    # RED (and any baselined scenario now passing → RED, shrink-only)". So a
-    # documented known-red under_load failure no longer reds the lane, but a NEW
-    # regression and a stale baseline both still do.
-    ratchet_failed = UnderLoadRatchetGate.check(results, specs=effective_specs, enabled=gate_under_load_ratchet)
-    under_load_names = {spec.name for spec in effective_specs if spec.lane == UNDER_LOAD_LANE}
-    non_ratchet_failed = any(
-        not r.ok and not (gate_under_load_ratchet and r.spec_name in under_load_names) for r in results
-    )
-    failed = non_ratchet_failed or regressed or cost_regressed or cost_bounds_failed or ratchet_failed
+    # Every scenario that failed reds the lane — there is no known-red allowance
+    # and no metered ratchet. An under_load behavioural-drift failure is a real
+    # failure exactly like any clean_room failure: a red scenario fails the run,
+    # full stop.
+    failed = any(not r.ok for r in results) or regressed or cost_regressed or cost_bounds_failed
     if failed and model_override is None:
         sys.exit(1)
     return failed
