@@ -77,6 +77,8 @@ def _render_text(ticket: Ticket, artifacts: TicketArtifacts) -> list[str]:
     lines = [f"Artifacts for ticket #{artifacts.ticket_id} — {header}"]
     lines.extend(("", "Worktrees / stacks:"))
     lines.extend(_worktree_lines(artifacts))
+    lines.extend(("", "Intake landscape survey:"))
+    lines.extend(_landscape_lines(artifacts))
     lines.extend(("", "Plan artifacts:"))
     lines.extend(_plan_lines(artifacts))
     lines.extend(("", "Run artifacts (task results):"))
@@ -101,6 +103,20 @@ def _worktree_lines(artifacts: TicketArtifacts) -> list[str]:
             )
         )
     return lines
+
+
+def _landscape_lines(artifacts: TicketArtifacts) -> list[str]:
+    landscape = artifacts.landscape
+    if landscape is None:
+        return ["  (none)"]
+    survey = landscape.survey
+    counts = (
+        f"open_prs={len(survey.get('open_prs', []))}, "
+        f"in-flight worktrees={sum(1 for w in survey.get('worktrees', []) if w.get('in_flight'))}, "
+        f"recommendations={len(survey.get('recommendations', []))}, "
+        f"warnings={len(survey.get('warnings', []))}"
+    )
+    return [f"  - {landscape.recorded_at} by {landscape.recorded_by or '(unattributed)'}: {counts}"]
 
 
 def _plan_lines(artifacts: TicketArtifacts) -> list[str]:

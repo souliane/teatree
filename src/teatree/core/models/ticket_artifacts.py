@@ -57,6 +57,20 @@ class PlanArtifactRef:
 
 
 @dataclass(frozen=True, slots=True)
+class LandscapeArtifactRef:
+    """The latest intake landscape survey for the per-ticket artifact aggregation (#2541).
+
+    The survey the intake FSM step produced (open PRs, in-flight worktrees,
+    per-issue recommendations, warnings) — the planner's input. ``survey`` is the
+    JSON-serialisable payload stored verbatim on the ``LandscapeArtifact`` row.
+    """
+
+    survey: dict
+    recorded_by: str
+    recorded_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class E2eRunRef:
     """An E2eMandatoryRun's evidence for the per-ticket artifact aggregation (#273).
 
@@ -82,6 +96,7 @@ class TicketArtifacts:
 
     ticket_id: int
     worktrees: tuple[WorktreeArtifact, ...] = ()
+    landscape: "LandscapeArtifactRef | None" = None
     plan_artifacts: tuple[PlanArtifactRef, ...] = ()
     result_artifact_paths: tuple[str, ...] = ()
     e2e_runs: tuple[E2eRunRef, ...] = ()
@@ -110,6 +125,16 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
         )
         for wt in worktree_model.objects.filter(ticket=ticket).order_by("pk")
     )
+    latest_landscape = ticket.landscape_artifacts.first()  # ty: ignore[unresolved-attribute]
+    landscape = (
+        LandscapeArtifactRef(
+            survey=latest_landscape.survey,
+            recorded_by=latest_landscape.recorded_by,
+            recorded_at=latest_landscape.recorded_at.isoformat(),
+        )
+        if latest_landscape is not None
+        else None
+    )
     plans = tuple(
         PlanArtifactRef(
             plan_text=plan.plan_text,
@@ -136,6 +161,7 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
     return TicketArtifacts(
         ticket_id=int(ticket.pk),
         worktrees=worktrees,
+        landscape=landscape,
         plan_artifacts=plans,
         result_artifact_paths=result_paths,
         e2e_runs=e2e_runs,

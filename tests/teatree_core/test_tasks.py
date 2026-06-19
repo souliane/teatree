@@ -348,6 +348,59 @@ class TestExecuteProvision(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_persists_landscape_artifact_before_scheduling_planning(self) -> None:
+        # #2541: the intake FSM worker bakes the landscape survey into a durable
+        # artifact the planner consumes — the survey is PRODUCED by intake, not
+        # re-derived by the planner. Revert the persistence and this drops to 0
+        # artifacts (the anti-vacuity proof).
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+        survey = {"worktrees": [], "open_prs": [{"url": "https://forge/pr/9"}], "recommendations": [], "warnings": []}
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.run_landscape", return_value=survey) as gather,
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            execute_provision.enqueue(ticket.pk)
+
+        gather.assert_called_once()
+        artifacts = list(LandscapeArtifact.objects.filter(ticket=ticket))
+        assert len(artifacts) == 1
+        assert artifacts[0].survey == survey
+        # The planner task exists too — persistence happens before scheduling.
+        assert ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_survey_gather_failure_never_blocks_provisioning_or_planning(self) -> None:
+        # The survey is best-effort context, not a gate: a gather that raises
+        # (a forge outage, a corrupt clone) must not abort provisioning or
+        # planning — fail-open, mirroring the landscape module's own doctrine.
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.run_landscape", side_effect=RuntimeError("forge down")),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not LandscapeArtifact.objects.filter(ticket=ticket).exists()
+        assert ticket.tasks.filter(phase="planning").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "provisioned 1 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_planning_for_externally_delivered_ticket(self) -> None:
         # #2104: a hand-dispatched delivery agent claimed the unit (via
         # ``workspace ticket``). The provision worker must NOT auto-schedule the

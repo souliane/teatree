@@ -1,8 +1,8 @@
-"""Integration for the ``workspace landscape`` intake survey command (#2541).
+"""Integration for the intake landscape survey gather (:mod:`teatree.core.landscape_gather`, #2541).
 
 Drives :func:`run_landscape` against a real ``git worktree`` under ``tmp_path``
 (so the local worktree gather is real, not mocked) with the code host patched to
-inject a fake forge. Proves the command composes the gather and renders the
+inject a fake forge. Proves the gather composes the survey and renders the
 structured report, and that a missing code host degrades to a local-only survey
 with a warning rather than aborting intake.
 """
@@ -13,12 +13,12 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace_landscape import _workspace_worktree_paths, run_landscape
+from teatree.core.landscape_gather import _workspace_worktree_paths, run_landscape
 from teatree.types import RawAPIDict
 from tests._git_repo import make_git_repo, run_git
 
-_FACTORY = "teatree.core.management.commands._workspace_landscape.code_host_from_overlay"
-_OVERLAY = "teatree.core.management.commands._workspace_landscape.get_overlay"
+_FACTORY = "teatree.core.landscape_gather.code_host_from_overlay"
+_OVERLAY = "teatree.core.landscape_gather.get_overlay"
 
 
 class _FakeHost:

@@ -1,5 +1,6 @@
 """Build agent prompts from ticket and task context."""
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -356,17 +357,34 @@ def _phase_fanout_directive(task: Task) -> str:
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 
 
-def _planning_phase_lines(task: Task) -> tuple[str, ...]:
-    """The headless ``PHASE: planning`` block — only the fan-out directive today.
+def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
+    """The persisted intake landscape survey block for the planner (#2541).
 
-    Planning carries no other headless-specific instruction (the planner skill
-    bundle handles the work); the block exists solely to surface an opted-in
-    judge-panel directive. Empty when the pair is not opted in (default-OFF).
+    The intake FSM step (``execute_provision``) baked the survey into a
+    ``LandscapeArtifact``; the planner CONSUMES the latest here (as compact JSON)
+    instead of re-deriving it. Empty when intake recorded none (forge outage),
+    so the planner falls back to ``t3 <overlay> workspace landscape``.
     """
-    fanout = _phase_fanout_directive(task)
-    if not fanout:
+    from teatree.core.models.landscape_artifact import LandscapeArtifact  # noqa: PLC0415
+
+    latest = LandscapeArtifact.latest_for(task.ticket)
+    if latest is None:
         return ()
-    return ("", "PHASE: planning", fanout)
+    return (
+        "",
+        "INTAKE LANDSCAPE SURVEY (produced by ticket-intake — CONSUME, do not re-derive):",
+        "Plan AGAINST this: an open PR for the issue → finish+merge it, not fresh; a merged",
+        "PR → surface for close; an in-flight worktree → build on it, never overwrite.",
+        json.dumps(latest.survey, sort_keys=True),
+    )
+
+
+def _planning_phase_lines(task: Task) -> tuple[str, ...]:
+    """The headless ``PHASE: planning`` block — intake survey (#2541) + opted-in fan-out."""
+    lines = list(_intake_landscape_lines(task))
+    if fanout := _phase_fanout_directive(task):
+        lines.extend(("", "PHASE: planning", fanout))
+    return tuple(lines)
 
 
 def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:

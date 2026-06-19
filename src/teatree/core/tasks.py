@@ -4,12 +4,37 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.core.models import Task, Ticket
+from teatree.config import workspace_dir
+from teatree.core.landscape_gather import run_landscape
+from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_intake_landscape(ticket: Ticket) -> None:
+    """Bake the intake landscape survey into a durable artifact (#2541).
+
+    Run after the worktrees materialise and before the planner is scheduled, so
+    the planner consumes the survey the intake FSM step produced instead of
+    re-deriving it. Best-effort context, never a gate: any gather failure (a
+    forge outage, a corrupt clone) or an empty survey degrades to a log line —
+    it must NEVER abort provisioning or block the planner (fail-open, mirroring
+    the landscape module's own degradation doctrine). A survey with only
+    warnings is still a non-empty dict, so it is persisted; a gather that raises
+    leaves no artifact.
+    """
+    try:
+        survey = run_landscape(workspace_dir())
+    except Exception:
+        logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
+        return
+    try:
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+    except ValueError:
+        logger.info("Intake landscape survey for ticket %s was empty; no artifact recorded", ticket.pk)
 
 
 class TransitionResult(TypedDict, total=False):
@@ -213,7 +238,10 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    On success, the runner has materialised every git worktree; we then call
+    On success, the runner has materialised every git worktree; we then bake the
+    intake landscape survey into a durable ``LandscapeArtifact`` (#2541) so the
+    planner consumes the survey the intake FSM step produced rather than
+    re-deriving it (best-effort — a gather failure never blocks the FSM), and call
     ``schedule_planning()`` so the FSM proceeds toward CODED — unless the unit
     is under active external delivery (#2104), in which case the auto-planner is
     skipped (a hand-dispatched delivery agent implements directly with no
@@ -237,6 +265,8 @@ def execute_provision(ticket_id: int) -> TransitionResult:
         if not result.ok:
             logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+
+        _persist_intake_landscape(ticket)
 
         if under_external_delivery(ticket):
             logger.info("Ticket %s under external delivery; skipping auto-planner (#2104)", ticket_id)

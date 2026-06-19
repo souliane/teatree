@@ -26,12 +26,16 @@ strategy. Output the plan in the `plan_text` field of your JSON result.
 
 ## Consume the intake landscape survey (do NOT re-derive it)
 
-The ticket-intake step (`/t3:ticket` § "1c. Landscape Survey") already surveyed
-what is **already in flight or already settled** — open PRs/MRs, local worktrees
-carrying uncommitted or unpushed work, and a per-issue close/merge/supersede
-recommendation. That survey is the planner's *input*; you consume it, you do not
-re-run it. If the survey was not handed to you, fetch it once with
-`t3 <overlay> workspace landscape` (the structured gather in
+The ticket-intake FSM step (`execute_provision`, after the worktrees materialise
+and before the planner is scheduled) already surveyed what is **already in flight
+or already settled** — open PRs/MRs, local worktrees carrying uncommitted or
+unpushed work, and a per-issue close/merge/supersede recommendation — and **baked
+it into a durable `LandscapeArtifact`** (#2541). That persisted survey is the
+planner's *input*: a headless planner sees it inline in the `INTAKE LANDSCAPE
+SURVEY` block of its system context, and any planner can read the latest via
+`LandscapeArtifact.latest_for(ticket)`. You consume it; you do not re-run it. Only
+when no artifact was recorded (a forge outage during provision) do you fetch it
+once with `t3 <overlay> workspace landscape` (the structured gather in
 `teatree.core.landscape`) — but the picture belongs to intake, not planning.
 
 Plan **against** the survey:
