@@ -114,7 +114,9 @@ Test a deployed/merged change against `dev`; an unmerged change must still pass 
 
 ## Writing Tests
 
-**Test depth:** Don't just verify "page loads with 200". Read the source code to understand what the feature does, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
+**Build the test against the TICKET's acceptance criteria, never against the MR diff (Non-Negotiable).** An E2E test verifies a **ticket** holistically — and a ticket is frequently multi-repo (a backend MR, a frontend MR, a microservice change, translations, external config, all closing one ticket). Gather the whole ticket and **all** its linked MRs across every repo before designing the test, then enumerate the end-to-end user flow the ticket promises and test *that*. Reading the MR diff too closely is a trap: it biases you to assert *what the code does now* instead of *what the ticket requires* — a vacuous test that passes regardless of correctness. The diff is an input to understanding, not the unit of test. The reviewer-side statement of this principle is `/t3:e2e-review` § "Test the ticket, not the MR diff" — apply it as the author, don't restate it.
+
+**Test depth:** Don't just verify "page loads with 200". Once you know the ticket's required flow, read the source code to understand how the feature is built, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
 
 **Tighten value assertions to a VISIBLE field, not a value a default can satisfy (Non-Negotiable).** A value assertion must bind to a field that is actually **rendered and visible** in the UI. The trap: asserting a computed value through a getter/accessor that returns a *default* (`0`, `''`, `null`) when the field is **absent** — the assertion then passes whether the feature worked or the field never rendered at all (a false-pass that survives the very regression the test exists to catch). Assert that the labelled field is **visible first**, then assert its text — so an absent field fails the visibility check instead of silently satisfying the value check via a default.
 

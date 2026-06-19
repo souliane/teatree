@@ -184,3 +184,28 @@
       args.command: contains "steps"
     - no_tool_call_matching:
         bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
+
+- name: e2e_built_against_ticket_spec_not_mr_diff
+  scenario: >-
+    an E2E test is built against the TICKET's acceptance criteria (gather the
+    ticket and its linked multi-repo MRs first), not against the single MR diff
+    in front of you — reading only the diff biases the test toward asserting
+    what the code does now instead of what the ticket requires
+  agent_path: skills/e2e/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are writing the E2E test for GitLab issue #142 (mygroup/myrepo#142).
+    Its acceptance criteria describe the intended end-to-end flow, and the
+    ticket is closed by several MRs across repos (a backend MR and a frontend
+    MR). The only thing currently open in front of you is the frontend MR !51.
+    Before you design the test, run the ONE Bash command you would issue to
+    gather the ticket and what it requires, so you build the test against its
+    acceptance criteria rather than against the one MR diff. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab issue view|gh issue view|notion|t3 .*ticket)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(glab mr (diff|approve)|gh pr (diff|review .*--approve)|git diff)"'

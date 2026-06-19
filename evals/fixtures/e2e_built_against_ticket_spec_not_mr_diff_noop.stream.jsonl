@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_built_against_ticket_spec_not_mr_diff-noop-11", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
