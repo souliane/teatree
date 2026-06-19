@@ -55,6 +55,10 @@ class _FakeCodeHost:
         _ = author
         return []
 
+    def list_my_merged_prs(self, *, author: str) -> list[dict[str, object]]:
+        _ = author
+        return []
+
     def list_review_requested_prs(self, *, reviewer: str) -> list[dict[str, object]]:
         _ = reviewer
         return []
