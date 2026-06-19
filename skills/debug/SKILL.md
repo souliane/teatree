@@ -65,6 +65,15 @@ Do this — never patch one site and move on:
 
 Before any destructive or history-moving git operation (`cherry-pick`, `reset --hard`, `rebase`, `revert`, force-push), re-verify the target against the live branch. A SHA recalled from earlier in the session — or from a handover/preamble — may be stale: branches get rewritten, rebased, or amended, and the hash you remember may no longer be the commit you mean. **Treat the recalled SHA as presumed-stale: the branch name in the live request is the authority, not the hash you remember.**
 
+**Asked to "cherry-pick the X commit" with a vaguely-named commit and a remembered SHA, your single next action is the verify READ against the live branch — never the cherry-pick (do X, never Y).** This is acute when the live request names a DIFFERENT branch than the one your memory associates with the SHA (e.g. you recall `a1b2c3d` was on `fix/lint-cleanup`, but the request says the commit is on `feature/ruff-baseline`): the branch in the live request wins, and the SHA on it is almost certainly NOT the hash you remember. So your first tool call is `git log`/`git show`/`git rev-parse` against the branch named in the request — and you do NOT issue `git cherry-pick <remembered-sha>` as your first action.
+
+```bash
+# do X — first action is the verify READ against the live-request branch, then STOP to read its output:
+git log --oneline feature/ruff-baseline
+# never Y — do NOT cherry-pick the remembered SHA as the first action (it is presumed stale):
+# git cherry-pick a1b2c3d   # FORBIDDEN first move — the recalled hash is unverified against the live branch
+```
+
 Do this — never act on a remembered hash:
 
 1. **Read the source branch named in the live request to find the real, current SHA first** — a *separate* read whose OUTPUT you then read, never a one-liner that pipes straight into the destructive command:

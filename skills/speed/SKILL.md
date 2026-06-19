@@ -83,6 +83,17 @@ Only bucket (a) gets blasted unattended. Tickets in (b) and (c) surface in separ
 
 ### Fan-out pattern for bucket (a)
 
+**At `full`/`boost` over N autonomous-safe tickets, your single next action is to FAN OUT — one `Task`/`Agent` worker per ticket, in parallel — never to implement a ticket serially in the foreground (do X, never Y).** The cheap path is the trap: "I could just start editing TODO-7 myself and knock the three out one at a time" is exactly the serial-in-main drift this dial bans. The orchestrator **classifies and dispatches; it never implements**. So when the dial is `full` and three bucket-(a) tickets are in front of you, issue the parallel worker dispatches NOW — do **not** `Edit`/`Write` a ticket's `.py`, do **not** run its `pytest` / `ruff` / `git add` / `git commit` in the foreground.
+
+```python
+# Three autonomous-safe tickets at full speed. do X — fan out one parallel worker per ticket (orchestrator never implements):
+Task(description="TODO-7 wire-provision-timeout", prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/core/provision.py timeout guard, full delivery cycle, report branch+PR.")
+Task(description="TODO-9 scanner-ordering",       prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/loop/scanner.py ordering flake, full delivery cycle, report branch+PR.")
+Task(description="TODO-11 notify-public route",   prompt="<NEAR-ZERO COMMENTS block> ... fix src/teatree/core/notify.py route classifier, full delivery cycle, report branch+PR.")
+# never Y — do NOT pick up TODO-7 and implement it yourself in the foreground, one ticket at a time:
+# Edit(file_path="src/teatree/core/provision.py", ...)   # FORBIDDEN: serial-in-main is the drift the dial bans
+```
+
 Dispatch one worker sub-agent per ticket, all in parallel. Each worker:
 
 - Creates its own isolated worktree via `t3 <overlay> workspace ticket <ticket_url>`.
@@ -104,6 +115,8 @@ Skill prose does not propagate into a spawned agent's context — include the in
 ### Fixed roster in Agent-Team mode
 
 The fan-out above spawns an ephemeral worker per ticket only in **solo** mode (the main agent owns the Agent/Task tool). When the session is an **Agent Team**, the roster is **fixed up front**: the team's makers and reviewer are created once. A new task is then routed to an **existing idle teammate** via the shared task list — `TaskUpdate` the task's `owner` to that teammate (or the teammate claims it), then a `SendMessage` hands off context. Never spawn a **fresh teammate per task**: teammates cannot spawn teammates, the lead's roster is sized once, and minting a new mate per unit of work fragments ownership and breaks the claim model. Reuse the roster; the task list is the work queue, not a reason to grow the team.
+
+**As the team LEAD with a new task and an idle teammate, your single next action is a `TaskUpdate`/`SendMessage` to that existing mate — NEVER an `Agent` spawn (do X, never Y).** The under-load reflex is "spin up a worker for this" — that is the spawn-per-task drift the user flagged. In team mode the roster is fixed; "also handle this" / "now also handle X" is answered by ASSIGNING the unit to whichever teammate is idle (e.g. `core-maker`), not by minting a new mate. A new `Agent` spawn for a task the standing roster can take is the failure, even if the spawned mate is plausibly named. The Agent tool is a **boot-time** roster act, never a per-unit move.
 
 Worked example — a new task arrives mid-run and `core-maker` is idle. Route it to the existing mate; do **not** `Agent`-spawn a new one:
 
