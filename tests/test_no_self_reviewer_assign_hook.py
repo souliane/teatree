@@ -45,9 +45,20 @@ class TestBlocksReviewerAssignment:
             "glab mr update 7624 --reviewer WouterLachat",
             "glab mr update 7624 --reviewers WouterLachat,souliane",
             "glab mr update --reviewer WouterLachat -R acme-eng/widget-app",
-            # Out-of-band REST writes that set the reviewer list directly.
+            # glab mr CREATE that assigns a reviewer at creation time.
+            "glab mr create --title 'fix: x (proj#1)' --description 'b' --reviewer WouterLachat",
+            "glab mr create --reviewers WouterLachat,souliane",
+            # gh pr CREATE assigning a reviewer — long flag and short -r.
+            "gh pr create --title 'fix: x' --body 'b' --reviewer octocat",
+            "gh pr create -r octocat -r hubot",
+            # gh pr EDIT assigning a reviewer — --add-reviewer and --reviewer.
+            "gh pr edit 12 --add-reviewer octocat",
+            "gh pr edit 12 --reviewer octocat",
+            # Out-of-band REST WRITES that set the reviewer list directly.
             ("glab api --method PUT projects/acme-eng%2Fwidget-app/merge_requests/7624 -f reviewer_ids=42"),
             ('gh api --method POST repos/souliane/teatree/pulls/12/requested_reviewers -f "reviewers[]=octocat"'),
+            # A gh api POST inferred from a body field flag (no explicit --method).
+            'gh api repos/souliane/teatree/pulls/12/requested_reviewers -f "reviewers[]=octocat"',
         ],
     )
     def test_reviewer_assignment_is_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -57,10 +68,14 @@ class TestBlocksReviewerAssignment:
         assert deny["permissionDecision"] == "deny"
         assert "reviewer" in deny["permissionDecisionReason"].lower()
 
-    def test_mcp_update_with_reviewer_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["mcp__glab__glab_mr_update", "mcp__glab__glab_mr_create"],
+    )
+    def test_mcp_with_reviewer_is_blocked(self, tool_name: str, capsys: pytest.CaptureFixture[str]) -> None:
         event = {
             "session_id": "sess-reviewer",
-            "tool_name": "mcp__glab__glab_mr_update",
+            "tool_name": tool_name,
             "tool_input": {"iid": 7624, "reviewer": "WouterLachat"},
         }
         assert router.handle_block_self_reviewer_assign(event) is True
@@ -78,12 +93,21 @@ class TestAllowsNonReviewerSurfaces:
             "glab mr update 12 --add-label needs-review",
             "glab mr update --title 'fix: rename widget (proj#1)'",
             "glab mr create --title 'fix: x (proj#1)' --description 'body'",
-            # A READ of the reviewer list is not an assignment.
+            # A GET READ of the requested-reviewers list is not an assignment —
+            # default method, the reviewer field is on the path, no write flag.
+            "gh api repos/souliane/teatree/pulls/12/requested_reviewers",
+            "gh api --method GET repos/souliane/teatree/pulls/12/requested_reviewers",
+            "glab api projects/acme-eng%2Fwidget-app/merge_requests/7624/reviewers",
+            # A bare READ of the MR (no reviewer field at all).
             "glab api projects/acme-eng%2Fwidget-app/merge_requests/7624",
+            # gh pr create/edit WITHOUT a reviewer flag is fine.
+            "gh pr create --title 'fix: x' --body 'b'",
+            "gh pr edit 12 --add-label needs-review",
             # Requesting review via the approval channel is the sanctioned path.
             "glab mr view 7624",
             # The literal phrase embedded in a commit message is not an assignment.
             "git commit -m 'note: glab mr update --reviewer was the old buggy path'",
+            "git commit -m 'note: gh pr create --reviewer was the old buggy path'",
         ],
     )
     def test_non_reviewer_command_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
