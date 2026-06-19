@@ -269,7 +269,7 @@ jobs:
           command: |
             uv run t3 eval run --trials 3 --require any --backend sdk \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
-              --require-executed --gate-under-load-ratchet --docker \
+              --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a

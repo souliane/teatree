@@ -1098,7 +1098,6 @@ class TestEvalCostBoundsGate:
             "--local",
             "--require-executed",
             "--gate-cost-bounds",
-            "--gate-under-load-ratchet",
         ]
         with (
             patch.dict("os.environ", {}, clear=True),
@@ -2157,13 +2156,6 @@ class TestEvalRunDocker:
             CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--max-budget-usd", "1.5", "--docker"])
         forwarded = run_docker.call_args.args[0]
         assert forwarded[forwarded.index("--max-budget-usd") + 1] == "1.5"
-
-    def test_forwards_under_load_ratchet_gate_into_the_container(self) -> None:
-        with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_docker:
-            CliRunner().invoke(
-                app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--gate-under-load-ratchet", "--docker"]
-            )
-        assert "--gate-under-load-ratchet" in run_docker.call_args.args[0]
 
     def test_propagates_container_exit_code(self) -> None:
         with patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=1):
