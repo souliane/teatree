@@ -67,6 +67,8 @@ When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase e
 
 Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: when `require_review_context` is set, the FSM `→ reviewing` transition (`teatree.core.gates.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — stamp it with `t3 <overlay> lifecycle record-review-context <id> --work-item <url> --documents <urls> --analysis <how-checked>`. A diff-only verdict cannot enter `reviewing`.
 
+**NEVER directly assign a reviewer on an MR/PR — review is REQUESTED, never assigned (Non-Negotiable).** Colleague review is obtained ONLY by posting the MR link to the Slack/approval channel (`/t3:review-request` → `review-request post`); the reviewer self-claims from there. Never set a reviewer directly — not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token.
+
 The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
 
 ### Self-Review Before Finalization
