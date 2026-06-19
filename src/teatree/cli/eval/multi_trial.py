@@ -170,6 +170,11 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )
+    RunGuards.sdk_metered_total(
+        backend=SDK_BACKEND,
+        executed=sum(1 for r in results if not r.skipped),
+        total_cost_usd=sum(r.cost_usd for r in results),
+    )
     regressed = False
     cost_regressed = False
     cost_bounds_failed = False

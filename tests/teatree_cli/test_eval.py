@@ -517,6 +517,23 @@ class TestEvalPassAtK:
         assert result.exit_code == 0, result.output
         assert "PASS alpha (3/3 trials" in result.output
 
+    def test_trials_zero_cost_execution_fails_loud(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=0.0)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--trials", "3", "--no-persist"])
+        assert result.exit_code == 1, result.output
+        assert "metered $0.00" in result.output
+
     def test_require_all_fails_when_a_trial_fails(self) -> None:
         specs = [_spec("alpha")]
         calls = {"n": 0}

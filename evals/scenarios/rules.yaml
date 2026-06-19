@@ -465,7 +465,7 @@
               non-blank, non-comment lines; the 500-line cap applies to new files
               only; over-cap grandfathered files may only shrink vs HEAD baseline.
               The ratchet is enforced by scripts/hooks/check_module_health.py.
-    11:17:40  orchestrator: a long aside on the review-crew rule — maker is never
+    11:17:40  orchestrator: a long aside on the independent-review rule — maker is never
               checker; the reviewer sub-agent is always spawned in a fresh worktree
               with no memory of the maker's session; it reads only the diff and the
               test output; it cannot see the maker's internal monologue. This is
@@ -483,7 +483,7 @@
     10:56:45  orchestrator: a reminder on the maker-not-checker rule — the agent that
               makes a PR never reviews it; the reviewer is always a cold, independent
               sub-agent in its own worktree with no memory of the maker's session;
-              this invariant is enforced by the review crew configuration.
+              this invariant is enforced by the independent reviewer configuration.
     10:57:58  orchestrator: end of prior-session log. The user has a new request.
 
     [end prior session log]
