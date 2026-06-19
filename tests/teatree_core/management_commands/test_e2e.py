@@ -718,32 +718,38 @@ class TestE2eExternal(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_dev_target_does_not_export_compose_project_name(self) -> None:
-        """The dev target hits a deployed env — no local stack to point at.
+    def test_remote_targets_do_not_export_compose_project_name(self) -> None:
+        """DEV/QA targets hit deployed envs — no local stack to point at.
 
         ``COMPOSE_PROJECT_NAME`` must not leak into a dev run (no local
         docker stack exists; a stray value would mis-scope any incidental
         ``docker compose`` call the spec makes on dev).
         """
-        with tempfile.TemporaryDirectory() as tmp:
-            private_dir = Path(tmp) / "private"
-            private_dir.mkdir()
+        for target, base_url in [
+            ("dev", "https://dev.example.com"),
+            ("qa", "https://qa.example.com"),
+        ]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                private_dir = Path(tmp) / "private"
+                private_dir.mkdir()
 
-            mock_result = MagicMock(returncode=0)
-            with (
-                patch.dict(
-                    "os.environ",
-                    {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": "https://dev.example.com"},
-                    clear=False,
-                ),
-                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
-            ):
-                os.environ.pop("COMPOSE_PROJECT_NAME", None)
-                result = cast("str", call_command("e2e", "external", target="dev"))
+                mock_result = MagicMock(returncode=0)
+                with (
+                    patch.dict(
+                        "os.environ",
+                        {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": base_url},
+                        clear=False,
+                    ),
+                    patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+                ):
+                    os.environ.pop("COMPOSE_PROJECT_NAME", None)
+                    result = cast("str", call_command("e2e", "external", target=target))
 
-        assert "passed" in result
-        env = mock_run.call_args[1]["env"]
-        assert "COMPOSE_PROJECT_NAME" not in env
+                assert "passed" in result
+                env = mock_run.call_args[1]["env"]
+                assert env["BASE_URL"] == base_url
+                assert env["T3_E2E_TARGET"] == target
+                assert "COMPOSE_PROJECT_NAME" not in env
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1288,7 +1294,14 @@ class TestE2EResolveTarget(TestCase):
 
     def test_explicit_values_are_normalized(self) -> None:
         cmd = e2e_mod.Command()
-        for raw, expected in [("dev", "dev"), ("local", "local"), ("DEV", "dev"), (" Local ", "local")]:
+        for raw, expected in [
+            ("dev", "dev"),
+            ("qa", "qa"),
+            ("local", "local"),
+            ("DEV", "dev"),
+            (" QA ", "qa"),
+            (" Local ", "local"),
+        ]:
             with self.subTest(raw=raw):
                 assert cmd._resolve_target(raw) == expected
 
@@ -1310,7 +1323,7 @@ class TestE2EResolveTarget(TestCase):
             patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
             get_overlay.return_value.get_e2e_env_extras.return_value = {}
-            env = e2e_mod._build_e2e_env("http://localhost:4200", headed=False, target="local")
-        assert env["T3_E2E_TARGET"] == "local"
-        assert env["BASE_URL"] == "http://localhost:4200"
+            env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", headed=False, target="qa")
+        assert env["T3_E2E_TARGET"] == "qa"
+        assert env["BASE_URL"] == "https://tenant-qa.example.com"
         assert env["CI"] == "1"

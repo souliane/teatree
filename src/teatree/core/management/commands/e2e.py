@@ -117,7 +117,7 @@ class Command(TyperCommand):
         absent, ``test_dir`` implies ``project`` and ``project_path`` implies
         ``external`` for compatibility.
 
-        ``--target dev|local`` selects the dual-env target and is forwarded to
+        ``--target dev|qa|local`` selects the dual-env target and is forwarded to
         whichever runner handles the overlay (see ``external`` for semantics).
         ``--branch``/``--ref`` overrides the ``external`` runner's specs ref.
 
@@ -282,9 +282,11 @@ class Command(TyperCommand):
         linked_ticket: Ticket | None,
     ) -> tuple[str | None, str | None, dict[str, str] | None]:
         """Build the per-target trio passed to ``_build_e2e_env``."""
-        if resolved_target == "dev":
+        if resolved_target in {"dev", "qa"}:
             if not os.environ.get("BASE_URL"):
-                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
+                self.stderr.write(
+                    f"--target {resolved_target} requires BASE_URL (the deployed environment URL) to be set.",
+                )
                 raise SystemExit(1)
             return None, None, None
 
@@ -319,16 +321,14 @@ class Command(TyperCommand):
     def _resolve_target(self, target: str) -> str:
         """Resolve the dual-env target deterministically.
 
-        ``dev`` / ``local`` are explicit. Empty means back-compat inference:
-        a pre-set ``BASE_URL`` env var means a remote target (``dev``),
-        otherwise ``local``. The result is exported verbatim as
-        ``T3_E2E_TARGET`` so the spec never re-derives it from a host regex.
+        Explicit values are ``dev`` / ``qa`` / ``local``. Empty preserves the
+        back-compat inference: ``BASE_URL`` means remote ``dev``, else ``local``.
         """
         normalized = target.strip().lower()
-        if normalized in {"dev", "local"}:
+        if normalized in {"dev", "qa", "local"}:
             return normalized
         if normalized:
-            self.stderr.write(f"--target must be 'dev' or 'local', got {target!r}.")
+            self.stderr.write(f"--target must be 'dev', 'qa', or 'local', got {target!r}.")
             raise SystemExit(2)
         return "dev" if os.environ.get("BASE_URL") else "local"
 
@@ -358,17 +358,13 @@ class Command(TyperCommand):
         ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
         ``[e2e_repos.<name>].branch`` default) to run from an open MR's branch.
 
-        ``--target dev|local`` selects the dual-env target deterministically:
-
-        - ``dev``: keep the pre-set ``BASE_URL`` (deployed env), no port scan.
-        - ``local``: always discover the local frontend, even if a stray
-            ``BASE_URL`` is exported (``--target local`` never hits a
-            deployed env silently).
-        - empty: back-compat — infer ``dev`` if ``BASE_URL`` is set,
-            else ``local``.
+        ``--target dev|qa|local`` is deterministic: remote targets keep the
+        pre-set ``BASE_URL`` and never scan local ports; ``local`` always
+        discovers the local frontend even if a stray ``BASE_URL`` is exported.
+        Empty preserves back-compat: infer ``dev`` if ``BASE_URL`` is set, else ``local``.
 
         The resolved value is exported as ``T3_E2E_TARGET`` so a dual-mode
-        spec branches on ``process.env.T3_E2E_TARGET === 'dev'`` rather than
+        spec branches on ``process.env.T3_E2E_TARGET`` rather than
         re-deriving the target from a ``BASE_URL`` host regex.
 
         Discovers the frontend port from docker-compose (or local process)
@@ -439,7 +435,7 @@ class Command(TyperCommand):
     ) -> str:
         """Run E2E tests from the project's own test directory.
 
-        ``--target dev|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
+        ``--target dev|qa|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
         suite (same contract as the ``external`` runner); empty falls back to
         ``BASE_URL``-based inference.
 
