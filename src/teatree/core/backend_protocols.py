@@ -187,6 +187,13 @@ class CodeHostBackend(Protocol):
         updated_after: str | None = None,
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_my_merged_prs(
+        self,
+        *,
+        author: str,
+        updated_after: str | None = None,
+    ) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def list_review_requested_prs(
         self,
         *,

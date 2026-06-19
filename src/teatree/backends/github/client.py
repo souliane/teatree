@@ -237,6 +237,13 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         query = quote_plus(" ".join(terms))
         return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        terms = [f"is:pr is:merged author:{author}"]
+        if updated_after:
+            terms.append(f"updated:>={updated_after}")
+        query = quote_plus(" ".join(terms))
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
+
     def list_review_requested_prs(
         self,
         *,

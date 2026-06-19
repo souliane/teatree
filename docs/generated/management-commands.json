@@ -818,6 +818,10 @@
           "name": "doctor"
         },
         {
+          "help": "Survey what is already in flight or settled before planning (#2541)",
+          "name": "landscape"
+        },
+        {
           "help": "Tear down every worktree whose ticket is already MERGED",
           "name": "clean-merged"
         },
