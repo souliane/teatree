@@ -4999,7 +4999,7 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
  absent, ``test_dir`` implies ``project`` and ``project_path`` implies
  ``external`` for compatibility.
 
- ``--target dev|local`` selects the dual-env target and is forwarded to
+ ``--target dev|qa|local`` selects the dual-env target and is forwarded to
  whichever runner handles the overlay (see ``external`` for semantics).
  ``--branch``/``--ref`` overrides the ``external`` runner's specs ref.
 
@@ -5065,17 +5065,14 @@ Usage: t3 teatree e2e external [OPTIONS]
  ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
  ``.branch`` default) to run from an open MR's branch.
 
- ``--target dev|local`` selects the dual-env target deterministically:
-
- - ``dev``: keep the pre-set ``BASE_URL`` (deployed env), no port scan.
- - ``local``: always discover the local frontend, even if a stray
-     ``BASE_URL`` is exported (``--target local`` never hits a
-     deployed env silently).
- - empty: back-compat — infer ``dev`` if ``BASE_URL`` is set,
-     else ``local``.
+ ``--target dev|qa|local`` is deterministic: remote targets keep the
+ pre-set ``BASE_URL`` and never scan local ports; ``local`` always
+ discovers the local frontend even if a stray ``BASE_URL`` is exported.
+ Empty preserves back-compat: infer ``dev`` if ``BASE_URL`` is set, else
+ ``local``.
 
  The resolved value is exported as ``T3_E2E_TARGET`` so a dual-mode
- spec branches on ``process.env.T3_E2E_TARGET === 'dev'`` rather than
+ spec branches on ``process.env.T3_E2E_TARGET`` rather than
  re-deriving the target from a ``BASE_URL`` host regex.
 
  Discovers the frontend port from docker-compose (or local process)
@@ -5118,7 +5115,7 @@ Usage: t3 teatree e2e project [OPTIONS]
 
  Run E2E tests from the project's own test directory.
 
- ``--target dev|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
+ ``--target dev|qa|local`` is exported as ``T3_E2E_TARGET`` for the in-repo
  suite (same contract as the ``external`` runner); empty falls back to
  ``BASE_URL``-based inference.
 
