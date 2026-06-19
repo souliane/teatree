@@ -747,11 +747,19 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
             )
 
     def test_full_on_other_overlay_does_not_leak(self) -> None:
-        """MUST-DENY: full on overlay A never relaxes substrate on overlay B (B stays gated)."""
+        """MUST-DENY: full on overlay A never relaxes substrate on overlay B (B stays gated).
+
+        The CLEAR targets a repo (``other-owner/other-repo``) that NO full
+        overlay owns — repo identity resolves it to no full overlay, so
+        ``t3-teatree`` standing full never leaks the carve-out onto it. (The
+        repo identity, not the stored ``ticket.overlay``, is what scopes the
+        carve-out — so this uses a foreign slug, not merely a foreign token on a
+        t3-teatree-owned repo.)
+        """
         ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
-        clear = _substrate_clear(ticket, pr_id=1738)
+        clear = _substrate_clear(ticket, pr_id=1738, slug="other-owner/other-repo")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
-            _assert_preconditions(clear)
+            _assert_preconditions(clear, slug="other-owner/other-repo")
 
     def test_per_clear_human_authorizer_still_works_under_babysit(self) -> None:
         """A matching per-CLEAR ``human_authorizer`` is the unchanged path for non-full overlays."""
@@ -845,3 +853,102 @@ class TestBranchSlugClearResolvesOverlayFromRecoveredRepo(TestCase):
         clear = _substrate_clear(None, pr_id=1753, slug="merge-candidate-working-repos")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear, slug="unknown-owner/unknown-repo")
+
+
+# A generic SECOND tooling repo the bundled overlay owns alongside its own repo.
+# The bundled overlay (``t3-teatree``) can govern more than one repo; this stands
+# in for any such co-owned repo without naming a private downstream project.
+_OWNED_TOOLING_REPO = "tooling-org/tooling-extra"
+# A repo owned by NO registered (full) overlay in the test environment.
+_FOREIGN_REPO = "foreign-org/foreign-product"
+
+
+@contextmanager
+def _teatree_owns(*repo_slugs: str) -> Iterator[None]:
+    """Make the bundled ``t3-teatree`` overlay own *repo_slugs* (workspace repos).
+
+    A second repo the bundled overlay governs is declared in its
+    ``workspace_repos``; the empty test config leaves it on the bundled default,
+    so the test pins the ownership explicitly.
+    """
+    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+    teatree_overlay = get_all_overlays()["t3-teatree"]
+    with patch.object(type(teatree_overlay), "get_workspace_repos", return_value=list(repo_slugs)):
+        yield
+
+
+class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
+    """The merge-approval gate resolves by REPO IDENTITY, not the stored ticket overlay.
+
+    A repo's OWNING overlay (the overlay whose ``workspace_repos`` declare it)
+    decides the merge-approval gate. An overlay at ``autonomy = full`` merges its
+    repos with no per-PR human sign-off; a below-full overlay keeps the sign-off
+    mandatory. The name-collision trap: two overlays can carry similar names
+    while owning disjoint repo sets, so the overlay TOKEN a ticket carries is not
+    a reliable gate key — the repo's owner is.
+
+    The bug this pins: a substrate CLEAR for a PR on a repo a ``full`` overlay
+    owns, whose ticket was MIS-STAMPED with a *different* overlay token (the
+    typed/active overlay at ticket creation, not the repo's owner), resolved its
+    autonomy against the stamped token (below full) and refused the merge — even
+    though the repo's owning overlay merges it freely. The resolver must let the
+    repo's OWNING overlay (``infer_overlay_for_url``) win over the stored token.
+    """
+
+    def test_owned_repo_resolves_to_owning_overlay_despite_mis_stamped_ticket(self) -> None:
+        """Repo identity wins over a mis-stamped ``ticket.overlay``.
+
+        RED before the fix: ``_resolve_clear_overlay_name`` returned the stored
+        ``ticket.overlay`` (a foreign token) first, so a PR on a repo the
+        bundled overlay owns resolved to the foreign overlay instead.
+        """
+        from teatree.core.merge.authorization import _resolve_clear_overlay_name  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",  # mis-stamped: not the repo's owner
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/5",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=5, slug=_OWNED_TOOLING_REPO)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO):
+            resolved = _resolve_clear_overlay_name(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert resolved == "t3-teatree"
+
+    def test_owned_repo_pr_is_not_human_approval_gated(self) -> None:
+        """A PR on a repo the full overlay owns is NOT human-approval-gated.
+
+        The full end-to-end gate: a substrate CLEAR whose ticket carries a
+        foreign overlay token still PASSES the substrate sign-off, because the
+        repo's owning overlay stands at ``autonomy = full``.
+        """
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
+        assert precheck is not None
+
+    def test_foreign_repo_pr_is_human_approval_gated(self) -> None:
+        """A PR on a repo NO full overlay owns IS human-approval-gated — no over-relax.
+
+        The foreign repo is owned by no registered (full) overlay in this test
+        environment, so repo identity resolves to no full overlay and the
+        substrate sign-off stays mandatory. The anti-vacuity twin: the fix must
+        keep a foreign repo's PR gated even when a ``full`` overlay exists.
+        """
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO)
+        with (
+            _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+            _overlay_autonomy("t3-teatree", "full"),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear, slug=_FOREIGN_REPO)
