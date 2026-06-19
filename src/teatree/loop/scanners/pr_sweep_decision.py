@@ -8,6 +8,7 @@ orchestration and under the module-health LOC cap (same split rationale as
 ``pr_sweep_adapters``).
 """
 
+import logging
 from collections.abc import Iterable
 
 from teatree.core.models.merge_clear import MergeClear
@@ -18,7 +19,10 @@ from teatree.loop.scanners.pr_sweep_types import (
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
     CheckResult,
+    PrSummary,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
@@ -131,3 +135,30 @@ def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> 
 
     ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     return ticket is not None and under_external_delivery(ticket)
+
+
+def record_mergeable_notified(*, pr: PrSummary, overlay: str) -> bool:
+    """Record the mergeable-DM ledger row for *pr*'s head; return whether to DM.
+
+    The :class:`MergeableNotified` ledger is the idempotency lock for the
+    "mergeable, ready to request review" DM: the first sight of a head records a
+    row and returns ``True`` (fire the DM); a re-tick on the same head finds the
+    existing row and returns ``False`` (no re-DM). A new push (new head SHA)
+    records a fresh row and re-fires exactly once. A ledger insert error degrades
+    to ``False`` so a DB hiccup never crashes the tick — the caller falls back to
+    a quiet skip.
+    """
+    from teatree.core.models.mergeable_notified import MergeableNotified  # noqa: PLC0415
+
+    try:
+        row = MergeableNotified.record(
+            slug=pr.slug,
+            pr_id=pr.number,
+            head_sha=pr.head_sha,
+            pr_url=pr.url,
+            overlay=overlay,
+        )
+    except Exception:
+        logger.exception("pr_sweep failed to record mergeable-notified ledger for %s#%d", pr.slug, pr.number)
+        return False
+    return row is not None
