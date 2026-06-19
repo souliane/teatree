@@ -157,13 +157,19 @@ def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) ->
     if effective_limit <= 0:
         return
 
-    candidate_ticket_pk = candidate.ticket.pk
+    # Scope blockers by the TICKET's overlay, not ``Worktree.overlay``. A row
+    # auto-detected via cwd (``resolve_worktree``) can carry ``Worktree.overlay=''``
+    # while its ticket carries the real overlay; counting by the ticket overlay
+    # holds the cap even for such rows so an empty ``Worktree.overlay`` cannot
+    # smuggle a second stack past the limit (#1397 defense-in-depth).
+    candidate_ticket = candidate.ticket
+    overlay = candidate_ticket.overlay or candidate.overlay
     counted_blockers = list(
         Worktree.objects.filter(
-            overlay=candidate.overlay,
+            ticket__overlay=overlay,
             state__in=_BLOCKING_STATES,
         )
-        .exclude(ticket__pk=candidate_ticket_pk)
+        .exclude(ticket__pk=candidate_ticket.pk)
         .order_by("ticket__pk", "pk"),
     )
     blockers = [b for b in counted_blockers if not _reconcile_phantom_blocker(b)]
@@ -175,10 +181,10 @@ def check_local_stack_limit(candidate: Worktree, *, limit: int | None = None) ->
     blocker_list = "\n  - ".join(labels)
     msg = (
         f"max_concurrent_local_stacks={effective_limit} for overlay "
-        f"{candidate.overlay!r} would be exceeded by starting "
+        f"{overlay!r} would be exceeded by starting "
         f"{_blocker_label(candidate)}.\n"
         f"Currently running:\n  - {blocker_list}\n"
-        f"Run `t3 {candidate.overlay or '<overlay>'} worktree teardown <path>` "
+        f"Run `t3 {overlay or '<overlay>'} worktree teardown <path>` "
         "on one of the above before starting a new stack."
     )
     raise LocalStackLimitExceededError(msg)

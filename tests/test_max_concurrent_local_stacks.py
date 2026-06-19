@@ -226,6 +226,50 @@ class TestLocalStackGateCrossOverlay(TestCase):
         del heavy_blocker
 
 
+class TestLocalStackGateEmptyWorktreeOverlayStillBlocks(TestCase):
+    """A live blocker whose ``Worktree.overlay`` is empty must still be counted by ticket overlay.
+
+    The cwd auto-detect path (``resolve_worktree`` → ``get_or_create``) used to
+    materialise worktree rows with ``overlay=''`` even though their ticket
+    carried the real overlay. Scoping the gate's blocker query by
+    ``Worktree.overlay`` then missed those rows, so a fresh start saw zero
+    blockers and breached the cap. The gate must scope by the TICKET's overlay
+    so an empty ``Worktree.overlay`` cannot smuggle a second stack past the cap.
+    """
+
+    def test_blocker_with_empty_overlay_but_matching_ticket_overlay_blocks(self) -> None:
+        blocker_ticket = Ticket.objects.create(
+            issue_url="https://example.com/t3-heavy/issues/9001",
+            overlay="t3-heavy",
+        )
+        # The bug: a live stack auto-detected via cwd → Worktree.overlay='' even
+        # though ticket.overlay carried the real overlay (this models the live
+        # running stack whose Worktree.overlay was left blank).
+        blocker = Worktree.objects.create(
+            overlay="",
+            ticket=blocker_ticket,
+            repo_path="backend",
+            branch="9001-feat",
+            state=Worktree.State.SERVICES_UP,
+            extra={"worktree_path": "/ws/9001-feat/backend"},
+        )
+        candidate_ticket = Ticket.objects.create(
+            issue_url="https://example.com/t3-heavy/issues/9002",
+            overlay="t3-heavy",
+        )
+        candidate = Worktree.objects.create(
+            overlay="t3-heavy",
+            ticket=candidate_ticket,
+            repo_path="backend",
+            branch="9002-feat",
+            state=Worktree.State.PROVISIONED,
+        )
+        with pytest.raises(LocalStackLimitExceededError) as exc:
+            check_local_stack_limit(candidate, limit=1)
+        assert "/ws/9001-feat/backend" in str(exc.value)
+        del blocker
+
+
 class TestLocalStackGateMultiRepoTicket(TestCase):
     """A multi-repo ticket is one logical stack, not N (one per repo)."""
 

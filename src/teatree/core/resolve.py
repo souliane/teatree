@@ -199,6 +199,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
         ticket=ticket,
         repo_path=repo_name,
         defaults={
+            "overlay": ticket.overlay,
             "branch": branch,
             "extra": {"worktree_path": str(cwd_path)},
         },

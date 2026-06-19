@@ -513,6 +513,27 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         assert result.extra["worktree_path"] == str(wt_dir)
         assert result.ticket.issue_url == "auto:feat/new"
 
+    def test_new_worktree_inherits_ticket_overlay(self) -> None:
+        """A newly auto-registered worktree gets ``overlay`` from its ticket (#1397).
+
+        Bug: ``get_or_create`` did not set ``overlay`` in its defaults, so a
+        cwd-auto-detected worktree was created with ``Worktree.overlay=''`` even
+        when its ticket carried the real overlay — which let the per-overlay
+        ``max_concurrent_local_stacks`` gate miss the row and breach the cap.
+        """
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/t3-heavy/issues/777",
+            overlay="t3-heavy",
+        )
+        wt_dir = self._make_git_worktree("my-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+            result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
+
+        assert result is not None
+        assert result.ticket_id == ticket.pk
+        assert result.overlay == "t3-heavy"
+
     def test_does_not_match_worktree_for_different_repo(self) -> None:
         """A Worktree for the same branch but a different repo must not be reused."""
         ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/123")
