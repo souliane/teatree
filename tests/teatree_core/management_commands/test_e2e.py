@@ -1144,6 +1144,32 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 e2e_mod._clone_or_update_e2e_repo(repo, "no-such-branch")
             assert "no-such-branch" in str(exc_info.value)
 
+    def test_ensure_external_e2e_dependencies_runs_npm_ci_for_locked_project(self) -> None:
+        """Managed external clones install their Playwright project deps before running."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = Path(tmp) / "clone" / "e2e"
+            playwright_root.mkdir(parents=True)
+            (playwright_root / "package.json").write_text('{"scripts":{}}\n')
+            (playwright_root / "package-lock.json").write_text("{}\n")
+
+            with patch.object(e2e_runners_mod, "run_checked") as mock_run:
+                e2e_runners_mod.ensure_external_e2e_dependencies(playwright_root)
+
+            mock_run.assert_called_once_with(["npm", "ci"], cwd=playwright_root)
+
+    def test_ensure_external_e2e_dependencies_skips_populated_node_modules(self) -> None:
+        """A populated dependency directory is reused instead of reinstalling on every run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            playwright_root = Path(tmp) / "clone" / "e2e"
+            package_dir = playwright_root / "node_modules" / "@playwright"
+            package_dir.mkdir(parents=True)
+            (playwright_root / "package.json").write_text('{"scripts":{}}\n')
+
+            with patch.object(e2e_runners_mod, "run_checked") as mock_run:
+                e2e_runners_mod.ensure_external_e2e_dependencies(playwright_root)
+
+            mock_run.assert_not_called()
+
 
 # ── e2e external --repo ───────────────────────────────────────────────
 
@@ -1190,14 +1216,45 @@ class TestE2eExternalRepo(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_runners_mod, "clone_or_update_e2e_repo", return_value=playwright_root),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies") as mock_install,
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="demo-svc"))
 
         assert "passed" in result
+        mock_install.assert_called_once_with(playwright_root)
         run_cwd = mock_run.call_args[1]["cwd"]
         assert str(run_cwd) == str(playwright_root)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_private_tests_path_does_not_auto_install_dependencies(self) -> None:
+        """User-managed ``T3_PRIVATE_TESTS`` checkouts remain outside TeaTree's install policy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+            wt_dir = Path(tmp) / "worktree"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/private-e2e")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir), "T3_PRIVATE_TESTS": str(private_dir)}),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies") as mock_install,
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
+                patch.object(utils_run_mod, "Popen", _popen_for(MagicMock(returncode=0))),
+            ):
+                call_command("e2e", "external")
+
+        mock_install.assert_not_called()
 
     def _run_external_capturing_ref(self, captured: dict[str, str], **call_kwargs: object) -> None:
         """Drive ``e2e external --repo`` with a stubbed clone that records the ref override."""
