@@ -2,11 +2,12 @@
 
 ``t3 loop status`` prints the statusline file written at the *last* tick, so
 its countdowns are stale — it can still show a live-looking loop line while
-the loop has been dead for hours. This module computes the same state LIVE
-from the DB on every
-call: the per-mini-loop cadence ledger (:class:`MiniLoopMarker`), the
-mini-loop registry + ``[loops]`` config, and the infra-slot leases
-(:class:`LoopLease`) with PID-anchored owner liveness.
+the loop has been dead for hours. This module computes the same state LIVE from
+the DB on every call. The #2513 cutover: the mini-loop rows now come from the
+DB ``Loop`` table (each row's ``enabled``/cadence/``last_run_at``/next-due) —
+the single source of truth, replacing the legacy ``MiniLoopMarker`` cadence
+ledger + ``[loops]``-toml ``LoopsConfig``. Infra-slot leases
+(:class:`LoopLease`) with PID-anchored owner liveness are read alongside.
 
 Strictly read-only: it issues ORM reads only — never ticks, claims, acquires,
 marks fired, or mutates a row. :func:`teatree.loops.schedule.mini_loop_schedules`
@@ -18,16 +19,17 @@ import datetime as dt
 import operator
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
 from teatree.core.loop_lease_manager import is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
-from teatree.core.models.mini_loop_marker import MiniLoopMarker
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
-from teatree.loops.config import LoopsConfig
-from teatree.loops.registry import iter_loops
 from teatree.utils.singleton import pid_alive
+
+if TYPE_CHECKING:
+    from teatree.core.models import Loop
 
 INFRA_SLOTS: tuple[str, ...] = (
     "loop-tick",
@@ -151,24 +153,42 @@ def _infra_entry(slot: str, lease: LoopLease | None) -> LoopStatusEntry:
     )
 
 
+_DAY_SECONDS = 86400
+
+
+def _row_cadence_seconds(loop: "Loop") -> int:
+    """Resolve a ``Loop`` row's cadence for the status denominator.
+
+    An interval row reports its ``delay_seconds``; a ``daily_at`` row reports the
+    day window (it fires once per day on/after the wall-clock time); a row with
+    neither (due every tick) reports ``0`` so the renderer treats it as immediate.
+    """
+    if loop.daily_at is not None:
+        return _DAY_SECONDS
+    return loop.delay_seconds or 0
+
+
 def _mini_entries() -> tuple[LoopStatusEntry, ...]:
-    config = LoopsConfig.load()
-    markers = {row.name: row.last_fired_at for row in MiniLoopMarker.objects.all()}
-    entries: list[LoopStatusEntry] = []
-    for loop in iter_loops():
-        cadence = config.cadence_for(loop)
-        last_fired_at = markers.get(loop.name)
-        next_fire_at = last_fired_at + dt.timedelta(seconds=cadence) if last_fired_at is not None else None
-        entries.append(
-            LoopStatusEntry(
-                name=loop.name,
-                kind=LoopKind.MINI,
-                enabled=config.is_enabled(loop),
-                cadence_seconds=cadence,
-                last_fired_at=last_fired_at,
-                next_fire_at=next_fire_at,
-            )
+    """Live mini-loop status from the DB ``Loop`` table (#2513 cutover).
+
+    The cutover SOT: each enabled/disabled state, cadence, last-run anchor, and
+    next-due instant comes from the ``Loop`` row (was ``LoopsConfig`` +
+    ``MiniLoopMarker``). One read here re-points BOTH the statusline and
+    ``t3 loop list`` since both consume :func:`build_report`.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415
+
+    entries = [
+        LoopStatusEntry(
+            name=loop.name,
+            kind=LoopKind.MINI,
+            enabled=loop.enabled,
+            cadence_seconds=_row_cadence_seconds(loop),
+            last_fired_at=loop.last_run_at,
+            next_fire_at=loop.next_run_at(),
         )
+        for loop in Loop.objects.all()
+    ]
     return tuple(sorted(entries, key=operator.attrgetter("name")))
 
 

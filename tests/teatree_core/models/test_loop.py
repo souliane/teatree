@@ -15,18 +15,28 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, Prompt
+
+
+def _prompt(name: str = "demo-prompt", body: str = "do x") -> Prompt:
+    """A reusable :class:`Prompt` row for loops under test (FK target, #2513).
+
+    Idempotent by name so several loops in one test can share one prompt (the FK
+    is many-loops→one-prompt) without tripping the unique-name constraint.
+    """
+    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": body})
+    return prompt
 
 
 class TestLoopDefaults(TestCase):
     def test_enabled_default_last_run_absent(self) -> None:
-        loop = Loop.objects.create(name="demo-x", delay_seconds=300, prompt="do x")
+        loop = Loop.objects.create(name="demo-x", delay_seconds=300, prompt=_prompt("p-x"))
         assert loop.enabled is True
         assert loop.last_run_at is None
         assert loop.daily_at is None
 
     def test_str_describes_name_state_and_cadence(self) -> None:
-        loop = Loop.objects.create(name="demo-ship", delay_seconds=300, prompt="do x")
+        loop = Loop.objects.create(name="demo-ship", delay_seconds=300, prompt=_prompt("p-ship"))
         rendered = str(loop)
         assert "demo-ship" in rendered
         assert "enabled" in rendered
@@ -37,24 +47,24 @@ class TestLoopAdditiveFields(TestCase):
     """Phase 0 additive fields default to empty/true with zero behaviour change."""
 
     def test_script_run_in_sub_agent_description_overlay_defaults(self) -> None:
-        loop = Loop.objects.create(name="demo-add", delay_seconds=300, prompt="do x")
+        loop = Loop.objects.create(name="demo-add", delay_seconds=300, prompt=_prompt("p-add"))
         assert loop.script == ""
         assert loop.run_in_sub_agent is True
         assert loop.description == ""
         assert loop.overlay == ""
 
     def test_script_only_loop_round_trips(self) -> None:
-        Loop.objects.create(name="demo-script", delay_seconds=60, prompt="", script="src/teatree/loops/run.py")
+        Loop.objects.create(name="demo-script", delay_seconds=60, prompt=None, script="src/teatree/loops/run.py")
         reloaded = Loop.objects.get(name="demo-script")
         assert reloaded.script == "src/teatree/loops/run.py"
-        assert reloaded.prompt == ""
+        assert reloaded.prompt_id is None
 
     def test_overlay_stores_backend_name_generically(self) -> None:
-        Loop.objects.create(name="demo-overlay", delay_seconds=60, prompt="do x", overlay="some-backend")
+        Loop.objects.create(name="demo-overlay", delay_seconds=60, prompt=_prompt("p-ov"), overlay="some-backend")
         assert Loop.objects.get(name="demo-overlay").overlay == "some-backend"
 
     def test_run_in_sub_agent_can_be_disabled(self) -> None:
-        Loop.objects.create(name="demo-inline", delay_seconds=60, prompt="do x", run_in_sub_agent=False)
+        Loop.objects.create(name="demo-inline", delay_seconds=60, prompt=_prompt("p-in"), run_in_sub_agent=False)
         assert Loop.objects.get(name="demo-inline").run_in_sub_agent is False
 
 
@@ -62,65 +72,66 @@ class TestLoopNullableDelay(TestCase):
     """``delay_seconds`` is nullable for prompt loops that run every tick."""
 
     def test_delay_seconds_may_be_null(self) -> None:
-        Loop.objects.create(name="demo-null", prompt="do x", delay_seconds=None)
+        Loop.objects.create(name="demo-null", prompt=_prompt("p-null"), delay_seconds=None)
         assert Loop.objects.get(name="demo-null").delay_seconds is None
 
     def test_is_due_true_when_no_cadence_at_all(self) -> None:
-        loop = Loop.objects.create(name="demo-no-cadence", prompt="do x", delay_seconds=None)
+        loop = Loop.objects.create(name="demo-no-cadence", prompt=_prompt("p-nc1"), delay_seconds=None)
         assert loop.is_due(timezone.now()) is True
 
     def test_cadence_label_handles_null_delay(self) -> None:
-        loop = Loop.objects.create(name="demo-no-cadence", prompt="do x", delay_seconds=None)
+        loop = Loop.objects.create(name="demo-no-cadence", prompt=_prompt("p-nc2"), delay_seconds=None)
         assert loop.cadence_label == "every tick"
 
     def test_next_run_at_handles_null_delay(self) -> None:
-        loop = Loop.objects.create(name="demo-no-cadence", prompt="do x", delay_seconds=None)
+        loop = Loop.objects.create(name="demo-no-cadence", prompt=_prompt("p-nc3"), delay_seconds=None)
         assert loop.next_run_at() is None
 
 
 class TestLoopPromptScriptXor(TestCase):
-    """Exactly one of ``prompt``/``script`` is set, enforced at clean() and in the DB."""
+    """Exactly one of ``prompt`` (FK) / ``script`` is set, enforced at clean() and in the DB."""
 
     def test_clean_rejects_both_prompt_and_script(self) -> None:
-        loop = Loop(name="demo-both", delay_seconds=60, prompt="do x", script="run.py")
+        loop = Loop(name="demo-both", delay_seconds=60, prompt=_prompt("p-both"), script="run.py")
         with pytest.raises(ValidationError):
             loop.full_clean()
 
     def test_clean_rejects_neither_prompt_nor_script(self) -> None:
-        loop = Loop(name="demo-neither", delay_seconds=60, prompt="", script="")
+        loop = Loop(name="demo-neither", delay_seconds=60, prompt=None, script="")
         with pytest.raises(ValidationError):
             loop.full_clean()
 
     def test_clean_rejects_script_with_null_delay(self) -> None:
-        loop = Loop(name="demo-script-no-delay", delay_seconds=None, prompt="", script="run.py")
+        loop = Loop(name="demo-script-no-delay", delay_seconds=None, prompt=None, script="run.py")
         with pytest.raises(ValidationError):
             loop.full_clean()
 
     def test_clean_accepts_prompt_only(self) -> None:
-        loop = Loop(name="demo-prompt-only", delay_seconds=60, prompt="do x", script="")
+        loop = Loop(name="demo-prompt-only", delay_seconds=60, prompt=_prompt("p-only"), script="")
         loop.full_clean()
 
     def test_clean_accepts_script_only_with_delay(self) -> None:
-        loop = Loop(name="demo-script-only", delay_seconds=60, prompt="", script="run.py")
+        loop = Loop(name="demo-script-only", delay_seconds=60, prompt=None, script="run.py")
         loop.full_clean()
 
     def test_db_constraint_rejects_both(self) -> None:
+        prompt = _prompt("p-both-db")
         with pytest.raises(IntegrityError), transaction.atomic():
-            Loop.objects.create(name="demo-both-db", delay_seconds=60, prompt="do x", script="run.py")
+            Loop.objects.create(name="demo-both-db", delay_seconds=60, prompt=prompt, script="run.py")
 
     def test_db_constraint_rejects_neither(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
-            Loop.objects.create(name="demo-neither-db", delay_seconds=60, prompt="", script="")
+            Loop.objects.create(name="demo-neither-db", delay_seconds=60, prompt=None, script="")
 
     def test_db_constraint_rejects_script_without_delay(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
-            Loop.objects.create(name="demo-script-no-delay-db", delay_seconds=None, prompt="", script="run.py")
+            Loop.objects.create(name="demo-script-no-delay-db", delay_seconds=None, prompt=None, script="run.py")
 
 
 class TestLoopIntervalCadence(TestCase):
     def test_never_run_loop_is_due_no_age_no_next(self) -> None:
         now = timezone.now()
-        loop = Loop.objects.create(name="demo-new", delay_seconds=300, prompt="do x")
+        loop = Loop.objects.create(name="demo-new", delay_seconds=300, prompt=_prompt())
         assert loop.seconds_since_run(now) is None
         assert loop.is_due(now) is True
         assert loop.next_run_at() is None
@@ -129,7 +140,7 @@ class TestLoopIntervalCadence(TestCase):
     def test_recently_run_not_due_until_delay_elapses(self) -> None:
         now = timezone.now()
         loop = Loop.objects.create(
-            name="demo-fresh", delay_seconds=300, prompt="do x", last_run_at=now - dt.timedelta(seconds=120)
+            name="demo-fresh", delay_seconds=300, prompt=_prompt(), last_run_at=now - dt.timedelta(seconds=120)
         )
         assert loop.is_due(now) is False
         loop.last_run_at = now - dt.timedelta(seconds=301)
@@ -137,7 +148,7 @@ class TestLoopIntervalCadence(TestCase):
 
     def test_next_run_at_is_last_plus_delay(self) -> None:
         now = timezone.now()
-        loop = Loop.objects.create(name="demo-next", delay_seconds=300, prompt="do x", last_run_at=now)
+        loop = Loop.objects.create(name="demo-next", delay_seconds=300, prompt=_prompt(), last_run_at=now)
         assert loop.next_run_at() == now + dt.timedelta(seconds=300)
 
 
@@ -147,55 +158,55 @@ class TestLoopDailyCadence(TestCase):
         return dt.datetime(2026, 6, 16, hour, minute, tzinfo=dt.UTC)
 
     def test_cadence_label_shows_daily_time(self) -> None:
-        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0))
+        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
         assert loop.cadence_label == "daily 08:00"
 
     def test_never_run_not_due_before_scheduled_time(self) -> None:
-        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0))
+        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
         assert loop.is_due(self._at(7)) is False
 
     def test_never_run_due_after_scheduled_time(self) -> None:
-        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0))
+        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
         assert loop.is_due(self._at(9)) is True
 
     def test_not_due_again_after_running_today(self) -> None:
         loop = Loop.objects.create(
-            name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0), last_run_at=self._at(8, 1)
+            name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0), last_run_at=self._at(8, 1)
         )
         assert loop.is_due(self._at(9)) is False
 
     def test_due_next_day_after_scheduled_time(self) -> None:
         loop = Loop.objects.create(
-            name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0), last_run_at=self._at(8, 1)
+            name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0), last_run_at=self._at(8, 1)
         )
         tomorrow_9 = (self._at(8, 1) + dt.timedelta(days=1)).replace(hour=9, minute=0)
         assert loop.is_due(tomorrow_9) is True
 
     def test_next_run_at_returns_a_datetime(self) -> None:
-        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt="do x", daily_at=dt.time(8, 0))
+        loop = Loop.objects.create(name="demo-daily", delay_seconds=86400, prompt=_prompt(), daily_at=dt.time(8, 0))
         assert loop.next_run_at() is not None
 
 
 class TestLoopManager(TestCase):
     def test_enabled_excludes_disabled(self) -> None:
-        Loop.objects.create(name="demo-on", delay_seconds=60, prompt="do x")
-        Loop.objects.create(name="demo-disabled", delay_seconds=60, prompt="do x", enabled=False)
+        Loop.objects.create(name="demo-on", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="demo-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)
         names = {row.name for row in Loop.objects.enabled()}
         assert "demo-on" in names
         assert "demo-disabled" not in names
 
     def test_due_returns_enabled_overdue_only(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="demo-due", delay_seconds=60, prompt="do x")
-        Loop.objects.create(name="demo-cooling", delay_seconds=60, prompt="do x", last_run_at=now)
-        Loop.objects.create(name="demo-due-off", delay_seconds=60, prompt="do x", enabled=False)
+        Loop.objects.create(name="demo-due", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="demo-cooling", delay_seconds=60, prompt=_prompt(), last_run_at=now)
+        Loop.objects.create(name="demo-due-off", delay_seconds=60, prompt=_prompt(), enabled=False)
         due = {row.name for row in Loop.objects.due(now)}
         assert "demo-due" in due
         assert "demo-cooling" not in due
         assert "demo-due-off" not in due
 
     def test_mark_run_sets_last_run_at(self) -> None:
-        Loop.objects.create(name="demo-mark", delay_seconds=60, prompt="do x")
+        Loop.objects.create(name="demo-mark", delay_seconds=60, prompt=_prompt())
         ts = timezone.now()
         Loop.objects.mark_run("demo-mark", ts)
         assert Loop.objects.get(name="demo-mark").last_run_at == ts
@@ -216,9 +227,13 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="dream").daily_at == dt.time(3, 0)
         assert Loop.objects.get(name="dogfood").delay_seconds == 86400
 
-    def test_eval_local_seeded_enabled_daily(self) -> None:
+    def test_eval_local_seeded_paused_daily(self) -> None:
+        # The #2513 cutover seeds every loop PAUSED, and migration
+        # 0087_pause_all_loops disables the rows seeded enabled by 0078 — the row
+        # IS seeded with its daily cadence, just not enabled until an operator
+        # turns it on.
         loop = Loop.objects.get(name="eval_local")
-        assert loop.enabled is True
+        assert loop.enabled is False
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
@@ -227,18 +242,19 @@ class TestLoopSeed(TestCase):
 
 
 class TestLoopBackfillSatisfiesXor(TestCase):
-    """The backfill migration leaves every seeded row satisfying the prompt-XOR-script."""
+    """Every seeded row satisfies the FK prompt-XOR-script after the #2513 conversion."""
 
     def test_every_seeded_row_has_exactly_one_of_prompt_or_script(self) -> None:
         for loop in Loop.objects.all():
-            assert bool(loop.prompt) != bool(loop.script), loop.name
+            assert (loop.prompt_id is not None) != bool(loop.script), loop.name
 
-    def test_arch_review_keeps_its_prompt(self) -> None:
+    def test_arch_review_prompt_text_migrated_to_a_prompt_row(self) -> None:
         loop = Loop.objects.get(name="arch_review")
-        assert loop.prompt != ""
+        assert loop.prompt_id is not None
+        assert loop.prompt.body != ""
         assert loop.script == ""
 
     def test_other_loops_run_the_script_entry_point(self) -> None:
         loop = Loop.objects.get(name="dispatch")
         assert loop.script == "src/teatree/loops/run.py"
-        assert loop.prompt == ""
+        assert loop.prompt_id is None

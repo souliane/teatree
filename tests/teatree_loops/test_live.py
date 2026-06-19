@@ -4,38 +4,31 @@ Unit coverage for the edge cases the management-command integration test does
 not exercise directly: the stall predicate when nothing has ever ticked, the
 PID-anchored owner liveness branches, and the entry-level age / overdue / due
 helpers. The clock is pinned so the derived numbers are deterministic.
+
+After the #2513 cutover the mini-loop rows come from the DB ``Loop`` table, so
+the tests that need a mini-loop present create real ``Loop`` rows (with a
+``demo-`` name prefix scoping their assertions away from the seeded production
+loops) instead of patching the removed ``iter_loops`` / ``LoopsConfig`` /
+``MiniLoopMarker`` source.
 """
 
 import datetime as dt
 import os
-from collections.abc import Iterator
-from contextlib import contextmanager
-from unittest.mock import patch
 
 import django.test
 from django.utils import timezone
 
+from teatree.core.models import Loop, Prompt
 from teatree.core.models.loop_lease import LoopLease
-from teatree.core.models.mini_loop_marker import MiniLoopMarker
-from teatree.loops.base import MiniLoop
-from teatree.loops.config import LoopsConfig
 from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
 _LIVE_PID = os.getpid()
 _DEAD_PID = 2_000_000_000
 
 
-def _stub_loop(name: str, cadence: int) -> MiniLoop:
-    return MiniLoop(name=name, default_cadence_seconds=cadence, build_jobs=lambda **_: [])
-
-
-@contextmanager
-def _registry(*loops: MiniLoop) -> Iterator[None]:
-    with (
-        patch("teatree.loops.live.iter_loops", return_value=loops),
-        patch.object(LoopsConfig, "load", classmethod(lambda cls, path=None: cls())),
-    ):
-        yield
+def _prompt() -> Prompt:
+    prompt, _ = Prompt.objects.get_or_create(name="demo-live-unit", defaults={"body": "x"})
+    return prompt
 
 
 class TestEntryHelpers:
@@ -74,8 +67,10 @@ class TestEntryHelpers:
 @django.test.override_settings(USE_TZ=True)
 class TestStallPredicate(django.test.TestCase):
     def test_stalled_when_no_tick_ever(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report()
+        # No infra lease rows and every Loop row's ``last_run_at`` is None
+        # (the seeded loops are all never-run) ⇒ ``last_tick_at`` is None.
+        Loop.objects.update(last_run_at=None)
+        report = build_report()
         assert report.last_tick_at is None
         assert report.last_tick_age_seconds is None
         assert report.stalled is True
@@ -83,16 +78,25 @@ class TestStallPredicate(django.test.TestCase):
     def test_stalled_when_oldest_beyond_factor(self) -> None:
         now = timezone.now()
         cadence = 720
-        MiniLoopMarker.objects.mark_fired("dispatch", now - dt.timedelta(seconds=STALL_FACTOR * cadence + 5))
-        with _registry(_stub_loop("dispatch", 300)), patch("teatree.loops.live.cadence_for_loop", return_value=cadence):
-            report = build_report(now=now)
+        Loop.objects.update(last_run_at=None)
+        Loop.objects.create(
+            name="demo-stall-old",
+            delay_seconds=300,
+            prompt=_prompt(),
+            last_run_at=now - dt.timedelta(seconds=STALL_FACTOR * cadence + 5),
+        )
+        report = build_report(now=now)
         assert report.stalled is True
 
     def test_not_stalled_when_recent(self) -> None:
         now = timezone.now()
-        MiniLoopMarker.objects.mark_fired("dispatch", now - dt.timedelta(seconds=10))
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        Loop.objects.create(
+            name="demo-stall-recent",
+            delay_seconds=300,
+            prompt=_prompt(),
+            last_run_at=now - dt.timedelta(seconds=10),
+        )
+        report = build_report(now=now)
         assert report.stalled is False
 
 
@@ -106,8 +110,7 @@ class TestOwnerLiveness(django.test.TestCase):
             owner_pid=_LIVE_PID,
             lease_expires_at=now - dt.timedelta(hours=1),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.owner.pid_is_alive is True
         assert report.owner.is_live is True
 
@@ -119,8 +122,7 @@ class TestOwnerLiveness(django.test.TestCase):
             owner_pid=_DEAD_PID,
             lease_expires_at=now + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.owner.pid_is_alive is False
         assert report.owner.is_live is True
 
@@ -132,8 +134,7 @@ class TestOwnerLiveness(django.test.TestCase):
             owner_pid=_DEAD_PID,
             lease_expires_at=now - dt.timedelta(hours=1),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.owner.is_live is False
         assert report.owner.is_claimed is True
 
@@ -145,14 +146,12 @@ class TestOwnerLiveness(django.test.TestCase):
             owner_pid=None,
             lease_expires_at=now - dt.timedelta(hours=1),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.owner.pid_is_alive is False
         assert report.owner.is_live is False
 
     def test_no_lease_is_unclaimed(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report()
+        report = build_report()
         assert report.owner.is_claimed is False
         assert report.owner.is_live is False
 
@@ -169,8 +168,7 @@ class TestPerLoopOwners(django.test.TestCase):
     def test_no_per_loop_leases_means_empty(self) -> None:
         now = timezone.now()
         LoopLease.objects.create(name="loop-owner", session_id="global", owner_pid=_LIVE_PID, lease_expires_at=now)
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.per_loop_owners == ()
 
     def test_two_per_loop_owners_surfaced_sorted_by_slot(self) -> None:
@@ -187,8 +185,7 @@ class TestPerLoopOwners(django.test.TestCase):
             owner_pid=_LIVE_PID,
             lease_expires_at=now + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert [o.slot for o in report.per_loop_owners] == ["loop:dispatch", "loop:review"]
         assert report.per_loop_owners[0].session_id == "sess-dispatch"
         assert all(o.is_live for o in report.per_loop_owners)
@@ -201,8 +198,7 @@ class TestPerLoopOwners(django.test.TestCase):
             owner_pid=_LIVE_PID,
             lease_expires_at=now - dt.timedelta(hours=1),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         owner = report.per_loop_owners[0]
         assert owner.pid_is_alive is True
         assert owner.is_live is True
@@ -212,8 +208,7 @@ class TestPerLoopOwners(django.test.TestCase):
         LoopLease.objects.create(name="loop-owner", session_id="g", owner_pid=_LIVE_PID, lease_expires_at=now)
         # The infra-slot leases use ``-`` not ``:`` so they are also excluded.
         LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=now)
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert report.per_loop_owners == ()
         assert report.owner.slot == "loop-owner"
 
@@ -245,8 +240,7 @@ class TestOwnedPerLoopOwners(django.test.TestCase):
     def test_scopes_to_owning_session(self) -> None:
         now = timezone.now()
         self._seed(now)
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         owned = owned_per_loop_owners(report, "sess-A")
         assert [o.slot for o in owned] == ["loop:dispatch"]
         assert owned[0].session_id == "sess-A"
@@ -254,8 +248,7 @@ class TestOwnedPerLoopOwners(django.test.TestCase):
     def test_other_session_subtracted_but_present_in_full_set(self) -> None:
         now = timezone.now()
         self._seed(now)
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         # The default view for session A excludes B's loop ...
         assert [o.slot for o in owned_per_loop_owners(report, "sess-A")] == ["loop:dispatch"]
         # ... yet B's loop genuinely exists in the unfiltered cross-session set.
@@ -264,15 +257,13 @@ class TestOwnedPerLoopOwners(django.test.TestCase):
     def test_empty_session_fails_open_to_full_set(self) -> None:
         now = timezone.now()
         self._seed(now)
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         owned = owned_per_loop_owners(report, "")
         assert {o.slot for o in owned} == {"loop:dispatch", "loop:review"}
 
     def test_no_per_loop_rows_is_empty_for_any_session(self) -> None:
         now = timezone.now()
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         assert owned_per_loop_owners(report, "sess-A") == ()
         assert owned_per_loop_owners(report, "") == ()
 
@@ -287,16 +278,14 @@ class TestInfraEntries(django.test.TestCase):
             acquired_at=now,
             lease_expires_at=now + dt.timedelta(minutes=2),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report(now=now)
+        report = build_report(now=now)
         tick = next(e for e in report.infra_slots if e.name == "loop-tick")
         assert tick.held is True
         assert tick.kind is LoopKind.INFRA
         assert tick.next_fire_at is not None
 
     def test_missing_lease_row_is_idle_never_fired(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            report = build_report()
+        report = build_report()
         tick = next(e for e in report.infra_slots if e.name == "loop-tick")
         assert tick.held is False
         assert tick.never_fired is True

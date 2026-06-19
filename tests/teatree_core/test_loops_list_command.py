@@ -13,7 +13,13 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, Prompt
+
+
+def _prompt(name: str = "demo-prompt") -> Prompt:
+    """A reusable :class:`Prompt` FK target for loops under test (#2513)."""
+    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
+    return prompt
 
 
 def _run(*args: str) -> str:
@@ -25,8 +31,10 @@ def _run(*args: str) -> str:
 @django.test.override_settings(USE_TZ=True)
 class TestLoopsListText(django.test.TestCase):
     def test_lists_seeded_interval_loop_with_cadence(self) -> None:
+        # Post-#2513 cutover every seeded loop ships PAUSED (plumbing only), so a
+        # seeded interval loop renders ``disabled`` with its cadence column.
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("tickets"))
-        assert "enabled" in line
+        assert "disabled" in line
         assert "every 300s" in line
 
     def test_lists_seeded_daily_loop_shows_schedule(self) -> None:
@@ -34,12 +42,12 @@ class TestLoopsListText(django.test.TestCase):
         assert "daily 08:00" in line
 
     def test_disabled_loop_marked_disabled(self) -> None:
-        Loop.objects.create(name="demo-off", delay_seconds=60, prompt="do x", enabled=False)
+        Loop.objects.create(name="demo-off", delay_seconds=60, prompt=_prompt(), enabled=False)
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-off"))
         assert "disabled" in line
 
     def test_never_run_interval_loop_renders_due(self) -> None:
-        Loop.objects.create(name="demo-new", delay_seconds=60, prompt="do x")
+        Loop.objects.create(name="demo-new", delay_seconds=60, prompt=_prompt())
         line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-new"))
         assert "last —" in line
         assert "next due" in line
@@ -49,7 +57,7 @@ class TestLoopsListText(django.test.TestCase):
 class TestLoopsListJson(django.test.TestCase):
     def test_json_interval_loop_shape(self) -> None:
         Loop.objects.create(
-            name="demo-json", delay_seconds=120, prompt="do x", last_run_at=timezone.now() - dt.timedelta(seconds=30)
+            name="demo-json", delay_seconds=120, prompt=_prompt(), last_run_at=timezone.now() - dt.timedelta(seconds=30)
         )
         payload = json.loads(_run("--json"))
         demo = next(e for e in payload["loops"] if e["name"] == "demo-json")

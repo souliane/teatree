@@ -455,8 +455,8 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     already-claimed issue, which the scanner skips).
 
     Returns ``None`` (no job emitted) whenever either gate is shut, so with
-    the default-OFF config neither ``build_registry_jobs`` nor
-    ``build_default_jobs`` emits anything for this domain — the registry
+    the default-OFF config neither ``build_loop_table_jobs`` nor
+    ``build_default_jobs`` emits anything for this domain — the live
     fan-out stays byte-for-byte unchanged until an overlay opts in.
 
     A loop that is enabled with an empty ``issue_implementer_label`` is a
@@ -493,7 +493,7 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
 
     Returns a scanner ONLY when ``auto_disposition_enabled`` is flipped on for
     this overlay. With the default-OFF config no scanner is built, so neither
-    ``build_registry_jobs`` nor ``build_default_jobs`` emits anything for this
+    ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
     domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
 
     ``repo`` (the duplicate-search target) and the obsolescence ``path_exists``

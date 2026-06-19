@@ -59,3 +59,19 @@
   should_not_fire:
     - "review the merge request feedback"
     - "scan the AI news for improvement ideas"
+
+- skill: loops
+  should_fire:
+    - "which loops are running and is the loop ticking?"
+    - "trigger a loop / run the loops master tick"
+  should_not_fire:
+    - "open a pull request for the finished branch"
+    - "render the ship prompt with these args"
+
+- skill: prompts
+  should_fire:
+    - "list the prompts in the prompt library"
+    - "render a prompt by name with its params"
+  should_not_fire:
+    - "which loops are running right now?"
+    - "create a worktree and refresh the db"

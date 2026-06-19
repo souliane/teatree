@@ -5,9 +5,16 @@ The autonomous-loop control plane (#1796) is manageable from the Django admin â€
 disabled there.
 """
 
+import django.test
 from django.contrib import admin
 
-from teatree.core.models import ConfigSetting, Loop
+from teatree.core.models import ConfigSetting, Loop, Prompt
+
+
+def _prompt(name: str = "demo-prompt") -> Prompt:
+    """A reusable :class:`Prompt` FK target for loops under test (#2513)."""
+    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
+    return prompt
 
 
 class TestConfigSettingAdmin:
@@ -21,7 +28,7 @@ class TestConfigSettingAdmin:
         assert "value" in model_admin.list_editable
 
 
-class TestLoopAdmin:
+class TestLoopAdmin(django.test.TestCase):
     def test_loop_registered_in_admin(self) -> None:
         assert Loop in admin.site._registry
 
@@ -32,14 +39,14 @@ class TestLoopAdmin:
 
     def test_loop_admin_action_shows_script_or_prompt(self) -> None:
         model_admin = admin.site._registry[Loop]
-        prompt_loop = Loop(name="demo-prompt", delay_seconds=60, prompt="do x")
-        script_loop = Loop(name="demo-script", delay_seconds=60, prompt="", script="run.py")
+        prompt_loop = Loop(name="demo-prompt", delay_seconds=60, prompt=_prompt())
+        script_loop = Loop(name="demo-script", delay_seconds=60, prompt=None, script="run.py")
         assert model_admin.action(prompt_loop) == "do x"
         assert model_admin.action(script_loop) == "run.py"
 
     def test_loop_admin_cadence_shows_human_label(self) -> None:
         model_admin = admin.site._registry[Loop]
-        loop = Loop(name="demo-cadence", delay_seconds=60, prompt="do x")
+        loop = Loop(name="demo-cadence", delay_seconds=60, prompt=_prompt())
         assert model_admin.cadence(loop) == "every 60s"
 
     def test_loop_admin_allows_inline_enable_disable(self) -> None:

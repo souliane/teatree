@@ -4,22 +4,23 @@ The dreaming consolidation pass is heavier than a scanner tick and must not
 run on — or re-arm — the live 12-minute loop (issue #1933 § 3). It is its own
 low-frequency cron (``t3 dream tick``) that reuses the MiniLoop cadence /
 config / in-flight-lock primitives. The structural contract: the ``dream``
-loop is registered (so its cadence is configured under ``[loops.dream]`` and
-the statusline can show its countdown) yet excluded from both the live-tick
-fan-out (``build_registry_jobs``) and the orchestrator's normal dispatch.
+loop is registered (so its cadence is configured and the statusline can show
+its countdown) yet excluded from both the live tick (#2513 cutover — the live
+tick is now the DB-``Loop``-table ``build_loop_table_jobs`` path, and dream's
+``build_jobs`` emits nothing) and the orchestrator's normal dispatch (via the
+``off_live_tick`` flag, which the Track-A orchestrator still honours).
 """
 
 import datetime as dt
 import inspect
-from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.loop_lease_manager import LoopLeaseManager
-from teatree.core.models import MiniLoopMarker
+from teatree.core.models import Loop, MiniLoopMarker, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.config import LoopsConfig
 from teatree.loops.dream.loop import (
@@ -34,7 +35,7 @@ from teatree.loops.dream.loop import (
     propose_evals_enabled,
     reindex_enabled,
 )
-from teatree.loops.fanout import build_registry_jobs
+from teatree.loops.master import build_loop_table_jobs
 from teatree.loops.orchestrator import Orchestrator
 from teatree.loops.orchestrator import TickRequest as OrchestratorTickRequest
 from teatree.loops.registry import iter_loops
@@ -85,19 +86,27 @@ class DreamLoopRegistrationTestCase(TestCase):
         names = {loop.name for loop in iter_loops()}
         assert "dream" in names
 
-    def test_dream_excluded_from_live_tick_fanout(self) -> None:
-        # An off-live-tick loop must NOT be marked fired by the live tick — its
-        # cadence ledger is owned by its own cron. The anti-vacuous contrast:
-        # the SAME loop without the skip flag IS fired by the live fan-out.
-        MiniLoopMarker.objects.all().delete()
-        build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
-        assert not MiniLoopMarker.objects.filter(name="dream").exists()
-
-        MiniLoopMarker.objects.all().delete()
-        live_dream = replace(MINI_LOOP, off_live_tick=False)
-        with patch("teatree.loops.fanout.iter_loops", return_value=[live_dream]):
-            build_registry_jobs(_context(), config=LoopsConfig(), now=NOW)
-        assert MiniLoopMarker.objects.filter(name="dream").exists()
+    @override_settings(USE_TZ=True)
+    def test_dream_emits_no_jobs_on_the_live_db_tick(self) -> None:
+        # #2513 cutover: the live tick is the DB-``Loop``-table path. Dream's
+        # row is daily, so on a due tick ``build_loop_table_jobs`` resolves it to
+        # its registry ``build_jobs`` — which deliberately emits NO scanner jobs
+        # (the consolidation engine runs from the dream cron, not the live tick).
+        # Anti-vacuous contrast: a live mini-loop with the same row DOES emit.
+        Prompt.objects.get_or_create(name="demo-dream-fk", defaults={"body": "x"})
+        Loop.objects.update_or_create(
+            name="dream",
+            defaults={
+                "script": "src/teatree/loops/run.py",
+                "prompt": None,
+                "delay_seconds": 86400,
+                "last_run_at": None,
+            },
+        )
+        jobs = build_loop_table_jobs(_context(), now=NOW)
+        assert all(getattr(job, "overlay", None) != "dream" for job in jobs)
+        # The dream row's build_jobs (registry MINI_LOOP) emits nothing.
+        assert MINI_LOOP.build_jobs(**_context()) == []
 
     def test_dream_excluded_from_orchestrator_dispatch(self) -> None:
         MiniLoopMarker.objects.all().delete()

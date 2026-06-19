@@ -11,7 +11,7 @@ from unittest.mock import patch
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop
+from teatree.core.models import Loop, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.master import build_loop_table_jobs
 
@@ -20,13 +20,19 @@ def _mini(name: str) -> MiniLoop:
     return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=lambda n=name, **_: [f"job-{n}"])
 
 
+def _prompt(name: str = "demo-prompt") -> Prompt:
+    """A reusable :class:`Prompt` FK target for loops under test (#2513)."""
+    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
+    return prompt
+
+
 @django.test.override_settings(USE_TZ=True)
 class TestBuildLoopTableJobs(django.test.TestCase):
     def test_runs_only_enabled_and_due_loops(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-a", delay_seconds=60, prompt="do x")  # never run -> due
-        Loop.objects.create(name="m-b", delay_seconds=60, prompt="do x", last_run_at=now)  # cooling -> not due
-        Loop.objects.create(name="m-c", delay_seconds=60, prompt="do x", enabled=False)  # due but disabled
+        Loop.objects.create(name="m-a", delay_seconds=60, prompt=_prompt())  # never run -> due
+        Loop.objects.create(name="m-b", delay_seconds=60, prompt=_prompt(), last_run_at=now)  # cooling -> not due
+        Loop.objects.create(name="m-c", delay_seconds=60, prompt=_prompt(), enabled=False)  # due but disabled
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-a"), _mini("m-b"), _mini("m-c"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-a" in jobs
@@ -35,7 +41,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
 
     def test_marks_last_run_for_dispatched_loop(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-d", delay_seconds=60, prompt="do x")
+        Loop.objects.create(name="m-d", delay_seconds=60, prompt=_prompt())
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-d"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="m-d").last_run_at == now
@@ -46,10 +52,29 @@ class TestBuildLoopTableJobs(django.test.TestCase):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
+    def test_off_live_tick_loop_is_never_picked_up(self) -> None:
+        # An off_live_tick loop (the heavy ``dream`` pass, #1933 § 3) is enabled
+        # and due, yet the live master tick must NEVER invoke its build_jobs or
+        # bump its last_run_at — it is driven by its own low-frequency cron.
+        now = timezone.now()
+        Loop.objects.create(name="m-dream", delay_seconds=60, prompt=_prompt())  # enabled + never run -> due
+        off = MiniLoop(
+            name="m-dream",
+            default_cadence_seconds=60,
+            build_jobs=lambda **_: ["job-m-dream"],
+            off_live_tick=True,
+        )
+        with patch("teatree.loops.master.iter_loops", return_value=(off,)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-dream" not in jobs
+        assert jobs == []
+        # never re-armed: its cadence anchor is untouched by the live tick
+        assert Loop.objects.get(name="m-dream").last_run_at is None
+
     def test_one_loop_raising_does_not_abort_the_rest(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="m-boom", delay_seconds=60, prompt="do x")
-        Loop.objects.create(name="m-ok", delay_seconds=60, prompt="do x")
+        Loop.objects.create(name="m-boom", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="m-ok", delay_seconds=60, prompt=_prompt())
         boom = MiniLoop(
             name="m-boom", default_cadence_seconds=60, build_jobs=lambda **_: (_ for _ in ()).throw(RuntimeError("x"))
         )
