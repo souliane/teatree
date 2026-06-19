@@ -8,6 +8,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import ProvisionStep, RunCommands
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.types import RunCommand
+from teatree.utils.singleton import singleton
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -57,6 +58,29 @@ class ServiceLauncherTests(TestCase):
     def test_prepare_all_runs_pre_run_for_every_service(self) -> None:
         ServiceLauncher.prepare_all(self.worktree, ["frontend", "backend"], overlay=self.overlay)
         assert self.order_file.read_text().splitlines() == ["pre-frontend", "pre-backend"]
+
+    def test_single_flight_refuses_concurrent_same_service_build(self) -> None:
+        """A second launch of the same (worktree, service) refuses while one holds the lock (#1038).
+
+        Anti-vacuity: drop the ``singleton(...)`` wrapper from ``run()`` and this
+        goes RED — the second launch executes the command instead of refusing.
+        """
+        launcher = ServiceLauncher(self.worktree, "frontend", overlay=self.overlay)
+        # Hold the exact per-(worktree, service) lock to simulate a build in flight.
+        with singleton(launcher._lock_name()):
+            result = launcher.run()
+        assert not result.ok
+        assert "already in flight" in result.detail
+        # The competing build never ran: neither pre-run nor command executed, so
+        # the order file was never even created.
+        assert not self.order_file.exists()
+
+    def test_single_flight_allows_different_service_concurrently(self) -> None:
+        """Holding the frontend lock must NOT block a different service on the same worktree."""
+        held = ServiceLauncher(self.worktree, "frontend", overlay=self.overlay)
+        with singleton(held._lock_name()):
+            result = ServiceLauncher(self.worktree, "backend", overlay=self.overlay).run()
+        assert result.ok
 
 
 class RealisticStackOverlay(CommandOverlay):

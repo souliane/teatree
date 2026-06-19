@@ -62,6 +62,7 @@ class TestEnsureRunning:
         with (
             patch.object(redis_container, "status", return_value="running"),
             patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_configured_db_count", return_value=redis_container.DEFAULT_DB_COUNT),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
             redis_container.ensure_running()
@@ -104,6 +105,7 @@ class TestEnsureRunning:
         with (
             patch.object(redis_container, "status", return_value="exited"),
             patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_configured_db_count", return_value=redis_container.DEFAULT_DB_COUNT),
             patch.object(redis_container, "_docker_tolerant", return_value=_completed()),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
@@ -159,6 +161,77 @@ class TestEnsureRunning:
         assert ("rm", "teatree-redis") in calls
         run_call = next(c for c in calls if c and c[0] == "run")
         assert "6379:6379" in run_call
+
+    def test_recreates_running_container_with_too_few_databases(self) -> None:
+        # Redis bakes `--databases N` in at boot; a running container started
+        # with `--databases 16` never picks up a raised `redis_db_count`, so
+        # slot allocation keeps failing once 16 are held. Reconciliation must
+        # recreate it with the larger pool. Anti-vacuity: drop the db-count
+        # branch from `_needs_recreate` and this goes RED (no recreate fires).
+        calls: list[tuple[str, ...]] = []
+        with (
+            patch.object(redis_container, "status", return_value="running"),
+            patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_configured_db_count", return_value=16),
+            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
+            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
+        ):
+            redis_container.ensure_running(db_count=64)
+        assert ("stop", "teatree-redis") in calls
+        assert ("rm", "teatree-redis") in calls
+        run_call = next(c for c in calls if c and c[0] == "run")
+        assert "--databases" in run_call
+        assert "64" in run_call
+
+    def test_no_recreate_when_running_container_has_enough_databases(self) -> None:
+        # A container already started with the requested (or a larger) pool is
+        # left untouched — no churn on the shared container.
+        with (
+            patch.object(redis_container, "status", return_value="running"),
+            patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_configured_db_count", return_value=64),
+            patch.object(redis_container, "_docker_checked") as mock,
+        ):
+            redis_container.ensure_running(db_count=64)
+        mock.assert_not_called()
+
+    def test_no_recreate_when_db_count_probe_inconclusive(self) -> None:
+        # An inconclusive `CONFIG GET databases` probe (docker hiccup) must NOT
+        # churn the shared container — fail-safe to "leave it running".
+        with (
+            patch.object(redis_container, "status", return_value="running"),
+            patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_configured_db_count", return_value=None),
+            patch.object(redis_container, "_docker_checked") as mock,
+        ):
+            redis_container.ensure_running(db_count=64)
+        mock.assert_not_called()
+
+
+class TestConfiguredDbCount:
+    def test_parses_databases_value_from_config_get(self) -> None:
+        with patch.object(
+            redis_container,
+            "_docker_tolerant",
+            return_value=_completed(stdout="databases\n64\n"),
+        ):
+            assert redis_container._configured_db_count() == 64
+
+    def test_returns_none_when_exec_fails(self) -> None:
+        with patch.object(redis_container, "_docker_tolerant", return_value=_completed(returncode=1)):
+            assert redis_container._configured_db_count() is None
+
+    def test_returns_none_when_value_unparseable(self) -> None:
+        with patch.object(
+            redis_container,
+            "_docker_tolerant",
+            return_value=_completed(stdout="databases\nnot-a-number\n"),
+        ):
+            assert redis_container._configured_db_count() is None
+
+    def test_returns_none_when_reply_truncated(self) -> None:
+        with patch.object(redis_container, "_docker_tolerant", return_value=_completed(stdout="databases\n")):
+            assert redis_container._configured_db_count() is None
 
 
 class TestNativeSquatterDetection:

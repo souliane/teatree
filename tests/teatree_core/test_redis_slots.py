@@ -232,11 +232,11 @@ class TestGhostSlotReclaim(TestCase):
 
 
 class TestGhostSlotReclaimFlushes(TestCase):
-    """``_reclaim_ghost_slots`` must FLUSHDB each ghost slot before clearing the field.
+    """``release_orphaned_redis_slots`` must FLUSHDB each ghost slot before clearing the field.
 
     Anti-vacuity: remove the ``redis_container.flushdb`` call from
-    ``_reclaim_ghost_slots`` and this test goes RED — ``mock_flush`` records
-    zero calls. Restoring the flush makes it GREEN.
+    ``release_orphaned_redis_slots`` and this test goes RED — ``mock_flush``
+    records zero calls. Restoring the flush makes it GREEN.
     """
 
     def test_reclaim_flushes_ghost_slot_db(self) -> None:
@@ -266,8 +266,9 @@ class TestGhostSlotReclaimFlushes(TestCase):
         ``redis_container.flushdb`` raises ``RuntimeError`` when the docker CLI
         is absent (CI, any host without docker). The ghost slot's DB row must
         still be reclaimed so allocation succeeds instead of propagating the
-        flush failure. Anti-vacuity: drop the swallow in ``_reclaim_ghost_slots``
-        and the ``allocate_redis_slot`` call below re-raises the RuntimeError.
+        flush failure. Anti-vacuity: drop the swallow in
+        ``release_orphaned_redis_slots`` and the ``allocate_redis_slot`` call
+        below re-raises the RuntimeError.
         """
         cfg = load_config()
         patched_user = _replace(cfg.user, redis_db_count=2)
@@ -297,6 +298,41 @@ class TestGhostSlotReclaimFlushes(TestCase):
         for ghost in (ghost_a, ghost_b):
             ghost.refresh_from_db()
         assert ghost_a.redis_db_index is None or ghost_b.redis_db_index is None
+
+
+class TestReleaseOrphanedRedisSlots(TestCase):
+    """``release_orphaned_redis_slots`` proactively frees ghost slots and reports them.
+
+    The public sweep ``clean-all`` runs so a prior session's removed worktree
+    (dirs gone, row + slot persist) no longer caps the pool. It returns the
+    ``(ticket_pk, released_index)`` pairs reclaimed so the caller can report them.
+    """
+
+    def test_returns_reclaimed_ticket_and_index_pairs(self) -> None:
+        ghost = Ticket.objects.create()
+        ghost_index = Ticket.objects.allocate_redis_slot(ghost)
+        Worktree.objects.create(
+            ticket=ghost,
+            overlay="test",
+            repo_path="org/repo",
+            branch="main",
+            extra={"worktree_path": "/gone/path"},
+        )
+        with patch("teatree.core.managers.redis_container.flushdb"):
+            reclaimed = Ticket.objects.release_orphaned_redis_slots()
+        assert reclaimed == [(ghost.pk, ghost_index)]
+        ghost.refresh_from_db()
+        assert ghost.redis_db_index is None
+
+    def test_keeps_live_slot_and_returns_empty(self) -> None:
+        live, live_dir = _make_live_ticket()
+        with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
+            reclaimed = Ticket.objects.release_orphaned_redis_slots()
+        assert reclaimed == []
+        mock_flush.assert_not_called()
+        live.refresh_from_db()
+        assert live.redis_db_index is not None
+        live_dir.rmdir()
 
 
 class TestReleaseRedisSlot(TestCase):

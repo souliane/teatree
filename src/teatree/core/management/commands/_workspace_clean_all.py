@@ -21,6 +21,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     drop_orphan_databases,
     is_clean_ignored,
     prune_branches,
+    release_orphaned_redis_slots,
 )
 from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
 from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
@@ -55,9 +56,10 @@ def run_clean_all(
 
     Validates ``reap_unsynced`` up front (exit 1 on a bad value), then sequences:
     squash-merged Worktree rows, CREATED-row reap, empty-ticket-dir prune, orphan
-    DBs/docker/env-roots, orphaned RAW worktrees (#2361), branch + stash prune in
-    the cwd repo, and DSLR snapshot prune. A failed push/abandon line exits 1 via
-    :func:`_raise_on_cleanup_failures` (the #932 failure contract).
+    DBs, orphaned Redis slots (#1038), docker/env-roots, orphaned RAW worktrees
+    (#2361), branch + stash prune in the cwd repo, and DSLR snapshot prune. A
+    failed push/abandon line exits 1 via :func:`_raise_on_cleanup_failures` (the
+    #932 failure contract).
     """
     if reap_unsynced not in _VALID_REAP_UNSYNCED:
         _die(io.write_err, f"--reap-unsynced must be 'keep' or 'snapshot', got {reap_unsynced!r}")
@@ -76,6 +78,7 @@ def run_clean_all(
 
     cleaned.extend(reaper.remove_empty_ticket_dirs())
     cleaned.extend(drop_orphan_databases())
+    cleaned.extend(release_orphaned_redis_slots())
     cleaned.extend(reap_orphan_worktree_docker())
     cleaned.extend(reap_orphan_isolated_worktree_roots())
     cleaned.extend(reap_orphan_raw_worktrees(workspace, reap_unsynced=policy))

@@ -884,6 +884,10 @@
           "name": "diagram"
         },
         {
+          "help": "Release a ticket's held Redis DB slot (FLUSHDB + clear the index)",
+          "name": "release-slot"
+        },
+        {
           "help": "Quick health check: overlay loads, CLI responds, imports OK",
           "name": "smoke-test"
         }

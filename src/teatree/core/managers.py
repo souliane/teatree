@@ -131,7 +131,7 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
                 if ghost_reclaim_attempted:
                     break
                 ghost_reclaim_attempted = True
-                self._reclaim_ghost_slots(using=self.db)
+                self.release_orphaned_redis_slots(using=self.db)
                 continue
             try:
                 with transaction.atomic(using=self.db):
@@ -144,26 +144,33 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
         raise RedisSlotsExhaustedError(msg)
 
-    def _reclaim_ghost_slots(self, *, using: str = "default") -> int:
-        """Flush and clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
+    def release_orphaned_redis_slots(self, *, using: str = "default") -> list[tuple[int, int]]:
+        """Flush + clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
 
-        A slot is a ghost when the ticket has at least one Worktree row and
-        every row either has no on-disk path recorded or has a path that no
-        longer exists as a directory. Tickets with no Worktree rows are not
-        reclaimed — they may be mid-provision (slot allocated, Worktree row
-        not yet written). Each ghost slot's Redis DB is flushed before the
-        field is cleared, matching ``Ticket.release_redis_slot``'s contract so
-        the next ticket assigned the reclaimed slot starts with a clean
-        cache/queue. The flush is best-effort: when redis/docker is
-        unavailable (``flushdb`` raises ``RuntimeError`` because the docker
-        CLI is absent, e.g. CI) the DB row is still reclaimed so allocation
-        never fails on a missing cache backend. Returns the count of
-        reclaimed slots.
+        A slot is orphaned (a "ghost") when the ticket has at least one Worktree
+        row and every row either has no on-disk path recorded or has a path that
+        no longer exists as a directory — the dirs are gone but the rows (and the
+        slot) persist, which is the dominant local-stack exhaustion source: prior
+        sessions' worktrees were removed without releasing the slot. Tickets with
+        no Worktree rows are not reclaimed — they may be mid-provision (slot
+        allocated, Worktree row not yet written). Each orphaned slot's Redis DB is
+        flushed before the field is cleared, matching ``Ticket.release_redis_slot``'s
+        contract so the next ticket assigned the reclaimed slot starts with a clean
+        cache/queue. The flush is best-effort: when redis/docker is unavailable
+        (``flushdb`` raises ``RuntimeError`` because the docker CLI is absent, e.g.
+        CI) the DB row is still reclaimed so allocation never fails on a missing
+        cache backend.
+
+        Two callers share this: ``allocate_redis_slot`` calls it lazily before
+        raising exhaustion, and ``workspace clean-all`` runs it proactively so the
+        pool is freed without waiting for the next allocation to fail (#1038).
+        Returns the ``(ticket_pk, released_index)`` pairs reclaimed, so callers can
+        report exactly which slots were freed.
         """
         from pathlib import Path  # noqa: PLC0415
 
         candidates = list(self.using(using).filter(redis_db_index__isnull=False).prefetch_related("worktrees"))
-        reclaimed = 0
+        reclaimed: list[tuple[int, int]] = []
         for candidate in candidates:
             worktrees = list(candidate.worktrees.all())
             if not worktrees:
@@ -171,18 +178,19 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             else:
                 is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
             if is_ghost:
+                released_index = candidate.redis_db_index
                 try:
-                    redis_container.flushdb(candidate.redis_db_index, db_count=load_config().user.redis_db_count)
+                    redis_container.flushdb(released_index, db_count=load_config().user.redis_db_count)
                 except RuntimeError as exc:
                     logger.warning(
                         "ghost slot %s flush skipped (%s); reclaiming DB row anyway",
-                        candidate.redis_db_index,
+                        released_index,
                         exc,
                     )
                 candidate.redis_db_index = None
                 candidate.save(update_fields=["redis_db_index"], using=using)
-                reclaimed += 1
-                logger.info("reclaimed ghost redis slot from ticket pk=%s", candidate.pk)
+                reclaimed.append((candidate.pk, released_index))
+                logger.info("reclaimed orphaned redis slot %s from ticket pk=%s", released_index, candidate.pk)
         return reclaimed
 
 
