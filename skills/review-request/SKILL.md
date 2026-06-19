@@ -135,6 +135,15 @@ After sending, remind the user about PRs that couldn't be sent:
 - **Draft PRs:** skip silently (exclude from tables)
 - **Failed CI:** "!789 has a failed pipeline — fix before requesting review"
 
+## Customer-repo done-definition (Non-Negotiable)
+
+The agent's done-definition depends on who owns the repo:
+
+- **Customer / colleague-facing repos** (an overlay with `require_human_approval_to_merge = true`): the agent's job is DONE when the **MR is mergeable + review-requestable**. The agent must NOT merge (that needs colleague approval), and — when `agent_review_request_disabled` is `true` for the overlay — must NOT request review itself. Agent-driven review-request is **disabled** on such an overlay until the user re-enables it: do NOT ask the user to approve a review-request post and do NOT auto-post one. The `t3 <overlay> review-request post` path refuses (the `#960` chokepoint blocks) because `resolve_on_behalf_verdict("review_request_post")` BLOCKs regardless of `on_behalf_post_mode` (including the `immediate` value the autonomy collapse forces). Stop at mergeable; report the PR link and that it is ready for the user to request review.
+- **Tooling repos** (`souliane/teatree` and the user's solo-owned tooling overlay repos, governed by a tooling overlay with `require_human_approval_to_merge = false`): the agent DOES merge its own green, cold-review-cleared work via the keystone.
+
+The enforcement chokepoint is one DB-home, per-overlay setting: `agent_review_request_disabled` (default `false`) forces the review-request BLOCK even when the autonomy collapse has set `on_behalf_post_mode = immediate`. Enable it on a customer overlay with `t3 <overlay> config_setting set agent_review_request_disabled true --overlay <name>`; flip it back to `false` once the agent's review-requests are trustworthy. It is orthogonal to `require_human_approval_to_merge` (which gates merge, not the review-request post).
+
 ## Rules
 
 - **NEVER directly assign a reviewer — review is REQUESTED, never assigned.** Reviewers must NEVER be set directly on an MR/PR (not via `glab mr update --reviewer`, not via a `reviewer_ids`/`requested_reviewers` API write, not via the MR-update MCP tool's reviewer arg) — least of all on the user's OWN MR (this happened on the user's MRs and is forbidden). The ONLY sanctioned path is requesting review by posting the MR link to the Slack/approval channel (the `review-request post` command below); the reviewer self-claims from there. A PreToolUse gate (`handle_block_self_reviewer_assign`) blocks every direct-assignment surface; a vetted one-off on a colleague's MR needs an explicit `[reviewer-ok: <reason>]` token.

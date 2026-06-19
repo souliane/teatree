@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-revreq-disabled-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Agent review-request is disabled on this customer overlay. I'll confirm the MR is review-requestable read-only, then report it ready for the user to request review."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme review-request discover --json", "description": "confirm MR is review-requestable (read-only)"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "{\"prs\": [{\"url\": \"https://gitlab.com/org/repo/-/merge_requests/385\", \"ready\": true}]}"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -90,6 +90,13 @@ class OnBehalfVerdict(StrEnum):
 _DRAFT_FORM_ACTIONS: frozenset[str] = frozenset({"post_draft_note"})
 
 
+# The agent-driven review-request post action (mirrors ``_ACTION`` in
+# ``teatree.core.management.commands.review_request_post``). When the overlay
+# sets ``agent_review_request_disabled``, this one action BLOCKs regardless of
+# ``on_behalf_post_mode`` — the customer-overlay done-definition gate.
+_REVIEW_REQUEST_POST_ACTION: str = "review_request_post"
+
+
 def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     """Return the verdict for *action* under the effective on-behalf mode.
 
@@ -120,8 +127,24 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     Resolution follows the standard env (``T3_ON_BEHALF_POST_MODE``) →
     active-overlay → global → default chain via
     :func:`teatree.config.get_effective_settings`.
+
+    One mode-independent override sits above the table: when the overlay sets
+    ``agent_review_request_disabled``, the single action
+    ``review_request_post`` BLOCKs regardless of ``on_behalf_post_mode`` — even
+    the ``IMMEDIATE`` value the autonomy collapse (``notify``/``full``) forces.
+    This is the customer-overlay done-definition gate: an overlay that keeps a
+    human in the merge loop wants the agent to stop at "MR is mergeable +
+    review-requestable" and never auto-request review. It is scoped to that one
+    action — every other colleague-visible post resolves through the table
+    below unchanged.
     """
     settings = get_effective_settings()
+    # Mode-independent override: a customer overlay can disable agent-driven
+    # review-request posting outright, so this one action BLOCKs even when the
+    # autonomy collapse has forced ``on_behalf_post_mode = IMMEDIATE``. Scoped to
+    # ``review_request_post`` — it never collapses any other action.
+    if action == _REVIEW_REQUEST_POST_ACTION and settings.agent_review_request_disabled:
+        return OnBehalfVerdict.BLOCK
     if settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE:
         return OnBehalfVerdict.PROCEED
     # Auto-proceed actions are the user's routine self-documentation on their
