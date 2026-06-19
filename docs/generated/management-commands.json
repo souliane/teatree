@@ -663,7 +663,7 @@
           "name": "create"
         },
         {
-          "help": "",
+          "help": "Cancel a pending or (with --confirm) claimed task, driving it to FAILED",
           "name": "cancel"
         },
         {

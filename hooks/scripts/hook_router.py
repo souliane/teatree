@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
 from django_bootstrap import bootstrap_teatree_django
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
@@ -7384,17 +7385,17 @@ def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
 
 
 def _resolved_away_mode() -> bool:
-    """Resolve the effective availability mode; True when ``away``."""
-    if not bootstrap_teatree_django():
-        return False
-    try:
-        from teatree.core.availability import MODE_AWAY, resolve_mode  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        return resolve_mode().mode == MODE_AWAY
-    except Exception:  # noqa: BLE001
-        return False
+    """Resolve the effective availability mode; True when ``away`` (#2559).
+
+    Delegates to the stdlib sibling :func:`availability_away_probe.resolved_away_mode`,
+    which reads the resolved mode by subprocessing ``t3 <overlay> availability
+    show`` instead of an in-process ``django.setup()`` — the bare-``python3``
+    hook has no ``uv`` env, so the old bootstrap returned ``False`` (never away)
+    and silently neutered ``t3 <overlay> availability away`` as a suppressor. The
+    thin wrapper stays here as the single patchable seam every caller and test
+    already targets.
+    """
+    return resolved_away_mode_stdlib()
 
 
 def _is_live_user_turn(data: dict) -> bool:

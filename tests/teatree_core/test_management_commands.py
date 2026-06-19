@@ -1044,6 +1044,60 @@ class TestTasksCancelCommand(TestCase):
         with pytest.raises(SystemExit):
             call_command("tasks", "cancel", 99999)
 
+    def test_cancel_with_reason_persists_a_task_attempt(self) -> None:
+        # #2559: a cancellation reason must persist to the DB so the audit trail
+        # records WHY a task was cancelled — mirroring how ``complete --note``
+        # records a TaskAttempt. Before the fix ``cancel`` accepted no --reason.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        call_command("tasks", "cancel", task.pk, reason="superseded by !6219")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        attempt = task.attempts.get()
+        assert attempt.error == "superseded by !6219"
+        assert attempt.result == {"cancel_reason": "superseded by !6219"}
+        assert attempt.exit_code == 1  # a cancellation is a non-success terminal
+
+    def test_cancel_without_reason_records_no_attempt(self) -> None:
+        # The reason is optional — a bare cancel stays a clean no-attempt fail
+        # exactly as before (no regression).
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        call_command("tasks", "cancel", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.attempts.count() == 0
+
+    def test_cancel_blank_reason_records_no_attempt(self) -> None:
+        # A whitespace-only reason is treated as no reason — no empty audit row.
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+        call_command("tasks", "cancel", task.pk, reason="   ")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.attempts.count() == 0
+
 
 class TestTasksCompleteCommand(TestCase):
     """Tests for the tasks complete subcommand (#1031).
