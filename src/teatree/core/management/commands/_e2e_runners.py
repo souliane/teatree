@@ -104,6 +104,23 @@ def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
     return cache_path / repo.e2e_dir
 
 
+def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
+    """Install dependencies for a TeaTree-managed external Playwright checkout.
+
+    ``--repo`` clones live under TeaTree's cache, so the runner owns making them
+    executable. User-provided ``T3_PRIVATE_TESTS`` directories remain
+    user-managed and do not go through this helper.
+    """
+    package_json = playwright_root / "package.json"
+    if not package_json.is_file():
+        return
+    node_modules = playwright_root / "node_modules"
+    if node_modules.is_dir() and any(node_modules.iterdir()):
+        return
+    install_cmd = ["npm", "ci"] if (playwright_root / "package-lock.json").is_file() else ["npm", "install"]
+    run_checked(install_cmd, cwd=playwright_root)
+
+
 def resolve_private_tests_path() -> Path | None:
     """Resolve the private tests directory from env or config."""
     from teatree.config import load_config  # noqa: PLC0415
@@ -133,9 +150,11 @@ def resolve_external_specs_path(repo: str, branch: str) -> Path:
         if repo not in repos_by_name:
             raise E2eSpecsResolutionError.repo_not_in_config(repo)
         try:
-            return clone_or_update_e2e_repo(repos_by_name[repo], branch)
+            playwright_root = clone_or_update_e2e_repo(repos_by_name[repo], branch)
         except E2eBranchNotFoundError as exc:
             raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
+        ensure_external_e2e_dependencies(playwright_root)
+        return playwright_root
     if branch:
         raise E2eSpecsResolutionError.branch_needs_repo()
     private_tests_path = resolve_private_tests_path()
