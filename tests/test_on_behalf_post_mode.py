@@ -161,6 +161,61 @@ class TestAutoActionsAllowlist(_OnBehalfDbBase):
         assert resolve_on_behalf_verdict("post_e2e_evidence") is OnBehalfVerdict.BLOCK
 
 
+class TestAgentReviewRequestDisabled(_OnBehalfDbBase):
+    """``agent_review_request_disabled`` BLOCKs ``review_request_post`` regardless of mode.
+
+    The customer-overlay done-definition: for an overlay that keeps a human in
+    the merge loop (``require_human_approval_to_merge = True``), the agent's job
+    ends at "MR is mergeable + review-requestable" — it must NOT auto-request
+    review. But the autonomy collapse (``notify``/``full``) sets
+    ``on_behalf_post_mode = immediate``, which would otherwise lift the
+    review-request post gate. This setting is the dedicated, mode-independent
+    disable that the user opts the customer overlay into; default off preserves
+    the legacy behaviour for every other overlay.
+    """
+
+    def test_disabled_blocks_review_request_even_under_immediate(self) -> None:
+        # ``immediate`` is exactly the autonomy-collapsed value a customer overlay
+        # (``notify`` tier) resolves to — yet review-request must still BLOCK.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        ConfigSetting.objects.set_value("agent_review_request_disabled", value=True)
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
+
+    def test_disable_is_scoped_to_review_request_only(self) -> None:
+        # The disable must NOT collapse every colleague-visible action — only the
+        # review-request post. Other ``immediate`` posts keep proceeding.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        ConfigSetting.objects.set_value("agent_review_request_disabled", value=True)
+        assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
+
+    def test_disabled_blocks_review_request_under_blocking_mode_too(self) -> None:
+        # Under a blocking mode the review-request was already BLOCKed; the
+        # setting must keep it BLOCKed (a recorded approval is still required).
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        ConfigSetting.objects.set_value("agent_review_request_disabled", value=True)
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
+
+    def test_default_off_lets_immediate_review_request_proceed(self) -> None:
+        # No row set → default False → ``immediate`` review-request PROCEEDs,
+        # exactly the legacy behaviour. This pins that the gate is opt-in.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.PROCEED
+
+    def test_per_overlay_disable_blocks_only_that_overlay(self) -> None:
+        # The customer-overlay scenario: global gate off (a solo tooling overlay
+        # auto-requests), the customer overlay opts into the disable.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        ConfigSetting.objects.set_value("agent_review_request_disabled", value=True, scope="customer")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "customer")
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.BLOCK
+
+    def test_other_overlay_unaffected_by_per_overlay_disable(self) -> None:
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        ConfigSetting.objects.set_value("agent_review_request_disabled", value=True, scope="customer")
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "tooling")
+        assert resolve_on_behalf_verdict("review_request_post") is OnBehalfVerdict.PROCEED
+
+
 class TestDefaults(_OnBehalfDbBase):
     def test_default_when_no_config(self) -> None:
         """No DB row and no config file → DRAFT_OR_ASK (the dataclass default)."""

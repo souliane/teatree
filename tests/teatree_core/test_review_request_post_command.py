@@ -22,7 +22,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import UserSettings
+from teatree.config import OnBehalfPostMode, UserSettings
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost, Ticket
 
@@ -303,6 +303,65 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
             code2, payload2 = _run("--title", "fix(scope): thing")
         assert code2 == 0, payload2
         assert payload2["action"] == "post"
+        assert len(backend.posts) == 1
+
+
+class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
+    """``agent_review_request_disabled`` refuses the auto-post end-to-end (#2560).
+
+    The customer-overlay scenario: the autonomy collapse has set
+    ``on_behalf_post_mode = immediate`` (which would otherwise auto-post a review
+    request with no approval), but the overlay opts into
+    ``agent_review_request_disabled``. The command must refuse with no post —
+    the agent stops at "MR is mergeable + review-requestable".
+    """
+
+    def _immediate_with_disable(self, *, disabled: bool) -> AbstractContextManager[object]:
+        return patch(
+            "teatree.on_behalf_gate.get_effective_settings",
+            return_value=UserSettings(
+                on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE,
+                agent_review_request_disabled=disabled,
+            ),
+        )
+
+    def test_disabled_refuses_auto_post_under_immediate(self) -> None:
+        backend = _FakeBackend()
+
+        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
+            ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+            return GuardDecision(action="post")
+
+        with (
+            self._immediate_with_disable(disabled=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", side_effect=_real_claim),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "fix(scope): thing")
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "on_behalf_not_approved"
+        assert backend.posts == []
+        # The orphan claim is rolled back exactly as the missing-approval path.
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_not_disabled_auto_posts_under_immediate(self) -> None:
+        # The control: WITHOUT the disable, ``immediate`` auto-posts (no
+        # recorded approval needed). This pins the disable as the only thing
+        # that changes the outcome — the test above is anti-vacuous.
+        backend = _FakeBackend()
+        with (
+            self._immediate_with_disable(disabled=False),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "fix(scope): thing")
+
+        assert code == 0, payload
+        assert payload["action"] == "post"
         assert len(backend.posts) == 1
 
 
