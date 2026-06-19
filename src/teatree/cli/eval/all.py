@@ -57,7 +57,13 @@ def _relative_source(path: Path) -> str:
 
 def build_scenarios_table(specs: list[EvalSpec]) -> Table:
     table = Table(title="Eval scenarios", show_lines=False)
-    table.add_column("Name", style="bold")
+    # ``min_width`` floors the Name column at the longest name so a piped/non-TTY
+    # console (default width 80) can neither wrap nor truncate it. A CI discovery-
+    # assertion greps ``t3 eval list`` for a scenario NAME on one line; without
+    # this floor a long scenario name truncates to an ellipsis and the grep
+    # falsely reports broken overlay wiring.
+    longest_name = max((len(spec.name) for spec in specs), default=0)
+    table.add_column("Name", style="bold", no_wrap=True, min_width=longest_name)
     table.add_column("Scenario")
     table.add_column("Agent")
     table.add_column("File", overflow="ellipsis", no_wrap=True)
