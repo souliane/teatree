@@ -5690,12 +5690,22 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree tasks cancel [OPTIONS] TASK_ID
 
+ Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
+
+ An optional ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring
+ ``complete --note``) so the audit trail records WHY the task was cancelled
+ — the cancel transition is otherwise indistinguishable from any other
+ failure (#2559). A blank/whitespace reason records no attempt (no empty
+ audit row); the cancellation itself is unchanged.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  [required]                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --confirm    --no-confirm      [default: no-confirm]                         │
-│ --help                         Show this message and exit.                   │
+│ --confirm    --no-confirm          [default: no-confirm]                     │
+│ --reason                     TEXT  Audit-trail reason recorded on a          │
+│                                    TaskAttempt (e.g. 'superseded by !6219'). │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

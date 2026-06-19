@@ -135,6 +135,52 @@ class TestEvalList:
         assert result.exit_code == 0
         assert "(no scenarios discovered)" in result.output
 
+    def test_name_column_is_floored_to_the_longest_scenario_name(self) -> None:
+        # CI discovery-assertion steps grep `t3 eval list` output for a scenario
+        # NAME on a single line. A piped (non-TTY) Rich console defaults to width
+        # 80, which can truncate the no-wrap Name column with an ellipsis — the
+        # grep then finds nothing and falsely reports "overlay wiring is broken".
+        # The fix floors the Name column's `min_width` at the longest name so it
+        # is never narrowed below a full name. Assert that floor directly.
+        from teatree.cli.eval.all import build_scenarios_table  # noqa: PLC0415
+
+        long_name = "a_very_long_overlay_scenario_name_xxxxx"
+        table = build_scenarios_table([_spec("short"), _spec(long_name)])
+        name_column = table.columns[0]
+        assert name_column.header == "Name"
+        assert name_column.no_wrap is True
+        assert name_column.min_width == len(long_name), (
+            f"Name column min_width {name_column.min_width!r} must floor at the longest "
+            f"name ({len(long_name)}) so it cannot truncate when piped"
+        )
+
+    def test_long_scenario_name_survives_a_narrow_piped_render(self) -> None:
+        # End-to-end: with realistic-length sibling columns competing for an 80-col
+        # budget, the long name renders intact on one greppable line.
+        from io import StringIO  # noqa: PLC0415
+
+        from rich.console import Console  # noqa: PLC0415
+
+        from teatree.cli.eval.all import build_scenarios_table  # noqa: PLC0415
+
+        long_name = "a_very_long_overlay_scenario_name_xxxxx"
+        spec = EvalSpec(
+            name=long_name,
+            scenario="the agent opens the PR via the sanctioned wrapper, never a raw forge merge call",
+            agent_path="src/overlay/skills/example-overlay/SKILL.md",
+            prompt="do",
+            matchers=(
+                Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="pr create"),
+            ),
+            source_path=Path("/some/very/long/absolute/path/to/evals/specs/a_very_long_overlay_scenario.yaml"),
+        )
+        buffer = StringIO()
+        Console(file=buffer, width=80, force_terminal=False).print(build_scenarios_table([spec]))
+        rendered = buffer.getvalue()
+        assert any(long_name in line for line in rendered.splitlines()), (
+            f"long scenario name not greppable on one line at width 80:\n{rendered}"
+        )
+
 
 class TestEvalRun:
     def test_sdk_run_default_budget_is_generous_so_a_scenario_completes(self) -> None:
