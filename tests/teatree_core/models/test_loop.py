@@ -227,9 +227,13 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="dream").daily_at == dt.time(3, 0)
         assert Loop.objects.get(name="dogfood").delay_seconds == 86400
 
-    def test_eval_local_seeded_enabled_daily(self) -> None:
+    def test_eval_local_seeded_paused_daily(self) -> None:
+        # The #2513 cutover seeds every loop PAUSED, and migration
+        # 0087_pause_all_loops disables the rows seeded enabled by 0078 — the row
+        # IS seeded with its daily cadence, just not enabled until an operator
+        # turns it on.
         loop = Loop.objects.get(name="eval_local")
-        assert loop.enabled is True
+        assert loop.enabled is False
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:

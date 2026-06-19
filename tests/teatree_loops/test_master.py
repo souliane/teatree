@@ -52,6 +52,25 @@ class TestBuildLoopTableJobs(django.test.TestCase):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
+    def test_off_live_tick_loop_is_never_picked_up(self) -> None:
+        # An off_live_tick loop (the heavy ``dream`` pass, #1933 § 3) is enabled
+        # and due, yet the live master tick must NEVER invoke its build_jobs or
+        # bump its last_run_at — it is driven by its own low-frequency cron.
+        now = timezone.now()
+        Loop.objects.create(name="m-dream", delay_seconds=60, prompt=_prompt())  # enabled + never run -> due
+        off = MiniLoop(
+            name="m-dream",
+            default_cadence_seconds=60,
+            build_jobs=lambda **_: ["job-m-dream"],
+            off_live_tick=True,
+        )
+        with patch("teatree.loops.master.iter_loops", return_value=(off,)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-dream" not in jobs
+        assert jobs == []
+        # never re-armed: its cadence anchor is untouched by the live tick
+        assert Loop.objects.get(name="m-dream").last_run_at is None
+
     def test_one_loop_raising_does_not_abort_the_rest(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="m-boom", delay_seconds=60, prompt=_prompt())

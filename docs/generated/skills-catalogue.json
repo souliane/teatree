@@ -50,7 +50,7 @@
     },
     {
       "name": "loops",
-      "summary": "Show t3 loop status \u2014 which loops are running vs stalled, the cadence and next tick of each loop, and loop ownership"
+      "summary": "Show t3 loop status and trigger DB-configured loops \u2014 which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a master tick"
     },
     {
       "name": "next",
@@ -59,6 +59,10 @@
     {
       "name": "platforms",
       "summary": "Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms"
+    },
+    {
+      "name": "prompts",
+      "summary": "Trigger and manage reusable prompts \u2014 list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history"
     },
     {
       "name": "retro",
