@@ -351,7 +351,7 @@ Read ``text`` aloud synchronously through the local speakers per [teatree.speak]
 | Subcommand | Description |
 | --- | --- |
 | `create` | Enqueue the next-phase task for a ticket |
-| `cancel` |  |
+| `cancel` | Cancel a pending or (with --confirm) claimed task, driving it to FAILED |
 | `complete` | Mark a claimed or failed task COMPLETED for work finished out-of-band |
 | `claim` |  |
 | `start` | Claim an interactive task and exec ``claude`` in the current terminal |

@@ -83,8 +83,26 @@ class Command(TyperCommand):
         return {"task_id": task.pk, "ticket_id": ticket_obj.pk, "phase": phase, "execution_target": target}
 
     @command()
-    def cancel(self, task_id: int, *, confirm: bool = False) -> None:
+    def cancel(
+        self,
+        task_id: int,
+        *,
+        confirm: bool = False,
+        reason: Annotated[
+            str,
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'superseded by !6219')."),
+        ] = "",
+    ) -> None:
+        """Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
+
+        An optional ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring
+        ``complete --note``) so the audit trail records WHY the task was cancelled
+        — the cancel transition is otherwise indistinguishable from any other
+        failure (#2559). A blank/whitespace reason records no attempt (no empty
+        audit row); the cancellation itself is unchanged.
+        """
         from django.db import transaction  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415
 
         with transaction.atomic():
             try:
@@ -101,6 +119,15 @@ class Command(TyperCommand):
                 self.stderr.write(f"Task {task_id} already finished ({task.status}).")
                 raise SystemExit(1)
 
+            if reason.strip():
+                TaskAttempt.objects.create(
+                    task=task,
+                    execution_target=task.execution_target,
+                    ended_at=timezone.now(),
+                    exit_code=1,
+                    error=reason.strip(),
+                    result={"cancel_reason": reason.strip()},
+                )
             task.fail()
         self.stdout.write(f"Task {task_id} cancelled.")
 
