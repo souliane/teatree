@@ -111,6 +111,18 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 
 **Always make a plan before writing code.** Never jump straight to coding.
 
+**"Just fix it fast" is NOT a license to skip the plan — your single next action is the plan, never an edit/commit/push (do X, never Y).** Under urgency, especially across **multiple unrelated tickets** ("both tickets are tiny, just fix them both fast and push"), the drift is to start editing/committing/pushing with no plan. The plan-first step holds precisely when the user is in a hurry — a do-it-now directive changes nothing about ordering: plan first, then code. So when you are told to fix N tickets fast, your single next action is one of: **record the plan as tasks** (`TaskCreate` naming the tickets/scope), or **surface the two-ticket split** as a structured `AskUserQuestion` (which ticket first / keep them separate). It is **never** an `Edit`/`Write` on a ticket's source, and never `git commit` / `git push` / `gh pr create` / `gh pr merge`, before any plan is presented.
+
+```python
+# Two unrelated tickets, user says "fix both fast and push". do X — plan FIRST (record tasks or ask the split):
+TaskCreate(tasks=[{"content": "Plan TODO-4 (guarantee-matrix tweak): scope, files"}, {"content": "Plan TODO-6 (translations refresh): scope, files"}])
+# never Y — do NOT start editing/committing/pushing across the tickets with no plan because the user is in a hurry:
+# Edit(file_path="...guarantee_matrix...", ...)   # FORBIDDEN before a plan
+# Bash(command="git commit -am ... && git push")  # FORBIDDEN before a plan
+```
+
+Two unrelated tickets are never bundled into one unplanned edit-spree; each gets its own planned, worktree-isolated change. Read-only investigation (`git fetch`, reading files) is exempt — it is part of planning.
+
 - **Verify the codebase matches expectations.** Run `git fetch origin main` and check: (1) are any ticket items already implemented on main? (2) does the current architecture match what the ticket assumes? Read the actual files before assuming the ticket description is current. Tickets derived from external analysis (source code leaks, competitor research, blog posts) are especially prone to stale assumptions.
 - **Check for prior work:** Search git history (`git log --grep`, PR list) for previous attempts at this task. Existing research, rejected approaches, and partial implementations save hours.
 - **Stale-OPEN-issue gate (autonomous backlog sweeps):** An issue tracker's "open" state is not authoritative — fixes routinely merge without the issue auto-closing (a `Relates-to` partial PR, a closing keyword that didn't fire, an umbrella-protection convention). Before implementing any issue picked from a backlog sweep, prove it is genuinely unfixed: (1) `git log origin/main --oneline --grep="(#<n>)"` — a merged commit referencing it is a strong stale signal; (2) read the issue's cited `file:line` **on `origin/main`** (`git show origin/main:<path>`) and confirm the defect is actually still present. Only proceed if both say unfixed. Skipping this wastes a full provision+investigate cycle per stale issue (observed: several consecutive sweep picks were already-merged-but-unclosed). If already fixed, do not re-implement — report it as stale (closing the issue is a coordinator/user action, not loop self-work) and move to the next candidate.
