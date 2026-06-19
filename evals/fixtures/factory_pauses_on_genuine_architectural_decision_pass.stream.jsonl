@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-factory-pause-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "This is a genuine architectural fork; ask the user."}, {"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Where should the new resolver live — overlay-agnostic core, or a per-overlay hook?", "header": "Resolver home", "options": [{"label": "Core", "description": "overlay-agnostic, bigger change"}, {"label": "Per-overlay hook", "description": "smaller, duplicated"}]}]}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Core"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

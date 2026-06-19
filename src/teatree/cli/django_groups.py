@@ -66,6 +66,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
             ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
+            ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
+            ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),
+            (
+                "reclaim-disk",
+                "Reclaim disk via zero-data-loss docker prunes (builder + dangling images + unreferenced volumes).",
+            ),
+            ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
         ],
     ),
     "run": DjangoGroup(

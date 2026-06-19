@@ -33,11 +33,15 @@ Reconcile-on-read
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.types import E2ELastRunSerialized, E2ERecipeSerialized, E2ERepoEntrySerialized
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 _RECIPE_KEY = "e2e_recipe"
 
@@ -178,14 +182,45 @@ def resolve_environment(ticket: Ticket, *, at: str = "") -> EnvResolution:
     return EnvResolution(rung="main", provision_at=dict.fromkeys(repo_names, "origin/main"))
 
 
+@dataclass(frozen=True)
+class RunProvenance:
+    """Which vanilla spec a run exercised, for DB-only reproducibility (#272).
+
+    ``spec_path`` is the exact spec that ran; ``manifest_entry`` the
+    overlay-resolved manifest entry id (e.g. a CI lane). Both are
+    overlay-agnostic strings core never parses; empty values are dropped rather
+    than stored, so an overlay with no per-spec manifest records exactly the
+    pre-#272 shape (the default ``RunProvenance()`` is the no-op).
+    """
+
+    spec_path: str = ""
+    manifest_entry: str = ""
+
+
+_NO_PROVENANCE = RunProvenance()
+
+
+def resolve_run_provenance(overlay: "OverlayBase", spec_path: str) -> RunProvenance:
+    """Build the #272 run provenance for *spec_path*, asking *overlay* for its lane.
+
+    Empty ``spec_path`` (no per-spec run) yields the no-op provenance; otherwise
+    the overlay maps the spec to its manifest entry id via
+    :meth:`OverlayBase.get_e2e_run_provenance`.
+    """
+    if not spec_path:
+        return _NO_PROVENANCE
+    return RunProvenance(spec_path=spec_path, manifest_entry=overlay.get_e2e_run_provenance(spec_path))
+
+
 def record_run(
     ticket: Ticket,
     *,
     result: str,
     per_repo_shas: dict[str, str],
     env: str = "local",
+    provenance: RunProvenance = _NO_PROVENANCE,
 ) -> None:
-    """Record run provenance on the durable recipe (#794, #88).
+    """Record run provenance on the durable recipe (#794, #88, #272).
 
     ``{result, timestamp, per_repo_shas, env}`` is written to ``last_run`` so
     a run is auditable after the workspace is cleaned. On a **green** run the
@@ -197,14 +232,24 @@ def record_run(
     on-disk workspace) or ``"dev"`` (a deployed dev run). The DoD gate (#88)
     reads it: only a *local* green run satisfies the pre-ship requirement,
     so a dev-after-merge run records provenance without unblocking the gate.
+
+    ``provenance`` (#272) records which vanilla spec ran and its
+    overlay-resolved manifest entry id so the run is reproducible from the DB
+    record alone — empty fields are omitted (default ``RunProvenance()`` is the
+    pre-#272 shape).
     """
     recipe = load_recipe(ticket)
-    recipe.last_run = E2ELastRunSerialized(
+    last_run = E2ELastRunSerialized(
         result=result,
         timestamp=timezone.now().isoformat(),
         per_repo_shas=dict(per_repo_shas),
         env=env,
     )
+    if provenance.spec_path:
+        last_run["spec_path"] = provenance.spec_path
+    if provenance.manifest_entry:
+        last_run["manifest_entry"] = provenance.manifest_entry
+    recipe.last_run = last_run
     if result == "green":
         by_repo = {r.repo: r for r in recipe.repos}
         for repo, sha in per_repo_shas.items():

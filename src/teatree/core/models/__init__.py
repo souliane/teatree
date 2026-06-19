@@ -40,6 +40,7 @@ from teatree.core.models.loop import Loop, LoopManager
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
+from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
@@ -136,6 +137,7 @@ __all__ = [
     "MatcherDetail",
     "MergeAudit",
     "MergeClear",
+    "MergeableNotified",
     "MiniLoopMarker",
     "NoPlanArtifactError",
     "OnBehalfApproval",

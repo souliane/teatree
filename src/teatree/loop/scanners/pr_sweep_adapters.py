@@ -16,6 +16,7 @@ from typing import TypedDict, cast
 
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, CheckResult, PrSummary
+from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.run import run_allowed_to_fail
 
 _GH_NOT_INSTALLED_RC = 127
@@ -294,6 +295,9 @@ class SlackMergeNotifier:
 
     def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
         target = url or f"{slug}#{pr_id}"
+        if reason == _MERGEABLE_AWAITING_REVIEW_REASON:
+            self._post(f"mergeable, ready to request review {target}")
+            return
         self._post(f"flag ({reason}) {target}")
 
     def _post(self, text: str) -> None:

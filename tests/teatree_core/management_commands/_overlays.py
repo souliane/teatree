@@ -340,7 +340,25 @@ class PreRunOverlay(FullOverlay):
         return [ProvisionStep(name=f"prep-{service}", callable=_log_step)]
 
 
+class ProvenanceOverlay(FullOverlay):
+    """Overlay that resolves a manifest entry id from a spec path (#272).
+
+    Mirrors a real per-spec manifest: the entry id is the spec's CI lane, here
+    a simple ``<basename>-lane`` derivation so the test can assert the command
+    threads the overlay-resolved id (not just the spec path) into the run
+    provenance.
+    """
+
+    def get_e2e_run_provenance(self, spec_path: str) -> str:
+        if not spec_path:
+            return ""
+        return f"{spec_path.rsplit('/', 1)[-1].removesuffix('.spec.ts')}-lane"
+
+
 FULL_OVERLAY = "tests.teatree_core.management_commands._overlays.FullOverlay"
+
+
+PROVENANCE_OVERLAY = "tests.teatree_core.management_commands._overlays.ProvenanceOverlay"
 
 
 FORBID_CLOSE_KEYWORDS_OVERLAY = "tests.teatree_core.management_commands._overlays.ForbidCloseKeywordsOverlay"

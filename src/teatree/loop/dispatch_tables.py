@@ -99,14 +99,17 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "review_request_merge_react.missing_scope": "action_needed",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
     # (see is_pr_sweep_flag): a conflicted open PR (#78), a green
-    # solo-overlay PR with no recorded independent cold-review (#68), and a PR
+    # solo-overlay PR with no recorded independent cold-review (#68), a PR
     # red only on repo-state checks against a stale base that a rerun can't fix
-    # (#2045 — only a merge-update can). All need an operator decision, so they
-    # surface in action_needed rather than being dropped with the rest of the
-    # diagnostic pr_sweep.* family.
+    # (#2045 — only a merge-update can), and a colleague-facing own PR that is
+    # green+clean+up-to-date but uncleared — mergeable, awaiting the operator's
+    # review-request decision. All need an operator decision, so they surface in
+    # action_needed rather than being dropped with the rest of the diagnostic
+    # pr_sweep.* family.
     "pr_sweep.flag_conflict": "action_needed",
     "pr_sweep.flag_no_review": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
+    "pr_sweep.flag_mergeable": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -138,13 +141,20 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
 
 # pr_sweep flag-level kinds the scanner deliberately did NOT act on: a merge
-# conflict, a missing independent cold-review on a solo overlay, or a PR red
+# conflict, a missing independent cold-review on a solo overlay, a PR red
 # only on repo-state checks against a stale base that needs a merge-update
-# (#2045). They share the ``pr_sweep.`` prefix for log grouping but must escape
-# the diagnostic drop so the operator sees them — the same exemption shape as
-# the CI-green-gate self_update skip above.
+# (#2045), or a colleague-facing own PR that is mergeable but uncleared and
+# awaits the operator's review-request decision. They share the ``pr_sweep.``
+# prefix for log grouping but must escape the diagnostic drop so the operator
+# sees them — the same exemption shape as the CI-green-gate self_update skip
+# above.
 PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset(
-    {"pr_sweep.flag_conflict", "pr_sweep.flag_no_review", "pr_sweep.needs_branch_update"}
+    {
+        "pr_sweep.flag_conflict",
+        "pr_sweep.flag_no_review",
+        "pr_sweep.needs_branch_update",
+        "pr_sweep.flag_mergeable",
+    }
 )
 
 # Reviewer signals dispatch to the agent AND mirror into the statusline so

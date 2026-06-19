@@ -43,6 +43,10 @@ Same regex+semicolon shape as the other knobs in that file. Two policies are rec
 
 Repos absent from `SWEEP_POLICY` default to `bulk-update` so existing behavior is unchanged for unconfigured repos.
 
+### Mergeable colleague-facing MRs are notify-only
+
+When a self-authored MR on a **colleague-facing** repo turns green, is not draft, not conflicted, and up to date with main but has no independent CLEAR, the loop's `PrSweepScanner` does NOT auto-merge it and does NOT auto-request review (auto review-request is disabled by the per-overlay `agent_review_request_disabled` chokepoint). It DMs you the MR link + "mergeable, ready to request review" **once per head** (idempotent via the `MergeableNotified` ledger; re-fires only on a new commit), so you can decide when to request a colleague's review. The DM is the only action — colleague review remains the merge gate.
+
 **Why serial, not parallel, for `serial-merge`:** the whole point is that PR #N+1 must see the *post-merge* state of `main` before it tries to update — that is what removes the conflict cascade. Sweeping the full list in parallel and then merging sequentially defers the same conflicts to merge time instead of preventing them. The `serial-merge` loop therefore re-runs the discovery CLI after each merge, so it always operates on a fresh "open PRs as of now" snapshot.
 
 ## Dependencies

@@ -7,7 +7,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0088_backfill_worktree_overlay_from_ticket"),
+        ("core", "0089_mergeablenotified"),
     ]
 
     operations = [

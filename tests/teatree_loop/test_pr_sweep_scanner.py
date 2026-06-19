@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, Task
+from teatree.core.models import AutoReviewDispatch, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
@@ -247,7 +247,10 @@ class TestSkipPaths:
         assert signals[0].payload["reason"] == "changes_requested"
 
     def test_no_clear_for_head_skips_without_dm(self) -> None:
-        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        # A COLLEAGUE's open PR with no CLEAR is a pure silent skip — the
+        # mergeable-DM flag is scoped to the operator's OWN PRs, so a
+        # colleague's PR never DMs (it is theirs to merge).
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=COLLEAGUE_LOGIN)]})
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
@@ -255,11 +258,15 @@ class TestSkipPaths:
 
         assert keystone.calls == []
         assert notifier.calls == []
+        assert notifier.flag_calls == []
         assert signals[0].payload["reason"] == "no_clear_for_head"
 
     def test_clear_for_stale_sha_does_not_match_current_head(self) -> None:
+        # A stale-SHA CLEAR is treated as absent regardless of author; a
+        # colleague PR keeps this on the pure skip path so the assertion
+        # pins the stale-CLEAR=absent logic, not the own-PR mergeable flag.
         _issue_clear(sha=STALE)
-        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(head=HEAD)]})
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(head=HEAD, author=COLLEAGUE_LOGIN)]})
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
@@ -560,10 +567,11 @@ class TestSoloOverlayBypassesClearGate:
         assert signals[0].kind == "pr_sweep.blocked"
         assert signals[0].payload["reason"] == "solo_overlay_gh_fallback_failed"
 
-    def test_collaborative_overlay_default_still_skips_on_no_clear(self) -> None:
-        # Anti-vacuous: without solo_overlay, the existing no_clear_for_head
-        # skip MUST still fire. This is the gate that keeps the CLEAR contract
-        # in force for every overlay that did not explicitly opt in.
+    def test_collaborative_overlay_default_never_auto_merges_on_no_clear(self) -> None:
+        # Anti-vacuous: without solo_overlay, the CLEAR contract stays in force —
+        # the sweep NEVER auto-merges an uncleared PR. An own green+clean PR now
+        # DMs "mergeable, ready to request review" (notify-only) instead of a
+        # silent skip; the no-merge guarantee is unchanged.
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=False)
@@ -571,9 +579,10 @@ class TestSoloOverlayBypassesClearGate:
         signals = scanner.scan()
 
         assert keystone.calls == []
-        assert api.merge_pr_calls == []
-        assert notifier.calls == []
-        assert signals[0].payload["reason"] == "no_clear_for_head"
+        assert api.merge_pr_calls == []  # never auto-merged
+        assert notifier.calls == []  # not a merge announcement
+        assert signals[0].kind == "pr_sweep.flag_mergeable"
+        assert signals[0].payload["reason"] == "mergeable_awaiting_review"
 
 
 class TestSoloOverlayRequiresIndependentColdReview:
@@ -636,18 +645,18 @@ class TestSoloOverlayRequiresIndependentColdReview:
 
     def test_collaborative_overlay_unaffected_by_cold_review_gate(self) -> None:
         # Anti-vacuous: the cold-review gate is solo-overlay-only. A non-solo
-        # overlay with a recorded cold-review still skips on no_clear_for_head —
-        # the gate did not silently turn the collaborative default into a bypass.
+        # overlay with a recorded cold-review NEVER auto-merges — the gate did
+        # not silently turn the collaborative default into a bypass. (The own
+        # green PR now flags mergeable, notify-only; no merge happens.)
         _record_cold_review()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
-        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=False)
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=False)
 
         signals = scanner.scan()
 
-        assert api.merge_pr_calls == []
-        assert notifier.flag_calls == []
-        assert signals[0].payload["reason"] == "no_clear_for_head"
+        assert api.merge_pr_calls == []  # never auto-merged on a collaborative overlay
+        assert signals[0].kind == "pr_sweep.flag_mergeable"
 
 
 class TestAutoReviewDispatch:
@@ -757,8 +766,9 @@ class TestAutoReviewDispatch:
 
     def test_human_approval_overlay_never_reaches_dispatch_path(self) -> None:
         # solo_overlay=False is the human-approval-required posture (a
-        # GitLab-governed client overlay): the sweep skips on no_clear_for_head
-        # and never enters _evaluate_solo_overlay, so no review task is enqueued.
+        # GitLab-governed client overlay): the sweep never enters
+        # _evaluate_solo_overlay, so no review task is enqueued. The own green
+        # PR flags mergeable (notify-only) instead of arming a cold-review.
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         scanner, _ = _scanner(
@@ -767,8 +777,8 @@ class TestAutoReviewDispatch:
 
         signals = scanner.scan()
 
-        assert dispatcher.calls == []
-        assert signals[0].payload["reason"] == "no_clear_for_head"
+        assert dispatcher.calls == []  # the collaborative path never auto-dispatches a review
+        assert signals[0].payload["reason"] == "mergeable_awaiting_review"
 
     def test_external_delivery_suppresses_review_arm(self) -> None:
         # #2104: the production seam — a hand-dispatched delivery agent ran
@@ -1049,6 +1059,112 @@ class TestConflictFlag:
         assert [s.kind for s in signals] == ["pr_sweep.merged"]
 
 
+class TestMergeableAwaitingReviewFlag:
+    """A colleague-facing own PR with no CLEAR but green+clean+up-to-date is flagged mergeable.
+
+    On a COLLABORATIVE overlay (NOT solo_overlay) the sweep cannot auto-merge —
+    a colleague review is the gate — but a silent ``no_clear_for_head`` skip
+    leaves the user unaware the PR is ready. Instead the sweep DMs the user once
+    per head ("mergeable, ready to request review") and never auto-requests
+    review nor merges. The :class:`MergeableNotified` ledger keeps the DM at
+    exactly once per head, re-firing only on a new commit.
+    """
+
+    def test_own_green_clean_uptodate_pr_with_no_clear_is_flagged_mergeable(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []  # never merged — no CLEAR
+        assert api.merge_pr_calls == []  # never auto-merged via the bound path
+        assert notifier.calls == []  # not a merge announcement
+        assert notifier.flag_calls == [
+            (SLUG, 6230, "mergeable_awaiting_review", f"https://github.com/{SLUG}/pull/6230")
+        ]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_mergeable"]
+        assert signals[0].payload["reason"] == "mergeable_awaiting_review"
+        assert signals[0].payload["merged"] is False
+        assert MergeableNotified.objects.filter(slug=SLUG, pr_id=6230, head_sha=HEAD).count() == 1
+
+    def test_dm_fires_once_per_head_second_sweep_is_silent(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        first = scanner.scan()
+        second = scanner.scan()
+
+        assert first[0].kind == "pr_sweep.flag_mergeable"
+        # second tick on the same head: ledger already recorded -> no re-DM
+        assert notifier.flag_calls == [
+            (SLUG, 6230, "mergeable_awaiting_review", f"https://github.com/{SLUG}/pull/6230")
+        ]
+        assert second[0].kind == "pr_sweep.skip"
+        assert second[0].payload["reason"] == "no_clear_for_head"
+        assert MergeableNotified.objects.filter(slug=SLUG, pr_id=6230).count() == 1
+
+    def test_new_head_refires_the_dm(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+        scanner.scan()
+
+        api.prs_by_slug[SLUG] = [_open_pr(head=STALE)]
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.flag_mergeable"
+        assert notifier.flag_calls == [
+            (SLUG, 6230, "mergeable_awaiting_review", f"https://github.com/{SLUG}/pull/6230"),
+            (SLUG, 6230, "mergeable_awaiting_review", f"https://github.com/{SLUG}/pull/6230"),
+        ]
+
+    def test_colleague_authored_pr_is_not_flagged_mergeable(self) -> None:
+        # A colleague's open PR in a watched repo is theirs — never DM it as ours.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=COLLEAGUE_LOGIN)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == []
+        assert signals[0].kind == "pr_sweep.skip"
+        assert signals[0].payload["reason"] == "no_clear_for_head"
+
+    def test_behind_main_pr_is_not_flagged_mergeable(self) -> None:
+        # Behind-main is not "ready to request review" — not flagged.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(behind_main=True)]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == []
+        assert signals[0].kind == "pr_sweep.skip"
+        assert signals[0].payload["reason"] == "no_clear_for_head"
+
+    def test_ci_red_pr_with_no_clear_is_not_flagged_mergeable(self) -> None:
+        # A red PR is blocked on ci_red before the mergeable check is reached.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == []
+        assert signals[0].kind == "pr_sweep.skip"
+        assert signals[0].payload["reason"] == "ci_red"
+
+    def test_solo_overlay_does_not_flag_mergeable(self) -> None:
+        # Anti-vacuous: on a solo overlay the no-CLEAR path takes the solo
+        # bypass (flag_no_review without a cold-review), never the
+        # collaborative mergeable DM. The mergeable flag is the COLLABORATIVE
+        # branch only.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, notifier = _scanner(api=api, keystone=FakeKeystone(), solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert all(reason != "mergeable_awaiting_review" for _slug, _pr, reason, _url in notifier.flag_calls)
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+
+
 class TestGhConflictDecode:
     """The ``gh`` adapter maps GitHub's mergeable / mergeStateStatus to is_conflicted."""
 
@@ -1112,6 +1228,13 @@ class TestSlackMergeNotifier:
             slug=SLUG, pr_id=42, reason="no_independent_review", url=""
         )
         assert backend.posts == [("U1", f"flag (no_independent_review) {SLUG}#42")]
+
+    def test_mergeable_flag_posts_ready_to_request_review_message(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+            slug=SLUG, pr_id=42, reason="mergeable_awaiting_review", url="https://github.com/x/pull/42"
+        )
+        assert backend.posts == [("U1", "mergeable, ready to request review https://github.com/x/pull/42")]
 
     def test_no_user_id_posts_nothing(self) -> None:
         backend = self._Backend()

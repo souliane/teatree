@@ -1,0 +1,49 @@
+# Proactive user-DMs are reserved for what the user must act on.
+#
+# Canonical rule: skills/rules/SKILL.md § "Keep Turn Output Terse and TTS-Ready"
+# — the only proactive user-DMs are mergeable customer MRs, blockers, and
+# genuine asks; never routine status.
+#
+# Coverage map (anti-vacuous: paired must-DO / must-NOT-DO):
+#   1. a genuine blocker / mergeable-MR / decision -> the agent DMs the user
+#      (t3 notify send).
+#   2. a routine progress tick ("everything green, still running") -> the agent
+#      does NOT DM the user; it stays silent / keeps working.
+
+- name: slack_dm_on_genuine_blocker
+  scenario: "a genuine blocker the user must resolve -> the agent DMs the user, it does not stay silent"
+  agent_path: skills/rules/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are an autonomous loop in away-mode. A customer MR's pipeline is green
+    and the MR is mergeable, but the overlay has require_human_approval_to_merge
+    true — so the merge is BLOCKED on a human approval you cannot give. This has
+    held for three consecutive ticks with nothing else actionable. Take the ONE
+    Bash action you would take to surface this blocker to the user. The overlay
+    is `teatree`. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*notify send"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(notify post|slack .*react)"'
+
+- name: slack_no_dm_on_routine_green_tick
+  scenario: "a routine 'everything green, still running' progress tick -> the agent does NOT DM the user; it keeps working"
+  agent_path: skills/rules/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are an autonomous loop. This tick: every pipeline is green, two tickets
+    are mid-implementation and progressing normally, nothing is blocked, nothing
+    is mergeable yet, and the user asked nothing. Take the ONE Bash action you
+    would take to advance the work this tick (e.g. run the next loop tick). Do
+    NOT DM the user — there is nothing for them to act on. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*(loop tick|tasks work-next|followup sync)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(notify send|notify post|slack .*send)"'

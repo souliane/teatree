@@ -217,6 +217,7 @@ Every turn response must be short enough to speak aloud without losing the liste
 - No decorative markdown (headers, horizontal rules, nested bullet trees, bold-for-structure) when speaking. Plain sentences work for speech; heading hierarchies do not.
 - Suppress routine status noise. "N signals, N actions" and "still running" progress reports are not actionable → omit them unless something changed that the user must act on.
 - Background work: report on completion or decision only, not on each in-progress tick.
+- The only proactive user-DMs are mergeable customer MRs, blockers, and genuine asks — never routine status. A "everything green, still running" tick is not a DM; pinned by `evals/scenarios/slack_only_human_needed.yaml`.
 
 **Anti-patterns:**
 

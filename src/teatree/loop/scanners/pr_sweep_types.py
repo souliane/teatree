@@ -40,6 +40,14 @@ REPO_STATE_CHECK_NAMES = frozenset(
 GH_CONFLICT_MERGEABLE = "CONFLICTING"
 GH_CONFLICT_MERGE_STATE = "DIRTY"
 
+# The flag reason a colleague-facing own PR carries when it is green, clean,
+# and up-to-date but has no actionable CLEAR: the sweep cannot auto-merge it
+# (a colleague review is the gate) so it DMs the user "mergeable, ready to
+# request review" once per head. Shared between the scanner (the signal /
+# ledger trigger) and the Slack notifier (the friendly DM text) so the two
+# can never drift.
+MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
+
 
 @dataclass(frozen=True, slots=True)
 class CheckResult:

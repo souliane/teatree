@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-slack-tick-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Nothing for the user to act on; advance the work."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 loop tick", "description": "advance the loop"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "tick done"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-customer_mr_green_dms_mergeable_notify-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "colleague review is the gate, so I notify myself only."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree notify send 'MR https://github.com/acme-eng/acme-product/pull/512 is mergeable, ready to request review' --idempotency-key mergeable:acme-product:512", "description": "self-DM the mergeable MR"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
