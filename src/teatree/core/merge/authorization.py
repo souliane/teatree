@@ -164,38 +164,51 @@ def _assert_clear_authorized(
 
 
 def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "") -> str:
-    """The overlay name to resolve autonomy against for *clear*.
+    """The overlay name to resolve autonomy against for *clear* — by REPO IDENTITY.
+
+    The merge-approval gate is a property of the **repo**, not of whatever
+    overlay token a ticket happens to carry. A repo's OWNING overlay
+    (:func:`infer_overlay_for_url` over every overlay's ``get_workspace_repos``)
+    is authoritative — a repo resolves to its OWNING overlay even when the
+    linked ticket was mis-stamped with a different overlay at creation.
+    Resolving the stored ``ticket.overlay`` first inverted this: a ticket
+    created while the agent was typed as a *different* overlay (the
+    ``T3_OVERLAY_NAME`` the CLI bridge stamps, or a loop scanner setting
+    ``ticket.overlay = self.overlay_name``) carried the WRONG overlay, so a PR
+    on a repo governed by a ``full`` overlay was evaluated under a below-full
+    overlay and refused. This is the name-collision trap: two overlays can carry
+    similar names while owning disjoint repo sets — the repo's owning overlay,
+    not the typed token, decides the gate.
 
     Resolution order, first non-empty wins:
 
-    1.  ``clear.ticket.overlay`` — authoritative when the CLEAR carries a
-        linked ticket.
-    2.  :func:`infer_overlay_for_url` on the CLEAR's stored ``slug`` — the same
-        workspace-repos inference ``ticket.overlay`` itself is populated from.
-        This resolves only when the stored slug is an ``owner/repo``.
-    3.  :func:`infer_overlay_for_url` on *resolved_slug* — the real
+    1.  :func:`infer_overlay_for_url` on the CLEAR's stored ``slug`` — the repo's
+        OWNING overlay, authoritative. Resolves only when the stored slug is an
+        ``owner/repo`` (the merge-authorization path stores ``owner/repo``).
+    2.  :func:`infer_overlay_for_url` on *resolved_slug* — the real
         ``owner/repo`` the merge keystone recovered for this CLEAR
         (:func:`resolve_pr_repo_slug` →
         :func:`_reconcile_slug_against_reviewed_sha`). The loop routinely
         issues a ticket-less substrate CLEAR whose stored ``slug`` is a *branch
-        name* (``merge-candidate-working-repos``), not ``owner/repo`` — step 2
-        returns ``""`` for it, so without this step the carve-out resolves the
-        global (babysit) overlay and wrongly refuses a merge the overlay
-        genuinely stands ``full`` for. Threading the merge's already-recovered
-        slug makes the autonomy check resolve the SAME repo the bound merge
-        targets.
+        name* (``merge-candidate-working-repos``), not ``owner/repo`` — step 1
+        returns ``""`` for it, so this step resolves the SAME repo the bound
+        merge targets.
+    3.  ``clear.ticket.overlay`` — the stored token, the LAST resort. Used only
+        when repo identity is inconclusive (no overlay claims either slug, e.g.
+        a repo not yet declared in any overlay's ``workspace_repos``), so an
+        existing attribution is never discarded for a blank inference.
 
     Returns ``""`` when no source resolves an overlay (the fail-closed default).
     """
     from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
-    overlay_name = str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
-    if overlay_name:
-        return overlay_name
     from_stored = infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
     if from_stored:
         return from_stored
-    return infer_overlay_for_url(resolved_slug.strip()).strip()
+    from_recovered = infer_overlay_for_url(resolved_slug.strip()).strip()
+    if from_recovered:
+        return from_recovered
+    return str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
 
 
 def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
