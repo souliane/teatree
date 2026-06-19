@@ -358,6 +358,16 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert action.kind == "statusline"
         assert action.zone == "action_needed"
 
+    def test_mergeable_flag_surfaces_in_action_needed(self) -> None:
+        # A colleague-facing own PR that is green+clean+up-to-date but uncleared
+        # DMs the user "mergeable, ready to request review"; the signal must also
+        # reach the operator's action-needed zone so it is not silently dropped
+        # with the diagnostic pr_sweep.* family.
+        action = self._action("pr_sweep.flag_mergeable", "mergeable_awaiting_review")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
     def test_no_review_flag_with_review_dispatched_routes_to_in_flight(self) -> None:
         # #68: a flag whose review was auto-armed is in-flight work, not an
         # operator-triage item — the loop is handling it.

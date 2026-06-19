@@ -56,12 +56,14 @@ from teatree.loop.scanners.pr_sweep_decision import (
     has_independent_cold_review,
     pr_authored_by_self,
     pr_ticket_under_external_delivery,
+    record_mergeable_notified,
     red_checks_are_all_repo_state,
 )
 from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
     GREEN_TERMINAL_CONCLUSIONS,
+    MERGEABLE_AWAITING_REVIEW_REASON,
     REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
@@ -74,6 +76,7 @@ __all__ = [
     "GH_CONFLICT_MERGEABLE",
     "GH_CONFLICT_MERGE_STATE",
     "GREEN_TERMINAL_CONCLUSIONS",
+    "MERGEABLE_AWAITING_REVIEW_REASON",
     "REPO_STATE_CHECK_NAMES",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
@@ -286,7 +289,9 @@ class PrSweepScanner:
             return _skip(pr, reason=skip_reason)
         clear = find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
         if clear is None:
-            return self._evaluate_solo_overlay(pr) if self.solo_overlay else _skip(pr, reason="no_clear_for_head")
+            if self.solo_overlay:
+                return self._evaluate_solo_overlay(pr)
+            return self._evaluate_no_clear_collaborative(pr)
         return self._evaluate_with_clear(pr, clear)
 
     def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
@@ -391,6 +396,39 @@ class PrSweepScanner:
             merged=True,
             merged_sha=merged_sha,
             reason=reason,
+        )
+
+    def _evaluate_no_clear_collaborative(self, pr: PrSummary) -> MergeAttempt:
+        """Flag a colleague-facing own PR that is green+clean+up-to-date but uncleared.
+
+        The COLLABORATIVE-overlay complement of :meth:`_evaluate_solo_overlay`:
+        on a non-solo overlay the sweep cannot auto-merge an uncleared PR — a
+        colleague review is the gate (and #2568's chokepoint already disables an
+        auto review-REQUEST). But a silent ``no_clear_for_head`` skip leaves the
+        user unaware their own PR turned green. When the PR is authored by the
+        operator (``self_identities``), CI-green, and NOT behind main (draft /
+        conflict / changes-requested are already filtered upstream), DM the user
+        the MR link + "mergeable, ready to request review" — exactly ONCE per
+        head via the :class:`MergeableNotified` ledger (a re-tick on the same
+        head / a ledger error degrades to the quiet ``no_clear_for_head`` skip),
+        re-firing only on a new commit. Notify-only: the sweep never requests
+        review and never merges. Every other case (colleague author, behind
+        main, red/pending CI) falls through to the existing skip.
+        """
+        ci_skip, _fallback = self._ci_gate(pr)
+        if ci_skip is not None:
+            return self._ci_block(pr, reason=ci_skip)
+        if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities) or pr.behind_main:
+            return _skip(pr, reason="no_clear_for_head")
+        if not record_mergeable_notified(pr=pr, overlay=self.overlay):
+            return _skip(pr, reason="no_clear_for_head")
+        self._flag(slug=pr.slug, pr_id=pr.number, reason=MERGEABLE_AWAITING_REVIEW_REASON, url=pr.url)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="flag_mergeable",
+            reason=MERGEABLE_AWAITING_REVIEW_REASON,
+            url=pr.url,
         )
 
     def _flag_conflict(self, pr: PrSummary) -> MergeAttempt:
