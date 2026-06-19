@@ -61,6 +61,12 @@ class TestManualMutantKilled:
 
 @pytest.mark.integration
 class TestMutmutKillsTheMutant:
+    # The real mutmut run is given an internal 420s subprocess budget below; the
+    # global 60s pytest-timeout (pyproject.toml ``[tool.pytest.ini_options]``)
+    # would kill the test long before that budget elapses on a loaded CI runner.
+    # Grant an outer timeout that comfortably exceeds the inner budget so the
+    # mutmut subprocess can finish and report instead of being flake-killed.
+    @pytest.mark.timeout(600)
     def test_mutmut_reports_a_killed_mutant(self, tmp_path) -> None:
         if shutil.which("uv") is None:
             pytest.skip("uv not available")
