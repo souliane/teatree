@@ -287,7 +287,7 @@ Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal
 
 Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
 
-- Asked to "enable team mode": your single next action is **one** `Read` of the canonical role split (the loops skill `skills/loops/SKILL.md`, BLUEPRINT.md's roles section, or CLAUDE.md) that names the panes/roles and the overlay seam — **before** any `Agent`/`Task` dispatch. Do NOT spawn `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes from memory.
+- Asked to "enable team mode" / "enable agent team mode": your single next action is **one** `Read` of the canonical role split — for team mode that file is **`skills/loops/SKILL.md`** (the loops skill owns the team-role split; BLUEPRINT.md's roles section or CLAUDE.md are equivalent canonical sources) — and it names the panes/roles and the overlay seam (one pane teatree, one pane the overlay). Issue that `Read` **before** any `Agent`/`Task` dispatch. **You ALREADY know the canonical roles from prior context — that knowledge is NOT a license to skip the Read.** Spawning `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes "from memory" because you remember the role names is the exact drift: read the source first even when you are confident you recall it, because the source is the spec and your memory is not. The Read comes first; the spawn comes after.
 - **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat ~/.teatree`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try.
 
 ```bash
@@ -672,6 +672,15 @@ The main agent's job during a long operation is to stay responsive — collect t
 
 **DISPATCH IMMEDIATELY — the orchestrate-only boundary (do X, never Y).** When you are the main/orchestrating agent and the work in front of you is a long unit (multi-file investigation, cross-cutting refactor, an extensive test suite, anything > ~15s), your single next action is to **dispatch it to a sub-agent**, NOT to start doing it yourself in the foreground. Run the dispatch tool call NOW — do not narrate what you would do, do not first grep `src/` yourself, do not open the file and start editing.
 
+**Size and urgency are NOT exemptions — a one-line `.py` fix the user wants NOW is still dispatched, never hand-edited (do X, never Y).** The boundary is about WHO touches production code (a worktree sub-agent), not about how big the change is. "It's only one line" and "the user wants it now" are the two rationalizations that produce the drift — both are wrong: the orchestrate-only boundary holds for a one-character edit exactly as it holds for a refactor. So when a reviewer hands you a one-line `src/...py` bug to fix RIGHT NOW, your single next action is the `Task`/`Agent` dispatch below — **never** an `Edit`/`Write` against the `.py` file in the main agent, and never `git commit`/`pytest` on it in the foreground.
+
+```python
+# do X — the one-line fix is dispatched to a worktree sub-agent (the orchestrator never touches the .py):
+Task(description="Fix get_active_session", prompt="In a fresh worktree off origin/main, fix the one-line bug in src/teatree/core/session.py ... commit, report branch+sha.")
+# never Y — the orchestrator edits production code itself because the fix is "small" / "urgent":
+# Edit(file_path="src/teatree/core/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
+```
+
 1. **Dispatch the unit to a `Task` (or `Agent`) sub-agent in this same turn.** The prompt fully describes the bounded unit of work in plain language — the file/subsystem, the bug, the expected outcome. Do this even when you don't yet know the exact shell command (the `Task` path needs no shell invocation up front).
 2. **Never run the long unit yourself in the foreground.** Do NOT `grep -r … src`, `rg … src`, `find … -name`, open-and-`Edit` the `.py` file, or `Write` the `test_*.py` yourself when the unit is delegable — the orchestrator stays thin.
 3. **Keep moving while it runs** — pick up the next ticket, or arm a `Monitor` on it. Do NOT sit in a foreground `while/until … sleep … pgrep` poll loop waiting on the sub-agent's process.
@@ -711,6 +720,17 @@ t3 monitor watch --label subagent-42 --until-exit   # wakes you on completion; f
 **Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output.
 
 **One decision per question (do X — never Y).** Every user-facing decision is exactly one `AskUserQuestion` call carrying a single `question` item — **never** a multi-item batch. A prompt like "approve A1, B3, C4, Z40?" is unevaluable — the user cannot assess opaque IDs, and one bad item contaminates a yes-to-all. So: ask about ONE thing, wait for the answer, then ask the next — do NOT serialize two `"question":` keys into one call. Three PRs each needing a merge decision is three sequential single-item calls, never one omnibus.
+
+**When N decisions are undecided, your single next action is ONE `AskUserQuestion` with ONE question for the FIRST decision — never a batch (do X, never Y).** This holds precisely under load, where the tempting shortcut is to cram all N into one call "to save a round trip". That batch is the exact drift this rule forbids. Surface decision #1 now; the rest come one at a time after each answer.
+
+```python
+# Three things are undecided (target branch, commit type, squash?). do X — one call, one question, the FIRST decision:
+AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", "options": [...]}])
+# never Y — do NOT batch the three undecided items into one multi-question call to "save a round trip":
+# AskUserQuestion(questions=[{"question": "target branch?", ...}, {"question": "commit type?", ...}, {"question": "squash?", ...}])  # FORBIDDEN
+```
+
+A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
 
 **Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
 
