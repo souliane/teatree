@@ -24,6 +24,32 @@ The plan must be specific enough that the coder agent can execute it without
 guessing: file-level changes, data-model decisions, API contracts, and test
 strategy. Output the plan in the `plan_text` field of your JSON result.
 
+## Consume the intake landscape survey (do NOT re-derive it)
+
+The ticket-intake step (`/t3:ticket` § "1c. Landscape Survey") already surveyed
+what is **already in flight or already settled** — open PRs/MRs, local worktrees
+carrying uncommitted or unpushed work, and a per-issue close/merge/supersede
+recommendation. That survey is the planner's *input*; you consume it, you do not
+re-run it. If the survey was not handed to you, fetch it once with
+`t3 <overlay> workspace landscape` (the structured gather in
+`teatree.core.landscape`) — but the picture belongs to intake, not planning.
+
+Plan **against** the survey:
+
+- An open PR/branch already carries part of this work (`disposition: partial`,
+  `action: merge`) → plan to finish and merge that PR, not to start fresh; cite
+  the PR url in `plan_text`.
+- A merged PR already shipped the issue (`disposition: done`, `action: close`) →
+  do not plan redundant work; surface it so the issue is closed with the
+  citation.
+- A sibling ticket supersedes this one (`disposition: superseded`) → call it out
+  and recommend the supersede before planning.
+- A local worktree carries uncommitted/unpushed work for this ticket → plan to
+  build on it, never to overwrite forgotten commits.
+
+State in `plan_text` which survey items you reconciled, so the reviewer can see
+the plan was built against the real landscape.
+
 ## E2E test plan / Acceptance scenarios
 
 The plan drives behaviour-level TDD: the user-visible acceptance scenarios are

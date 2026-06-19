@@ -19,6 +19,7 @@ from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
 from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     TicketIntake,
@@ -509,6 +510,21 @@ class Command(TyperCommand):
             OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
             for r in find_orphans_in_workspace()
         ]
+
+    @command()
+    def landscape(self) -> LandscapeReport:
+        """Survey what is already in flight or settled before planning (#2541).
+
+        The intake landscape survey the ``/t3:ticket`` step runs and the planner
+        consumes: the operator's open PRs/MRs, the local worktrees carrying
+        uncommitted or unpushed work, and a per-issue close/merge/supersede
+        recommendation against the in-flight PR landscape. Forge or git probes
+        that cannot complete degrade to ``warnings`` rather than aborting — a
+        missed in-flight branch is worse than a noisy warning. Emits a
+        JSON-serialisable survey so the planner plans against reality instead of
+        re-deriving it.
+        """
+        return run_landscape(_workspace_dir())
 
     @command(name="reap-stale")
     def reap_stale(

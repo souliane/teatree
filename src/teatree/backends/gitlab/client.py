@@ -161,6 +161,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def list_my_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
         return self._client.list_all_open_mrs(author, updated_after=updated_after)
 
+    def list_my_merged_prs(self, *, author: str, updated_after: str | None = None) -> list[RawAPIDict]:
+        return self._client.list_recently_merged_mrs(author, updated_after=updated_after)
+
     def list_review_requested_prs(
         self,
         *,

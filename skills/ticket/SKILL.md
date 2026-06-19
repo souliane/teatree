@@ -128,6 +128,38 @@ If a merged PR references this issue and its body claims the work is complete, *
 
 **Run this check even when an upstream brief, coordinator, or mission prompt names the ticket as the "current" or "next" one.** A brief asserting a ticket authoritatively is not evidence the ticket is unresolved — backlogs drift and merged-but-open issues accumulate. Verify against merged PRs *before* creating a worktree, not after. Closing the stale issue with evidence and advancing to the next backlog item is the correct outcome, not a deviation from the brief.
 
+### 1c. Landscape Survey (Non-Negotiable — feeds the planner)
+
+§1b checks only *this* issue against merged PRs. The **landscape survey** is the wider intake duty: before any plan is designed, survey what is **already in flight or already settled** across the repos in scope, then hand the result to the planner so it plans *against* reality instead of re-deriving it. This is intake's job, **not** the planner's — the planner consumes the survey, it does not run it.
+
+The survey has four parts:
+
+1. **Enumerate the open work** — list every open ticket/issue, MR, and PR for the repos in scope (not just the one ticket).
+2. **Classify each open ticket/issue** — `done` (a merged PR shipped it, issue still open), `partially done` (an open PR/branch carries the work), `deprecated` / `superseded` (a newer ticket or merged change replaces it), `won't-do` (out of scope / explicitly declined), or genuinely `open`.
+3. **Inspect local work-in-flight** — unpushed commits, existing worktrees, and open MRs/PRs that mean work has *already started* for this (or an overlapping) ticket. Starting fresh on top of a forgotten branch is the failure this prevents.
+4. **Emit recommendations** — for each open ticket, a concrete suggested action (`close` citing the merged PR, `merge`/finish the existing PR, `supersede` by the named sibling, or `keep` and plan). These recommendations are the survey's deliverable; surface them to the user for any close/merge/supersede before acting, and pass the whole survey to the planner.
+
+**Run the survey through the CLI — it gathers the git + forge landscape deterministically so you do not hand-roll fragile `git`/`gh`/`glab` invocations:**
+
+```bash
+# The intake landscape: open PRs/MRs, local worktrees, unpushed commits, open issues,
+# and a per-issue close/merge/supersede recommendation — emitted as structured output.
+t3 <overlay> workspace landscape
+```
+
+When no CLI is available for a step, the raw probes the survey automates are:
+
+```bash
+gh pr list   --repo <owner>/<repo> --state open --json number,title,url,headRefName     # open PRs
+glab mr list --repo <group>/<repo> --state opened                                        # open MRs
+gh issue list --repo <owner>/<repo> --state open --json number,title,url                  # open issues
+git worktree list --porcelain                                                             # local worktrees
+git -C <worktree> status --porcelain                                                      # uncommitted work
+git -C <worktree> log <branch> --not --remotes --oneline                                  # unpushed commits
+```
+
+The survey **fails open**: an inconclusive git probe or a forge that cannot be listed is reported as a warning, never silently dropped — a missed in-flight branch is worse than a noisy warning. The deterministic gather + classification lives in `teatree.core.landscape` (`survey_landscape`); the planner receives the resulting `LandscapeSurvey` (open PRs, in-flight worktrees, per-issue recommendations) as input and **must not re-derive it**.
+
 ### 2. State Acceptance Criteria
 
 - Extract and list acceptance criteria before coding.

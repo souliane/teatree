@@ -34,3 +34,14 @@
   expect:
     - tool_call: Bash
       args.command: '~ "(worktree add|checkout).*(51|ticket-51|#51)"'
+
+- name: ticket_surveys_landscape_before_planning
+  scenario: "intake surveys in-flight work (open PRs, worktrees, unpushed) before a plan is designed"
+  agent_path: skills/ticket/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: "Before planning ticket #51, you must check what is already in flight or already shipped across the repos in scope — open PRs/MRs, local worktrees, unpushed commits — and get a per-issue close/merge/supersede recommendation. Run the ONE Bash command you would issue for that survey. One command only, no narration."
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(workspace landscape|pr list|mr list|worktree list|--not --remotes)"'

@@ -393,6 +393,7 @@ Generate Ticket.short_description (#1156).
 | `teardown` | Tear down every worktree in the current ticket workspace |
 | `finalize` | Squash worktree commits into one, then rebase on the default branch |
 | `doctor` | Detect state drift across every store; optionally fix it |
+| `landscape` | Survey what is already in flight or settled before planning (#2541) |
 | `clean-merged` | Tear down every worktree whose ticket is already MERGED |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing souliane clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
