@@ -79,6 +79,7 @@ Overlays subclass `OverlayBase` and override methods:
 - `get_visual_qa_targets(changed_files)` — URL paths the pre-push browser sanity gate should load (default: `[]` — opt in by mapping diff paths to URLs)
 - `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
 - `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
+- `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
 
 ## Skill Loading
 
