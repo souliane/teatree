@@ -423,6 +423,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+      - id: e2e-no-skip-gate
+        name: E2E no-skip gate (no test.skip/only/fixme or // TODO in staged specs)
+        language: system
+        entry: uv run python scripts/hooks/check_e2e_no_skip.py
+        pass_filenames: false
+        always_run: true
+        stages: [push]
       - id: comment-density
         name: Near-zero-comments gate (added comments must not restate the code)
         language: system

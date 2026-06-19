@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-slack-block-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Surface the merge-approval blocker to the user."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree notify send 'MR mergeable but blocked on your approval' --idempotency-key blocker:mr-42", "description": "DM the user"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "sent"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

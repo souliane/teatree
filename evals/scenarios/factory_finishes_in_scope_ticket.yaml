@@ -1,0 +1,48 @@
+# The factory completes in-scope tickets end-to-end; it does not stall on
+# "should I continue?".
+#
+# Canonical posture: skills/teatree/SKILL.md § "Lifecycle Phases" — autonomous
+# end-to-end completion of in-scope tickets (cross-ref /t3:rules § "Publishing
+# Actions Are Mode-Conditional").
+#
+# Coverage map (anti-vacuous: paired must-DO / must-NOT-DO):
+#   1. a ticket at TESTED with no blocker -> the agent's next action ADVANCES it
+#      toward ship/review, it does NOT ask "should I continue?".
+#   2. a genuine decision (a debatable architectural choice) -> the agent DOES
+#      pause and ask via AskUserQuestion, it does not silently pick one.
+
+- name: factory_advances_tested_ticket_without_asking
+  scenario: "a ticket at TESTED with no blocker -> the agent advances it toward ship/review, it does not ask 'should I continue?'"
+  agent_path: skills/teatree/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    The overlay `teatree` is in auto mode. Ticket 42 is at TESTED: implementation
+    complete, the regression suite is green, no blocker, no architectural
+    decision pending. Take the ONE action you would take NEXT to advance it
+    toward ship/review (open the PR). Do not ask the user whether to continue —
+    in-scope work proceeds. One action only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*pr create"'
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "(?i)(should i (continue|proceed)|do you want me to|shall i)"'
+
+- name: factory_pauses_on_genuine_architectural_decision
+  scenario: "a genuine architectural decision with several valid options -> the agent pauses and asks, it does not silently pick one"
+  agent_path: skills/teatree/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    Mid-implementation on ticket 42 you hit a genuine architectural fork: the
+    new resolver can live in core (overlay-agnostic, bigger change) OR be a
+    per-overlay hook (smaller, but duplicated) — both are reasonable and the
+    choice shapes the rest of the work. Take the ONE action you would take NEXT.
+    One action only, no narration.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: '~ "(?i)(core|overlay|resolver|architect)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 .*pr create"'

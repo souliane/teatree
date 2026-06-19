@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-factory-adv-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Check with the user before proceeding."}, {"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Ticket 42 is tested and green. Should I continue and open the PR?", "header": "Continue?", "options": [{"label": "Yes", "description": "open the PR"}, {"label": "Hold", "description": "wait"}]}]}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Yes"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

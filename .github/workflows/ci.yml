@@ -211,6 +211,35 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
+  # GATE (PR-only): re-runs the E2E no-skip pre-push hook on the PR diff so an
+  # agent that bypasses prek still trips the gate.
+  e2e-no-skip-gate:
+    # Deterministic E2E no-skip gate. The pre-push hook scans staged spec files;
+    # CI re-runs the SAME check on the PR-vs-base diff so an agent that bypasses
+    # prek still trips the gate. Reads the PR diff into the git index (and the
+    # PR's HEAD spec files onto disk) so the hook's ``git diff --cached`` query
+    # sees the PR contents and the scan reads the PR's spec bodies.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_e2e_no_skip.py
+
   # GATE (PR-only): re-runs the module-health LOC/function ratchet on the PR's
   # full base..head diff so a prek-bypassing or merge-routed module growth still
   # trips the gate.
