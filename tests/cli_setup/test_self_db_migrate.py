@@ -40,6 +40,7 @@ def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, migrate_retur
         patch.object(setup_module, "_install_claude_plugin", return_value=True),
         patch.object(setup_module, "ensure_self_db_migrated", return_value=migrate_returns) as mock_migrate,
         patch.object(setup_module, "seed_db_config_from_toml") as mock_seed,
+        patch.object(setup_module, "seed_default_loops") as mock_seed_loops,
         patch("teatree.config.load_config") as mock_load,
     ):
         mock_load.return_value.user.contribute = False
@@ -50,19 +51,19 @@ def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, migrate_retur
         except typer.Exit as exc:
             raised.append(exc.exit_code)
 
-    return mock_migrate, mock_seed, raised
+    return mock_migrate, mock_seed, mock_seed_loops, raised
 
 
 class TestSetupRunsSelfDbMigrations:
     def test_setup_invokes_self_db_migrate_quietly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_migrate, _mock_seed, raised = _run_setup(tmp_path, monkeypatch)
+        mock_migrate, _mock_seed, _mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch)
         mock_migrate.assert_called_once_with(quiet=True)
         assert raised == []
 
     def test_setup_exits_nonzero_when_self_db_left_unmigrated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _mock_migrate, _mock_seed, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
+        _mock_migrate, _mock_seed, _mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
         assert raised == [1]
 
 
@@ -70,7 +71,7 @@ class TestSetupSeedsDbConfigFromToml:
     """``t3 setup`` runs the #938 dual-read auto-migration after the self-DB migrate (TODO-75)."""
 
     def test_setup_seeds_db_config_after_a_clean_migrate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_migrate, mock_seed, raised = _run_setup(tmp_path, monkeypatch)
+        _mock_migrate, mock_seed, _mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch)
         mock_seed.assert_called_once_with()
         assert raised == []
 
@@ -79,6 +80,26 @@ class TestSetupSeedsDbConfigFromToml:
     ) -> None:
         # The ``ConfigSetting`` table may not exist on an unmigrated self-DB, so the
         # seed is skipped — the setup still exits non-zero on the unmigrated DB.
-        _mock_migrate, mock_seed, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
+        _mock_migrate, mock_seed, _mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
         mock_seed.assert_not_called()
+        assert raised == [1]
+
+
+class TestSetupSeedsDefaultLoops:
+    """``t3 setup`` idempotently seeds the default loops + prompts after the migrate (#2513)."""
+
+    def test_setup_seeds_default_loops_after_a_clean_migrate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_migrate, _mock_seed, mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch)
+        mock_seed_loops.assert_called_once_with()
+        assert raised == []
+
+    def test_setup_skips_loop_seed_when_self_db_left_unmigrated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The ``Loop`` table may not exist on an unmigrated self-DB, so the loop
+        # seed is skipped along with the config seed.
+        _mock_migrate, _mock_seed, mock_seed_loops, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
+        mock_seed_loops.assert_not_called()
         assert raised == [1]

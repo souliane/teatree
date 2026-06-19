@@ -1,11 +1,12 @@
 """``manage.py loop_list`` — LIVE loop status from the DB (#1744).
 
 Integration-first: drives the real ``loop_list`` management command via
-``call_command`` against a DB seeded with :class:`MiniLoopMarker` and
-:class:`LoopLease` rows, asserting the rendered text and the ``--json`` shape.
-The mini-loop registry and ``[loops]`` config are patched to a small stub set
-so the assertions don't depend on the real domain loops, and the wall clock is
-pinned so countdowns are deterministic.
+``call_command`` against a DB seeded with :class:`Loop` and :class:`LoopLease`
+rows, asserting the rendered text and the ``--json`` shape. After the #2513
+cutover the mini-loop rows come from the DB ``Loop`` table, so the tests that
+assert a specific mini-loop's rendering clear the seeded production loops
+(migration 0078) and create their own rows; the wall clock is anchored on
+``last_run_at`` so countdowns are deterministic.
 """
 
 import datetime as dt
@@ -20,26 +21,27 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
+from teatree.core.models import Loop, Prompt
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.mini_loop_marker import MiniLoopMarker
-from teatree.loops.base import MiniLoop
-from teatree.loops.config import LoopsConfig
 
 _LIVE_PID = os.getpid()
 _DEAD_PID = 2_000_000_000
 
 
-def _stub_loop(name: str, cadence: int, *, always_on: bool = False) -> MiniLoop:
-    return MiniLoop(name=name, default_cadence_seconds=cadence, build_jobs=lambda **_: [], always_on=always_on)
+def _prompt() -> Prompt:
+    prompt, _ = Prompt.objects.get_or_create(name="demo-loop-list", defaults={"body": "x"})
+    return prompt
 
 
-@contextmanager
-def _registry(*loops: MiniLoop) -> Iterator[None]:
-    with (
-        patch("teatree.loops.live.iter_loops", return_value=loops),
-        patch.object(LoopsConfig, "load", classmethod(lambda cls, path=None: cls())),
-    ):
-        yield
+def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = None, enabled: bool = True) -> Loop:
+    return Loop.objects.create(
+        name=name,
+        delay_seconds=cadence,
+        prompt=_prompt(),
+        enabled=enabled,
+        last_run_at=last_run_at,
+    )
 
 
 def _run(*args: str) -> str:
@@ -51,50 +53,50 @@ def _run(*args: str) -> str:
 @django.test.override_settings(USE_TZ=True)
 class TestLoopListText(django.test.TestCase):
     def test_never_fired_loop_renders_em_dash_next(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300)
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.strip().startswith("dispatch"))
         assert "next —" in line
         assert "last —" in line
 
     def test_overdue_loop_renders_overdue(self) -> None:
-        MiniLoopMarker.objects.mark_fired("audit", timezone.now() - dt.timedelta(hours=2))
-        with _registry(_stub_loop("audit", 60)):
-            output = _run()
+        Loop.objects.all().delete()
+        _make_loop("audit", 60, last_run_at=timezone.now() - dt.timedelta(hours=2))
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.strip().startswith("audit"))
         assert "next overdue" in line
 
     def test_disabled_loop_shown_with_disabled_marker(self) -> None:
-        with (
-            _registry(_stub_loop("review", 300)),
-            patch.object(LoopsConfig, "is_enabled", lambda self, loop: False),
-        ):
-            output = _run()
+        Loop.objects.all().delete()
+        _make_loop("review", 300, enabled=False)
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.strip().startswith("review"))
         assert "disabled" in line
 
     def test_infra_slots_listed_before_mini_loops(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         assert output.index("infra slots:") < output.index("mini-loops:")
         assert "loop-tick" in output
 
     def test_stall_warning_when_last_tick_old(self) -> None:
+        # Every Loop row never ran (no mini-loop contributes a recent tick) and
+        # the only infra lease was acquired 10h ago ⇒ last_tick is stale.
+        Loop.objects.update(last_run_at=None)
         LoopLease.objects.filter(name="loop-tick").delete()
         lease = LoopLease.objects.create(name="loop-tick", owner="t")
         lease.acquired_at = timezone.now() - dt.timedelta(hours=10)
         lease.save(update_fields=["acquired_at"])
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         assert "STALLED" in output
         assert "t3 loop tick" in output
         assert "t3 loop claim" in output
 
     def test_no_stall_when_recent_tick(self) -> None:
+        # A recent infra tick is enough to clear the stall — the mini-loop
+        # source no longer matters for ``last_tick_at``.
         LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=timezone.now())
-        MiniLoopMarker.objects.mark_fired("dispatch", timezone.now())
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         assert "STALLED" not in output
 
 
@@ -108,8 +110,7 @@ class TestLoopOwnerLine(django.test.TestCase):
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
         assert "sess-live" in line
         assert "alive" in line
@@ -123,16 +124,14 @@ class TestLoopOwnerLine(django.test.TestCase):
             acquired_at=timezone.now() - dt.timedelta(hours=2),
             lease_expires_at=timezone.now() - dt.timedelta(hours=1),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
         assert "sess-dead" in line
         assert "dead/unknown" in line
         assert "stale" in line
 
     def test_unclaimed_owner_reported(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            output = _run()
+        output = _run()
         line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
         assert "unclaimed" in line
 
@@ -140,8 +139,9 @@ class TestLoopOwnerLine(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True)
 class TestLoopListJson(django.test.TestCase):
     def test_json_shape(self) -> None:
+        Loop.objects.all().delete()
         fired = timezone.now() - dt.timedelta(seconds=120)
-        MiniLoopMarker.objects.mark_fired("dispatch", fired)
+        _make_loop("dispatch", 300, last_run_at=fired)
         LoopLease.objects.create(
             name="loop-owner",
             session_id="sess-json",
@@ -149,8 +149,7 @@ class TestLoopListJson(django.test.TestCase):
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)):
-            payload = json.loads(_run("--json"))
+        payload = json.loads(_run("--json"))
         assert {"infra_slots", "mini_loops", "owner", "stalled", "tick_cadence_seconds"} <= payload.keys()
         dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
         assert dispatch["kind"] == "mini-loop"
@@ -162,8 +161,9 @@ class TestLoopListJson(django.test.TestCase):
         assert "loop-tick" in infra_names
 
     def test_json_never_fired_has_empty_timestamps(self) -> None:
-        with _registry(_stub_loop("inbox", 60)):
-            payload = json.loads(_run("--json"))
+        Loop.objects.all().delete()
+        _make_loop("inbox", 60)
+        payload = json.loads(_run("--json"))
         inbox = next(e for e in payload["mini_loops"] if e["name"] == "inbox")
         assert inbox["last_fired_at"] == ""
         assert inbox["next_fire_at"] == ""
@@ -173,11 +173,12 @@ class TestLoopListJson(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True)
 class TestLoopListIsReadOnly(django.test.TestCase):
     def test_no_rows_created_or_mutated(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)):
-            _run()
-            _run("--json")
-            _run("--all")
+        loop_count_before = Loop.objects.count()
+        _run()
+        _run("--json")
+        _run("--all")
         assert MiniLoopMarker.objects.count() == 0
+        assert Loop.objects.count() == loop_count_before
         assert not LoopLease.objects.exclude(session_id="").exists()
 
 
@@ -218,7 +219,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
     def test_default_view_scopes_to_current_session(self) -> None:
         """Session A sees only its own loop by default; B's loop is subtracted."""
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             output = _run()
         assert "per-loop owners:" in output
         assert "loop:dispatch" in output
@@ -227,7 +228,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
     def test_all_shows_both_sessions_proving_default_subtracted(self) -> None:
         """``--all`` lists B's loop too — proving the default actually subtracted it."""
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             default_output = _run()
             all_output = _run("--all")
         assert "loop:review" not in default_output
@@ -239,7 +240,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
     def test_empty_session_default_shows_full_view(self) -> None:
         """A cron / anonymous tick (no session) fails open to the full view, never empty."""
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session(""):
+        with _session(""):
             output = _run()
         assert "per-loop owners:" in output
         assert "loop:dispatch" in output
@@ -247,7 +248,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
 
     def test_all_renders_each_per_loop_owner(self) -> None:
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             output = _run("--all")
         assert "per-loop owners:" in output
         dispatch_line = next(ln for ln in output.splitlines() if "loop:dispatch" in ln)
@@ -260,7 +261,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         assert "stale" in review_line
 
     def test_all_with_no_per_loop_owners_shows_no_block(self) -> None:
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             output = _run("--all")
         assert "per-loop owners:" not in output
 
@@ -271,16 +272,16 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         default view must be byte-identical whether or not a current session
         resolves — the per-loop block is absent in both cases.
         """
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             with_session = _run()
-        with _registry(_stub_loop("dispatch", 300)), _session(""):
+        with _session(""):
             anonymous = _run()
         assert with_session == anonymous
         assert "per-loop owners:" not in with_session
 
     def test_all_json_includes_per_loop_owners(self) -> None:
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             payload = json.loads(_run("--all", "--json"))
         assert "per_loop_owners" in payload
         slots = {o["slot"] for o in payload["per_loop_owners"]}
@@ -293,7 +294,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
     def test_default_json_scopes_per_loop_owners_to_session(self) -> None:
         """The default ``--json`` per_loop_owners block is scoped to the current session."""
         self._seed_per_loop_owners()
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             payload = json.loads(_run("--json"))
         assert {o["slot"] for o in payload["per_loop_owners"]} == {"loop:dispatch"}
 
@@ -310,7 +311,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
-        with _registry(_stub_loop("dispatch", 300)), _session("sess-dispatch"):
+        with _session("sess-dispatch"):
             payload = json.loads(_run("--json"))
         assert "per_loop_owners" not in payload
         assert set(payload["owner"].keys()) == {"session_id", "owner_pid", "pid_is_alive", "is_live"}

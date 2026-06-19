@@ -4,7 +4,7 @@ The dreaming consolidation pass is heavier than a scanner tick and must not
 run on — or re-arm — the live 12-minute work loop (issue #1933 § 3). It is
 registered as a MiniLoop so its cadence is configurable under ``[loops.dream]``
 and the statusline can show its countdown, but it is marked ``off_live_tick``
-so the live fan-out (:func:`teatree.loops.fanout.build_registry_jobs`) and the
+so the live fan-out (:func:`teatree.loops.master.build_loop_table_jobs`) and the
 :class:`teatree.loops.orchestrator.Orchestrator` skip it. The actual pass is
 driven by its own low-frequency cron, the ``dream`` management command
 (``t3 dream tick`` / ``t3 dream run``), which reuses the cadence ledger

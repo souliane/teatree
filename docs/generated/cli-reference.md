@@ -57,6 +57,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 one consolidation loop per agent identity, deduped across    │
 │                 all sessions (#786 WS4); it idles when none.                 │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
+│ prompts         Manage and trigger reusable prompts (#2513).                 │
 │ teams           Agent-teams master switch. The teams.enabled config key      │
 │                 (default off) gates the pane-backed teammate layer; off      │
 │                 keeps the classic in-session sub-agent fan-out.              │
@@ -3625,6 +3626,59 @@ Usage: t3 loops run [OPTIONS]
 │                            all).                                             │
 │ --once                     Run a single tick and return (test hook).         │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 prompts`
+
+```
+Usage: t3 prompts [OPTIONS] COMMAND [ARGS]...
+
+ Manage and trigger reusable prompts (#2513).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list    List reusable prompts: name, declared params, version depth,         │
+│         description.                                                         │
+│ render  Render a reusable prompt by name with its declared params (the       │
+│         ``/prompts`` trigger).                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 prompts list`
+
+```
+Usage: t3 prompts list [OPTIONS]
+
+ List reusable prompts: name, declared params, version depth, description.
+
+ Read-only: reads the ``Prompt`` table and prints it — never mutates a row.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the prompts as JSON.                                    │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 prompts render`
+
+```
+Usage: t3 prompts render [OPTIONS] NAME
+
+ Render a reusable prompt by name with its declared params (the ``/prompts``
+ trigger).
+
+ Read-only: loads the row and renders it — never mutates. A missing/undeclared
+ param or an unknown name is a loud error, never a silent wrong-render.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  The prompt name to render. [required]                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --arg         TEXT  A declared-param value as KEY=VALUE (repeatable).        │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,6 +1,17 @@
 from django.contrib import admin
 
-from teatree.core.models import ConfigSetting, Loop, PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import (
+    ConfigSetting,
+    Loop,
+    Prompt,
+    PromptVersion,
+    PullRequest,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 
 
 @admin.register(Ticket)
@@ -52,12 +63,37 @@ class LoopAdmin(admin.ModelAdmin):
     @admin.display(description="action")
     @staticmethod
     def action(obj: Loop) -> str:
-        return obj.script or obj.prompt
+        """The loop's invocation: its ``script`` path, or its prompt's body (#2513)."""
+        return obj.script or (obj.prompt.body if obj.prompt_id is not None else "")  # ty: ignore[unresolved-attribute]
 
     @admin.display(description="cadence")
     @staticmethod
     def cadence(obj: Loop) -> str:
         return obj.cadence_label
+
+
+class PromptVersionInline(admin.TabularInline):
+    """Read-only superseded-content history under each prompt (#2513, D2)."""
+
+    model = PromptVersion
+    extra = 0
+    fields = ("version", "body", "params", "created_at")
+    readonly_fields = ("version", "body", "params", "created_at")
+    can_delete = False
+    ordering = ("-version",)
+
+
+@admin.register(Prompt)
+class PromptAdmin(admin.ModelAdmin):
+    list_display = ("name", "overlay", "current_version", "description", "updated_at")
+    search_fields = ("name", "overlay")
+    readonly_fields = ("created_at", "updated_at")
+    inlines = (PromptVersionInline,)
+
+    @admin.display(description="versions")
+    @staticmethod
+    def current_version(obj: Prompt) -> int:
+        return obj.current_version
 
 
 @admin.register(ConfigSetting)

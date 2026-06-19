@@ -243,6 +243,34 @@ def seed_db_config_from_toml() -> None:
         typer.echo(f"OK    config DB store: {summary[-1].strip()}")
 
 
+def seed_default_loops() -> None:
+    """Seed the default loops + prompts into the self-DB — the #2513 install seed.
+
+    Runs ``python -m teatree seed_loops`` in the *running* interpreter so it
+    targets the exact self-DB the runtime ``t3`` resolves (the #126 rule the
+    self-DB migrate follows), with the same stripped ``DJANGO_SETTINGS_MODULE``
+    env (#959). The ``seed_loops`` command is idempotent — it ``get_or_create``s
+    by name, so re-running ``t3 setup`` creates nothing new and never clobbers an
+    operator-edited row.
+
+    Best-effort, NOT fail-closed: a failure is a single WARN and the function
+    returns. A missing default loop is recoverable (the operator can re-run the
+    seed or add rows in the admin), so a failed seed must not abort ``t3 setup``.
+    """
+    result = run_allowed_to_fail(
+        _self_db_migrate_cmd("seed_loops"),
+        env=_self_db_migrate_env(),
+        expected_codes=None,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output)"
+        typer.echo(f"WARN  default loop seed skipped — {detail}")
+        return
+    summary = result.stdout.strip().splitlines()
+    if summary:
+        typer.echo(f"OK    default loops: {summary[-1].strip()}")
+
+
 __all__ = [
     "ReinstallResult",
     "SubprocessRunner",
@@ -250,4 +278,5 @@ __all__ = [
     "ensure_self_db_migrated",
     "reinstall_running_editable",
     "seed_db_config_from_toml",
+    "seed_default_loops",
 ]

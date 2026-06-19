@@ -1,11 +1,12 @@
 """DB-configured autonomous loop (#1796).
 
 A :class:`Loop` row is the durable definition of one autonomous loop: a unique
-``name``, exactly one of ``prompt`` (an instruction to run the loop's work) or
-``script`` (a path to the entry point that runs it), its cadence, an ``enabled``
-flag, and ``last_run_at``, the cadence anchor. The loop's logic stays in its
-existing Python code; ``prompt``/``script`` only say how to invoke it, so the
-row carries config + cadence, not behaviour. ``run_in_sub_agent`` toggles
+``name``, exactly one of ``prompt`` (a nullable FK to a reusable
+:class:`teatree.core.models.prompt.Prompt`, the instruction to run the loop's
+work) or ``script`` (a path to the entry point that runs it), its cadence, an
+``enabled`` flag, and ``last_run_at``, the cadence anchor. The loop's logic
+stays in its existing Python code; ``prompt``/``script`` only say how to invoke
+it, so the row carries config + cadence, not behaviour. ``run_in_sub_agent`` toggles
 sub-agent dispatch, ``description`` is human context, and ``overlay`` names the
 backend the loop runs against (generically — the stored value is a backend name,
 not a hard-coded overlay).
@@ -54,7 +55,13 @@ class Loop(models.Model):
     """One row per autonomous loop carrying its config and cadence anchor."""
 
     name = models.CharField(max_length=64, unique=True)
-    prompt = models.TextField(blank=True, default="")
+    prompt = models.ForeignKey(
+        "core.Prompt",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="loops",
+    )
     script = models.CharField(max_length=255, blank=True, default="")
     run_in_sub_agent = models.BooleanField(default=True)
     description = models.TextField(blank=True, default="")
@@ -73,7 +80,7 @@ class Loop(models.Model):
         ordering: ClassVar = ["name"]
         constraints: ClassVar = [
             models.CheckConstraint(
-                condition=models.Q(prompt="", script__gt="") | models.Q(prompt__gt="", script=""),
+                condition=(models.Q(prompt__isnull=True, script__gt="") | models.Q(prompt__isnull=False, script="")),
                 name="loop_prompt_xor_script",
             ),
             models.CheckConstraint(
@@ -87,8 +94,8 @@ class Loop(models.Model):
         return f"loop<{self.name} {state} {self.cadence_label}>"
 
     def clean(self) -> None:
-        """Exactly one of ``prompt``/``script``; a script loop carries an interval."""
-        if bool(self.prompt) == bool(self.script):
+        """Exactly one of ``prompt`` (FK) / ``script``; a script loop carries an interval."""
+        if (self.prompt_id is not None) == bool(self.script):  # ty: ignore[unresolved-attribute]
             msg = "Set exactly one of prompt or script."
             raise ValidationError(msg)
         if self.script and self.delay_seconds is None:

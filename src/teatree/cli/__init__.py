@@ -61,6 +61,7 @@ from teatree.cli.loops import loops_app
 from teatree.cli.mutation import mutation_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
+from teatree.cli.prompts import prompts_app
 from teatree.cli.recover import recover_app
 from teatree.cli.review import review_app, review_request_app
 from teatree.cli.setup import setup_app
@@ -158,6 +159,7 @@ app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
 app.add_typer(loops_app, name="loops")
+app.add_typer(prompts_app, name="prompts")
 app.add_typer(teams_app, name="teams")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")

@@ -44,17 +44,19 @@ type ReportDict = dict[str, Any]
 
 
 def _registry_jobs_builder(request: "TickRequest", started_at: dt.datetime) -> list[Any]:
-    """Drive the live tick's scanner fan-out from the mini-loop registry (#1481).
+    """Drive the live tick's scanner fan-out from the DB ``Loop`` table (#1796 cutover).
 
-    Bridges the up-stack :mod:`teatree.loops` registry into
-    :func:`teatree.loop.tick.run_tick` so the registry is the single
-    source of which scanners run a live tick, gated by the same
-    enable + cadence decision the orchestrator uses.
+    The #2513 cutover: the live fat tick no longer asks ``LoopsConfig``/
+    ``MiniLoopMarker`` (code cadence + toml) which scanners run — the ``Loop``
+    rows are the single source of truth. A loop runs this tick iff its row is
+    ``enabled`` and ``is_due``; :func:`build_loop_table_jobs` resolves each due
+    row to its registry ``MiniLoop.build_jobs`` and bumps ``last_run_at``. The
+    function name is retained so the statusline-reader wiring and the existing
+    ``_registry_jobs_builder`` patch points keep working.
     """
-    from teatree.loops.config import LoopsConfig  # noqa: PLC0415
-    from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
+    from teatree.loops.master import build_loop_table_jobs  # noqa: PLC0415
 
-    return build_registry_jobs(
+    return build_loop_table_jobs(
         {
             "backends": request.backends,
             "host": request.host,
@@ -62,7 +64,6 @@ def _registry_jobs_builder(request: "TickRequest", started_at: dt.datetime) -> l
             "notion_client": request.notion_client,
             "ready_labels": request.ready_labels,
         },
-        config=LoopsConfig.load(),
         now=started_at,
     )
 

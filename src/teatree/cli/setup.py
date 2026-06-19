@@ -17,7 +17,12 @@ from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
-from teatree.self_update import current_editable_source, ensure_self_db_migrated, seed_db_config_from_toml
+from teatree.self_update import (
+    current_editable_source,
+    ensure_self_db_migrated,
+    seed_db_config_from_toml,
+    seed_default_loops,
+)
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -614,6 +619,12 @@ def run(
     # through), so the config seed never aborts setup.
     if not self_db_unmigrated:
         seed_db_config_from_toml()
+        # #2513: seed the default loops + prompts so a fresh (or squashed-
+        # migration) install has them present. Idempotent (``get_or_create`` by
+        # name) and best-effort — it never clobbers an operator-edited row and
+        # never aborts setup. The cron is NOT registered here and no tick is
+        # started: the seeded rows are config only until the operator opts in.
+        seed_default_loops()
 
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see

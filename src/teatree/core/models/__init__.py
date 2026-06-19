@@ -46,6 +46,7 @@ from teatree.core.models.pending_article_suggestion import PendingArticleSuggest
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.prompt import Prompt, PromptManager, PromptVersion, PromptVersionManager
 from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
@@ -138,6 +139,10 @@ __all__ = [
     "PlanArtifact",
     "PlanArtifactRef",
     "Ports",
+    "Prompt",
+    "PromptManager",
+    "PromptVersion",
+    "PromptVersionManager",
     "PullMainCloneMarker",
     "PullRequest",
     "QualityGateError",

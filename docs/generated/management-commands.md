@@ -259,6 +259,14 @@ Run one master tick: run every enabled, due loop (DB-configured); render statusl
 | `post-test-plan` | Post a test plan as a PR comment. Uploads files and updates existing notes |
 | `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
+## `prompts_list`
+
+List reusable prompts: name, params, version, description (read-only; #2513).
+
+## `prompts_render`
+
+Render a reusable prompt by name with its declared params (read-only; #2513).
+
 ## `questions`
 
 ``t3 teatree questions`` group root.
@@ -322,6 +330,10 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 ## `safe_kill`
 
 Signal *pid* only if it maps to a dead target AND is confirmed non-live.
+
+## `seed_loops`
+
+Idempotently seed the default loops + prompts (#2513).
 
 ## `speak`
 
