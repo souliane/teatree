@@ -49,13 +49,18 @@ proof). The engine never autonomously writes a scenario file or a fixture — th
 LLM-generated, self-anti-vacuous derivation is the deferred follow-up the design
 issue specifies.
 
-Deferred (out of scope for v1 — see issue #1933 § 6): the optional phase-4
-cross-link pass; the phase-5 ``MEMORY.md`` re-index (rewriting the user's real
-155KB index with BINDING entries); the phase-6 decay / archive of the memory
-``.md`` files; and the QA-probe gates (``DreamQaProbe``
-retention/interference/monotonicity). All four are high-file-blast-radius
-follow-ups — never an autonomous v1 file rewrite — and v1 leaves ``DreamQaProbe``
-behaviour untouched.
+The file-side phases over the discovered ``~/.claude`` memory dirs are LIVE
+(#1933 § 6, shipped in #2489) and run from the cron command after the pass, each
+behind its own kill-switch and fault-isolated: phase 4 cross-link
+(:mod:`teatree.loops.dream.cross_link`), phase 5 ``MEMORY.md`` re-index
+(:mod:`teatree.loops.dream.reindex`), and phase 6 decay / archive
+(:mod:`teatree.loops.dream.decay`). They are invoked by
+``teatree.core.management.commands.dream``, not by this engine, which owns only
+the transcript-side replay → cluster → distill → ledger pipeline (phases 1-3).
+
+Still deferred (#2545): the § 4 acceptance gates (``DreamQaProbe``
+retention/interference/monotonicity). ``DreamQaProbe`` is migrated but is not yet
+populated or replayed — no gate runs during a pass today.
 """
 
 import json

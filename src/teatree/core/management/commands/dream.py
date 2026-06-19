@@ -1,7 +1,8 @@
 """``manage.py dream`` — drive the idle-time memory-consolidation cron (#1933).
 
-The command owns the cron mechanics around the (currently stubbed) distillation
-engine (:func:`teatree.loops.dream.engine.run_consolidation`):
+The command owns the cron mechanics around the distillation engine
+(:func:`teatree.loops.dream.engine.run_consolidation`, phases 1-3) and drives the
+file-side phases 4-6 (cross-link / re-index / decay) after it:
 
 ``run`` is the manual escape hatch: it runs a pass NOW regardless of cadence,
 with an optional ``--since`` window bound and a ``--dry-run`` no-write mode.
@@ -143,8 +144,18 @@ class Command(TyperCommand):
             return False
 
         if result.members_replayed == 0:
+            # No transcript was replayed, so nothing was distilled — the
+            # consolidation pass stays attempted-not-succeeded (staleness keeps
+            # firing). But the file-side phases 4-6 operate on the on-disk memory
+            # set (discover_memory_dirs), independent of the transcript extract,
+            # so a 0-member pass must still run them — otherwise decay can never
+            # archive stale memories and the index is never re-derived on a quiet
+            # night (#2547).
+            memory_phases = self._run_memory_phases(dry_run=dry_run)
             DreamRunMarker.objects.mark_attempted(now)
-            self.stdout.write("WARN  dream pass found 0 transcript members — marker NOT stamped succeeded.")
+            self.stdout.write(
+                f"WARN  dream pass found 0 transcript members — marker NOT stamped succeeded{memory_phases}.",
+            )
             return False
 
         DreamRunMarker.objects.mark_succeeded(now)
