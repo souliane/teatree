@@ -278,6 +278,23 @@ class _TerminalResultError(Exception):
         self.cause = cause
 
 
+class _SuccessMislabelResultError(Exception):
+    """A finished SUCCESS the CLI mislabeled by exiting non-zero on a ``"success"`` subtype.
+
+    The captured ``result`` event already reads ``subtype="success"`` but also
+    carries a stray ``is_error=True`` (the CLI exited non-zero), so grading the
+    trajectory as-is would force a finished, all-matchers-pass run to FAIL on the
+    flag alone. Carries the captured trajectory so the runner can grade the REAL
+    messages and clear ``is_error`` — the same correction
+    :meth:`SdkInProcessRunner._terminal_capped_run` applies to a capped run.
+    """
+
+    def __init__(self, *, messages: list[Message], cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.messages = messages
+        self.cause = cause
+
+
 class ClaudeCliMissingError(RuntimeError):
     """Raised when ``claude`` is not on PATH while the all-skipped gate is armed.
 
@@ -424,6 +441,8 @@ class SdkInProcessRunner:
             return self._terminal_run(spec, terminal_reason="timeout")
         except _TerminalResultError as terminal:
             return self._terminal_capped_run(spec, terminal)
+        except _SuccessMislabelResultError as mislabel:
+            return self._success_mislabel_run(spec, mislabel)
         return _eval_run_from_messages(spec, messages)
 
     def _terminal_capped_run(self, spec: EvalSpec, terminal: _TerminalResultError) -> EvalRun:
@@ -455,6 +474,22 @@ class SdkInProcessRunner:
             is_error=False,
             cost_usd=cost,
         )
+
+    @staticmethod
+    def _success_mislabel_run(spec: EvalSpec, mislabel: _SuccessMislabelResultError) -> EvalRun:
+        """Grade a finished SUCCESS the CLI mislabeled by exiting non-zero.
+
+        The captured ``result`` event reads ``subtype="success"`` but carries a
+        stray ``is_error=True`` (the CLI exited non-zero on the success subtype).
+        Grade the REAL trajectory via :func:`_eval_run_from_messages` so the
+        matchers decide pass/fail, then clear ``is_error`` — exactly the correction
+        :meth:`_terminal_capped_run` applies — so a finished, all-matchers-pass run
+        is not forced to FAIL on the flag alone (:attr:`ScenarioResult.passed` fails
+        on ``is_error`` BEFORE consulting matchers). The ``terminal_reason`` already
+        reads ``success`` and is left untouched — this is a finished run, not a cap.
+        """
+        graded = _eval_run_from_messages(spec, mislabel.messages)
+        return dataclasses.replace(graded, is_error=False)
 
     async def _drive(self, spec: EvalSpec, *, system_prompt: str, max_turns: int) -> list[Message]:
         variant = parse_model_variant(spec.model)
@@ -522,9 +557,10 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
     ``AssistantMessage`` (with its tool calls) the agent produced before hitting
     the cap. On a KNOWN terminal cap the partial list is re-raised inside a
     :class:`_TerminalResultError` for the runner to grade; a SUCCESS mislabeled as
-    an error result (the CLI exited non-zero on a ``"success"`` subtype) is graded
-    from the captured messages, not raised; any other error re-raises unchanged so
-    a genuine crash is never swallowed.
+    an error result (the CLI exited non-zero on a ``"success"`` subtype) is
+    re-raised inside a :class:`_SuccessMislabelResultError` so the runner grades the
+    captured messages AND clears the stray ``is_error``; any other error re-raises
+    unchanged so a genuine crash is never swallowed.
     """
     messages: list[Message] = []
     try:
@@ -535,7 +571,7 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             messages.append(message)  # noqa: PERF401 — partial list must survive a mid-iteration Exception
     except Exception as exc:
         if is_success_result_error(str(exc)):
-            return messages
+            raise _SuccessMislabelResultError(messages=messages, cause=exc) from exc
         reason = classify_terminal_error(str(exc))
         if reason is None:
             raise

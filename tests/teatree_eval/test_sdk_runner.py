@@ -869,15 +869,17 @@ class TestSuccessResultIsNotAnError:
         assert is_success_result_error("Claude Code returned an error result: error_max_turns") is False
 
     def test_success_labeled_error_after_a_result_grades_as_a_normal_run(self, tmp_path: Path) -> None:
-        # The SUCCESS ResultMessage reached the consumer before the spurious error,
-        # so the run grades from the captured trajectory: success, not error.
+        # The production case: the CLI exits non-zero on a ``"success"`` subtype, so
+        # the captured ``result`` event carries BOTH ``subtype="success"`` AND
+        # ``is_error=True``. The run must still grade from the captured trajectory as
+        # a success — ``is_error`` cleared — not be forced to FAIL on the stray flag.
         spec = _spec(tmp_path)
         messages = [
             AssistantMessage(
                 content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
                 model="haiku",
             ),
-            _result(subtype="success", total_cost_usd=0.0321),
+            _result(subtype="success", is_error=True, total_cost_usd=0.0321),
         ]
         query = _yield_then_raise_query(messages, "Claude Code returned an error result: success")
         run = self._run_with_query(spec, query)
@@ -888,8 +890,9 @@ class TestSuccessResultIsNotAnError:
         assert run.cost_usd == pytest.approx(0.0321)
 
     def test_success_labeled_run_grades_through_report_evaluate(self, tmp_path: Path) -> None:
-        # The deliverable shape: a success-labeled run produces a normal graded
-        # ScenarioResult (not a crash), with the matcher deciding pass/fail.
+        # The deliverable shape: a success-labeled run whose captured result carries
+        # the stray ``is_error=True`` still produces a normal graded ScenarioResult
+        # (not a forced FAIL), with the matcher deciding pass/fail.
         from teatree.eval.report import evaluate  # noqa: PLC0415
 
         spec = _spec(tmp_path)
@@ -898,7 +901,7 @@ class TestSuccessResultIsNotAnError:
                 content=[ToolUseBlock(id="t1", name="Bash", input={"command": "git worktree add ../wt HEAD"})],
                 model="haiku",
             ),
-            _result(subtype="success", total_cost_usd=0.01),
+            _result(subtype="success", is_error=True, total_cost_usd=0.01),
         ]
         query = _yield_then_raise_query(messages, "Claude Code returned an error result: success")
         run = self._run_with_query(spec, query)
