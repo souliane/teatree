@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.loops.dream.decay import ArchivedMemory
 
 
 class Command(TyperCommand):
@@ -158,13 +159,29 @@ class Command(TyperCommand):
             )
             return False
 
-        DreamRunMarker.objects.mark_succeeded(now)
         promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
-        memory_phases = self._run_memory_phases(dry_run=dry_run)
+        memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
+            clusters_recorded=result.clusters_recorded, dry_run=dry_run
+        )
         memory_promote = self._run_memory_promotion(dry_run=dry_run)
+
+        # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
+        # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
+        # success — staleness keeps firing until a faithful pass lands (#2545).
+        if not gates_passed:
+            DreamRunMarker.objects.mark_attempted(now)
+            self.stdout.write(
+                f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
+                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
+                f"{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped succeeded.",
+            )
+            return False
+
+        DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}{memory_promote}.",
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
+            f"{memory_promote}{gates_summary}.",
         )
         return True
 
@@ -279,6 +296,96 @@ class Command(TyperCommand):
         ]
         parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run) for label, runner in phases]
         return "".join(part for part in parts if part)
+
+    def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
+        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545).
+
+        Snapshots every discovered memory dir BEFORE the phases mutate it, runs the
+        phases (capturing what decay archived per dir), snapshots AFTER, then runs the
+        six acceptance gates per dir (:func:`teatree.loops.dream.gates.run_acceptance_pass`),
+        which also populates the ``DreamQaProbe`` corpus. Returns
+        ``(phase_summary, all_gates_passed, gate_summary)`` — a failing gate makes the
+        caller stamp the pass attempted-not-succeeded (staleness keeps firing) rather
+        than laundering a lossy consolidation into a success.
+
+        Fault-isolated: a gate-evaluation failure for one dir is reported in the
+        summary, defaults that dir's verdict to PASS (the gate machinery, not the
+        consolidation, broke), and never crashes the tick.
+        """
+        from teatree.loops.dream import gates  # noqa: PLC0415
+        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
+
+        memory_dirs = discover_memory_dirs()
+        if not memory_dirs:
+            return "", True, ""
+
+        before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
+        schema_before = self._ledger_schema_count()
+        phase_summary, archived_by_dir = self._run_phases(memory_dirs, dry_run=dry_run)
+        schema_after = self._ledger_schema_count()
+
+        all_passed = True
+        clauses: list[str] = []
+        for d in memory_dirs:
+            try:
+                report = gates.run_acceptance_pass(
+                    before[d],
+                    gates.snapshot_memory_dir(d),
+                    overlay="",
+                    archived=archived_by_dir.get(d, ()),
+                    schema_before=schema_before,
+                    schema_after=schema_after,
+                    clusters_recorded=clusters_recorded,
+                    persist=not dry_run,
+                )
+            except Exception as exc:  # noqa: BLE001
+                clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
+                continue
+            all_passed = all_passed and report.passed
+            if not report.passed:
+                failed = ", ".join(g.name for g in report.gate_results if not g.passed)
+                clauses.append(f"gates FAILED ({failed})")
+        gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
+        return phase_summary, all_passed, gate_summary
+
+    def _run_phases(
+        self, memory_dirs: list[Path], *, dry_run: bool
+    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
+        """Run phases 4 (cross-link) + 5 (re-index) then decay, returning decay's archives per dir."""
+        parts = [
+            self._phase_summary("cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run),
+            self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run),
+        ]
+        decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
+        parts.append(decay_summary)
+        return "".join(part for part in parts if part), archived_by_dir
+
+    @staticmethod
+    def _ledger_schema_count() -> int:
+        """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
+        from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
+
+        return ConsolidatedMemory.objects.count()
+
+    def _decay_dirs_with_archives(
+        self, memory_dirs: list[Path], *, dry_run: bool
+    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
+        """Run phase-6 decay per dir under fault isolation, returning its summary + archives."""
+        from teatree.loops.dream import decay  # noqa: PLC0415
+        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
+
+        archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
+        if not decay_enabled():
+            return "", archived_by_dir
+        total = 0
+        for d in memory_dirs:
+            try:
+                result = decay.decay_memories(d, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001
+                return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
+            archived_by_dir[d] = result.archived
+            total += result.archived_count
+        return (f"; archived {total} stale memory(ies)" if total else ""), archived_by_dir
 
     def _phase_summary(
         self,

@@ -58,9 +58,13 @@ behind its own kill-switch and fault-isolated: phase 4 cross-link
 ``teatree.core.management.commands.dream``, not by this engine, which owns only
 the transcript-side replay → cluster → distill → ledger pipeline (phases 1-3).
 
-Still deferred (#2545): the § 4 acceptance gates (``DreamQaProbe``
-retention/interference/monotonicity). ``DreamQaProbe`` is migrated but is not yet
-populated or replayed — no gate runs during a pass today.
+The § 4 acceptance gates (a)-(f) are LIVE (#2545, :mod:`teatree.loops.dream.gates`):
+the cron snapshots each memory dir BEFORE and AFTER the file-side phases, runs the
+six gates (retention / interference / consolidation-happened / index-budget /
+monotonicity / no-loss-audit) and POPULATES the ``DreamQaProbe`` corpus (formerly
+a dead model) by replaying a probe derived from each memory's signature line. A
+failing gate marks the pass attempted-not-succeeded (staleness keeps firing), so a
+lossy / delete-only / no-op consolidation is caught rather than stamped success.
 """
 
 import json
