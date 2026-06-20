@@ -1,7 +1,7 @@
 import logging
 import re
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
@@ -74,6 +74,46 @@ def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: 
         return False
     more_prs_coming = bool(extra and extra.get("more_prs_coming"))
     return not more_prs_coming
+
+
+class PrTitleInputs(NamedTuple):
+    """The commit/worktree-derived inputs an overlay PRODUCES a title from.
+
+    Grouped so ``resolve_pr_title`` keeps a small signature and both call sites
+    (the ship and the preview) assemble the same shape.
+    """
+
+    branch: str
+    subject: str
+    body: str
+    title_override: str = ""
+
+
+def resolve_pr_title(ticket: "Ticket", extra: Mapping[str, object] | None, inputs: PrTitleInputs) -> str:
+    """Resolve the title a PR will SHIP with — the single source of truth.
+
+    Both ``ShipExecutor._build_pr_spec`` (the actual ship) and ``ship_preview``
+    (the ``pr create`` preflight) call this, so the title the preflight
+    validates is always the title that will actually ship — they can no longer
+    drift. Precedence: an explicit ``--title`` (``inputs.title_override``) wins;
+    then a title pinned on ``extra['pr_title_override']``; then the
+    overlay-PRODUCED title (``metadata.build_pr_title``, which returns the
+    subject unchanged by default); then the ``Resolve <issue_url>`` fallback.
+
+    The returned title is NOT yet close-keyword-sanitized — each caller applies
+    ``sanitize_close_keywords`` so the description's first line is built from the
+    same sanitized string (the title/description divergence guard).
+    """
+    pinned = inputs.title_override or str((extra or {}).get("pr_title_override") or "")
+    if pinned:
+        return pinned
+    generated = get_overlay().metadata.build_pr_title(
+        branch=inputs.branch,
+        subject=inputs.subject,
+        body=inputs.body or "",
+        issue_url=ticket.issue_url or "",
+    )
+    return generated or f"Resolve {ticket.issue_url}"
 
 
 def overlay_pr_labels() -> list[str]:
@@ -369,18 +409,17 @@ class ShipExecutor(RunnerBase):
         branch: str,
         extra: "TicketExtra",
     ) -> PullRequestSpec:
-        title_override = str(extra.get("pr_title_override") or "")
         subject, body = git.last_commit_message(repo=repo_path)
         overlay = get_overlay()
-        # PRODUCE the title from structured data unless the user pinned one
-        # via --title. The overlay default returns the subject unchanged.
-        generated = overlay.metadata.build_pr_title(
-            branch=branch,
-            subject=subject,
-            body=body or "",
-            issue_url=ticket.issue_url or "",
+        # PRODUCE the title via the shared resolver so the ship and the
+        # ``ship_preview`` preflight agree on what will ship: a pinned
+        # ``--title`` / ``extra['pr_title_override']`` wins, else the
+        # overlay-produced title, else the ``Resolve <url>`` fallback.
+        title = resolve_pr_title(
+            ticket,
+            extra,
+            PrTitleInputs(branch=branch, subject=subject, body=body or ""),
         )
-        title = title_override or generated or f"Resolve {ticket.issue_url}"
         close_ticket = should_close_ticket(
             extra,
             setting_enabled=overlay.config.mr_close_ticket,

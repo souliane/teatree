@@ -48,6 +48,6 @@ t3 loops tick            # the MASTER tick: run every enabled, due Loop row ONCE
 t3 loops run             # the master CONTINUOUSLY: tick, wait --interval, tick — until interrupted
 ```
 
-The master claims the singleton `t3-master` lease; a non-owner session SKIPs. Only loops whose `Loop` row is `enabled` AND `is_due` fan out — a disabled or cooling row is skipped, so triggering the master never runs a paused loop. Per-loop config (cadence, enabled, prompt vs script) is edited in the Django admin (`Loop` rows). A prompt-backed loop runs its `Prompt` body as the per-tick instruction — see `/t3:prompts`.
+The master claims the singleton `t3-master` lease; a non-owner session SKIPs. Only loops whose `Loop` row is `enabled` AND `is_due` AND that `LoopsConfig.is_enabled` admits fan out — a disabled or cooling row is skipped, AND a loop held by a `LoopState` pause/disable (`t3 loop pause`/`disable`) or the `T3_LOOPS_DISABLED` env kill-switch is skipped too (the unified verdict, #2584), so triggering the master never runs a held loop and never bumps a held loop's cadence anchor. The scoped per-loop runner (`run_scoped_tick`, the entry every `Loop` row references via `run.py`) honours `Loop.enabled` symmetrically. Per-loop config (cadence, enabled, prompt vs script) is edited in the Django admin (`Loop` rows). A prompt-backed loop runs its `Prompt` body as the per-tick instruction — see `/t3:prompts`.
 
 For ownership hand-off, claiming, the lease/owner machinery, and how the cron drives the tick, see `t3:teatree`.

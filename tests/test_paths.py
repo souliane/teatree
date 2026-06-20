@@ -10,6 +10,7 @@ from teatree.paths import (
     CanonicalDBFromWorktreeError,
     ResolvedDataDir,
     _seed_isolated_db,
+    _sqlite_snapshot,
     _worktree_isolation_root,
     find_overlay_db,
     find_stale_dbs,
@@ -37,6 +38,30 @@ def _make_sqlite_db(path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _make_wal_sqlite_db(path: Path) -> None:
+    """A WAL-mode DB whose ``-shm``/``-wal`` companions are absent.
+
+    ``PRAGMA journal_mode=WAL`` persists in the file header (bytes 18-19 become
+    ``2,2``); after a checkpoint+close and reaping the companions, only the main
+    db file remains, still flagged WAL. Opening it WAL-mode requires (re)creating
+    the ``-shm`` shared-memory file — which a ``mode=ro`` open cannot do, so it
+    raises ``OperationalError``. This is the on-disk shape an auto-isolated
+    worktree seed snapshots from.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        conn.execute("CREATE TABLE marker (id INTEGER PRIMARY KEY, note TEXT)")
+        conn.execute("INSERT INTO marker (note) VALUES ('canonical')")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    for companion in ("-wal", "-shm"):
+        Path(str(path) + companion).unlink(missing_ok=True)
 
 
 class TestRunningFromWorktree:
@@ -125,6 +150,47 @@ class TestIsolatedSlug:
 
     def test_auto_isolated_dir_ends_in_teatree_worktrees(self) -> None:
         assert paths.auto_isolated_worktrees_dir().name == "teatree-worktrees"
+
+
+class TestSqliteSnapshot:
+    def test_snapshots_wal_mode_db_with_absent_companions(self, tmp_path: Path) -> None:
+        """RED-before-fix: a WAL-header DB whose dir forbids creating ``-shm``.
+
+        With ``?mode=ro`` the snapshot open raises
+        ``OperationalError: unable to open database file`` (read-only cannot
+        create the ``-shm`` WAL needs). ``?immutable=1`` opens it without a
+        ``-shm`` and produces a correct snapshot.
+        """
+        src_dir = tmp_path / "canonical"
+        src = src_dir / "db.sqlite3"
+        _make_wal_sqlite_db(src)
+        dst = tmp_path / "snapshot.sqlite3"
+        # Make the source dir read-only so a ``mode=ro`` open cannot create the
+        # ``-shm`` companion — forcing the failure the fix removes.
+        src_dir.chmod(0o500)
+        try:
+            _sqlite_snapshot(src, dst)
+        finally:
+            src_dir.chmod(0o700)
+        conn = sqlite3.connect(dst)
+        try:
+            assert conn.execute("SELECT note FROM marker").fetchone()[0] == "canonical"
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            conn.close()
+
+    def test_snapshots_normal_rollback_journal_db(self, tmp_path: Path) -> None:
+        """The fix must not regress the normal (non-WAL) path."""
+        src = tmp_path / "canonical" / "db.sqlite3"
+        _make_sqlite_db(src)
+        dst = tmp_path / "snapshot.sqlite3"
+        _sqlite_snapshot(src, dst)
+        conn = sqlite3.connect(dst)
+        try:
+            assert conn.execute("SELECT note FROM marker").fetchone()[0] == "canonical"
+            assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            conn.close()
 
 
 class TestSeedIsolatedDb:

@@ -5,7 +5,7 @@ from django.db import migrations
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0090_landscapeartifact"),
+        ("core", "0091_remove_orphan_slack_answer_loop"),
     ]
 
     operations = [

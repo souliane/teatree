@@ -527,7 +527,7 @@
     },
     {
       "bom-ref": "requirements-L106",
-      "description": "requirements line 106: pydantic-settings==2.14.1",
+      "description": "requirements line 106: pydantic-settings==2.14.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -536,9 +536,9 @@
         }
       ],
       "name": "pydantic-settings",
-      "purl": "pkg:pypi/pydantic-settings@2.14.1",
+      "purl": "pkg:pypi/pydantic-settings@2.14.2",
       "type": "library",
-      "version": "2.14.1"
+      "version": "2.14.2"
     },
     {
       "bom-ref": "requirements-L108",

@@ -16,7 +16,13 @@ from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
+from teatree.core.runners.ship import (
+    PrTitleInputs,
+    overlay_pr_labels,
+    resolve_pr_title,
+    sanitize_close_keywords,
+    should_close_ticket,
+)
 from teatree.utils import git
 
 
@@ -34,57 +40,60 @@ class PrValidationError(TypedDict):
     details: list[str]
 
 
-def ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
-    """Return ``(repo_path, title, description)`` previewed from the last commit.
+def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tuple[str, str, str]:
+    """Return ``(repo_path, title, description)`` for the PR that will ship.
 
-    The title is PRODUCED by the overlay (``metadata.build_pr_title``), not
-    copied verbatim from the commit subject: an overlay enforcing a title
-    grammar assembles a canonical title from the branch + subject + ticket so
-    a non-canonical subject can never reach the MR. The default overlay hook
-    returns the subject unchanged, preserving prior behaviour.
+    The title is resolved through ``runners.ship.resolve_pr_title`` — the SAME
+    helper ``ShipExecutor._build_pr_spec`` uses — so the preview (and the
+    ``pr create`` preflight built on it) validate the title that will actually
+    ship, not a title regenerated from the commit subject. An explicit
+    ``--title`` (the ``title`` arg) wins, then a title pinned on
+    ``extra['pr_title_override']``, then the overlay-PRODUCED title
+    (``metadata.build_pr_title``, returning the subject unchanged by default),
+    then the ``Resolve <issue_url>`` fallback.
+
+    Honoring the override here is parity with ``_build_pr_spec``: ignoring it
+    made the preflight apply an overlay's title grammar (e.g. a customer-MR
+    requiring a GitLab issue URL) to the wrong title, false-failing a tooling
+    PR whose pinned title satisfied the grammar.
 
     The TITLE is sanitized first, then the description's first line is built
-    from that exact sanitized string. Applying close-keyword sanitization only
-    to the description (the old behaviour) silently diverged it from the title
-    whenever the title carried a close-keyword (e.g. the ``Resolve <url>``
-    fallback, or a ``fix: resolve X`` subject) — the title/description
-    divergence class. Reusing the sanitized title makes the first line ==
-    title by construction.
+    from that exact sanitized string, so the title and the description's first
+    line can never diverge (the release-notes-pipeline divergence guard).
     """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path)
     overlay = get_overlay()
-    generated = overlay.metadata.build_pr_title(
-        branch=worktree.branch or "",
-        subject=subject,
-        body=body or "",
-        issue_url=ticket.issue_url or "",
+    resolved = resolve_pr_title(
+        ticket,
+        ticket.extra or {},
+        PrTitleInputs(branch=worktree.branch or "", subject=subject, body=body or "", title_override=title),
     )
     close_ticket = should_close_ticket(
         ticket.extra or {},
         setting_enabled=overlay.config.mr_close_ticket,
     )
-    title = sanitize_close_keywords(generated or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
+    sanitized_title = sanitize_close_keywords(resolved, close_ticket=close_ticket)
     raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
-    description = f"{title}\n\n{raw_body}" if raw_body else title
-    return repo_path, title, description
+    description = f"{sanitized_title}\n\n{raw_body}" if raw_body else sanitized_title
+    return repo_path, sanitized_title, description
 
 
-def ship_dry_run(ticket: Ticket, worktree: Worktree) -> ShipDryRun:
-    repo_path, title, description = ship_preview(ticket, worktree)
+def ship_dry_run(ticket: Ticket, worktree: Worktree, *, title: str = "") -> ShipDryRun:
+    repo_path, resolved_title, description = ship_preview(ticket, worktree, title=title)
     return ShipDryRun(
         dry_run=True,
         repo=repo_path,
         branch=worktree.branch,
-        title=title,
+        title=resolved_title,
         description=description,
         labels=overlay_pr_labels(),
     )
 
 
-def validate_pr_metadata(ticket: Ticket, worktree: Worktree) -> PrValidationError | None:
-    _, title, description = ship_preview(ticket, worktree)
-    validation = get_overlay().metadata.validate_pr(title, description)
+def validate_pr_metadata(ticket: Ticket, worktree: Worktree, *, title: str = "") -> PrValidationError | None:
+    _, resolved_title, description = ship_preview(ticket, worktree, title=title)
+    validation = get_overlay().metadata.validate_pr(resolved_title, description)
     if validation["errors"]:
         return PrValidationError(error="PR validation failed", details=validation["errors"])
     return None
