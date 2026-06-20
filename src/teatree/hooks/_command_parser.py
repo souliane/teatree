@@ -478,10 +478,11 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, raws, payloads, ctx.base)
-    # ``t3 review`` posts carry the body as the positional NOTE and use
-    # ``--file`` as a diff ANCHOR, not a body-file — extract the NOTE and SKIP
-    # the body-file walker so the anchored source is never scanned (#2278/#2270).
-    if append_t3_review_note_payload(words, raws, payloads):
+    # ``t3 review`` posts carry the body as the positional NOTE (or the #32
+    # ``--body-file``) and use ``--file`` as a diff ANCHOR, not a body-file —
+    # extract the NOTE + ``--body-file`` body and SKIP the generic body-file
+    # walker so the anchored source is never scanned (#2278/#2270/#32).
+    if append_t3_review_note_payload(words, raws, payloads, ctx):
         return
     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
