@@ -24,6 +24,21 @@ def _run() -> str:
 
 @django.test.override_settings(USE_TZ=True)
 class TestSeedDefaultLoops(django.test.TestCase):
+    def setUp(self) -> None:
+        # Exercise the seed FUNCTION's defaults, NOT the migration's output.
+        # Migration 0094 (and friends) seed the same Loop/Prompt rows at
+        # migrate-time, and ``seed_default_loops_and_prompts`` uses
+        # ``get_or_create(name=...)`` — on the migrated test DB those rows
+        # already exist, so the ``defaults`` block never runs and the
+        # assertions would silently test the MIGRATION's output instead of the
+        # seed function. Clearing the migration-seeded rows first forces every
+        # ``get_or_create`` here to create from the seed's OWN ``defaults`` —
+        # catching a seed.py regression (e.g. reverting ``script`` to the shared
+        # ``run.py``) that the migration's rows would otherwise mask. The
+        # TestCase transaction rolls this back, so it is test-local.
+        Loop.objects.all().delete()
+        Prompt.objects.all().delete()
+
     def test_seeds_every_default_loop(self) -> None:
         seed_default_loops_and_prompts()
         names = set(Loop.objects.values_list("name", flat=True))

@@ -266,7 +266,7 @@ class TestLoopBackfillSatisfiesXor(TestCase):
     def test_other_loops_run_their_own_per_loop_module(self) -> None:
         # #2513: each script loop's ``script`` is its OWN module, never the
         # retired shared ``run.py``. The DB ``script`` column is per-loop and
-        # load-bearing — migration 0093 repointed every default script row.
+        # load-bearing — migration 0094 repointed every default script row.
         loop = Loop.objects.get(name="dispatch")
         assert loop.script == "src/teatree/loops/dispatch/loop.py"
         assert loop.prompt_id is None
