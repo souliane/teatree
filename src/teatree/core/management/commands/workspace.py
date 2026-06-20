@@ -458,8 +458,8 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Detect state drift across every store; optionally fix it.
 
-        Checks Django ↔ git worktrees, Postgres DBs, docker containers, redis
-        slots, env cache files.  Without ``--fix`` prints drift; with
+        Checks Django ↔ git worktrees, Postgres DBs, docker containers,
+        env cache files.  Without ``--fix`` prints drift; with
         ``--fix`` cleans orphan containers, drops orphan DBs, regenerates
         missing env caches, and prunes stale worktree dirs.  Every action
         uses :func:`run_checked` — no silent swallow.

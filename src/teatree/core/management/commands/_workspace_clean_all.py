@@ -55,7 +55,7 @@ def run_clean_all(
 
     Validates ``reap_unsynced`` up front (exit 1 on a bad value), then sequences:
     squash-merged Worktree rows, CREATED-row reap, empty-ticket-dir prune, orphan
-    DBs, orphaned Redis slots (#1038), docker/env-roots, orphaned RAW worktrees
+    DBs, docker/env-roots, orphaned RAW worktrees
     (#2361), branch + stash prune in the cwd repo, and DSLR snapshot prune. A
     failed push/abandon line exits 1 via :func:`_raise_on_cleanup_failures` (the
     #932 failure contract).
