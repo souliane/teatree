@@ -9,6 +9,15 @@ files under ``docs/blueprint/`` (e.g. ``configuration.md``,
 ``loop-topology.md``) — the appendices ARE the BLUEPRINT, so updating one of
 them satisfies the sync requirement just as the monolith does.
 
+The ``fix:``/``refactor:`` exemption only fires if the hook can read the commit
+*type*, which lives in the commit message. The commit message is sourced
+robustly: from ``argv[1]`` when prek hands it the commit-message file at the
+``commit-msg`` stage, otherwise from git's canonical ``COMMIT_EDITMSG``. A
+positional argument that is a staged *source* path (handed at the pre-commit
+stage or by ``prek run --all-files``) is never mistaken for the commit message —
+that coupling was the bug behind task #35, where a ``fix(db)`` commit was gated
+because the first line of a staged source file was read as the "commit type".
+
 See: souliane/teatree#8
 """
 
@@ -21,6 +30,11 @@ import sys
 # extracted helper) does not alter the external contracts BLUEPRINT documents
 # — the same reasoning that exempts ``fix``.
 _EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix", "refactor")
+
+# Filenames git uses to hold an in-progress commit message. ``argv[1]`` is read
+# as the commit message only when it ends in one of these — a staged ``src/``
+# path never matches, so it can never be mis-read as the commit type.
+_COMMIT_MSG_FILENAMES = ("COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG")
 
 
 def _staged_files() -> list[str]:
@@ -43,15 +57,53 @@ def _is_blueprint(path: str) -> bool:
     return path == "BLUEPRINT.md" or (path.startswith("docs/blueprint/") and path.endswith(".md"))
 
 
-def _commit_message() -> str:
-    min_args = 2
-    if len(sys.argv) < min_args:
-        return ""
+def _looks_like_commit_msg_file(path: str) -> bool:
+    """True when ``path`` is a git commit-message file, not a staged source path.
+
+    Git (and prek at the ``commit-msg`` stage) hands the hook a path ending in
+    one of git's known commit-message filenames. A staged ``src/`` path handed
+    at another stage ends in ``.py`` / ``.md`` / etc. and never matches, so it
+    is never read as the commit message.
+    """
+    return pathlib.PurePath(path).name in _COMMIT_MSG_FILENAMES
+
+
+def _git_commit_editmsg_path() -> str:
+    """Git's canonical path to the in-progress commit message (worktree-aware)."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-path", "COMMIT_EDITMSG"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def _read_first_line(path: str) -> str:
     try:
-        with pathlib.Path(sys.argv[1]).open(encoding="utf-8") as fh:
+        with pathlib.Path(path).open(encoding="utf-8") as fh:
             return fh.readline().strip()
     except OSError:
         return ""
+
+
+def _commit_message() -> str:
+    """The first line of the commit message, sourced robustly.
+
+    Prefer ``argv[1]`` when it is genuinely the commit-message file git handed
+    the hook at the ``commit-msg`` stage; otherwise fall back to git's canonical
+    ``COMMIT_EDITMSG``. This keeps the commit type available to the exemption
+    regardless of how the hook is invoked, and never reads a staged source path
+    handed as ``argv[1]`` as if it were the commit message (task #35).
+    """
+    min_args = 2
+    if len(sys.argv) >= min_args and _looks_like_commit_msg_file(sys.argv[1]):
+        return _read_first_line(sys.argv[1])
+
+    editmsg = _git_commit_editmsg_path()
+    if editmsg:
+        return _read_first_line(editmsg)
+    return ""
 
 
 def main() -> int:
@@ -74,7 +126,7 @@ def main() -> int:
         print("    If this change adds/removes/renames endpoints, models,")
         print("    commands, or config, please update BLUEPRINT.md too.")
         print()
-        print("    To skip: use a fix/test/docs/style/chore/ci commit type.")
+        print("    To skip: use a fix/refactor/test/docs/style/chore/ci commit type.")
         print()
         return 1
 
