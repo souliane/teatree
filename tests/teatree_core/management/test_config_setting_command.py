@@ -45,6 +45,19 @@ class TestConfigSettingSet(TestCase):
             call_command("config_setting", "set", "not_a_real_setting", "true")
         assert ConfigSetting.objects.filter(key="not_a_real_setting").exists() is False
 
+    def test_set_rejects_deleted_agent_review_request_disabled_key(self) -> None:
+        # #2579 item 1: the parallel side flag ``agent_review_request_disabled``
+        # is deleted — review-request blocking is driven off the autonomy tier.
+        # Setting the old key must now be refused (it left OVERLAY_OVERRIDABLE_SETTINGS).
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set", "agent_review_request_disabled", "true")
+        assert ConfigSetting.objects.filter(key="agent_review_request_disabled").exists() is False
+
+    def test_set_accepts_new_review_request_post_disabled_key(self) -> None:
+        # The Option-A per-overlay escape replacing the deleted flag IS overridable.
+        call_command("config_setting", "set", "review_request_post_disabled", "true")
+        assert ConfigSetting.objects.get_effective("review_request_post_disabled") is True
+
     def test_set_rejects_invalid_json(self) -> None:
         with pytest.raises(SystemExit):
             call_command("config_setting", "set", "issue_implementer_enabled", "not-json")
