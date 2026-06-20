@@ -696,7 +696,7 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 #### `t3 review post-comment`
 
 ```
-Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
+Usage: t3 review post-comment [OPTIONS] REPO MR [NOTE]
 
  Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack
  approval.
@@ -708,6 +708,13 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
  :class:`~teatree.core.models.live_post_approval.LivePostApproval`
  for the MR (mint via ``t3 review approve-live-post``).
 
+ The body comes from exactly one of three sources (souliane/teatree#32):
+ the positional ``NOTE``, ``-m``/``--body <text>``, or ``--body-file
+ <path>``. ``--body-file`` is the scannable path for large MR-thread
+ evidence — the #1415 banned-terms gate reads and scans the file's
+ content, mirroring how ``gh``/``glab`` comment commands accept a body
+ file.
+
  ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
  per-post escapes for the colleague-MR shape and TODO-anchor gates
  respectively (#126), mirroring the sibling override flags.
@@ -716,51 +723,70 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
 │ *    mr        INTEGER  Merge request IID [required]                         │
-│ *    note      TEXT     Comment text (markdown) [required]                   │
+│      note      [NOTE]   Comment text (markdown). Omit and use -m/--body or   │
+│                         --body-file instead.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file                      TEXT     File path for inline comment (omit for  │
-│                                      general note)                           │
-│ --line                      INTEGER  Line number in the new file (must be an │
-│                                      added line)                             │
-│                                      [default: 0]                            │
-│ --live                               Publish a colleague-visible comment     │
-│                                      directly instead of creating a draft.   │
-│                                      Requires a single-use Slack-recorded    │
-│                                      approval token minted via `t3 review    │
-│                                      approve-live-post <mr-url> --slack-ts   │
-│                                      <ts>` (#1207). The default (no flag)    │
-│                                      creates a DRAFT and DMs the user the    │
-│                                      link — safe-by-default.                 │
-│ --evidence-json             TEXT     Structured-evidence record (JSON) for a │
-│                                      'missing/wrong/broken' finding          │
-│                                      (souliane/teatree#1280). Required when  │
-│                                      the note asserts something is           │
-│                                      missing/wrong/broken/stale or does not  │
-│                                      exist. JSON keys: master_check_paths    │
-│                                      (list), ticket_dep_refs (list),         │
-│                                      helper_indirection_paths (list),        │
-│                                      recent_merge_sweep_query (str),         │
-│                                      confidence ('verified'|'speculative').  │
-│                                      Schema:                                 │
-│                                      teatree.cli.review.evidence_gate.Findi… │
-│ --allow-long-review                  Escape the colleague-MR review-shape    │
-│                                      cap (souliane/teatree#1114) for ONE     │
-│                                      post — the documented over-deny escape  │
-│                                      (#126), consistent with the sibling     │
-│                                      --quote-ok / --allow-banned-term        │
-│                                      overrides. Use only when a long-form    │
-│                                      review on a colleague's MR is genuinely │
-│                                      authorized; the cap still fires by      │
-│                                      default.                                │
-│ --allow-todo-blocker                 Escape the TODO-anchor blocker gate     │
-│                                      (souliane/teatree#1186) for ONE post —  │
-│                                      the documented over-deny escape (#126). │
-│                                      Use only when a blocker anchored on an  │
-│                                      author-marked TODO/FIXME genuinely must │
-│                                      be addressed in THIS MR; the gate still │
-│                                      refuses by default.                     │
-│ --help                               Show this message and exit.             │
+│ --file                        TEXT     File path for inline comment (omit    │
+│                                        for general note)                     │
+│ --line                        INTEGER  Line number in the new file (must be  │
+│                                        an added line)                        │
+│                                        [default: 0]                          │
+│ --body                -m      TEXT     Inline comment body (markdown). The   │
+│                                        short -m mirrors the sibling forge    │
+│                                        comment commands. Mutually exclusive  │
+│                                        with the positional NOTE and          │
+│                                        --body-file; exactly one body source  │
+│                                        is required (souliane/teatree#32).    │
+│ --body-file                   TEXT     Read the comment body from a file —   │
+│                                        the scannable path for large          │
+│                                        MR-thread evidence, matching how      │
+│                                        `gh`/`glab` comment commands accept   │
+│                                        --body-file. The #1415 banned-terms   │
+│                                        gate reads and scans the file before  │
+│                                        posting. Mutually exclusive with the  │
+│                                        positional NOTE and -m/--body         │
+│                                        (souliane/teatree#32).                │
+│ --live                                 Publish a colleague-visible comment   │
+│                                        directly instead of creating a draft. │
+│                                        Requires a single-use Slack-recorded  │
+│                                        approval token minted via `t3 review  │
+│                                        approve-live-post <mr-url> --slack-ts │
+│                                        <ts>` (#1207). The default (no flag)  │
+│                                        creates a DRAFT and DMs the user the  │
+│                                        link — safe-by-default.               │
+│ --evidence-json               TEXT     Structured-evidence record (JSON) for │
+│                                        a 'missing/wrong/broken' finding      │
+│                                        (souliane/teatree#1280). Required     │
+│                                        when the note asserts something is    │
+│                                        missing/wrong/broken/stale or does    │
+│                                        not exist. JSON keys:                 │
+│                                        master_check_paths (list),            │
+│                                        ticket_dep_refs (list),               │
+│                                        helper_indirection_paths (list),      │
+│                                        recent_merge_sweep_query (str),       │
+│                                        confidence                            │
+│                                        ('verified'|'speculative'). Schema:   │
+│                                        teatree.cli.review.evidence_gate.Fin… │
+│ --allow-long-review                    Escape the colleague-MR review-shape  │
+│                                        cap (souliane/teatree#1114) for ONE   │
+│                                        post — the documented over-deny       │
+│                                        escape (#126), consistent with the    │
+│                                        sibling --quote-ok /                  │
+│                                        --allow-banned-term overrides. Use    │
+│                                        only when a long-form review on a     │
+│                                        colleague's MR is genuinely           │
+│                                        authorized; the cap still fires by    │
+│                                        default.                              │
+│ --allow-todo-blocker                   Escape the TODO-anchor blocker gate   │
+│                                        (souliane/teatree#1186) for ONE post  │
+│                                        — the documented over-deny escape     │
+│                                        (#126). Use only when a blocker       │
+│                                        anchored on an author-marked          │
+│                                        TODO/FIXME genuinely must be          │
+│                                        addressed in THIS MR; the gate still  │
+│                                        refuses by default.                   │
+│ --help                                 Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

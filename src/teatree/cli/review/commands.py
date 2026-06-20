@@ -140,15 +140,34 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         raise typer.Exit(code=code)
 
 
+_BODY_OPTION_HELP = (
+    "Inline comment body (markdown). The short -m mirrors the sibling forge comment "
+    "commands. Mutually exclusive with the positional NOTE and --body-file; exactly "
+    "one body source is required (souliane/teatree#32)."
+)
+
+_BODY_FILE_OPTION_HELP = (
+    "Read the comment body from a file — the scannable path for large MR-thread "
+    "evidence, matching how `gh`/`glab` comment commands accept --body-file. The "
+    "#1415 banned-terms gate reads and scans the file before posting. Mutually "
+    "exclusive with the positional NOTE and -m/--body (souliane/teatree#32)."
+)
+
+
 @review_app.command(name="post-comment")
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
+def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json + the #32 body-source flags). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing. ``--body``/``--body-file`` are the #32 scannable body-source flags.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
-    note: str = typer.Argument(help="Comment text (markdown)"),
+    note: str | None = typer.Argument(
+        None,
+        help="Comment text (markdown). Omit and use -m/--body or --body-file instead.",
+    ),
     file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
     line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
     *,
+    body: str = typer.Option("", "-m", "--body", help=_BODY_OPTION_HELP),
+    body_file: str = typer.Option("", "--body-file", help=_BODY_FILE_OPTION_HELP),
     live: bool = typer.Option(
         False,
         "--live",
@@ -172,16 +191,30 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     :class:`~teatree.core.models.live_post_approval.LivePostApproval`
     for the MR (mint via ``t3 review approve-live-post``).
 
+    The body comes from exactly one of three sources (souliane/teatree#32):
+    the positional ``NOTE``, ``-m``/``--body <text>``, or ``--body-file
+    <path>``. ``--body-file`` is the scannable path for large MR-thread
+    evidence — the #1415 banned-terms gate reads and scans the file's
+    content, mirroring how ``gh``/``glab`` comment commands accept a body
+    file.
+
     ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
     per-post escapes for the colleague-MR shape and TODO-anchor gates
     respectively (#126), mirroring the sibling override flags.
     """
+    from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415
+
+    try:
+        resolved_note = resolve_post_body(note=note, body=body, body_file=body_file)
+    except PostBodyError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=2) from exc
     service = _require_token()
     evidence = _parse_evidence(evidence_json)
     msg, code = service.post_comment(
         repo,
         mr,
-        note,
+        resolved_note,
         file=file,
         line=line,
         live=live,

@@ -1,10 +1,10 @@
-r"""Positional-NOTE body extraction for ``t3 review`` posting verbs (#2278).
+r"""Body extraction for ``t3 review`` posting verbs (#2278/#32).
 
 Split out of :mod:`teatree.hooks._command_parser` to keep that module under
 the module-health LOC cap. This module owns one concern: given a ``t3 ...
 review post-comment`` / ``post-draft-note`` command segment, locate the
-posting verb and extract the positional ``NOTE`` argument — the published
-body — so the banned-terms / quote gates scan it.
+posting verb and extract the published body — so the banned-terms / quote
+gates scan it.
 
 ``t3 review post-comment REPO MR NOTE`` (and ``post-draft-note``) carry the
 body as the positional ``NOTE``, not a ``--body``/``--message`` flag, so the
@@ -14,7 +14,16 @@ the inline ``--file`` anchor — a SOURCE path, not a body-file — was treated 
 the body-file and the anchored source was scanned instead of the note (#2278).
 :func:`_t3_review_post_verb_index` recognises the segment and
 :func:`_t3_review_note_body` extracts the NOTE; the caller then suppresses the
-body-file walker for the segment so the anchor is never read.
+generic body-file walker for the segment so the ``--file`` anchor is never read.
+
+#32 added a ``--body-file`` source to ``review post-comment`` so large MR-thread
+evidence posts through a scannable flag. Because the t3-review path suppresses
+the generic body-file walker (to skip the ``--file`` anchor),
+:func:`_t3_review_body_file_payload` reads the ``--body-file`` body HERE —
+through the same :mod:`_body_file_resolution` machinery, fail-closed when
+unreadable — while the ``--file`` anchor stays unscanned. The inline ``-m`` /
+``--body`` body is still scanned by the generic body-flag walker that runs
+before this module on every segment.
 
 The leader is canonicalised up to the ``t3`` executable before recognition, so
 an env-prefixed (``FOO=bar t3 …``) or path-form (``./t3``, ``/usr/local/bin/t3``)
@@ -23,9 +32,12 @@ the surrounding parser normalises a segment's leader.
 """
 
 from pathlib import PurePosixPath
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from teatree.hooks._publish_detection import _ENV_ASSIGNMENT_RE
+
+if TYPE_CHECKING:
+    from teatree.hooks._body_file_resolution import BodyFileContext
 
 # The ``t3 review`` posting verbs whose BODY is the positional ``NOTE``
 # argument rather than a ``--body``/``--message`` flag.
@@ -37,8 +49,16 @@ _T3_REVIEW_NOTE_POSITIONAL_INDEX: Final[int] = 2
 
 # Value-taking options on the ``t3 review`` post verbs whose next token is a
 # VALUE, never a positional. Recognising them keeps the positional counter
-# from miscounting a flag's value (``--line 3`` -> ``3``) as the NOTE body.
-_T3_REVIEW_VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--file", "--line", "--evidence-json"})
+# from miscounting a flag's value (``--line 3`` -> ``3``, a ``--body-file
+# <path>`` path, a ``-m`` / ``--body`` text) as the NOTE body.
+_T3_REVIEW_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
+    {"--file", "--line", "--evidence-json", "--body-file", "-m", "--body"},
+)
+
+# The ``--body-file`` flag on a ``t3 review`` post (#32): a FILE whose content
+# is the published body, distinct from the ``--file`` diff anchor (a SOURCE path
+# that must stay unscanned).
+_T3_REVIEW_BODY_FILE_FLAG: Final[str] = "--body-file"
 
 # The POSIX end-of-options marker. Typer requires it to pass a positional NOTE
 # that itself starts with ``-``; everything after it is a positional.
@@ -124,17 +144,53 @@ def _t3_review_note_body(words: list[str], raws: list[str], verb_index: int) -> 
     return None
 
 
-def append_t3_review_note_payload(words: list[str], raws: list[str], payloads: list[str]) -> bool:
-    """Append a ``t3 review`` post's positional NOTE body and report handling.
+def _t3_review_body_file_payload(words: list[str], payloads: list[str], ctx: "BodyFileContext") -> None:
+    """Append the body referenced by a ``t3 review`` post's ``--body-file <path>`` (#32).
+
+    Resolves ONLY the ``--body-file`` flag — never the ``--file`` diff anchor —
+    through the shared :func:`_body_file_resolution._append_file_payload`, so a
+    relative path resolves against the command's ``cd`` dir, an in-command
+    heredoc/redirect body is paired, and an unreadable file fails closed (a
+    public MR post whose body the gate cannot read must hard-block). Both the
+    space-separated (``--body-file <path>``) and equals (``--body-file=<path>``)
+    spellings are handled.
+    """
+    from teatree.hooks._body_file_resolution import _append_file_payload  # noqa: PLC0415
+    from teatree.hooks._command_parser import attached_value  # noqa: PLC0415
+
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word == _T3_REVIEW_BODY_FILE_FLAG and i + 1 < n:
+            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=True)
+            i += 2
+            continue
+        attached = attached_value(word, _T3_REVIEW_BODY_FILE_FLAG + "=")
+        if attached is not None:
+            _append_file_payload(attached, payloads, ctx, fail_closed=True)
+        i += 1
+
+
+def append_t3_review_note_payload(
+    words: list[str], raws: list[str], payloads: list[str], ctx: "BodyFileContext"
+) -> bool:
+    """Append a ``t3 review`` post's body and report handling.
 
     Returns ``True`` when ``words`` is a ``t3 review post-comment`` /
-    ``post-draft-note`` segment — the caller then SKIPS the generic body-flag
-    and body-file walkers so the segment's inline ``--file`` anchor is never
-    scanned as the published body (#2278/#2270). The extracted NOTE (when
-    present) is appended to ``payloads``. ``raws`` carries each WORD token's
-    verbatim source span (parallel to ``words``) so the NOTE resolver can tell a
-    single-quoted INERT ``$(...)`` from a live one. Returns ``False`` for a
-    non-review segment, leaving ``payloads`` untouched.
+    ``post-draft-note`` segment — the caller then SKIPS the generic body-file
+    walker so the segment's inline ``--file`` anchor is never scanned as the
+    published body (#2278/#2270). The published body is appended to ``payloads``
+    from whichever source carries it: the positional ``NOTE`` (via
+    :func:`_t3_review_note_body`) and the ``--body-file`` content (via
+    :func:`_t3_review_body_file_payload`, #32). The inline ``-m`` / ``--body``
+    body is already covered by the generic body-flag walker the caller runs
+    before this on every segment. ``raws`` carries each WORD token's verbatim
+    source span (parallel to ``words``) so the NOTE resolver can tell a
+    single-quoted INERT ``$(...)`` from a live one. ``ctx`` is the body-file
+    resolution context (heredoc map, repo-dir base) the ``--body-file`` reader
+    needs. Returns ``False`` for a non-review segment, leaving ``payloads``
+    untouched.
     """
     verb_index = _t3_review_post_verb_index(words)
     if verb_index is None:
@@ -142,4 +198,5 @@ def append_t3_review_note_payload(words: list[str], raws: list[str], payloads: l
     note = _t3_review_note_body(words, raws, verb_index)
     if note is not None:
         payloads.append(note)
+    _t3_review_body_file_payload(words, payloads, ctx)
     return True

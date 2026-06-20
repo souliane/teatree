@@ -423,6 +423,57 @@ class TestT3ReviewPostBodyIsPositionalNote:
         assert "acmecorp" in payload
 
 
+class TestT3ReviewPostBodyFileIsScanned:
+    """``t3 review post-comment --body-file <path>`` body is read and scanned (#32).
+
+    #32 adds a ``--body-file`` (and ``-m``/``--body``) source to ``review
+    post-comment`` so large MR-thread evidence can be posted through the
+    scannable flag path instead of a single shell-quoted positional. The body
+    is the FILE the flag points at — NOT the ``--file`` diff anchor (a SOURCE
+    path) — so the gate must scan the body file while still skipping the anchor.
+    """
+
+    def _payload(self, command: str) -> str | None:
+        return banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+
+    def test_body_file_content_is_extracted(self, tmp_path: Path) -> None:
+        body = tmp_path / "evidence.md"
+        body.write_text("clean MR-thread evidence\n", encoding="utf-8")
+        payload = self._payload(f"t3 teatree review post-comment my-org/repo 7 --body-file {body}")
+        assert payload is not None
+        assert "clean MR-thread evidence" in payload
+
+    def test_banned_term_in_body_file_is_surfaced(self, tmp_path: Path) -> None:
+        # RED guard: a banned term in the BODY FILE must reach the scanner. Pre-#32
+        # the t3-review path skipped the body-file walker entirely, so a leak in a
+        # ``--body-file`` post slipped through unscanned.
+        body = tmp_path / "evidence.md"
+        body.write_text("this names acmecorp internally\n", encoding="utf-8")
+        payload = self._payload(f"t3 teatree review post-comment my-org/repo 7 --body-file {body}")
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_body_file_scanned_while_anchor_source_is_not(self, tmp_path: Path) -> None:
+        # The ``--file`` diff anchor (a SOURCE) must still be skipped even when a
+        # ``--body-file`` body is present: only the body is published.
+        anchor = tmp_path / "module.py"
+        anchor.write_text("# acmecorp wiring\nx = 1\n", encoding="utf-8")
+        body = tmp_path / "evidence.md"
+        body.write_text("clean inline review note\n", encoding="utf-8")
+        payload = self._payload(
+            f"t3 teatree review post-comment my-org/repo 7 --body-file {body} --file {anchor} --line 1"
+        )
+        assert payload is not None
+        assert "clean inline review note" in payload
+        assert "acmecorp" not in payload
+
+    def test_unreadable_body_file_fails_closed(self) -> None:
+        # A missing ``--body-file`` is an unscannable public body → fail closed.
+        payload = self._payload("t3 teatree review post-comment my-org/repo 7 --body-file /nope/absent-body.md")
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
 class TestRelativeBodyFileResolvesAgainstCommandDir:
     """A relative ``--body-file`` resolves against the command's own ``cd`` dir.
 

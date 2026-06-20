@@ -485,6 +485,12 @@ When reviewing an external MR/PR, **always post comments inline on the correct f
 t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 ```
 
+**Large evidence bodies — use `--body-file` (the scannable path, #32).** The comment body may come from the positional `NOTE`, `-m`/`--body <text>`, or `--body-file <path>` — exactly one source. For a large MR-thread evidence body (a verdict table, a multi-row reconciliation), write it to a file and pass `--body-file`, matching how `gh`/`glab` comment commands accept a body file. This avoids shell-quoting a huge positional and routes the body through the well-known flag the #1415 banned-terms gate reads and scans (the gate skips the `--file` diff anchor, which is a SOURCE path, not the body). `--file`/`--line` stay the inline diff anchor and compose with any body source.
+
+```bash
+t3 review post-comment <REPO> <MR_IID> --body-file <path/to/evidence.md>
+```
+
 The CLI validates the target line is an added (`+`) line in the MR diff before posting, and verifies the response anchored correctly (non-null `line_code`). When something goes wrong it refuses upfront — common rejected cases:
 
 - **Context line:** the target is unchanged in the diff. CLI rejects and lists the nearby added lines so you can pick one.
