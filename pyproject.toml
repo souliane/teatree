@@ -507,6 +507,13 @@ unresolved-attribute = "ignore"
 managed = true
 package = true
 
+# Floor a transitive dependency above a published advisory without promoting it
+# to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions
+# >= 2.12.0, < 2.14.2 carry GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource
+# follows symlinks outside secrets_dir). Patched in 2.14.2. Drop the entry once
+# `mcp` floors it itself.
+constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
+
 # --- uv audit advisory lane (souliane/teatree#2292) ---
 # Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
 # preview lane (CI job `uv-audit-advisory`). The advisory lane never reds the
