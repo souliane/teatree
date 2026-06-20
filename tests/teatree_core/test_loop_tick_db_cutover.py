@@ -90,3 +90,31 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-cool"),)):
             jobs = _registry_jobs_builder(TickRequest(), now)
         assert jobs == []
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMasterTickPreservesOperationalPause(django.test.TestCase):
+    """The unified gate (#2584) preserves the migration-0087 operational pause.
+
+    Migration 0087 disabled every default ``Loop`` row (``enabled=False``) for
+    the #2513 cutover. The unification must NOT un-pause anything: with the rows
+    disabled the master tick produces zero jobs, exactly as today. This pins the
+    pause through the ``loops_tick`` master builder (``_loop_table_jobs_builder``)
+    so a future change to the unified verdict cannot silently re-arm the loops.
+    No live tick is run here — only the pure job-builder is invoked.
+    """
+
+    def test_master_builder_emits_zero_jobs_when_all_rows_disabled(self) -> None:
+        from teatree.core.management.commands.loops_tick import _loop_table_jobs_builder  # noqa: PLC0415
+
+        now = timezone.now()
+        # Simulate the migration-0087 state: enabled+due registry loops, but
+        # every Loop row disabled. Zero jobs must fan out.
+        for name in ("p-a", "p-b", "p-c"):
+            Loop.objects.create(name=name, delay_seconds=60, prompt=_prompt(), enabled=False)
+        registry = (_mini("p-a"), _mini("p-b"), _mini("p-c"))
+        with patch("teatree.loops.master.iter_loops", return_value=registry):
+            jobs = _loop_table_jobs_builder(TickRequest(), now)
+        assert jobs == []
+        for name in ("p-a", "p-b", "p-c"):
+            assert Loop.objects.get(name=name).last_run_at is None

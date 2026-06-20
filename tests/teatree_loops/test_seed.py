@@ -12,6 +12,7 @@ import django.test
 from django.core.management import call_command
 
 from teatree.core.models import Loop, Prompt
+from teatree.loops.registry import iter_loops
 from teatree.loops.seed import DEFAULT_LOOPS, seed_default_loops_and_prompts
 
 
@@ -27,6 +28,20 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         names = set(Loop.objects.values_list("name", flat=True))
         assert {spec.name for spec in DEFAULT_LOOPS} <= names
+
+    def test_seeded_loop_table_matches_iter_loops(self) -> None:
+        # No orphan seed row that the master fan-out / iter_loops can never run
+        # (#2584). Every seeded ``Loop`` name must have a registry ``MiniLoop``
+        # (so ``build_loop_table_jobs`` can resolve it) and every registry loop
+        # must be seeded. ``slack_answer`` used to break this — it was in the
+        # seed + migration 0087 but had no registry MiniLoop (it runs only via
+        # the piggyback cycle, ``tick_piggyback``).
+        seed_default_loops_and_prompts()
+        seeded = {spec.name for spec in DEFAULT_LOOPS}
+        registry = {loop.name for loop in iter_loops()}
+        assert seeded == registry, (
+            f"seed/registry mismatch: seed-only={seeded - registry}, registry-only={registry - seeded}"
+        )
 
     def test_seed_is_idempotent_no_duplicate_rows(self) -> None:
         seed_default_loops_and_prompts()

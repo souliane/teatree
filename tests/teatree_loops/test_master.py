@@ -11,7 +11,7 @@ from unittest.mock import patch
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.master import build_loop_table_jobs
 
@@ -84,3 +84,96 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         # the raising loop is NOT marked run; the healthy one is
         assert Loop.objects.get(name="m-boom").last_run_at is None
         assert Loop.objects.get(name="m-ok").last_run_at == now
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMasterHonoursLoopStateAndEnv(django.test.TestCase):
+    """The master gate routes through the unified verdict (#2584).
+
+    The #2513 cutover left ``build_loop_table_jobs`` gating only on
+    ``Loop.enabled AND is_due`` — it ignored both the durable ``LoopState``
+    control tier (``t3 loop pause`` / ``disable``, #1913) and the
+    ``T3_LOOPS_DISABLED`` env kill-switch. These pin that the master now reaches
+    the SAME verdict ``LoopsConfig.is_enabled`` does: a ``Loop`` row that is
+    ``enabled`` and ``is_due`` is STILL skipped (and not cadence-bumped) when a
+    LoopState hold or the env kill-switch applies.
+    """
+
+    def test_loop_state_pause_skips_an_enabled_due_loop(self) -> None:
+        # An enabled + never-run (due) Loop row, but held by a LoopState PAUSE:
+        # the master must emit no job and must NOT consume the cadence anchor.
+        now = timezone.now()
+        Loop.objects.create(name="m-paused", delay_seconds=60, prompt=_prompt())
+        LoopState.objects.pause("m-paused")
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-paused"),)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert jobs == []
+        assert Loop.objects.get(name="m-paused").last_run_at is None
+
+    def test_loop_state_disable_skips_an_enabled_due_loop(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-disabled-state", delay_seconds=60, prompt=_prompt())
+        LoopState.objects.disable("m-disabled-state")
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-disabled-state"),)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert jobs == []
+        assert Loop.objects.get(name="m-disabled-state").last_run_at is None
+
+    def test_env_kill_switch_all_skips_every_enabled_due_loop(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-env-a", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="m-env-b", delay_seconds=60, prompt=_prompt())
+        registry = (_mini("m-env-a"), _mini("m-env-b"))
+        with (
+            patch.dict("os.environ", {"T3_LOOPS_DISABLED": "all"}),
+            patch("teatree.loops.master.iter_loops", return_value=registry),
+        ):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert jobs == []
+        assert Loop.objects.get(name="m-env-a").last_run_at is None
+        assert Loop.objects.get(name="m-env-b").last_run_at is None
+
+    def test_env_kill_switch_named_loop(self) -> None:
+        # T3_LOOPS_DISABLED=<name> kills only the named loop; the sibling runs.
+        now = timezone.now()
+        Loop.objects.create(name="m-named-off", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="m-named-on", delay_seconds=60, prompt=_prompt())
+        registry = (_mini("m-named-off"), _mini("m-named-on"))
+        with (
+            patch.dict("os.environ", {"T3_LOOPS_DISABLED": "m-named-off"}),
+            patch("teatree.loops.master.iter_loops", return_value=registry),
+        ):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-named-off" not in jobs
+        assert "job-m-named-on" in jobs
+        assert Loop.objects.get(name="m-named-off").last_run_at is None
+        assert Loop.objects.get(name="m-named-on").last_run_at == now
+
+    def test_env_kill_switch_all_still_runs_always_on_loop(self) -> None:
+        # The env kill-switch respects an always_on loop only via its flag —
+        # an always_on loop still fans out even under T3_LOOPS_DISABLED=all.
+        now = timezone.now()
+        Loop.objects.create(name="m-always", delay_seconds=60, prompt=_prompt())
+        always = MiniLoop(
+            name="m-always",
+            default_cadence_seconds=60,
+            build_jobs=lambda **_: ["job-m-always"],
+            always_on=True,
+        )
+        with (
+            patch.dict("os.environ", {"T3_LOOPS_DISABLED": "all"}),
+            patch("teatree.loops.master.iter_loops", return_value=(always,)),
+        ):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-always" in jobs
+        assert Loop.objects.get(name="m-always").last_run_at == now
+
+    def test_held_loop_cadence_anchor_is_not_consumed(self) -> None:
+        # A LoopState-held enabled + due loop's cadence anchor must be preserved
+        # — the gate runs BEFORE mark_run, so last_run_at stays None.
+        now = timezone.now()
+        Loop.objects.create(name="m-anchor", delay_seconds=60, prompt=_prompt())
+        LoopState.objects.pause("m-anchor")
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-anchor"),)):
+            build_loop_table_jobs({}, now=now)
+        assert Loop.objects.get(name="m-anchor").last_run_at is None

@@ -220,7 +220,12 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="audit").delay_seconds == 1800
         assert Loop.objects.get(name="followup").delay_seconds == 1800
         assert Loop.objects.get(name="arch_review").delay_seconds == 10800
-        assert Loop.objects.get(name="slack_answer").delay_seconds == 20
+
+    def test_orphan_slack_answer_row_is_removed(self) -> None:
+        # #2584: ``slack_answer`` has no registry MiniLoop, so the autonomous
+        # fan-out can never run it — migration 0091 removes the orphan Loop row
+        # 0078 seeded. It runs only via the won-tick piggyback cycle.
+        assert not Loop.objects.filter(name="slack_answer").exists()
 
     def test_daily_loops_seeded_with_schedule(self) -> None:
         assert Loop.objects.get(name="news").daily_at == dt.time(8, 0)
@@ -237,7 +242,11 @@ class TestLoopSeed(TestCase):
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
-        assert Loop.objects.count() == 19
+        # 18 after #2584 removed the orphan ``slack_answer`` row (19 from 0078
+        # minus the one loop with no registry MiniLoop). The seeded set now
+        # equals ``iter_loops()`` — pinned by
+        # tests/teatree_loops/test_seed.py::test_seeded_loop_table_matches_iter_loops.
+        assert Loop.objects.count() == 18
         assert Loop.objects.filter(name="dispatch").exists()
 
 
