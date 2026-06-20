@@ -271,11 +271,19 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         The load-bearing anti-regression: with no per-loop lease present the
         default view must be byte-identical whether or not a current session
         resolves — the per-loop block is absent in both cases.
+
+        The clock is frozen across both renders: ``build_report`` anchors every
+        countdown on ``timezone.now()`` at call time, so a sub-hour ``next in
+        Xm YYs`` countdown (a ``daily_at`` loop seeded by migration 0078) ticks
+        a second between the two ``_run()`` calls and would make the output
+        differ on the *time*, not on the session-scoping invariant under test.
+        Pinning ``now`` isolates the assertion to the behaviour it guards.
         """
-        with _session("sess-dispatch"):
-            with_session = _run()
-        with _session(""):
-            anonymous = _run()
+        with patch("teatree.loops.live.timezone.now", return_value=timezone.now()):
+            with _session("sess-dispatch"):
+                with_session = _run()
+            with _session(""):
+                anonymous = _run()
         assert with_session == anonymous
         assert "per-loop owners:" not in with_session
 
