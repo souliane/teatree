@@ -27,7 +27,9 @@ from typing import TextIO
 
 from teatree.utils import bad_artifacts
 from teatree.utils import django_db_dslr as _dslr
+from teatree.utils import django_db_reconcile as _reconcile
 from teatree.utils.django_db_dslr import prune_dslr_snapshots
+from teatree.utils.django_db_reconcile import is_config_error as _is_config_error
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -69,19 +71,6 @@ def _is_pipenv_repo(repo: Path) -> bool:
         return "[[package]]" not in lock.read_text(encoding="utf-8")
     except OSError:
         return True
-
-
-_CONFIG_ERROR_MARKERS = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
-
-
-def _is_config_error(combined: str) -> bool:
-    """True iff *combined* migrate output looks like an import/config failure.
-
-    These markers signal the interpreter could not import the app's
-    dependencies or settings — the unverified-venv signature that gates the
-    dockerized fallback and the unfakeable-migration skip.
-    """
-    return any(m in combined for m in _CONFIG_ERROR_MARKERS)
 
 
 def runner_prefix(repo: Path) -> list[str]:
@@ -298,6 +287,18 @@ class DjangoDbImporter:
             if _is_config_error(combined) and not self._migrate_via_docker and cfg.dockerized_migrate is not None:
                 self.stdout.write("  Host migrate failed to import deps; retrying inside the docker image...\n")
                 self._migrate_via_docker = True
+                continue
+
+            # souliane/teatree#1038: a master renumber (a migration inserted
+            # earlier, bumping later numbers) makes the snapshot's old-numbered
+            # applied record fail Django's `check_consistent_history` BEFORE any
+            # forward migrate runs — "X is applied before its dependency Y". When
+            # the conflict is a provable pure renumber, reconcile the stale
+            # record and retry the migrate; otherwise fall through to the normal
+            # fake/divergence handling (the reconcile NEVER masks real drift).
+            if _reconcile.reconcile_renumbered_migration(
+                combined, run_env, run_managepy=self._run_migrate, stdout=self.stdout
+            ):
                 continue
 
             failure_reason = self._try_fake_failing_migration(combined, result.stdout, run_env)
