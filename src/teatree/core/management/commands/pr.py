@@ -108,6 +108,7 @@ def _run_ship_gates(
     worktree: Worktree,
     *,
     skip_visual_qa: str = "",
+    title: str = "",
 ) -> (
     ShippingGateFailure
     | VisualQAGateFailure
@@ -123,6 +124,12 @@ def _run_ship_gates(
     The branch-currency gate (#940) runs FIRST: a stale base would
     otherwise poison the visual-QA gate (it would render the
     pre-merge tree) and the cold reviewer's SHA attestation.
+
+    ``title`` is the explicit ``--title`` override: it has not yet been
+    persisted to ``extra['pr_title_override']`` (that happens at ship time,
+    after the gates pass), so it is threaded into ``validate_pr_metadata``
+    here — otherwise the preflight would validate the regenerated commit
+    subject rather than the title that will actually ship.
     """
     currency_error = _run_branch_currency_gate(ticket, worktree)
     if currency_error is not None:
@@ -147,7 +154,7 @@ def _run_ship_gates(
     e2e_error = _run_e2e_mandatory_gate(ticket)
     if e2e_error is not None:
         return e2e_error
-    return validate_pr_metadata(ticket, worktree)
+    return validate_pr_metadata(ticket, worktree, title=title)
 
 
 def _dispatch_ship(
@@ -164,7 +171,7 @@ def _dispatch_ship(
     inline; the default enqueues it for a worker (#708).
     """
     if dry_run:
-        return ship_dry_run(ticket, worktree)
+        return ship_dry_run(ticket, worktree, title=title)
     if sync:
         return _ship_sync(ticket, title)
     return _enqueue_ship(ticket, title)
@@ -275,7 +282,7 @@ class Command(TyperCommand):
             return no_commits
 
         if not skip_validation:
-            gate_failure = _run_ship_gates(ticket, ship_worktree, skip_visual_qa=skip_visual_qa)
+            gate_failure = _run_ship_gates(ticket, ship_worktree, skip_visual_qa=skip_visual_qa, title=title)
             if gate_failure is not None:
                 return gate_failure
         else:
@@ -290,7 +297,7 @@ class Command(TyperCommand):
             # not slip onto GitLab via the bypass; only the explicit
             # --skip-mr-format-check opt-in disables the format check too.
             if not skip_mr_format_check:
-                format_error = validate_pr_metadata(ticket, ship_worktree)
+                format_error = validate_pr_metadata(ticket, ship_worktree, title=title)
                 if format_error is not None:
                     return format_error
 

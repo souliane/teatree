@@ -4,12 +4,13 @@ Split out of ``test_pr_command`` alongside the ``_pr_preview`` module split:
 test files mirror the production module path.
 """
 
+from typing import TypedDict
 from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.management.commands import _pr_preview
-from teatree.core.management.commands._pr_preview import ship_preview
+from teatree.core.management.commands._pr_preview import ship_preview, validate_pr_metadata
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
@@ -26,6 +27,36 @@ class _GeneratingMetadata(OverlayMetadata):
 
 class _GenOverlay(CommandOverlay):
     metadata = _GeneratingMetadata()
+
+
+class _ValidationResult(TypedDict):
+    errors: list[str]
+    warnings: list[str]
+
+
+class _IssueUrlFirstLineMetadata(OverlayMetadata):
+    """Customer-MR grammar: the title MUST reference a GitLab issue URL.
+
+    Mirrors a downstream customer overlay's ``validate_pr``, which rejects any
+    title that does not carry a ``…/-/issues/<n>`` reference. A
+    tooling/non-customer PR with an explicit ``--title`` / ``pr_title_override``
+    must validate the title that will actually ship — not the regenerated
+    commit subject — so the override clears (or, for a tooling title, fails)
+    the preflight against the title it will actually use.
+    """
+
+    def validate_pr(self, title: str, description: str) -> _ValidationResult:
+        _ = description
+        if "/-/issues/" not in title:
+            return _ValidationResult(
+                errors=[f"PR title must reference a GitLab issue URL (got: {title!r})"],
+                warnings=[],
+            )
+        return _ValidationResult(errors=[], warnings=[])
+
+
+class _CustomerGrammarOverlay(CommandOverlay):
+    metadata = _IssueUrlFirstLineMetadata()
 
 
 class TestShipPreviewTitleDescriptionInvariant(TestCase):
@@ -142,3 +173,154 @@ class TestShipPreviewUsesOverlayGeneratedTitle(TestCase):
             _, title, description = ship_preview(ticket, ticket.worktrees.first())
         assert title == "fix(corridor): canonical generated title [none] (proj#119)"
         assert description.split("\n", 1)[0] == title
+
+
+class TestShipPreviewHonorsTitleOverride(TestCase):
+    """``ship_preview`` must use the pinned title, not the regenerated subject.
+
+    Parity with ``ShipExecutor._build_pr_spec`` (``runners/ship.py``): a title
+    pinned via ``ticket.extra['pr_title_override']`` (or an explicit ``--title``)
+    is the title that will actually ship, so the preview — and therefore the
+    preflight validation built on it — must reflect it. Regenerating the title
+    from the last commit subject and ignoring the override makes the preflight
+    validate a title that is NOT the one that ships.
+    """
+
+    def _ticket_with_worktree(self, *, extra: dict[str, str] | None = None) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.REVIEWED,
+            issue_url="https://github.com/souliane/teatree/issues/298",
+            extra=extra or {},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="298-fix-thing",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        return ticket
+
+    def test_pr_title_override_replaces_regenerated_subject(self) -> None:
+        ticket = self._ticket_with_worktree(extra={"pr_title_override": "fix(scope): pinned title (#298)"})
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("chore: some unrelated subject (#298)", "Body."),
+            ),
+        ):
+            _, title, description = ship_preview(ticket, ticket.worktrees.first())
+        assert title == "fix(scope): pinned title (#298)"
+        assert description.split("\n", 1)[0] == title
+
+    def test_explicit_title_argument_replaces_regenerated_subject(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("chore: some unrelated subject (#298)", "Body."),
+            ),
+        ):
+            _, title, description = ship_preview(
+                ticket, ticket.worktrees.first(), title="fix(scope): explicit flag title (#298)"
+            )
+        assert title == "fix(scope): explicit flag title (#298)"
+        assert description.split("\n", 1)[0] == title
+
+    def test_explicit_title_argument_wins_over_stored_override(self) -> None:
+        ticket = self._ticket_with_worktree(extra={"pr_title_override": "fix(scope): stored title (#298)"})
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("chore: subject (#298)", "Body."),
+            ),
+        ):
+            _, title, _ = ship_preview(ticket, ticket.worktrees.first(), title="fix(scope): flag wins (#298)")
+        assert title == "fix(scope): flag wins (#298)"
+
+
+class TestValidatePrMetadataHonorsTitleOverride(TestCase):
+    """The preflight must validate the title that will actually ship.
+
+    The customer-MR grammar (``_IssueUrlFirstLineMetadata``) rejects any title
+    that does not reference a GitLab issue URL. A tooling PR's commit subject
+    (``fix(scope): …``) lacks that reference, so regenerating the title from the
+    subject false-fails the preflight — the bug a downstream customer PR hit.
+    With an explicit ``--title`` (or ``pr_title_override``) carrying the issue
+    URL, the preflight must validate THAT title and pass.
+    """
+
+    def _ticket_with_worktree(self, *, extra: dict[str, str] | None = None) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            state=Ticket.State.REVIEWED,
+            issue_url="https://gitlab.example.com/group/repo/-/issues/298",
+            extra=extra or {},
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="298-fix-thing",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        return ticket
+
+    def test_regenerated_subject_false_fails_customer_grammar(self) -> None:
+        # Documents the bug: with NO override, the title is the commit subject,
+        # which the customer grammar rejects.
+        ticket = self._ticket_with_worktree()
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": _CustomerGrammarOverlay()},
+            ),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("fix(scope): tooling change with no issue url (#298)", "Body."),
+            ),
+        ):
+            error = validate_pr_metadata(ticket, ticket.worktrees.first())
+        assert error is not None
+
+    def test_explicit_title_with_issue_url_passes_preflight(self) -> None:
+        ticket = self._ticket_with_worktree()
+        pinned = "https://gitlab.example.com/group/repo/-/issues/298 fix(scope): tooling change"
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": _CustomerGrammarOverlay()},
+            ),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("fix(scope): tooling change with no issue url (#298)", "Body."),
+            ),
+        ):
+            error = validate_pr_metadata(ticket, ticket.worktrees.first(), title=pinned)
+        assert error is None
+
+    def test_stored_override_with_issue_url_passes_preflight(self) -> None:
+        pinned = "https://gitlab.example.com/group/repo/-/issues/298 fix(scope): tooling change"
+        ticket = self._ticket_with_worktree(extra={"pr_title_override": pinned})
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": _CustomerGrammarOverlay()},
+            ),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("fix(scope): tooling change with no issue url (#298)", "Body."),
+            ),
+        ):
+            error = validate_pr_metadata(ticket, ticket.worktrees.first())
+        assert error is None
