@@ -23,6 +23,13 @@ class WorktreeProvisioner(RunnerBase):
     Reads ``ticket.repos`` and ``ticket.extra['branch']`` (set by the CLI at
     scope time) and materialises one ``Worktree`` row + on-disk git worktree
     per repo. Idempotent: re-running over an existing layout is a no-op.
+
+    #33: a ticket whose repos live on DIFFERENT branches maps each repo to its
+    own branch in ``ticket.extra['branches']`` (repo → branch); a repo absent
+    from the map falls back to ``extra['branch']``. The ticket DIR is always
+    ``extra['branch']`` regardless, so every repo provisions as a SIBLING in
+    one dir even when the repos are on split per-repo branches — this is what
+    lets an e2e / workspace-ticket stack compose split branches together.
     """
 
     def __init__(self, ticket: Ticket) -> None:
@@ -39,6 +46,12 @@ class WorktreeProvisioner(RunnerBase):
         if not branch:
             return RunnerResult(ok=False, detail="ticket.extra['branch'] not set — call scope() first")
 
+        # #33: a ticket whose repos live on DIFFERENT branches maps each one
+        # in ``extra['branches']``. The ticket DIR is always ``branch`` so all
+        # repos provision as SIBLINGS in one dir; only the per-repo git branch
+        # differs. Repos absent from the map fall back to ``branch``.
+        branches = dict(extra.get("branches") or {})
+
         workspace = _workspace_dir()
         ticket_dir = workspace / branch
         ticket_dir.mkdir(parents=True, exist_ok=True)
@@ -52,21 +65,23 @@ class WorktreeProvisioner(RunnerBase):
                 provisioned[repo_name] = (existing.extra or {})["worktree_path"]
                 continue
 
+            repo_branch = branches.get(repo_name, branch)
+
             worktree = existing or Worktree.objects.create(
                 ticket=ticket,
                 repo_path=repo_name,
-                branch=branch,
+                branch=repo_branch,
                 overlay=ticket.overlay,
             )
 
-            created = self._create(workspace, repo_name, ticket_dir, branch)
+            created = self._create(workspace, repo_name, ticket_dir, repo_branch)
             if created is None:
                 worktree.delete()
                 failed.append(repo_name)
                 continue
 
             wt_path, clone_path = created
-            worktree.branch = branch
+            worktree.branch = repo_branch
             worktree.extra = {
                 **(worktree.extra or {}),
                 "worktree_path": wt_path,

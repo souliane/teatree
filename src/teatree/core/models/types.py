@@ -51,6 +51,11 @@ class TicketExtra(TypedDict, total=False):
     reopened_from: str
     visual_qa: VisualQASummary
     branch: str
+    # #33 per-repo branch override map (repo → branch). A ticket whose repos
+    # live on DIFFERENT branches maps each one here; ``branch`` stays the
+    # single ticket-dir name so every repo provisions as a SIBLING in one dir.
+    # Repos absent from the map fall back to ``branch``.
+    branches: dict[str, str]
     description: str
     provision: dict[str, str]
     shipping_skipped: str
