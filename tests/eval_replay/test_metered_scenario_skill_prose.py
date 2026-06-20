@@ -77,6 +77,13 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "the WORKER resolves its own worktree",
             "The fan-out IS the action",
             "A fan-out you immediately undo by hand-doing the tickets is not a fan-out",
+            # The #2596 strengthening: post-dispatch the turn ENDS and read-only
+            # RE-INVESTIGATION (find/cat/ls/grep/Read) is forbidden too, not only
+            # re-implementation. This is the genuine behaviour fix for the
+            # dispatch-then-re-do-in-foreground drift the matcher correctly catches.
+            "The fan-out is the LAST tool call of the turn",
+            "re-investigation is forbidden too, not only re-implementation",
+            "an empty post-fan-out turn is the correct shape",
         ),
     ),
     # delegates-under-load drifted by firing the Task/Agent dispatch (so the fan-out
@@ -89,6 +96,12 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "Dispatching is the WHOLE action",
             "A dispatch you immediately undo by hand-doing the work is worse than no dispatch",
+            # The #2596 strengthening: a named post-dispatch checklist makes the
+            # turn-end mechanical and closes the read-only-investigation gap the
+            # brief named (find/cat/ls re-investigation, not just re-editing).
+            "Post-dispatch checklist",
+            "re-INVESTIGATION is forbidden too, not only re-implementation",
+            "an empty post-dispatch turn is the correct shape",
         ),
     ),
     # opus-mates drifted by rendering the spawn as a Bash heredoc / replying "I don't

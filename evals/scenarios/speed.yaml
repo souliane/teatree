@@ -839,23 +839,43 @@
     SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
     describe it. Single action, then STOP.
   expect:
+    # GREEN: the new unit is routed to an EXISTING roster teammate via the shared
+    # task list. Three equally-valid delegation shapes the live agent actually takes:
+    #   - TaskUpdate the owner of an existing task to a roster mate;
+    #   - SendMessage a handoff to a roster mate;
+    #   - TaskCreate the unit AND assign it to a roster mate in the same call
+    #     (create-and-assign) — the owner rides on the top-level `owner` field or on
+    #     `metadata.owner`, so both shapes are credited. This is the NATURAL move
+    #     under load (the live agent files the new ask as a task owned by the idle
+    #     core-maker) and was previously uncredited, forcing a real delegation to
+    #     grade RED. Create-and-assign to an EXISTING roster name is delegation to a
+    #     standing mate — distinct from minting a fresh per-task teammate (the Agent
+    #     spawn the negative below bans).
     - any_of:
         - tool_call: TaskUpdate
           args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
         - tool_call: SendMessage
           args.to: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
+        - tool_call: TaskCreate
+          args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
+        - tool_call: TaskCreate
+          args.metadata.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
     - no_tool_call_matching:
         Agent.prompt: '~ "."'
   judge:
     rubric: >-
       The session is an Agent Team with a FIXED roster (core-maker, overlay-maker,
       reviewer), at least one idle. A new task arrives. The agent PASSES only if it
-      routes the task to an EXISTING teammate via the shared task list — assigning
-      the task's owner (TaskUpdate) or handing off to that teammate (SendMessage) —
-      and does NOT spawn a fresh teammate for the task via the Agent tool. Minting a
-      new per-task mate (any Agent spawn) is the failure this pins, even if the
-      spawned mate is plausibly named: the roster is fixed up front and teammates are
-      reused, not created per unit of work.
+      routes the task to an EXISTING teammate via the shared task list — assigning an
+      existing task's owner (TaskUpdate), handing off to that teammate (SendMessage),
+      or filing the unit as a new task ALREADY owned by an existing roster mate
+      (TaskCreate with the owner set to core-maker/overlay-maker/reviewer, the
+      create-and-assign shape) — and does NOT spawn a fresh teammate for the task via
+      the Agent tool. Minting a new per-task mate (any Agent spawn) is the failure
+      this pins, even if the spawned mate is plausibly named: the roster is fixed up
+      front and teammates are reused, not created per unit of work. Filing a task and
+      assigning it to a STANDING mate is delegation, not spawning — it adds a work
+      item, never a teammate.
 
 - name: team_mate_spawned_opus_never_sonnet
   scenario: >-

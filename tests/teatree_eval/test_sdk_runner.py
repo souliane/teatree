@@ -1238,7 +1238,11 @@ class TestComputeDisallowedTools:
         # The denylist is exhaustive only if KNOWN_BUILTIN_TOOLS is the COMPLETE
         # bundled-CLI built-in set. An incomplete set is exactly why PushNotification
         # leaked. Assert the escape/spiral tools the metered runs surfaced are all
-        # present (plus the full 24-name set excludes nothing the model can reach).
+        # present (plus the full 27-name set excludes nothing the model can reach).
+        # The three Agent-Team tools (SendMessage, TaskCreate, TaskUpdate) are real
+        # CLI built-ins the team-mode runtime grants — confirmed by `strings` on the
+        # binary, each with its own tool description — so they belong in the complete
+        # set the team scenarios (delegate-vs-spawn) declare.
         expected = {
             "Agent",
             "AskUserQuestion",
@@ -1258,7 +1262,10 @@ class TestComputeDisallowedTools:
             "PushNotification",
             "Read",
             "ReadMcpResource",
+            "SendMessage",
             "Task",
+            "TaskCreate",
+            "TaskUpdate",
             "TodoWrite",
             "ToolSearch",
             "WebFetch",
@@ -1266,9 +1273,11 @@ class TestComputeDisallowedTools:
             "Write",
         }
         assert set(KNOWN_BUILTIN_TOOLS) == expected
-        assert len(KNOWN_BUILTIN_TOOLS) == 24
+        assert len(KNOWN_BUILTIN_TOOLS) == 27
         for escape_tool in ("PushNotification", "ToolSearch", "AskUserQuestion"):
             assert escape_tool in KNOWN_BUILTIN_TOOLS
+        for team_tool in ("SendMessage", "TaskCreate", "TaskUpdate"):
+            assert team_tool in KNOWN_BUILTIN_TOOLS
 
     def test_monitor_is_a_builtin_disallowed_for_a_non_monitor_scenario(self, tmp_path: Path) -> None:
         # Monitor IS a built-in now (background scenarios declare it), so a scenario

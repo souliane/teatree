@@ -700,6 +700,14 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree … fix t
 # Bash(command="pytest … && git commit -m …")     ← FORBIDDEN: running the delegated unit yourself
 ```
 
+**Post-dispatch checklist — the dispatch is a HARD turn boundary; re-INVESTIGATION is forbidden too, not only re-implementation.** The drift hides in a softer move than re-editing: after the dispatch, the agent "just has a quick look" — `find`/`cat`/`ls`/`grep`/`rg`/`Read`/`Glob` to inspect the file it just delegated — and that read-only peek slides into editing, testing, and committing the unit in the foreground. A read-only probe of a delegated unit is NOT a harmless look; it is the first step of re-doing the work, and it has no purpose for the orchestrator (the worker reads its own files). So treat the dispatch as the **last tool call of the turn**. Concretely, once the dispatch (or the N-way fan-out) is issued:
+
+1. **The very next tool call is forbidden if it touches a dispatched unit's surface — in ANY tool.** Not just `Edit`/`Write`/`pytest`/`git commit` (re-implementation), but also `find`/`cat`/`ls`/`grep`/`rg`/`head`/`tail` in `Bash`, and `Read`/`Glob`/`Grep` (re-investigation). The orchestrator does not locate, open, inspect, diff, or test a file it just handed to a worker.
+2. **The only permitted next foreground actions are dispatcher work, never executor work** — fanning out the NEXT ticket's worker, arming a `Monitor`, or surfacing a `(b)`/`(c)` decision via `AskUserQuestion`. Each is dispatch/route/ask, never do.
+3. **End the turn.** When there is no further ticket to dispatch and no decision to surface, the turn is over — STOP and wait for the workers' reported results. Filling the post-dispatch silence with foreground `find`/`cat`/`Edit` is the recurrence; an empty post-dispatch turn is the correct shape.
+
+The test: after a dispatch, if your next tool call names or touches the file/module/ticket you just delegated — to read it OR to write it — you have re-entered executor mode. The dispatch was supposed to be the whole action; honour it by stopping.
+
 Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
 
 ```text

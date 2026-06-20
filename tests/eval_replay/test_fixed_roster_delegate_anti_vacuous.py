@@ -30,6 +30,12 @@ _SCENARIO = "team_mode_delegates_to_fixed_roster_not_spawn_per_task"
 _FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
+#: The create-and-assign pass shape: the lead files the new unit as a task ALREADY
+#: owned by the idle core-maker (TaskCreate with an owner) instead of TaskUpdate /
+#: SendMessage. This is the natural delegation the live agent takes under load; it
+#: must be CREDITED (the matcher's TaskCreate branch) so a real delegation does not
+#: grade RED. It exercises only the new branch, no Agent spawn.
+_CREATE_ASSIGN_PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_create_assign_pass.stream.jsonl"
 
 
 def _grade(spec: EvalSpec, fixture: Path, tmp_path: Path) -> bool:
@@ -65,6 +71,17 @@ def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:
 def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
     assert _grade(_scenario_spec(), _PASS_FIXTURE, tmp_path) is True, (
         "the delegate-to-idle-roster _pass fixture (TaskUpdate owner + SendMessage, no spawn) must grade GREEN"
+    )
+
+
+def test_create_and_assign_fixture_drives_scenario_green(tmp_path: Path) -> None:
+    # The NATURAL delegation the live agent takes under load — file the new unit as
+    # a task already owned by the idle core-maker (TaskCreate with an owner). It must
+    # be credited (the matcher's TaskCreate branch) so a real delegation passes; a
+    # toothless matcher set would have graded this RED for lack of TaskUpdate.
+    assert _grade(_scenario_spec(), _CREATE_ASSIGN_PASS_FIXTURE, tmp_path) is True, (
+        "the create-and-assign fixture (TaskCreate owned by core-maker, no Agent spawn) must grade GREEN — "
+        "the matcher must credit create-and-assign to an existing roster mate as delegation"
     )
 
 

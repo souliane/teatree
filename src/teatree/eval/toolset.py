@@ -15,9 +15,22 @@ MINUS the available set — exhaustive even if a CLI build ignored ``--tools``.
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
 
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (24,
+#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (27,
 #: from ``strings`` on the binary). Because the set is complete, no built-in
 #: (PushNotification etc.) can leak past the denylist.
+#:
+#: The three Agent-Team tools — ``SendMessage``, ``TaskCreate``, ``TaskUpdate`` —
+#: are genuine CLI built-ins the team-mode runtime grants (verified by ``strings``
+#: on the binary: each carries its own tool description, e.g. "TaskCreate adds an
+#: item to the task list and takes ``subject`` and ``description``…" and "use the
+#: SendMessage tool with ``to: "<name>"`` to send messages to specific teammates").
+#: They were MISSING from the set, so the team scenarios that declare them
+#: (``team_mode_delegates_to_fixed_roster_not_spawn_per_task``,
+#: ``team_mate_spawned_opus_never_sonnet``) produced a ``--tools`` allowlist whose
+#: denylist-complement was NOT exhaustive over the real built-in set — an
+#: incomplete set is exactly the leak this constant exists to prevent. Including
+#: them keeps the allowlist/denylist pair consistent so the ``Agent`` tool the
+#: spawn-vs-delegate scenarios depend on is reliably exposed.
 #:
 #: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
 #: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
@@ -40,7 +53,10 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "PushNotification",
     "Read",
     "ReadMcpResource",
+    "SendMessage",
     "Task",
+    "TaskCreate",
+    "TaskUpdate",
     "TodoWrite",
     "ToolSearch",
     "WebFetch",
