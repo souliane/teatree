@@ -2,14 +2,22 @@
 
 The clean-room lane (the default) loads one skill into an empty context to
 isolate that skill's effect. The ``under_load`` lane does the opposite: it
-reproduces the conditions a drift actually occurs under — the FULL skill bundle
-as the system prompt plus an injected polluted ``context_preamble`` folded into
-the user prompt — so a rule that survives clean-room but drifts in a real
+reproduces the conditions a drift actually occurs under — the (near-)full skill
+bundle as the system prompt plus an injected polluted ``context_preamble`` folded
+into the user prompt — so a rule that survives clean-room but drifts in a real
 session is caught.
+
+The bundle is capped at :data:`_BUNDLE_CHAR_BUDGET` so a full bundle + a realistic
+preamble + a multi-tool scenario (``Agent`` + ``Task`` schemas) fits the model's
+200k-token input window instead of 400ing with "Prompt too long" before the model
+runs. The cap keeps the scenario's own ``agent_path`` skill, the ``rules`` skill,
+and every small canonical-source skill (smallest-first fill); only the largest
+peripheral skills shed. The realistic-overload condition is preserved — the bundle
+still dwarfs the preamble.
 
 Two seams keep :mod:`teatree.eval.sdk_runner` thin (it is at its module-LOC
 cap): :func:`build_system_prompt` resolves the lane-correct system prompt
-(one skill + live-env framing, or the whole bundle + bundle framing), and
+(one skill + live-env framing, or the budgeted bundle + bundle framing), and
 :func:`build_user_prompt` prepends the polluted preamble to the scenario prompt.
 
 HARD SDK CONSTRAINT: ``claude_agent_sdk.query(prompt, options)`` is
