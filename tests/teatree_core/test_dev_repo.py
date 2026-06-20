@@ -77,6 +77,14 @@ class TestResolveRepoNames:
             "frontend",
         ]
 
+    def test_repo_branch_suffix_is_stripped_from_names(self) -> None:
+        # #33: a `repo:branch` token contributes only the repo NAME here; the
+        # branch suffix is parsed separately by parse_repo_branch_map.
+        assert resolve_repo_names(_ProductOverlay(), "https://example.com/issues/1", "backend:fix/x, frontend") == [
+            "backend",
+            "frontend",
+        ]
+
 
 class TestResolveDevRepo:
     def test_core_issue_resolves_to_core_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

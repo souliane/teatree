@@ -71,10 +71,38 @@ def resolve_repo_names(overlay: "OverlayBase", issue_url: str, repos: str) -> li
     package repo, provision only that single repo (dev-tooling mode) via
     :func:`resolve_dev_repo`. Otherwise the overlay's product repo set
     (``overlay.get_workspace_repos()``).
+
+    #33: a ``--repos`` token may carry a per-repo branch as ``repo:branch``
+    (e.g. ``"backend:fix/123,frontend:main"``) so split-branch repos compose
+    as siblings in one ticket dir. The branch suffix is stripped here — the
+    repo NAME is the part before the first ``:`` — and parsed separately by
+    :func:`parse_repo_branch_map`.
     """
     if repos:
-        return [r.strip() for r in repos.split(",") if r.strip()]
+        return [_repo_name(r) for r in repos.split(",") if r.strip()]
     dev_repo = resolve_dev_repo(issue_url)
     if dev_repo:
         return [dev_repo]
     return overlay.get_workspace_repos()
+
+
+def _repo_name(token: str) -> str:
+    """The repo name from a ``--repos`` token, dropping any ``:branch`` suffix."""
+    return token.strip().split(":", 1)[0].strip()
+
+
+def parse_repo_branch_map(repos: str) -> dict[str, str]:
+    """Per-repo branch overrides parsed from the ``--repos`` string (#33).
+
+    A token of the form ``repo:branch`` maps that repo to its own branch;
+    a bare ``repo`` token contributes nothing (the repo falls back to the
+    ticket's shared ``extra['branch']`` in the provisioner). A branch value
+    may itself contain ``:`` (rare), so only the FIRST ``:`` splits repo from
+    branch. Returns an empty dict when no token carries a branch.
+    """
+    pairs: dict[str, str] = {}
+    for token in repos.split(","):
+        repo, sep, branch = token.strip().partition(":")
+        if sep and repo.strip() and branch.strip():
+            pairs[repo.strip()] = branch.strip()
+    return pairs

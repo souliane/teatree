@@ -271,6 +271,83 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_repos_with_per_repo_branch_persists_branch_map(self) -> None:
+        # #33: a split-branch ticket carries each repo's branch in --repos as
+        # `repo:branch`; the map lands on extra['branches'] (repo -> branch) for
+        # the provisioner, the repo NAMES drop the suffix, and extra['branch']
+        # stays the shared dir name so the repos provision as siblings.
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace",
+                "ticket",
+                "https://example.com/issues/44",
+                repos="backend:fix/be-44, frontend:fix/fe-44",
+            ),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.extra["branches"] == {"backend": "fix/be-44", "frontend": "fix/fe-44"}
+        assert ticket.extra["branch"].startswith("44-")
+        assert ticket.extra["branch"] not in {"fix/be-44", "fix/fe-44"}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_repos_mixed_bare_and_branch_tokens(self) -> None:
+        # A bare `repo` token (no `:branch`) contributes no override — that repo
+        # falls back to the shared ticket branch in the provisioner.
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace",
+                "ticket",
+                "https://example.com/issues/47",
+                repos="backend:fix/be-47, frontend",
+            ),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.extra["branches"] == {"backend": "fix/be-47"}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_repos_branch_map_merges_across_reruns(self) -> None:
+        # Re-running `ticket` to add a sibling repo's branch keeps the branches
+        # already recorded for the earlier repos (merge, not replace).
+        call_command(
+            "workspace",
+            "ticket",
+            "https://example.com/issues/45",
+            repos="backend:fix/be-45",
+        )
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace",
+                "ticket",
+                "https://example.com/issues/45",
+                repos="frontend:fix/fe-45",
+            ),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branches"] == {"backend": "fix/be-45", "frontend": "fix/fe-45"}
+
+    def test_parse_repo_branch_map_unit(self) -> None:
+        from teatree.core.dev_repo import parse_repo_branch_map  # noqa: PLC0415
+
+        assert parse_repo_branch_map("") == {}
+        assert parse_repo_branch_map("backend") == {}  # bare repo, no override
+        assert parse_repo_branch_map("a:b") == {"a": "b"}
+        # a branch may carry '/'; bare tokens alongside branched ones are skipped.
+        assert parse_repo_branch_map("a:fix/b, c, d:main") == {"a": "fix/b", "d": "main"}
+        # only the FIRST ':' splits, so a branch may itself contain a ':'.
+        assert parse_repo_branch_map("repo:rel:branch") == {"repo": "rel:branch"}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_rejects_variant_mismatch_on_existing_ticket(self) -> None:
         """Re-issuing `workspace ticket <url> --variant <v>` with a different variant must error (#1306).
 
