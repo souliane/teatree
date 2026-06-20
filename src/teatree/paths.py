@@ -161,8 +161,15 @@ def _exclusive_lock(lock_path: Path) -> Iterator[None]:
 
 
 def _sqlite_snapshot(src: Path, dst: Path) -> None:
-    """Consistent point-in-time copy even if a live writer holds ``src``."""
-    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    """Consistent point-in-time copy even if a live writer holds ``src``.
+
+    ``?immutable=1`` (not ``?mode=ro``) opens the source: a WAL-mode DB whose
+    ``-shm``/``-wal`` companions are absent needs to (re)create the ``-shm``
+    shared-memory file, which a ``mode=ro`` open cannot do — it fails with
+    ``OperationalError: unable to open database file``. ``immutable=1`` opens
+    without a ``-shm`` and snapshots correctly.
+    """
+    source = sqlite3.connect(f"file:{src}?immutable=1", uri=True)
     try:
         dest = sqlite3.connect(dst)
         try:
