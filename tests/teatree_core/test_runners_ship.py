@@ -906,6 +906,64 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
         assert "Closes #873" not in description
 
 
+class TestShipExecutorHonorsTitleOverride(TestCase):
+    """The ship path PRODUCES the title via the shared ``resolve_pr_title``.
+
+    A title pinned on ``extra['pr_title_override']`` is what ships — the same
+    title ``ship_preview`` previews and the preflight validates. This is the
+    ship-side half of the title-resolution parity; ``test_pr_preview`` covers
+    the preview/preflight side.
+    """
+
+    def _ticket_with_extra(self, extra: dict) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/298",
+            extra=extra,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo298",
+            branch="298-fix-thing",
+            extra={"worktree_path": "/tmp/repo298"},
+        )
+        return ticket
+
+    def _capture_pr_title(self, ticket: Ticket) -> str:
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/souliane/teatree/pull/1"}
+        host.current_user.return_value = "souliane"
+        cfg = MagicMock()
+        cfg.config.mr_close_ticket = True
+        cfg.config.pr_auto_labels = []
+        cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
+        with (
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
+            patch("teatree.core.runners.ship.overlay_pr_labels", return_value=[]),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.git.push"),
+            patch(
+                "teatree.core.runners.ship.git.last_commit_message",
+                return_value=("chore: unrelated subject (#298)", "Body."),
+            ),
+            patch("teatree.core.runners.ship.git.config_value", return_value="souliane"),
+        ):
+            ShipExecutor(ticket).run()
+        return host.create_pr.call_args[0][0].title
+
+    def test_pr_title_override_is_the_shipped_title(self) -> None:
+        ticket = self._ticket_with_extra({"pr_title_override": "fix(scope): pinned title (#298)"})
+        title = self._capture_pr_title(ticket)
+        assert title == "fix(scope): pinned title (#298)"
+
+    def test_no_override_falls_back_to_subject(self) -> None:
+        ticket = self._ticket_with_extra({})
+        title = self._capture_pr_title(ticket)
+        assert title == "chore: unrelated subject (#298)"
+
+
 class TestOverlayPrLabels:
     def test_default_overlay_returns_empty(self) -> None:
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
