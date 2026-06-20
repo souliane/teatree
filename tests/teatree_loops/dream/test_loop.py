@@ -97,7 +97,7 @@ class DreamLoopRegistrationTestCase(TestCase):
         Loop.objects.update_or_create(
             name="dream",
             defaults={
-                "script": "src/teatree/loops/run.py",
+                "script": "src/teatree/loops/dream/loop.py",
                 "prompt": None,
                 "delay_seconds": 86400,
                 "last_run_at": None,

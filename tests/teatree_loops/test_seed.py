@@ -75,6 +75,37 @@ class TestSeedDefaultLoops(django.test.TestCase):
             has_script = bool(loop.script)
             assert has_prompt != has_script, loop.name
 
+    def test_each_script_loop_points_at_its_own_module(self) -> None:
+        # The #2513 regression fix: a script loop's ``script`` is its OWN on-disk
+        # module (``src/teatree/loops/<name>/loop.py``), never the retired shared
+        # ``run.py``. The DB ``script`` column is now PER-LOOP and load-bearing.
+        seed_default_loops_and_prompts()
+        for loop in Loop.objects.filter(name__in=[s.name for s in DEFAULT_LOOPS]):
+            if loop.script:
+                assert loop.script == f"src/teatree/loops/{loop.name}/loop.py", loop.name
+
+    def test_no_loop_points_at_the_retired_shared_runner(self) -> None:
+        # No seeded row may carry the retired shared ``run.py`` entry point.
+        seed_default_loops_and_prompts()
+        assert not Loop.objects.filter(script="src/teatree/loops/run.py").exists()
+
+    def test_no_two_script_loops_share_an_entry_point(self) -> None:
+        # The owner's rule: the script is not shared — it is specific to one loop.
+        # Every script-backed row must carry a DISTINCT entry point.
+        seed_default_loops_and_prompts()
+        scripts = list(Loop.objects.exclude(script="").values_list("script", flat=True))
+        assert len(scripts) == len(set(scripts)), scripts
+
+    def test_arch_review_is_prompt_backed_and_references_the_review_skill(self) -> None:
+        # arch_review stays the single PROMPT-backed default; its body is a real
+        # instruction telling the sub-agent to run an architectural review using
+        # the ``ac-reviewing-codebase`` skill (owner decision) — not a script.
+        seed_default_loops_and_prompts()
+        arch = Loop.objects.get(name="arch_review")
+        assert arch.script == ""
+        assert arch.prompt_id is not None
+        assert "ac-reviewing-codebase" in arch.prompt.body
+
     def test_management_command_seeds_and_reports(self) -> None:
         out = _run()
         assert Loop.objects.filter(name="dispatch").exists()
