@@ -35,6 +35,36 @@ class TestExtractFailingMigration:
         assert _extract_failing_migration("no migration here") is None
 
 
+class TestExtractInconsistentHistory:
+    """Parse Django's ``InconsistentMigrationHistory`` message verbatim.
+
+    souliane/teatree#1038: a master renumber makes the snapshot's old-numbered
+    record fail ``check_consistent_history`` with this exact sentence, fired
+    BEFORE any ``Applying …`` line. The parser keys on the canonical wording in
+    ``django/db/migrations/loader.py::check_consistent_history``.
+    """
+
+    def test_parses_applied_and_dependency(self) -> None:
+        from teatree.utils.django_db_reconcile import extract_inconsistent_history  # noqa: PLC0415
+
+        combined = (
+            "django.db.migrations.exceptions.InconsistentMigrationHistory: "
+            "Migration realtymodule.0096_remove_realty_participant_authorization is applied "
+            "before its dependency loanrequestmodule.0257_move_participant_authorization_data "
+            "on database 'default'.\n"
+        )
+        assert extract_inconsistent_history(combined) == (
+            ("realtymodule", "0096_remove_realty_participant_authorization"),
+            ("loanrequestmodule", "0257_move_participant_authorization_data"),
+        )
+
+    def test_returns_none_on_unrelated_error(self) -> None:
+        from teatree.utils.django_db_reconcile import extract_inconsistent_history  # noqa: PLC0415
+
+        assert extract_inconsistent_history("relation foo already exists") is None
+        assert extract_inconsistent_history("Applying myapp.0001_initial...\n") is None
+
+
 class TestDslrSnapName:
     def test_includes_ref_db_name(self) -> None:
         result = _dslr_snap_name("development-acme")

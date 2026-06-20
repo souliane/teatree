@@ -357,6 +357,124 @@ class TestMigrateDockerizedFallback:
         assert "--fake" in docker_calls[1], docker_calls
 
 
+class TestMigrateRenumberReconcile:
+    """A master renumber must not block the import; the snapshot record is safely reconciled.
+
+    souliane/teatree#1038: master inserted a migration that bumped later
+    numbers, so the DSLR snapshot's old-numbered ``django_migrations`` record
+    fails Django's ``check_consistent_history`` BEFORE any forward migrate runs:
+    ``realtymodule.0096… is applied before its dependency
+    loanrequestmodule.0257_move_participant_authorization_data``. The engine
+    must detect the pure renumber, rename the stale record (via the reconcile
+    script), and retry the migrate — and must NOT reconcile a genuine
+    divergence (real schema drift stays surfaced).
+    """
+
+    _INCONSISTENT = (
+        "django.db.migrations.exceptions.InconsistentMigrationHistory: "
+        "Migration realtymodule.0096_remove_realty_participant_authorization is applied "
+        "before its dependency loanrequestmodule.0257_move_participant_authorization_data "
+        "on database 'default'."
+    )
+
+    def test_reconciles_renumber_then_migrate_succeeds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        calls: list[list[str]] = []
+        call_count = 0
+
+        def fake_run(args, **_kw):
+            nonlocal call_count
+            calls.append(list(args))
+            call_count += 1
+            if call_count == 1:
+                # First migrate: the renumber trips check_consistent_history.
+                return CompletedProcess(args, 1, "", self._INCONSISTENT)
+            if call_count == 2:
+                # The reconcile script ran and renamed the stale record.
+                return CompletedProcess(
+                    args,
+                    0,
+                    f"{RECONCILE_OK} loanrequestmodule.0256_move_participant_authorization_data -> "
+                    "loanrequestmodule.0257_move_participant_authorization_data\n",
+                    "",
+                )
+            # Retried migrate now succeeds (history consistent).
+            return CompletedProcess(args, 0, "Applying realtymodule.0096... OK\n", "")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        assert _make_importer(tmp_path)._migrate_reference_db() is _MigrateResult.APPLIED
+        # Second call must be the reconcile script (manage.py shell -c <script>).
+        assert calls[1][-3:-1] == ["shell", "-c"], calls[1]
+
+    def test_passes_dependency_to_reconcile_script(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.django_db_reconcile import RECONCILE_OK  # noqa: PLC0415
+
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        captured_envs: list[dict[str, str]] = []
+        call_count = 0
+
+        def fake_run(args, **kw):
+            nonlocal call_count
+            captured_envs.append(dict(kw.get("env") or {}))
+            call_count += 1
+            if call_count == 1:
+                return CompletedProcess(args, 1, "", self._INCONSISTENT)
+            if call_count == 2:
+                return CompletedProcess(args, 0, f"{RECONCILE_OK} a.b -> a.c\n", "")
+            return CompletedProcess(args, 0, "Applying x.0001... OK\n", "")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        assert _make_importer(tmp_path)._migrate_reference_db() is _MigrateResult.APPLIED
+        reconcile_env = captured_envs[1]
+        assert reconcile_env["T3_RECONCILE_DEP_APP"] == "loanrequestmodule"
+        assert reconcile_env["T3_RECONCILE_DEP_NAME"] == "0257_move_participant_authorization_data"
+
+    def test_does_not_reconcile_genuine_divergence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.django_db_reconcile import RECONCILE_SKIP  # noqa: PLC0415
+
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        calls: list[list[str]] = []
+        call_count = 0
+
+        def fake_run(args, **_kw):
+            nonlocal call_count
+            calls.append(list(args))
+            call_count += 1
+            if call_count == 1:
+                return CompletedProcess(args, 1, "", self._INCONSISTENT)
+            # Reconcile script refuses: not a provable renumber.
+            return CompletedProcess(args, 0, f"{RECONCILE_SKIP} no-unique-renumber-candidate count=0\n", "")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        importer = _make_importer(tmp_path)
+        assert importer._migrate_reference_db() is _MigrateResult.FAILED
+        # The migrate was NOT retried after the SKIP (no further migrate call).
+        migrate_calls = [c for c in calls if c[-3:] == ["manage.py", "migrate", "--no-input"]]
+        assert len(migrate_calls) == 1, f"divergence must not retry the migrate: {calls}"
+
+    def test_inconsistent_history_with_config_error_is_not_reconciled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A co-occurring import/config error must never trigger the reconcile.
+
+        The reconcile script runs in the same (unverified) venv; acting on it
+        would trust deps the migrate could not even import.
+        """
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def fake_run(args, **_kw):
+            calls.append(list(args))
+            return CompletedProcess(args, 1, "", f"{self._INCONSISTENT}\nModuleNotFoundError: No module named 'x'")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        importer = _make_importer(tmp_path)
+        assert importer._migrate_reference_db() is _MigrateResult.FAILED
+        assert all("shell" not in c for c in calls), f"reconcile must not run on a config error: {calls}"
+
+
 class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
     """0027 collapses the legacy ``teatree`` overlay value to ``t3-teatree``.
 
