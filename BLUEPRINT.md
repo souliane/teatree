@@ -250,7 +250,7 @@ Optional hooks cover env, services, Docker base images, DB import strategy, post
 
 **Overlay API version pin.** `teatree.__overlay_api_version__` is bumped on any breaking change to the overlay-facing API. Overlays assert this at import to fail loudly when teatree diverges from what they were built against.
 
-**Docker base-image sharing (§6.2a).** Teatree builds each `BaseImageConfig` exactly once per `(image_name, lockfile-hash)` and shares the image across every worktree that needs it. Code isolation is volume-mount level; the image itself is shared.
+**Docker base-image sharing (§6.2a).** Teatree builds each `BaseImageConfig` once from the master clone's lockfile and tags it with the single master tag `{image_name}:base` (NOT per-lockfile) — shared across every worktree. `ensure_base_image` (re)builds only when the image is **absent** (`docker image inspect` rc≠0) or **broken** (the tag resolves but its config Id does not — a corrupt/interrupted build → `rmi -f` then rebuild); a worktree provision otherwise never triggers a build. Code isolation is volume-mount level (`.:/app:rw`); dependency drift between the branch's lockfile and the baked master deps is reconciled at container start by the overlay's entrypoint (`uv sync`), so no per-lockfile image tag is needed.
 
 **`t3 startoverlay <name> <dest>`** scaffolds a lightweight overlay package: `src/<name>/{__init__,overlay,apps}.py`, `skills/overlay/SKILL.md`, `pyproject.toml`. No `manage.py`/`settings.py`/`urls.py` — teatree is the Django project.
 
@@ -421,7 +421,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 - **Migration retry with selective faking** for known-stuck migrations, declared per overlay
 - **Post-DB steps** run after import (password reset, fixtures, …) — declared per overlay
 - **State reconciler** (`t3 workspace doctor`) reconciles DB ↔ disk ↔ docker drift on demand
-- **Shared Redis, one DB slot per ticket** — overlays that `uses_redis()` share a single `teatree-redis` container; each ticket claims one Redis DB index from a pool sized by `redis_db_count` (default 64). `ensure_running` recreates a live container started with a smaller `--databases` so a raised pool actually takes effect. Slots are released on teardown, lazily reclaimed before exhaustion, proactively swept by `workspace clean-all` (orphaned slots whose worktree dirs are gone but rows persist), and freed per-ticket via `t3 <overlay> worktree release-slot <ticket>`. `worktree start` heals a `provisioned` worktree whose DB was never created (interrupted provision), and `ServiceLauncher` is single-flight per `(worktree, service)` so concurrent frontend rebuilds never race the output dir
+- **Redis is a normal per-stack compose service** — there is no teatree-owned shared Redis container or DB-index pool. An overlay whose app needs Redis runs it as an ordinary `docker-compose` service in the worktree's own stack (its own container, isolated network), reached by the app at the in-stack hostname. One-stack-at-a-time provisioning makes a shared pool pointless; the per-stack container IS the isolation. `worktree start` heals a `provisioned` worktree whose DB was never created (interrupted provision), and `ServiceLauncher` is single-flight per `(worktree, service)` so concurrent frontend rebuilds never race the output dir
 
 ---
 

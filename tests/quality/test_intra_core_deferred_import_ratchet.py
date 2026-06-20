@@ -181,7 +181,7 @@ class TestCoreModelManagerNodes:
 
     ``models`` depends on ``managers`` (the eager ``objects = XManager()`` edge),
     one-way: ``managers`` may never depend on ``models`` (the pure exception leaf
-    ``models.errors`` is its own node so the ``RedisSlotsExhaustedError`` edge does
+    ``models.errors`` is its own node so a manager-imported exception edge does
     not pull ``managers`` into the full ``models`` node). The two manager-layer
     helper leaves (``loop_lease_manager`` / ``session_handover_manager``, split out
     of ``managers``) are declared below ``managers`` so it never reaches back up
@@ -214,8 +214,7 @@ class TestCoreModelManagerNodes:
 
     def test_managers_has_no_runtime_models_import(self) -> None:
         # The 17 deferred `from teatree.core.models.X import Y` imports inside
-        # manager methods became `apps.get_model("core", "Y")`; the lone top-level
-        # `RedisSlotsExhaustedError` import moved to the modelkit leaf. A runtime
+        # manager methods became `apps.get_model("core", "Y")`. A runtime
         # `from teatree.core.models...` import in managers.py (top-level OR
         # function-scoped, but not TYPE_CHECKING-guarded) resurrects the forbidden
         # managers→models edge.

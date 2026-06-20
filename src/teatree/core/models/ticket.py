@@ -8,13 +8,13 @@ from django.db import models, transaction
 from django.utils import timezone
 from django_fsm import FSMField, TransitionNotAllowed, transition
 
-from teatree.config import Mode, get_effective_settings, load_config
+from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.types import validated_ticket_extra
-from teatree.utils import git, redis_container
+from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
     short_description = models.CharField(max_length=80, blank=True, default="")
-    redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
@@ -781,15 +780,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         previous = extra.pop("ignored_from", self.State.NOT_STARTED)
         self.extra = extra
         self.state = str(previous)
-
-    def release_redis_slot(self) -> None:
-        """FLUSHDB on the ticket's Redis DB index and clear the field."""
-        if self.redis_db_index is None:
-            return
-        index = self.redis_db_index
-        redis_container.flushdb(index, db_count=load_config().user.redis_db_count)
-        self.redis_db_index = None
-        self.save(update_fields=["redis_db_index"])
 
     def _cancel_pending_tasks(self) -> None:
         """Fail all pending/claimed tasks when reworking."""

@@ -21,7 +21,6 @@ from teatree.core.management.commands._workspace_cleanup import (
     drop_orphan_databases,
     is_clean_ignored,
     prune_branches,
-    release_orphaned_redis_slots,
 )
 from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
 from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
@@ -78,7 +77,6 @@ def run_clean_all(
 
     cleaned.extend(reaper.remove_empty_ticket_dirs())
     cleaned.extend(drop_orphan_databases())
-    cleaned.extend(release_orphaned_redis_slots())
     cleaned.extend(reap_orphan_worktree_docker())
     cleaned.extend(reap_orphan_isolated_worktree_roots())
     cleaned.extend(reap_orphan_raw_worktrees(workspace, reap_unsynced=policy))

@@ -522,9 +522,6 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         _ = worktree
         return set()
 
-    def uses_redis(self) -> bool:
-        return False
-
     # ── Run hooks ────────────────────────────────────────────────────
 
     def get_run_commands(self, worktree: "Worktree") -> RunCommands:

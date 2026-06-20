@@ -487,22 +487,6 @@ def drop_orphan_databases() -> list[str]:
     return cleaned
 
 
-def release_orphaned_redis_slots() -> list[str]:
-    """Release Redis DB slots held by tickets whose worktree dirs are all gone.
-
-    The dominant local-stack provisioning blocker: a prior session's worktree was
-    removed (its dirs are gone) but its ``Worktree`` row — and the ``redis_db_index``
-    slot it holds — persist, so the slot is never freed and ``worktree provision``
-    eventually fails with ``RedisSlotsExhaustedError`` even though no live stack
-    needs the slot. ``allocate_redis_slot`` already reclaims these lazily before
-    raising; running the same reclaim proactively in ``clean-all`` frees the pool
-    up front so the next provision never has to fail-then-recover (#1038). A live
-    slot (any worktree dir still on disk) is never reclaimed.
-    """
-    reclaimed = Ticket.objects.release_orphaned_redis_slots()
-    return [f"Released orphaned Redis slot {index} (ticket #{pk})" for pk, index in reclaimed]
-
-
 def _die(write_err: "Callable[[str], object]", message: str) -> None:
     """Write ``message`` to stderr then exit 1 — the #932 failure contract.
 

@@ -19,7 +19,7 @@ PRE-DJANGO reader needs (so the DB is unreachable — ``orchestrator_bash_gate_e
 ``speak``, ``handover_mirror_path``, ``check_updates``, and ``statusline_chain``,
 which the bash statusline hook reads straight from ``~/.teatree.toml`` and can
 never reach the DB), path/infra bootstrap that the settings module itself needs
-(``workspace_dir``, ``worktrees_dir``, ``redis_db_count``, ``timezone``,
+(``workspace_dir``, ``worktrees_dir``, ``timezone``,
 ``privacy``), and nested structured tables that have no flat scalar shape for a
 ``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — including
 the ~32 that are file-only today.
@@ -56,8 +56,7 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf", "ask_before_post
 #   ``[teatree] statusline_chain`` straight from ``~/.teatree.toml`` — it has no
 #   path to the Django DB, so a DB row for it would be silently unread)
 # - path / infra bootstrap the settings module needs to even open the DB:
-#   ``workspace_dir``, ``worktrees_dir``, ``redis_db_count``, ``timezone``,
-#   ``privacy``
+#   ``workspace_dir``, ``worktrees_dir``, ``timezone``, ``privacy``
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
 _TOML_HOME: frozenset[str] = frozenset(
     {
@@ -69,7 +68,6 @@ _TOML_HOME: frozenset[str] = frozenset(
         "statusline_chain",
         "workspace_dir",
         "worktrees_dir",
-        "redis_db_count",
         "timezone",
         "privacy",
     }

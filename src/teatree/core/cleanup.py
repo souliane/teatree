@@ -31,7 +31,7 @@ from teatree.core.branch_classification import (
     probe_host_cli,
 )
 from teatree.core.clone_paths import resolve_clone_path
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
@@ -626,8 +626,5 @@ def cleanup_worktree(
     if overlay is not None:
         label += reap_external_resources(overlay, worktree, step_errors)
 
-    ticket_id = worktree.ticket.pk
     worktree.delete()
-    if not Worktree.objects.filter(ticket_id=ticket_id).exists():
-        Ticket.objects.get(pk=ticket_id).release_redis_slot()
     return CleanupResult(label=label, errors=step_errors)

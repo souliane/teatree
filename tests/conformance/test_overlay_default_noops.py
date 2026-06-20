@@ -2,7 +2,7 @@
 
 The forensic provisioning root-cause analysis
 (``docs/provisioning-rootcause-2026-05-27.md``) identifies Pattern A: an
-overlay can forget ``uses_redis`` / ``get_required_ports`` /
+overlay can forget ``get_required_ports`` /
 ``get_db_import_strategy`` / ``get_readiness_probes`` and the lifecycle
 reports green. The default returns falsy, the FSM never checks, and the
 runtime silently degrades.

@@ -355,7 +355,7 @@ Two distinct gates run on a worktree, with two different overlay hooks:
 
 For the full extension points table, override chain, and project skill creation guide, see [`references/extension-points.md`](references/extension-points.md).
 
-Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_env()`, `uses_redis()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`, `get_health_checks()`, `get_readiness_probes()`. See the reference for the full list.
+Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_env()`, `get_provision_steps()`, `get_db_import_strategy()`, `get_env_extra()`, `get_run_commands()`, `get_services_config()`, `get_verify_endpoints()`, `get_health_checks()`, `get_readiness_probes()`. See the reference for the full list.
 
 ## Lifecycle State Machine
 

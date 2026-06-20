@@ -25,7 +25,6 @@ _TOML_CARVE_OUT = frozenset(
         "statusline_chain",
         "workspace_dir",
         "worktrees_dir",
-        "redis_db_count",
         "timezone",
         "privacy",
     }

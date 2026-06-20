@@ -86,7 +86,7 @@ records.
 ### Ticket — Core delivery entity (FSM)
 
 - **States:** not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered (plus `ignored` for abandoned tickets)
-- **Fields:** overlay, issue_url, variant, repos (JSONField), state (FSMField), role, extra (JSONField), redis_db_index
+- **Fields:** overlay, issue_url, variant, repos (JSONField), state (FSMField), role, extra (JSONField)
 - **Key methods:** scope(), start(), code(), test(), review(), ship(), rework()
 
 ### Worktree — Per-repo lifecycle (FSM, FK → Ticket)

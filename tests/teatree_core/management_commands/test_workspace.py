@@ -723,9 +723,6 @@ _no_stash = patch.object(ws_clean_all_mod, "drop_orphaned_stashes", new=lambda _
 _no_orphan_dbs = patch.object(ws_clean_all_mod, "drop_orphan_databases", new=list)
 
 
-_no_orphan_redis_slots = patch.object(ws_clean_all_mod, "release_orphaned_redis_slots", new=list)
-
-
 _no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=list)
 
 
@@ -2626,112 +2623,6 @@ class TestDropOrphanDatabasesFailure(TestCase):
             result = ws_cleanup_mod.drop_orphan_databases()
 
         assert result == []
-
-
-class TestReleaseOrphanedRedisSlotsPass(TestCase):
-    """The ``clean-all`` Redis-slot pass frees ghost slots and reports each freed one.
-
-    Anti-vacuity: drop the ``release_orphaned_redis_slots()`` line from
-    ``run_clean_all`` and ``test_clean_all_releases_orphaned_slot`` goes RED — the
-    ghost slot stays held and the report line is absent.
-    """
-
-    def test_reports_each_freed_slot(self) -> None:
-        ghost = Ticket.objects.create(overlay="test")
-        index = Ticket.objects.allocate_redis_slot(ghost)
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ghost,
-            repo_path="org/repo",
-            branch="ghost-branch",
-            extra={"worktree_path": "/gone/path"},
-        )
-        with patch("teatree.core.managers.redis_container.flushdb"):
-            lines = ws_cleanup_mod.release_orphaned_redis_slots()
-        assert lines == [f"Released orphaned Redis slot {index} (ticket #{ghost.pk})"]
-        ghost.refresh_from_db()
-        assert ghost.redis_db_index is None
-
-    def test_keeps_live_slot(self) -> None:
-        tmp = tempfile.mkdtemp()
-        live = Ticket.objects.create(overlay="test")
-        Ticket.objects.allocate_redis_slot(live)
-        Worktree.objects.create(
-            overlay="test",
-            ticket=live,
-            repo_path="org/repo",
-            branch="live-branch",
-            extra={"worktree_path": tmp},
-        )
-        with patch("teatree.core.managers.redis_container.flushdb") as mock_flush:
-            lines = ws_cleanup_mod.release_orphaned_redis_slots()
-        assert lines == []
-        mock_flush.assert_not_called()
-        live.refresh_from_db()
-        assert live.redis_db_index is not None
-        Path(tmp).rmdir()
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_docker
-    @_no_orphan_isolated_roots
-    @_no_orphan_raw
-    @_no_dslr_prune
-    @override_settings(**SETTINGS)
-    def test_clean_all_releases_orphaned_slot(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            ghost = Ticket.objects.create(overlay="test")
-            index = Ticket.objects.allocate_redis_slot(ghost)
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ghost,
-                repo_path="org/repo",
-                branch="ghost-branch",
-                extra={"worktree_path": "/gone/path"},
-                state=Worktree.State.READY,
-            )
-            out: list[str] = []
-            io = ws_clean_all_mod.CleanAllIO(write_out=out.append, write_err=out.append)
-            with (
-                patch("teatree.core.managers.redis_container.flushdb"),
-                patch.object(ws_clean_all_mod, "WorktreeReaper") as mock_reaper,
-                patch.object(ws_clean_all_mod, "reap_one_worktree", new=lambda *a, **k: ""),
-            ):
-                mock_reaper.return_value.reap_squash_merged_worktrees.return_value = []
-                mock_reaper.return_value.remove_empty_ticket_dirs.return_value = []
-                cleaned = ws_clean_all_mod.run_clean_all(
-                    Path(tmp), io, keep_dslr=10, reap_unsynced="keep", interactive=False
-                )
-        assert f"Released orphaned Redis slot {index} (ticket #{ghost.pk})" in cleaned
-        ghost.refresh_from_db()
-        assert ghost.redis_db_index is None
-
-
-class TestWorktreeReleaseSlotCommand(TestCase):
-    """``t3 <overlay> worktree release-slot <ticket>`` frees one ticket's slot."""
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_releases_held_slot(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1038")
-        index = Ticket.objects.allocate_redis_slot(ticket)
-        with patch("teatree.core.models.ticket.redis_container.flushdb") as mock_flush:
-            call_command("worktree", "release-slot", str(ticket.pk))
-        mock_flush.assert_called_once()
-        assert mock_flush.call_args.args[0] == index
-        ticket.refresh_from_db()
-        assert ticket.redis_db_index is None
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_no_slot_is_a_noop(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1039")
-        with patch("teatree.core.models.ticket.redis_container.flushdb") as mock_flush:
-            call_command("worktree", "release-slot", str(ticket.pk))
-        mock_flush.assert_not_called()
-        ticket.refresh_from_db()
-        assert ticket.redis_db_index is None
 
 
 class TestWorktreeBranches(TestCase):

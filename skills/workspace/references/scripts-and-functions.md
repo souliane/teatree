@@ -36,7 +36,6 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 setup` | First-time setup and global skill management |
 | `t3 assess` | Codebase health assessment |
 | `t3 overlay` | Dev-mode overlay install/uninstall |
-| `t3 infra` | Teatree-wide infrastructure services |
 | `t3 tool privacy-scan` | Scan text for privacy-sensitive patterns |
 | `t3 tool analyze-video` | Decompose video into frames for AI analysis |
 | `t3 tool bump-deps` | Bump pyproject.toml dependencies from uv.lock |

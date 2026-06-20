@@ -165,7 +165,7 @@ class TestProducerContract(TestCase):
     of the failure going silent (the #390 ``POSTGRES_HOST`` / ``rd:`` class).
     """
 
-    def _render_keys(self, overlays: dict[str, OverlayBase], *, slug: str, redis_db_index: int) -> set[str]:
+    def _render_keys(self, overlays: dict[str, OverlayBase], *, slug: str) -> set[str]:
         with tempfile.TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket"
             ticket_dir.mkdir()
@@ -174,7 +174,6 @@ class TestProducerContract(TestCase):
             ticket = Ticket.objects.create(
                 overlay="test",
                 issue_url=f"https://example.com/issues/{slug}",
-                redis_db_index=redis_db_index,
             )
             wt = Worktree.objects.create(
                 overlay="test",
@@ -193,8 +192,8 @@ class TestProducerContract(TestCase):
         # POSTGRES_HOST is only emitted on the shared-postgres branch; the
         # union across both branches must still cover every declared key.
         renders = [
-            self._render_keys(_DEDICATED_PG, slug="dedicated", redis_db_index=3),
-            self._render_keys(_SHARED_PG, slug="shared", redis_db_index=4),
+            self._render_keys(_DEDICATED_PG, slug="dedicated"),
+            self._render_keys(_SHARED_PG, slug="shared"),
         ]
         missing = unproduced_declared_keys(_declared_core_keys(), renders)
         if missing:
