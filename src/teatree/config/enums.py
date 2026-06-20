@@ -104,17 +104,26 @@ class Autonomy(StrEnum):
 
     *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
         stays in the loop on merges, answers, and colleague-visible posts.
+        Review-request posting follows ``on_behalf_post_mode`` like any other
+        colleague-visible post.
     *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
         (derived ``notify_on_behalf``) and the user's MR merges only after a
-        colleague approval (per-diff CLEAR, never self-approve).
+        colleague approval (per-diff CLEAR, never self-approve). The
+        collaborative/customer surface: the resolved ``review_request_post_disabled``
+        is ``True`` so the agent never auto-requests review — it stops at "MR is
+        mergeable + review-requestable".
     *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
         ``solo_overlay`` merge bypass is reachable here only, and the substrate
         per-PR sign-off is satisfied by this standing grant (the §17.4.3 step 5
         carve-out — see :func:`teatree.core.merge.execution.assert_merge_preconditions`)
-        so a substrate CLEAR needs no per-CLEAR ``human_authorizer``.
+        so a substrate CLEAR needs no per-CLEAR ``human_authorizer``. The solo
+        tooling surface: the resolved ``review_request_post_disabled`` is ``False``
+        so review-request proceeds.
 
-    Both autonomous tiers collapse the three gates and pin ``mode = auto`` (see
-    :func:`_apply_autonomy`). An explicit per-gate value always wins. The
+    Both autonomous tiers collapse the three gates, pin ``mode = auto``, and set
+    the resolved ``review_request_post_disabled`` off the tier (#2579, replacing
+    the deleted ``agent_review_request_disabled`` side flag) — see
+    :func:`_apply_autonomy`. An explicit per-gate value always wins. The
     safety floor (privacy/leak gate, cold-review with reviewer != maker,
     CI-green, not-draft, never-lockout, the SHA-bound audited keystone
     transition) is out of scope and never touched — under ``full`` the substrate

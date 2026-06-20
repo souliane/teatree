@@ -5,10 +5,14 @@ The ``autonomy`` switch (``babysit`` < ``notify`` < ``full``, default
 user-in-the-loop approval gates — ``on_behalf_post_mode`` (which gates
 colleague auto-approve / on-behalf posts), ``require_human_approval_to_merge``,
 ``require_human_approval_to_answer`` — and pins ``mode = auto`` so the
-loop's auto-merge path is reachable. The collapse and its precedence rules
-live in :func:`teatree.config._apply_autonomy`; this command is the
-first-class CLI surface that persists the knob so a user flips an overlay to
-full merge/approve autonomy without hand-editing config.
+loop's auto-merge path is reachable. It also drives review-request blocking off
+the tier (#2579): the ``notify`` tier resolves ``review_request_post_disabled =
+True`` (a collaborative/customer surface never auto-requests review), while
+``full`` resolves it ``False`` (a solo tooling surface auto-requests). The
+collapse and its precedence rules live in
+:func:`teatree.config._apply_autonomy`; this command is the first-class CLI
+surface that persists the knob so a user flips an overlay to full merge/approve
+autonomy without hand-editing config.
 
 ``autonomy`` is DB-home (#1775): its sole authoritative tier is the
 ``ConfigSetting`` store, so ``set`` writes a DB row — the active overlay's

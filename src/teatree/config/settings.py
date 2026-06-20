@@ -300,7 +300,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "on_behalf_post_mode": OnBehalfPostMode.parse,
     "missing_issue_ref_policy": MissingIssuePolicy.parse,
     "on_behalf_auto_actions": _parse_str_list,
-    "agent_review_request_disabled": _parse_strict_bool,
+    "review_request_post_disabled": _parse_strict_bool,
     "notify_user_via_bot": _parse_strict_bool,
     "notify_on_post_on_behalf": _parse_strict_bool,
     "user_identity_aliases": _parse_user_identity_aliases,
@@ -594,19 +594,22 @@ class UserSettings:
     # re-gate evidence under a blocking mode. Per-overlay overridable; env
     # ``T3_ON_BEHALF_AUTO_ACTIONS`` (comma-separated) wins over both.
     on_behalf_auto_actions: list[str] = field(default_factory=lambda: ["post_e2e_evidence"])
-    # Disable agent-driven review-request posting for this overlay (#2560).
-    # When true, ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs the
-    # post REGARDLESS of ``on_behalf_post_mode`` — including the ``immediate``
-    # value the autonomy collapse (``notify``/``full``) forces. This is the
-    # customer-overlay done-definition gate: an overlay that keeps a human in the
-    # merge loop (``require_human_approval_to_merge = True``) wants the agent to
-    # stop at "MR is mergeable + review-requestable" and NOT auto-request review.
-    # Orthogonal to ``on_behalf_post_mode`` (which the autonomy tier collapses)
-    # and to ``require_human_approval_to_merge`` (which gates merge, not the
-    # review-request post). Default off preserves the legacy behaviour for every
-    # other overlay; per-overlay overridable (DB-home). The user re-enables agent
-    # review-request once it behaves correctly by setting this back to false.
-    agent_review_request_disabled: bool = False
+    # Whether agent-driven review-request posting is BLOCKED for this overlay
+    # (#2579). Resolved off the autonomy TIER by ``_apply_autonomy``: the
+    # ``notify`` tier (collaborative/customer surface) sets it ``True`` so
+    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even though the
+    # collapse forces ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
+    # tooling surface) leaves it ``False`` so review-request PROCEEDs; ``babysit``
+    # keeps the default ``False`` and review-request follows ``on_behalf_post_mode``
+    # like any other colleague-visible post. This is the customer-overlay
+    # done-definition gate: an overlay running ``notify`` stops at "MR is mergeable
+    # + review-requestable" and never auto-requests review. An explicit per-overlay
+    # pin always wins over the tier (Option A — the per-overlay escape): a ``full``
+    # overlay can pin ``True`` to suppress auto-request, and a ``notify`` overlay
+    # can pin ``False`` to opt back in. Orthogonal to ``require_human_approval_to_merge``
+    # (which gates merge, not the review-request post). Default off; per-overlay
+    # overridable (DB-home).
+    review_request_post_disabled: bool = False
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
