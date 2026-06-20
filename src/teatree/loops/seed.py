@@ -2,15 +2,18 @@
 
 The single source of truth for which autonomous :class:`Loop` rows ship by
 default and how each is invoked (its on-disk ``script`` or its reusable
-:class:`Prompt`). Migrations 0078/0080/0085 seeded these at migrate-time; this
-module is the install-time seed ``t3 setup`` runs so a fresh — or
-squashed-migration — install has them present regardless of migration history.
+:class:`Prompt`). Migrations seeded these at migrate-time; this module is the
+install-time seed ``t3 setup`` runs so a fresh — or squashed-migration — install
+has them present regardless of migration history.
 
 The seed is **idempotent**: it ``get_or_create``s by ``name``, so re-running it
 creates nothing new and NEVER clobbers an operator-edited row (a disabled loop,
-a re-pointed cadence). The script-backed loops point at the shared per-loop
-runner ``src/teatree/loops/run.py`` (the loop XOR: exactly one of script/prompt);
-``arch_review`` is the one prompt-backed default.
+a re-pointed cadence). Each script-backed loop points at its OWN on-disk module
+``src/teatree/loops/<name>/loop.py`` (the file exposing that loop's ``MINI_LOOP``)
+— the ``script`` column is PER-LOOP and load-bearing, never a value shared across
+rows (the loop XOR: exactly one of script/prompt). ``arch_review`` is the one
+prompt-backed default; its prompt instructs a sub-agent to run an architectural
+review using the ``ac-reviewing-codebase`` skill.
 
 **No orphan rows (#2584).** Every name in :data:`DEFAULT_LOOPS` has a registry
 ``MiniLoop`` (a ``teatree.loops.<name>.loop`` package exposing ``MINI_LOOP``), so
@@ -28,7 +31,25 @@ this module's parity test pins).
 import datetime as dt
 from dataclasses import dataclass
 
-_SCRIPT_ENTRY_POINT = "src/teatree/loops/run.py"
+#: The architectural-review prompt body — a real instruction telling the
+#: sub-agent to run an architectural review using the ``ac-reviewing-codebase``
+#: skill (owner's explicit decision). Shared with the data migration so the
+#: install-seed and the migrate-time seed agree.
+ARCH_REVIEW_PROMPT_BODY = (
+    "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
+    "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "
+    "codebase-wide architectural review, surfacing findings as the skill prescribes."
+)
+
+
+def script_entry_point_for(name: str) -> str:
+    """The per-loop on-disk module a script-backed loop named *name* points at.
+
+    Each script loop's ``script`` is its OWN module — never a value shared across
+    rows. This is the single place the canonical ``src/teatree/loops/<name>/loop.py``
+    shape is built.
+    """
+    return f"src/teatree/loops/{name}/loop.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +58,8 @@ class LoopSeedSpec:
 
     ``prompt_body`` set ⇒ a prompt-backed loop (a :class:`Prompt` named for the
     loop is seeded and the FK points at it); otherwise the loop is script-backed
-    at :data:`_SCRIPT_ENTRY_POINT`. ``daily_at`` overrides the interval for a
-    once-per-day loop.
+    at its OWN module (:func:`script_entry_point_for`). ``daily_at`` overrides the
+    interval for a once-per-day loop.
     """
 
     name: str
@@ -50,10 +71,14 @@ class LoopSeedSpec:
     def is_prompt_backed(self) -> bool:
         return self.prompt_body is not None
 
+    @property
+    def script_entry_point(self) -> str:
+        """This loop's OWN on-disk module ``src/teatree/loops/<name>/loop.py``."""
+        return script_entry_point_for(self.name)
 
-# Mirror of migrations 0078/0080: one autonomous loop per row, each on its own
-# cadence. ``arch_review`` is the single prompt-backed default; the rest are
-# script-backed at the shared per-loop runner.
+
+# One autonomous loop per row, each on its own cadence. Every script-backed loop
+# points at its OWN module; ``arch_review`` is the single prompt-backed default.
 DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     LoopSeedSpec("inbox", 60),
     LoopSeedSpec("idle_stack_reaper", 60),
@@ -71,7 +96,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     LoopSeedSpec("followup", 1800),
     LoopSeedSpec("issue_implementer", 3600),
     LoopSeedSpec("housekeeping", 3600),
-    LoopSeedSpec("arch_review", 10800, prompt_body="Run a sub-agent to run the arch_review loop."),
+    LoopSeedSpec("arch_review", 10800, prompt_body=ARCH_REVIEW_PROMPT_BODY),
     LoopSeedSpec("dogfood", 86400),
     LoopSeedSpec("eval_local", 86400),
     LoopSeedSpec("news", 86400, daily_at=dt.time(8, 0)),
@@ -119,7 +144,7 @@ def seed_default_loops_and_prompts() -> SeedResult:
         if prompt is not None:
             defaults["prompt"] = prompt
         else:
-            defaults["script"] = _SCRIPT_ENTRY_POINT
+            defaults["script"] = spec.script_entry_point
         _, made = Loop.objects.get_or_create(name=spec.name, defaults=defaults)
         loops_created += int(made)
     return SeedResult(loops_created=loops_created, prompts_created=prompts_created)

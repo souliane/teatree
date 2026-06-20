@@ -388,7 +388,12 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
     so a ``full``/``notify`` overlay that forgot ``mode`` would otherwise be a
     silent no-op). The ``notify`` tier additionally derives
     ``notify_on_behalf = True`` so every on-behalf action DMs the user.
-    ``babysit`` is a no-op — every gate keeps its resolved value.
+    Both tiers also set the resolved ``review_request_post_disabled`` off the tier
+    (#2579, replacing the deleted ``agent_review_request_disabled`` side flag):
+    ``notify`` → ``True`` (collaborative/customer surface BLOCKs review-request),
+    ``full`` → ``False`` (solo tooling surface PROCEEDs). ``babysit`` is a no-op —
+    every gate keeps its resolved value, so review-request follows
+    ``on_behalf_post_mode`` like any other colleague-visible post.
 
     Pin precedence:
 
@@ -418,6 +423,14 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
         relaxed["mode"] = Mode.AUTO
     if settings.autonomy is Autonomy.NOTIFY and "notify_on_behalf" not in gate_pinned:
         relaxed["notify_on_behalf"] = True
+    # Review-request blocking is driven off the tier (#2579), replacing the
+    # deleted ``agent_review_request_disabled`` side flag. The ``notify`` tier
+    # (collaborative/customer surface) BLOCKs review-request; ``full`` (solo
+    # tooling surface) PROCEEDs. An explicit per-overlay pin always wins (Option
+    # A — the per-overlay escape), so the field is only set for the tier when the
+    # user has not pinned it themselves.
+    if "review_request_post_disabled" not in gate_pinned:
+        relaxed["review_request_post_disabled"] = settings.autonomy is Autonomy.NOTIFY
     if not relaxed:
         return settings
     return replace(settings, **relaxed)

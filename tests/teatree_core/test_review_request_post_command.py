@@ -307,13 +307,13 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
 
 
 class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
-    """``agent_review_request_disabled`` refuses the auto-post end-to-end (#2560).
+    """``review_request_post_disabled`` refuses the auto-post end-to-end (#2579).
 
     The customer-overlay scenario: the autonomy collapse has set
     ``on_behalf_post_mode = immediate`` (which would otherwise auto-post a review
-    request with no approval), but the overlay opts into
-    ``agent_review_request_disabled``. The command must refuse with no post —
-    the agent stops at "MR is mergeable + review-requestable".
+    request with no approval), but the overlay runs the ``notify`` tier, which
+    resolves ``review_request_post_disabled = True``. The command must refuse with
+    no post — the agent stops at "MR is mergeable + review-requestable".
     """
 
     def _immediate_with_disable(self, *, disabled: bool) -> AbstractContextManager[object]:
@@ -321,7 +321,7 @@ class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
             "teatree.on_behalf_gate.get_effective_settings",
             return_value=UserSettings(
                 on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE,
-                agent_review_request_disabled=disabled,
+                review_request_post_disabled=disabled,
             ),
         )
 

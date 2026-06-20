@@ -17,7 +17,9 @@ from teatree.loops.run import LoopNotRunnableError, UnknownLoopError, run_loop
 
 class TestRunLoopRouting(TestCase):
     def test_script_loop_runs_the_script_path(self) -> None:
-        Loop.objects.create(name="demo-script", delay_seconds=60, prompt=None, script="src/teatree/loops/run.py")
+        Loop.objects.create(
+            name="demo-script", delay_seconds=60, prompt=None, script="src/teatree/loops/demo-script/loop.py"
+        )
         calls: list[str] = []
         result = run_loop(
             "demo-script",
@@ -71,3 +73,70 @@ class TestRunnerNotInRegistry(TestCase):
     def test_run_module_is_not_a_registered_mini_loop(self) -> None:
         names = {loop.name for loop in iter_loops()}
         assert "run" not in names
+
+
+class TestScriptPathToLoopName(TestCase):
+    """The on-disk ``Loop.script`` path maps UP to the canonical loop name.
+
+    A script loop's ``script`` is its OWN module ``src/teatree/loops/<name>/loop.py``
+    (#2513). ``script_path_to_loop_name`` is the single normalization seam that
+    parses the path to its loop name and verifies it against the live registry; a
+    path that does not resolve to a real registered loop module raises loudly,
+    never silently strips or no-ops.
+    """
+
+    def test_own_module_path_resolves_to_its_loop_name(self) -> None:
+        from teatree.loops.run import script_path_to_loop_name  # noqa: PLC0415
+
+        assert script_path_to_loop_name("src/teatree/loops/inbox/loop.py") == "inbox"
+        assert script_path_to_loop_name("src/teatree/loops/dispatch/loop.py") == "dispatch"
+
+    def test_retired_shared_runner_raises_loudly(self) -> None:
+        # The exact regression this fixes: a stale shared ``run.py`` value does
+        # NOT resolve to a registered loop module — it must raise, not no-op.
+        from teatree.loops.run import UnresolvableScriptError, script_path_to_loop_name  # noqa: PLC0415
+
+        with pytest.raises(UnresolvableScriptError, match=r"run\.py"):
+            script_path_to_loop_name("src/teatree/loops/run.py")
+
+    def test_path_naming_an_unregistered_loop_raises_loudly(self) -> None:
+        from teatree.loops.run import UnresolvableScriptError, script_path_to_loop_name  # noqa: PLC0415
+
+        with pytest.raises(UnresolvableScriptError, match="ghost"):
+            script_path_to_loop_name("src/teatree/loops/ghost/loop.py")
+
+
+class TestDefaultRunScriptReadsTheColumn(TestCase):
+    """``_default_run_script`` dispatches the loop's OWN module from ``Loop.script``.
+
+    The dispatch seam is LIVE and per-loop: it resolves the row's ``script`` path
+    to a loop name and runs THAT loop's scoped tick. A row whose ``script`` does
+    not resolve to a real registered loop module raises loudly.
+    """
+
+    def test_runs_the_scoped_tick_for_the_scripts_own_loop(self) -> None:
+        from unittest import mock  # noqa: PLC0415
+
+        from teatree.loops import run as run_mod  # noqa: PLC0415
+
+        # ``inbox`` is a real registered loop; the migration-seeded row may already
+        # exist, so set its script to its own module via update_or_create.
+        Loop.objects.update_or_create(
+            name="inbox",
+            defaults={"delay_seconds": 60, "prompt": None, "script": "src/teatree/loops/inbox/loop.py"},
+        )
+        with mock.patch.object(run_mod, "run_scoped_tick", return_value="scoped") as scoped:
+            result = run_mod._default_run_script("inbox")
+        scoped.assert_called_once()
+        assert scoped.call_args.args[0] == "inbox"
+        assert result == "scoped"
+
+    def test_stale_shared_script_value_raises_loudly(self) -> None:
+        from teatree.loops.run import UnresolvableScriptError, _default_run_script  # noqa: PLC0415
+
+        Loop.objects.update_or_create(
+            name="inbox",
+            defaults={"delay_seconds": 60, "prompt": None, "script": "src/teatree/loops/run.py"},
+        )
+        with pytest.raises(UnresolvableScriptError, match=r"run\.py"):
+            _default_run_script("inbox")
