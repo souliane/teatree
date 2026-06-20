@@ -623,7 +623,18 @@ def _synthesize_stream_json(messages: list[Message]) -> str:
 
 def _message_to_event(message: Message) -> dict[str, Any] | None:
     if isinstance(message, AssistantMessage):
-        return {"type": "assistant", "message": {"content": [_block_to_dict(b) for b in message.content]}}
+        # ``parent_tool_use_id`` distinguishes a TOP-LEVEL (main-agent) turn —
+        # ``None`` per the SDK contract — from a sub-agent SIDECHAIN turn, which
+        # carries the parent ``Agent``/``Task`` tool_use id. Threading it through
+        # to the synthesized event lets :func:`extract_tool_calls` count only the
+        # main agent's own calls; a sub-agent's worktree ``.py`` edits, emitted
+        # inline into the same ``query`` stream, must NOT be attributed to the main
+        # agent (the #2596 mis-attribution that failed delegates/full_speed RED).
+        return {
+            "type": "assistant",
+            "message": {"content": [_block_to_dict(b) for b in message.content]},
+            "parent_tool_use_id": message.parent_tool_use_id,
+        }
     if isinstance(message, ResultMessage):
         return {
             "type": "result",

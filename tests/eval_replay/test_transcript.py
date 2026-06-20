@@ -66,6 +66,34 @@ class TestExtractToolCalls:
         assert all(c.name == "Bash" for c in calls)
         assert len(calls) == 2
 
+    def test_excludes_subagent_sidechain_tool_calls(self) -> None:
+        # A non-None parent_tool_use_id marks a SUB-agent (sidechain) turn streamed
+        # inline into the same query output; only the MAIN agent's calls are captured.
+        stream = (
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent",'
+            '"input":{"prompt":"fix it in a worktree"}}]}}\n'
+            '{"type":"assistant","parent_tool_use_id":"toolu_1",'
+            '"message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"x.py"}}]}}\n'
+            '{"type":"result","subtype":"success"}\n'
+        )
+        calls = extract_tool_calls(parse_stream_json(stream))
+        assert [c.name for c in calls] == ["Agent"], (
+            "the sub-agent's Edit (parent_tool_use_id set) must not be attributed to the main agent"
+        )
+
+    def test_absent_or_none_parent_is_treated_as_main_agent(self) -> None:
+        # Backward compatibility: replay fixtures omit the key, and a real top-level
+        # turn carries parent_tool_use_id == None — both are MAIN-agent calls.
+        stream = (
+            '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.py"}}]}}\n'
+            '{"type":"assistant","parent_tool_use_id":null,'
+            '"message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"b.py"}}]}}\n'
+            '{"type":"result","subtype":"success"}\n'
+        )
+        calls = extract_tool_calls(parse_stream_json(stream))
+        assert [c.name for c in calls] == ["Edit", "Write"]
+        assert [c.turn for c in calls] == [1, 2]
+
 
 class TestExtractTextBlocks:
     def test_returns_text_blocks_from_assistant_events(self) -> None:

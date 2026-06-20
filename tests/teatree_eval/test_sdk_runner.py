@@ -154,6 +154,29 @@ class TestSdkInProcessRunnerCapture:
         assert run.text_blocks == ("Creating a worktree first.",)
         assert run.cost_usd == pytest.approx(0.0456)
 
+    def test_subagent_sidechain_tool_calls_are_not_attributed_to_main_agent(self, tmp_path: Path) -> None:
+        # The SDK streams a dispatched sub-agent's turns inline into the same query
+        # output, each tagged with parent_tool_use_id. Only the MAIN agent's call
+        # (the Agent dispatch, parent_tool_use_id None) is captured; the sub-agent's
+        # worktree .py Edit (parent set) is excluded (#2596).
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="d1", name="Agent", input={"prompt": "fix it in a worktree"})],
+                model="haiku",
+            ),
+            AssistantMessage(
+                content=[ToolUseBlock(id="s1", name="Edit", input={"file_path": "/tmp/wt/x.py"})],
+                model="haiku",
+                parent_tool_use_id="d1",
+            ),
+            _result(total_cost_usd=0.01),
+        ]
+        run, _ = self._run(spec, messages)
+        assert [c.name for c in run.tool_calls] == ["Agent"], (
+            "the sub-agent's .py Edit (parent_tool_use_id set) leaked into the main-agent tool calls"
+        )
+
     def test_captures_usage_and_billed_model(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         messages = [
