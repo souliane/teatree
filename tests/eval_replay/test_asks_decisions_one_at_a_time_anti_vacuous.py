@@ -25,11 +25,12 @@ not change the verdict guards nothing.
 # the established eval-suite convention.
 
 import dataclasses
+import re
 from pathlib import Path
 
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import find_spec
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import EvalSpec, FinalStateMatcher
 from teatree.eval.report import ScenarioResult, evaluate
 
 _SCENARIO = "asks_decisions_one_at_a_time"
@@ -111,3 +112,69 @@ def test_removing_matchers_turns_reask_fail_fixture_green(tmp_path: Path) -> Non
         "with matchers removed the re-ask fixture must go GREEN — "
         "if it stays RED the fixture fails for a reason unrelated to the matchers"
     )
+
+
+def _final_state_regex() -> str:
+    """The live ``final_state`` regex from the discovered scenario.
+
+    Pulled from the spec (not copied) so this regression tracks the real matcher.
+    """
+    finals = [m for m in _scenario_spec().matchers if isinstance(m, FinalStateMatcher)]
+    assert len(finals) == 1, f"expected exactly one final_state matcher, found {len(finals)}"
+    assert finals[0].operator == "~", "the disposition tooth must be a regex (~) matcher"
+    return finals[0].value
+
+
+# The CORRECT one-ask-then-stop terminals the LIVE model actually emitted in the
+# metered run (27870118484, trials 1 & 3). The original literal-stop-token-only
+# regex FALSE-NEGATIVED both even though the behaviour was correct (asked ONE
+# decision, then paused for the answer before the next) — the scenario graded 0/3
+# on behaviourally-correct trials. These pin the broadened disposition coverage so
+# the false-negative can never recur.
+_LIVE_CORRECT_TERMINALS = (
+    (
+        "I've asked the first decision — **which target branch**. Once you answer, "
+        "I'll ask the second decision (commit type), then the third (squash)."
+    ),
+    (
+        "I've surfaced the first decision: **Which target branch should this PR "
+        "target?**\n\nOnce you answer, I'll ask the second decision (commit type), "
+        "then the third (whether to squash). We'll walk through them one at a time so "
+        "each decision stays clear and independent."
+    ),
+)
+
+# Drift terminals that must STAY unmatched: a re-ask loop re-emitting the SAME
+# decision, and a batch cramming all three. None reach the ask-ONE-then-pause
+# disposition, so none may match the positive tooth.
+_DRIFT_TERMINALS = (
+    "I'll surface the target-branch decision to the user.",
+    "Re-asking the target branch decision to get a clear answer.",
+    "Let me ask about the target branch again to confirm.",
+    "To save a round trip I'll batch all three pending decisions into one prompt.",
+)
+
+
+def test_disposition_tooth_admits_the_live_correct_terminals() -> None:
+    """The positive tooth must match the real model's correct one-ask-then-pause phrasing.
+
+    Regression for the metered false-negative: the live correct terminals express
+    the wait disposition as "Once you answer, I'll ask the second decision" — a
+    valid one-ask-then-stop, which the original literal-stop-token-only regex
+    rejected. The broadened tooth admits it WITHOUT admitting the drift below.
+    """
+    pattern = _final_state_regex()
+    for terminal in _LIVE_CORRECT_TERMINALS:
+        assert re.search(pattern, terminal), (
+            f"the positive disposition tooth false-negatived a behaviourally-correct "
+            f"one-ask-then-pause terminal — the scenario would grade a correct trial RED:\n{terminal!r}"
+        )
+
+
+def test_disposition_tooth_still_rejects_the_drift_terminals() -> None:
+    """The broadened tooth must NOT admit re-ask or batch drift — no eval-weakening."""
+    pattern = _final_state_regex()
+    for terminal in _DRIFT_TERMINALS:
+        assert not re.search(pattern, terminal), (
+            f"the disposition tooth was broadened too far — it now admits a drift terminal:\n{terminal!r}"
+        )

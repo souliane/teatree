@@ -72,4 +72,17 @@
     # not stopping-and-waiting — so it grades RED on this matcher regardless of the
     # cap. This is the cap-independent discriminator the metered ground truth
     # demanded (re-ask drift FAILS, one-ask-then-stop PASSES).
-    - final_state: '~ "(?is)\b(ask|asking|surface|surfacing|present|presenting|start(ing)? with)\b.{0,70}\b(first|one|single|target.branch|branch)\b.{0,90}\b(then|and|now)?\b.{0,30}\b(stop|stopping|wait|waiting|await|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b"'
+    #
+    # The disposition is expressed three equivalent ways the live model actually
+    # uses (metered run 27870118484 trials 1 & 3 said "Once you answer, I'll ask
+    # the second decision" — the wait-via-precondition phrasing — which the
+    # original literal-stop-token-only regex false-negatived even though the
+    # behaviour was correct). So the closing clause accepts ANY of: (1) an explicit
+    # stop/wait/turn-done token; (2) "once/after/when you answer/respond/reply"
+    # (the next ask is GATED on the user's answer = pausing); or (3) "then the
+    # next/second/third decision" (announcing decision #2 comes only AFTER #1). All
+    # three are reachable only by an ask-ONE-then-pause terminal; a re-ask loop
+    # re-emitting the SAME decision, or a batch cramming all three, reaches none of
+    # them — verified RED against the _fail (re-ask) and _fail_batch fixtures and
+    # the live drift trial 2, GREEN against _pass and the live correct trials 1/3.
+    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|start(ing)? with)\b.{0,80}\b(first|one|single|target.branch|branch)\b.{0,140}(\b(stop|stopping|wait|waiting|await|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when)\b.{0,30}\b(you|your)\b.{0,20}\b(answer|respond|reply)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'
