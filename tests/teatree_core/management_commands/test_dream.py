@@ -9,7 +9,7 @@ engine is a typed seam.
 
 import datetime as dt
 from io import StringIO
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +21,9 @@ from django.utils import timezone
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, LoopLease, MiniLoopMarker
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+
+if TYPE_CHECKING:
+    from teatree.loops.dream.gates import DreamQaReport
 
 
 def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
@@ -349,6 +352,98 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         out = stdout.getvalue()
         assert "cross-linked" not in out
         assert "OK    dream pass" in out
+
+
+class DreamAcceptanceGateWiringTestCase(TestCase):
+    """A failing §4 acceptance gate must NOT stamp the pass succeeded (#2545).
+
+    The gates make the pass anti-vacuous: a lossy / delete-only / no-op
+    consolidation FAILS a gate, and the command must keep staleness firing
+    rather than launder it into a success. The memory dir is a TMP fixture.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+
+    def _run(self, stdout: StringIO, *, report: "DreamQaReport") -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch("teatree.loops.dream.gates.run_acceptance_pass", return_value=report),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+    def test_failing_gate_does_not_stamp_succeeded(self) -> None:
+        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
+
+        failing = DreamQaReport(gate_results=(GateResult(name="retention", passed=False, detail="lost mem_a"),))
+        stdout = StringIO()
+        self._run(stdout, report=failing)
+        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
+        assert marker is None or marker.last_succeeded_at is None
+        out = stdout.getvalue()
+        assert "acceptance gate(s) FAILED" in out
+        assert "retention" in out
+
+    def test_failing_gate_keeps_staleness_active(self) -> None:
+        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
+
+        failing = DreamQaReport(gate_results=(GateResult(name="consolidation", passed=False, detail="no-op pass"),))
+        self._run(StringIO(), report=failing)
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is True
+
+    def test_passing_gates_stamp_succeeded(self) -> None:
+        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
+
+        passing = DreamQaReport(gate_results=(GateResult(name="retention", passed=True, detail="ok"),))
+        stdout = StringIO()
+        self._run(stdout, report=passing)
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert "all acceptance gates passed" in stdout.getvalue()
+
+    def test_real_gates_populate_the_dream_qa_probe_corpus(self) -> None:
+        # No gate patch — the REAL gates run over the tmp memory dir and POPULATE
+        # the formerly-dead DreamQaProbe model (the #2545 core acceptance).
+        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
+
+        stdout = StringIO()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=stdout)
+        # One probe per memory file, recorded against the corpus.
+        assert DreamQaProbe.objects.count() == 2
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
 
 class DreamMemoryPromotionWiringTestCase(TestCase):
