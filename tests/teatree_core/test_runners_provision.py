@@ -221,6 +221,145 @@ class TestWorktreeProvisioner(TestCase):
         assert "branch" in result.detail.lower()
 
 
+class TestWorktreeProvisionerPerRepoBranches(TestCase):
+    """#33: a ticket whose repos live on DIFFERENT branches.
+
+    A ``ticket.extra['branches']`` map (repo → branch) lets each repo
+    provision on its own branch while all repos still land as SIBLINGS in
+    the ONE ticket dir (``extra['branch']``). Repos not listed in the map
+    fall back to ``extra['branch']``. Single-branch tickets (no map) are
+    unchanged. This unblocks composing split per-repo branches into one
+    e2e/workspace-ticket stack.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _patch_workspace_dir(self) -> Any:
+        return patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace)
+
+    def _make_clones(self, *repos: str) -> None:
+        for repo in repos:
+            repo_dir = self.workspace / repo
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+
+    def _run_capturing_branches(self, ticket: Ticket) -> tuple[Any, dict[str, str], list[str]]:
+        """Run the provisioner, capturing the branch passed to each ``git worktree add``."""
+        branch_by_dest: dict[str, str] = {}
+        created_paths: list[str] = []
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, create_branch
+            branch_by_dest[path] = branch
+            created_paths.append(path)
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        return result, branch_by_dest, created_paths
+
+    def test_multi_branch_repos_provision_as_siblings_on_their_branches(self) -> None:
+        # The #8099 shape: two repos on two different fix branches, composed
+        # into ONE ticket dir as siblings.
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/8099",
+            repos=["repo-a", "repo-b"],
+            extra={
+                "branch": "8099-child-allowance",
+                "branches": {
+                    "repo-a": "fix/8099-child-allowance-resource",
+                    "repo-b": "fix/8099-child-allowance-document-translations",
+                },
+                "description": "x",
+            },
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+
+        ticket_dir = self.workspace / "8099-child-allowance"
+        path_a = str(ticket_dir / "repo-a")
+        path_b = str(ticket_dir / "repo-b")
+
+        # Both repos land as SIBLINGS in the ONE ticket dir.
+        assert Path(path_a).parent == ticket_dir
+        assert Path(path_b).parent == ticket_dir
+
+        # Each repo is provisioned on ITS OWN branch from the map.
+        assert branch_by_dest[path_a] == "fix/8099-child-allowance-resource"
+        assert branch_by_dest[path_b] == "fix/8099-child-allowance-document-translations"
+
+        # The Worktree rows record the per-repo branch, not the ticket-dir name.
+        wt_a = Worktree.objects.get(ticket=ticket, repo_path="repo-a")
+        wt_b = Worktree.objects.get(ticket=ticket, repo_path="repo-b")
+        assert wt_a.branch == "fix/8099-child-allowance-resource"
+        assert wt_b.branch == "fix/8099-child-allowance-document-translations"
+        assert (wt_a.extra or {}).get("worktree_path") == path_a
+        assert (wt_b.extra or {}).get("worktree_path") == path_b
+
+    def test_repo_absent_from_map_falls_back_to_ticket_branch(self) -> None:
+        # The #1038 shape: one repo on a feature branch, a sibling not listed
+        # in the map falls back to the shared ticket branch.
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/1038",
+            repos=["repo-a", "repo-b"],
+            extra={
+                "branch": "1038-multi-repo",
+                "branches": {"repo-a": "fix/1038-special"},
+                "description": "x",
+            },
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+        ticket_dir = self.workspace / "1038-multi-repo"
+        path_a = str(ticket_dir / "repo-a")
+        path_b = str(ticket_dir / "repo-b")
+
+        assert branch_by_dest[path_a] == "fix/1038-special"
+        assert branch_by_dest[path_b] == "1038-multi-repo"
+
+        wt_b = Worktree.objects.get(ticket=ticket, repo_path="repo-b")
+        assert wt_b.branch == "1038-multi-repo"
+
+    def test_single_branch_ticket_unchanged(self) -> None:
+        # No ``branches`` map → every repo uses ``extra['branch']`` exactly
+        # as before (the unchanged single-branch path).
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=["repo-a", "repo-b"],
+            extra={"branch": "77-feature", "description": "x"},
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+        ticket_dir = self.workspace / "77-feature"
+        assert branch_by_dest[str(ticket_dir / "repo-a")] == "77-feature"
+        assert branch_by_dest[str(ticket_dir / "repo-b")] == "77-feature"
+
+        for repo in ("repo-a", "repo-b"):
+            wt = Worktree.objects.get(ticket=ticket, repo_path=repo)
+            assert wt.branch == "77-feature"
+
+
 class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
     """#762 source-fix: public souliane/* worktrees get a local noreply identity.
 
