@@ -22,9 +22,10 @@ here via ``call_command``.
 
 import datetime as dt
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
+from django.apps import apps
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_registry import get_backend_provider
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.core.models import ConsolidatedMemory
     from teatree.loops.dream.decay import ArchivedMemory
 
 
@@ -363,9 +365,8 @@ class Command(TyperCommand):
     @staticmethod
     def _ledger_schema_count() -> int:
         """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
-        from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
-
-        return ConsolidatedMemory.objects.count()
+        consolidated_memory_model = cast("type[ConsolidatedMemory]", apps.get_model("core", "ConsolidatedMemory"))
+        return consolidated_memory_model.objects.count()
 
     def _decay_dirs_with_archives(
         self, memory_dirs: list[Path], *, dry_run: bool
