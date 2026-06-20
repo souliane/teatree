@@ -1,7 +1,7 @@
 """Stream D of the robustness plan (#390): typed state reconciler.
 
 Walks every state store teatree cares about — Django rows, git worktrees,
-Postgres DBs, docker containers, redis slot, env cache files — and returns
+Postgres DBs, docker containers, env cache files — and returns
 a ``Drift`` bundle enumerating what's out of sync.
 
 Drift objects are typed (per-finding dataclass) so callers can inspect and

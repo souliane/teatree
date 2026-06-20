@@ -4,8 +4,8 @@ Docker Compose stamps every container *and* every image it builds for a
 project with the ``com.docker.compose.project=<project>`` label. That single
 label is the safety boundary: filtering by it reaps exactly the artifacts a
 worktree's stack created and nothing else. Base / official images
-(``postgres``, ``python``, ``node``, ``redis``, ``nginx``) and the main-clone's
-shared ``{image_name}:deps-<hash>`` image are built via ``docker build`` (see
+(``postgres``, ``python``, ``node``, ``redis``, ``nginx``) and the single
+master ``{image_name}:base`` image are built via ``docker build`` (see
 :mod:`teatree.docker.build`), not compose, so they carry no compose-project
 label and are never enumerated under a removed worktree's project.
 

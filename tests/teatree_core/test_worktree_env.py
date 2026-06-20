@@ -292,28 +292,6 @@ class TestWriteEnvCache(TestCase):
             assert first.path == second.path
             assert stat.S_IMODE(second.path.stat().st_mode) == 0o444
 
-    def test_emits_redis_db_index_when_allocated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            wt, _ = _make_worktree(
-                tmp,
-                ticket_name="t5",
-                ticket_url="https://ex.com/5",
-                redis_db_index=7,
-                db_name="wt_5",
-            )
-            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                spec = write_env_cache(wt)
-            assert spec is not None
-            assert "REDIS_DB_INDEX=7" in spec.content
-
-    def test_omits_redis_db_index_when_unallocated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            wt, _ = _make_worktree(tmp, ticket_name="t6", ticket_url="https://ex.com/6", db_name="wt_6")
-            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
-                spec = write_env_cache(wt)
-            assert spec is not None
-            assert "REDIS_DB_INDEX" not in spec.content
-
     def test_base_image_env_var_lands_in_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt, _ = _make_worktree(tmp, ticket_name="t7", ticket_url="https://ex.com/7", db_name="wt_7")
@@ -325,7 +303,7 @@ class TestWriteEnvCache(TestCase):
             with patch.object(overlay_loader_mod, "_discover_overlays", return_value=overlay):
                 spec = write_env_cache(wt)
             assert spec is not None
-            assert "MYAPP_BASE_IMAGE=myapp-local:deps-" in spec.content
+            assert "MYAPP_BASE_IMAGE=myapp-local:base" in spec.content
 
 
 class TestRepoCopyNotSymlink(TestCase):

@@ -17,7 +17,6 @@ from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPos
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
-from teatree.utils.redis_container import DEFAULT_DB_COUNT as DEFAULT_REDIS_DB_COUNT
 
 
 @dataclass
@@ -486,7 +485,6 @@ class UserSettings:
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
-    redis_db_count: int = DEFAULT_REDIS_DB_COUNT
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
     # How much parallel work the orchestrator drives at once. The

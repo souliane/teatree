@@ -126,7 +126,7 @@ or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak`,
 `handover_mirror_path`, `check_updates`, and `statusline_chain` — the latter read
 straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
 to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
-`redis_db_count`, `timezone`, `privacy`), and the nested structured `mr_reminder`
+`timezone`, `privacy`), and the nested structured `mr_reminder`
 table. The two DERIVED fields (`notify_on_behalf`, `ask_before_post_on_behalf`) are
 computed by the resolver and have no home. The resolution-tier wiring below details
 each home's chain.

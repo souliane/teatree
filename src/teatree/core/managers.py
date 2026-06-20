@@ -3,11 +3,10 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
-from django.db import IntegrityError, models, transaction
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.config import load_config
 from teatree.core.loop_lease_manager import (
     GLOBAL_OWNER_SLOT,
     PER_LOOP_OWNER_PREFIX,
@@ -17,9 +16,7 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
-from teatree.core.modelkit.errors import RedisSlotsExhaustedError
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
-from teatree.utils import redis_container
 
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
@@ -99,99 +96,6 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
             .filter(Q(extra__tracker_status__isnull=True) | ~Q(extra__tracker_status="Done"))
             .order_by("pk")
         )
-
-    def allocate_redis_slot(self, ticket: "Ticket") -> int:
-        """Claim the lowest free Redis DB index for the ticket, atomically.
-
-        Idempotent: returns the existing index if the ticket already has one.
-        Raises RedisSlotsExhaustedError when every non-ghost slot is in use.
-
-        Ghost reclaim: before raising, scans for tickets that have at least
-        one Worktree row where every row's ``worktree_path`` no longer exists
-        on disk. Ghost slots are cleared and the allocation is retried once;
-        a non-ghost slot (any Worktree with a live on-disk path) is never
-        reclaimed. Tickets with no Worktree rows are not treated as ghosts
-        (they may be mid-provision).
-
-        The CAS shape is unchanged: ``redis_db_index`` carries a unique
-        constraint, so the read-taken-set → pick-lowest-free → ``save()``
-        loop lets two concurrent provisions race, the loser's ``save()``
-        raises a caught ``IntegrityError``, and exactly one writer wins each
-        slot. SQLite ``IMMEDIATE`` transaction mode serialises the write
-        window; ``select_for_update`` is a documented no-op on SQLite (#804).
-        """
-        if ticket.redis_db_index is not None:
-            return int(ticket.redis_db_index)
-        count = load_config().user.redis_db_count
-        ghost_reclaim_attempted = False
-        for _ in range(count):
-            taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
-            index = next((i for i in range(count) if i not in taken), None)
-            if index is None:
-                if ghost_reclaim_attempted:
-                    break
-                ghost_reclaim_attempted = True
-                self.release_orphaned_redis_slots(using=self.db)
-                continue
-            try:
-                with transaction.atomic(using=self.db):
-                    ticket.redis_db_index = index
-                    ticket.save(update_fields=["redis_db_index"], using=self.db)
-            except IntegrityError:
-                ticket.redis_db_index = None
-                continue
-            return index
-        msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
-        raise RedisSlotsExhaustedError(msg)
-
-    def release_orphaned_redis_slots(self, *, using: str = "default") -> list[tuple[int, int]]:
-        """Flush + clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
-
-        A slot is orphaned (a "ghost") when the ticket has at least one Worktree
-        row and every row either has no on-disk path recorded or has a path that
-        no longer exists as a directory — the dirs are gone but the rows (and the
-        slot) persist, which is the dominant local-stack exhaustion source: prior
-        sessions' worktrees were removed without releasing the slot. Tickets with
-        no Worktree rows are not reclaimed — they may be mid-provision (slot
-        allocated, Worktree row not yet written). Each orphaned slot's Redis DB is
-        flushed before the field is cleared, matching ``Ticket.release_redis_slot``'s
-        contract so the next ticket assigned the reclaimed slot starts with a clean
-        cache/queue. The flush is best-effort: when redis/docker is unavailable
-        (``flushdb`` raises ``RuntimeError`` because the docker CLI is absent, e.g.
-        CI) the DB row is still reclaimed so allocation never fails on a missing
-        cache backend.
-
-        Two callers share this: ``allocate_redis_slot`` calls it lazily before
-        raising exhaustion, and ``workspace clean-all`` runs it proactively so the
-        pool is freed without waiting for the next allocation to fail (#1038).
-        Returns the ``(ticket_pk, released_index)`` pairs reclaimed, so callers can
-        report exactly which slots were freed.
-        """
-        from pathlib import Path  # noqa: PLC0415
-
-        candidates = list(self.using(using).filter(redis_db_index__isnull=False).prefetch_related("worktrees"))
-        reclaimed: list[tuple[int, int]] = []
-        for candidate in candidates:
-            worktrees = list(candidate.worktrees.all())
-            if not worktrees:
-                is_ghost = False
-            else:
-                is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
-            if is_ghost:
-                released_index = candidate.redis_db_index
-                try:
-                    redis_container.flushdb(released_index, db_count=load_config().user.redis_db_count)
-                except RuntimeError as exc:
-                    logger.warning(
-                        "ghost slot %s flush skipped (%s); reclaiming DB row anyway",
-                        released_index,
-                        exc,
-                    )
-                candidate.redis_db_index = None
-                candidate.save(update_fields=["redis_db_index"], using=using)
-                reclaimed.append((candidate.pk, released_index))
-                logger.info("reclaimed orphaned redis slot %s from ticket pk=%s", released_index, candidate.pk)
-        return reclaimed
 
 
 class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):

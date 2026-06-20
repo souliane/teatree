@@ -16,8 +16,7 @@ class WorktreeTeardownRunner(RunnerBase):
     (docker only) and ``t3 <overlay> worktree teardown`` (docker + DB +
     worktree row) into one canonical path so callers no longer have to
     chain commands. The runner owns docker-down + DB drop + git worktree
-    removal; it then deletes the Worktree row and releases the ticket's
-    Redis slot when it was the last sibling.
+    removal; it then deletes the Worktree row.
 
     The transition body resets ``db_name`` and ``extra`` on the row to
     satisfy the FSM CREATED contract, so the runner accepts a snapshot of

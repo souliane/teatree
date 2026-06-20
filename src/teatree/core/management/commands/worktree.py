@@ -16,7 +16,6 @@ import typer
 from django.db import transaction
 from django_typer.management import TyperCommand, command
 
-from teatree.config import load_config
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
@@ -33,7 +32,6 @@ from teatree.core.runners import (
 )
 from teatree.core.worktree_env import CACHE_FILENAME, compose_project
 from teatree.docker.build import ensure_base_image
-from teatree.utils import redis_container
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
@@ -164,9 +162,6 @@ class Command(TyperCommand):
         # variant suffix).
         worktree.refresh_from_db()
         resolved_overlay = get_overlay()
-        if resolved_overlay.uses_redis():
-            redis_container.ensure_running(db_count=load_config().user.redis_db_count)
-            Ticket.objects.allocate_redis_slot(ticket_obj)
         validate_docker_service_contract(resolved_overlay, worktree)
         _build_base_images(resolved_overlay, worktree, writer=self.stdout.write)
 
@@ -182,28 +177,6 @@ class Command(TyperCommand):
             self.stderr.write(f"  Provision failed for {worktree.repo_path}")
             raise SystemExit(1)
         return int(worktree.pk)
-
-    @command(name="release-slot")
-    def release_slot(
-        self,
-        ticket: str = typer.Argument(..., help="Ticket pk, issue number, or issue URL whose Redis slot to free."),
-    ) -> int:
-        """Release a ticket's held Redis DB slot (FLUSHDB + clear the index).
-
-        The explicit, per-ticket counterpart to ``clean-all``'s orphaned-slot
-        sweep (#1038): when a worktree's dirs are already gone but its row + slot
-        persist, this frees the slot immediately so the next ``worktree provision``
-        does not fail with ``RedisSlotsExhaustedError``. Idempotent — a ticket with
-        no slot is a no-op. Returns the released index, or ``-1`` when none was held.
-        """
-        ticket_obj = Ticket.objects.resolve(ticket)
-        index = ticket_obj.redis_db_index
-        if index is None:
-            self.stdout.write(f"  Ticket #{ticket_obj.pk} holds no Redis slot — nothing to release.")
-            return -1
-        ticket_obj.release_redis_slot()
-        self.stdout.write(f"  Released Redis slot {index} from ticket #{ticket_obj.pk}.")
-        return int(index)
 
     def _resolve_ticket_hint(self, ticket: str) -> Ticket | None:
         """Resolve the ``--ticket`` number to a Ticket, or raise if it is unknown."""

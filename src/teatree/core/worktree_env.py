@@ -83,7 +83,7 @@ def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
     ticket_dir = wt_path.parent
     ticket = cast("Ticket", worktree.ticket)
 
-    pairs: list[tuple[str, str]] = [
+    return [
         ("WT_VARIANT", ticket.variant or ""),
         ("TICKET_DIR", str(ticket_dir)),
         ("TICKET_URL", ticket.issue_url),
@@ -91,9 +91,6 @@ def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
         ("COMPOSE_PROJECT_NAME", compose_project(worktree)),
         (PASS_KEY_ENV, postgres_pass_key(ticket.ticket_number)),
     ]
-    if ticket.redis_db_index is not None:
-        pairs.append(("REDIS_DB_INDEX", str(ticket.redis_db_index)))
-    return pairs
 
 
 def _declared_core_keys() -> set[str]:
@@ -104,7 +101,6 @@ def _declared_core_keys() -> set[str]:
         "TICKET_URL",
         "WT_DB_NAME",
         "COMPOSE_PROJECT_NAME",
-        "REDIS_DB_INDEX",
         "POSTGRES_HOST",
         PASS_KEY_ENV,
     }

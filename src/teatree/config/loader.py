@@ -27,14 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import (
-    DEFAULT_REDIS_DB_COUNT,
-    E2ERepo,
-    TeaTreeConfig,
-    UserSettings,
-    _default_handover_mirror_path,
-    _parse_str_list,
-)
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
@@ -247,7 +240,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
         timezone=teatree.get("timezone", ""),
-        redis_db_count=int(teatree.get("redis_db_count", DEFAULT_REDIS_DB_COUNT)),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
         orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),

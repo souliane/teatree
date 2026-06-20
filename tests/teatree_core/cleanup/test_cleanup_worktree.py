@@ -1,14 +1,14 @@
 """``cleanup_worktree`` orchestration behaviour with the git layer mocked.
 
 Split verbatim from the former monolithic ``tests/teatree_core/test_cleanup.py``
-(souliane/teatree#443). The classifier-driven safety gates, redis-slot release
-and overlay-step wiring all exercise the wholesale ``teatree.core.cleanup.git``
+(souliane/teatree#443). The classifier-driven safety gates and overlay-step
+wiring all exercise the wholesale ``teatree.core.cleanup.git``
 mock; the shared module-level ``_patch_*`` decorators and the
 ``_no_unpushed``/``_mock_workspace`` helpers are lifted unchanged.
 """
 
 from collections.abc import Iterator
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -688,68 +688,6 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_releases_redis_slot_when_last_worktree_removed(
-        self,
-        mock_config: MagicMock,
-        mock_git: MagicMock,
-        mock_overlay: MagicMock,
-    ) -> None:
-        _mock_workspace(mock_config)
-        _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits.return_value = []
-
-        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        ticket = wt.ticket
-        ticket.redis_db_index = 3
-        ticket.save()
-
-        with patch("teatree.utils.redis_container.flushdb") as mock_flush:
-            cleanup_worktree(wt)
-
-        mock_flush.assert_called_once_with(3, db_count=ANY)
-        ticket.refresh_from_db()
-        assert ticket.redis_db_index is None
-
-    @_patch_overlay
-    @_patch_git
-    @_patch_config
-    def test_keeps_redis_slot_when_other_worktrees_remain(
-        self,
-        mock_config: MagicMock,
-        mock_git: MagicMock,
-        mock_overlay: MagicMock,
-    ) -> None:
-        _mock_workspace(mock_config)
-        _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_git.status_porcelain.return_value = ""
-        mock_git.unsynced_commits.return_value = []
-
-        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        ticket = wt.ticket
-        ticket.redis_db_index = 4
-        ticket.save()
-
-        # Sibling worktree keeps ticket alive
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="org/other",
-            branch="fix-99",
-        )
-
-        with patch("teatree.utils.redis_container.flushdb") as mock_flush:
-            cleanup_worktree(wt)
-
-        mock_flush.assert_not_called()
-        ticket.refresh_from_db()
-        assert ticket.redis_db_index == 4
-
-    @_patch_overlay
-    @_patch_git
-    @_patch_config
     def test_proceeds_normally_when_fully_synced(
         self,
         mock_config: MagicMock,
@@ -805,7 +743,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         """A failed ``dropdb`` is recorded in ``errors``; the row + pass entry still go.
 
         Before #877 this either crashed mid-teardown (leaving the Worktree
-        row, redis slot and pass entry orphaned) or was swallowed. Now the
+        row and pass entry orphaned) or was swallowed. Now the
         failure is a descriptive ``errors`` entry, the result is non-clean,
         and every other resource is still cleaned.
         """

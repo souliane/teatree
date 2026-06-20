@@ -5,7 +5,6 @@ so they can be used by any layer without introducing cycles.
 """
 
 import enum
-import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -197,7 +196,7 @@ class ServiceSpec(TypedDict, total=False):
     base_image: str
     """Name of a ``BaseImageConfig`` the service's container should use.
 
-    Teatree resolves this to a lockfile-hashed tag at ``worktree provision`` and
+    Teatree resolves this to the single master tag at ``worktree provision`` and
     exports it as a compose env var so ``image: ${...}`` substitution works.
     """
 
@@ -206,16 +205,20 @@ class ServiceSpec(TypedDict, total=False):
 class BaseImageConfig:
     """Declares a Docker image teatree builds once and shares across worktrees.
 
-    Teatree tags each image as ``{image_name}:deps-{sha256(lockfile)[:12]}`` —
-    rebuild happens only when the lockfile content changes.  Code changes are
-    picked up automatically via the worktree's ``.:/app`` volume mount, with
-    no rebuild.
+    Teatree tags each image with the single master tag ``{image_name}:base``
+    — NOT per-lockfile.  The image is built once from the master clone's
+    lockfile and reused by every worktree.  Code changes are picked up
+    automatically via the worktree's ``.:/app`` volume mount, and dependency
+    drift is reconciled at container start by the overlay's entrypoint
+    (``uv sync`` against the branch's lockfile) — so a per-lockfile image tag
+    would only duplicate a cache the entrypoint already keeps.
 
     *build_context* is an absolute path (the overlay resolves it — usually
-    the main-repo root for that image's repo).  *dockerfile* and *lockfile*
-    are resolved relative to it.  *env_var* is the name core exports into
-    the per-worktree env cache with the resolved tag as value, so compose
-    files can reference ``image: ${env_var}``.
+    the master-repo root for that image's repo).  *dockerfile* and *lockfile*
+    are resolved relative to it; *lockfile* is the build source (the master
+    lockfile baked into the image) — it no longer feeds the tag.  *env_var*
+    is the name core exports into the per-worktree env cache with the tag as
+    value, so compose files can reference ``image: ${env_var}``.
     """
 
     image_name: str
@@ -226,8 +229,7 @@ class BaseImageConfig:
     build_args: dict[str, str] = field(default_factory=dict)
 
     def image_tag(self) -> str:
-        digest = hashlib.sha256((self.build_context / self.lockfile).read_bytes()).hexdigest()[:12]
-        return f"{self.image_name}:deps-{digest}"
+        return f"{self.image_name}:base"
 
 
 class DbImportStrategy(TypedDict, total=False):

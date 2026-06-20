@@ -425,5 +425,4 @@ Generate Ticket.short_description (#1156).
 | `status` | Report FSM state, branch, and allocated host ports for one worktree |
 | `diagnose` | Print a structured health checklist for one worktree |
 | `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
-| `release-slot` | Release a ticket's held Redis DB slot (FLUSHDB + clear the index) |
 | `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

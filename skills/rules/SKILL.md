@@ -521,7 +521,7 @@ When a teatree or skill infrastructure bug is discovered during any task, fix it
 
 ## Teatree Extension Point Changes Must Update All Registered Overlays (Non-Negotiable)
 
-When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_ports`, `get_port_env`, `uses_redis`, `get_health_checks`, `get_readiness_probes`, `get_base_images`, …) on this machine, you must in the same session update **every overlay registered locally** to adopt the new contract — even when the change is "additive" with a working default.
+When you add, change, or remove a hook on `OverlayBase` (e.g. `get_required_ports`, `get_port_env`, `get_health_checks`, `get_readiness_probes`, `get_base_images`, …) on this machine, you must in the same session update **every overlay registered locally** to adopt the new contract — even when the change is "additive" with a working default.
 
 **Why:** the teatree codebase is overlay-agnostic and CI cannot see the user's installed overlays. A "default returns empty/false" is silent — the overlay keeps shipping, but with the wrong runtime behaviour (port collisions, skipped readiness checks, missing health invariants). The drift only surfaces when the user runs the new command and gets a confusing failure with no obvious root cause.
 
