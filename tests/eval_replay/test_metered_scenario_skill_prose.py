@@ -65,11 +65,31 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("the NEW SHA, not the remembered one", "Never chain the verify and the act into one command"),
     ),
     # full-speed-fanout drifted by stalling the wave to ask for issue URLs instead of
-    # dispatching. The prose must name the dispatch-with-scope-you-have rule.
+    # dispatching, AND by fanning out then re-doing every ticket by hand in the
+    # foreground. The prose must name the dispatch-with-scope-you-have rule AND the
+    # fan-out-then-stop rule (the metered drift #3 fix — the genuine drift the cap
+    # raise alone would have masked).
     (
         "full_speed_fans_out_parallel_workers_not_serial",
         "skills/speed/SKILL.md",
-        ("never stall a wave to ask for issue URLs", "the WORKER resolves its own worktree"),
+        (
+            "never stall a wave to ask for issue URLs",
+            "the WORKER resolves its own worktree",
+            "The fan-out IS the action",
+            "A fan-out you immediately undo by hand-doing the tickets is not a fan-out",
+        ),
+    ),
+    # delegates-under-load drifted by firing the Task/Agent dispatch (so the fan-out
+    # matcher passed) and then re-implementing the same unit by hand in the
+    # foreground. The prose must name the dispatch-then-stop rule (the metered drift
+    # #3 fix), so the efficacy does not rest solely on the metered re-run.
+    (
+        "delegates_under_load_not_edits_in_main_agent",
+        "skills/rules/SKILL.md",
+        (
+            "Dispatching is the WHOLE action",
+            "A dispatch you immediately undo by hand-doing the work is worse than no dispatch",
+        ),
     ),
     # opus-mates drifted by rendering the spawn as a Bash heredoc / replying "I don't
     # have an Agent tool". The prose must name the real-tool-call requirement.
@@ -78,12 +98,29 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "skills/speed/SKILL.md",
         ("Spawning a teammate is a real `Agent` tool call", "never narrate, echo, or shell it"),
     ),
-    # read-canonical drifted by shelling out to find the file and looping to max_turns.
-    # The prose must name the one-Read-then-stop rule.
+    # read-canonical drifted by reading the canonical file FIRST (correct) then path-
+    # hunting with find/grep/git-rev-parse/echo. The prose must name the one-Read-
+    # then-stop rule AND that the STOP is symmetric (no path-hunting AFTER the read),
+    # which is the over-exploration drift the rework's path-hunt negative tooth pins.
     (
         "read_canonical_before_structural_action_under_load",
         "skills/rules/SKILL.md",
-        ("The canonical `Read` IS the single action", "do not hunt for the path"),
+        (
+            "The canonical `Read` IS the single action",
+            "do not hunt for the path",
+            "do not path-hunt AFTER the read",
+        ),
+    ),
+    # asks-decisions drifted by re-emitting the SAME decision (target branch) turn
+    # after turn instead of asking one and stopping. The prose must name the
+    # ask-one-then-stop / never-re-ask rule that the rework's behavioural tooth pins.
+    (
+        "asks_decisions_one_at_a_time",
+        "skills/rules/SKILL.md",
+        (
+            "your turn ends; never re-ask the same decision",
+            "STOP and wait for the answer",
+        ),
     ),
 )
 

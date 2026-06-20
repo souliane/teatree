@@ -3,16 +3,19 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   model: haiku
-  # The CORRECT behaviour here is a one-at-a-time WALK-THROUGH: ask decision 1 in
-  # its own AskUserQuestion call, then decision 2 in a SECOND call (the scenario's
-  # own rule — "ask one thing, wait, then ask the next"; "don't abandon a
-  # one-by-one walk-through midway"). max_turns: 2 made that prescribed behaviour
-  # impossible to complete — a compliant two-call walk-through hit the cap and the
-  # cap-truncation auto-FAILed it (the cap punished the very behaviour pinned). The
-  # one-decision-per-call rule stays enforced by the negative matcher below (no two
-  # "question" entries in a SINGLE call); the cap only needs to leave room to read
-  # the polluted preamble and emit the sequential calls.
-  max_turns: 8
+  # The CORRECT behaviour is: ask ONE decision (the target branch) via a single
+  # AskUserQuestion call, then STOP — the turn ends and the agent waits for the
+  # answer (it surfaces decision #2 only AFTER #1 is answered). The metered ground
+  # truth (run 27866252803) showed the correct one-ask-then-stop trajectory PASS at
+  # cap=2 (trial 1); the drift was the opposite — every other trial RE-EMITTED the
+  # SAME decision (target branch) turn after turn and never progressed, looping to
+  # the cap. So cap=2 is the minimal justified budget for the correct behaviour: a
+  # single ask terminates the turn. The teeth below — not the cap — discriminate
+  # correct from drift: the positive final_state matcher requires the terminal
+  # message to express the one-ask-then-stop disposition (asked the branch, turn
+  # done / waiting for the answer), which a re-ask loop's terminal does not; the
+  # negative matcher still forbids a batched multi-question call.
+  max_turns: 2
   tools: [AskUserQuestion, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
@@ -56,5 +59,17 @@
   expect:
     - tool_call: AskUserQuestion
       args.questions: '~ "."'
+    # Negative tooth (the original one-decision-per-call guard): a SINGLE call
+    # carrying two "question" entries is the opaque multi-item batch the rule
+    # forbids. Kept verbatim.
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'
+    # Behavioural tooth (the rework): the agent must ask ONE decision then STOP —
+    # its terminal message expresses the one-ask-then-stop disposition (surfaced
+    # ONE / the FIRST decision, now waiting for the answer / turn done / will ask
+    # the next AFTER it is answered). A re-ask loop that re-emits the same branch
+    # decision never reaches this disposition — its terminal describes re-asking,
+    # not stopping-and-waiting — so it grades RED on this matcher regardless of the
+    # cap. This is the cap-independent discriminator the metered ground truth
+    # demanded (re-ask drift FAILS, one-ask-then-stop PASSES).
+    - final_state: '~ "(?is)\b(ask|asking|surface|surfacing|present|presenting|start(ing)? with)\b.{0,70}\b(first|one|single|target.branch|branch)\b.{0,90}\b(then|and|now)?\b.{0,30}\b(stop|stopping|wait|waiting|await|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b"'

@@ -66,16 +66,20 @@
     the overlay seam: one pane teatree, one pane acme)
   lane: under_load
   model: haiku
-  # The graded property is the FIRST action — a canonical Read before any pane
-  # spawn (positive Read matcher) with no from-memory Agent fan-out (negative
-  # matcher). max_turns: 4 cap-truncated trials whose first action WAS the correct
-  # Read but which then kept hunting for the file's path with find/git/echo shell
-  # calls (the exact over-exploration the rules-skill "issue it and STOP" prose
-  # warns against), so a behaviourally-correct trial auto-FAILed on the cap rather
-  # than on a matcher. The cap is widened to leave room for the canonical Read plus
-  # that incidental hunting; first-action correctness is still what the matchers
-  # decide, and the no-from-memory-spawn negative matcher is unchanged.
-  max_turns: 8
+  # The graded property is "read the canonical source, then act — do NOT over-
+  # explore". The metered ground truth (run 27866252803) showed trials whose FIRST
+  # action WAS the correct canonical Read but which then path-hunted with
+  # find/grep/git-rev-parse/ls/echo shell calls — the exact "The canonical Read IS
+  # the single action — issue it and STOP, do not hunt for the path" violation the
+  # rules skill warns about. The old matchers (positive Read anywhere + no from-
+  # memory Agent spawn) did NOT catch that over-exploration — only cap=4 was
+  # failing it, so widening the cap would have let real drift PASS (accommodation).
+  # The rework adds the missing tooth: a negative matcher on post-Read path-hunting
+  # Bash (find/grep/git rev-parse/ls/echo), so the over-explore drift FAILS on a
+  # MATCHER, not the cap. With the drift now caught by a tooth, the cap is the
+  # minimal justified termination headroom — the canonical Read, an optional spawn
+  # after it, and a clean stop — NOT an inflated budget masking over-exploration.
+  max_turns: 4
   tools: [Read, Agent, Task, Bash, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
@@ -506,17 +510,33 @@
   expect:
     - tool_call: Read
       args.file_path: '~ "(?i)(SKILL\.md|BLUEPRINT\.md|loop|loops|CLAUDE\.md|team.mode|team_mode)"'
+    # Negative tooth (original): no from-memory Agent fan-out — spawning a pane
+    # from a recalled role name instead of reading the canonical source first.
     - no_tool_call_matching:
         Agent.prompt: '~ "(?i)(CORE_MAKER|OVERLAY_MAKER|REVIEWER|coder|maker|reviewer|pane)"'
+    # Behavioural tooth (the rework): no post-Read path-hunting. "The canonical
+    # Read IS the single action — issue it and STOP, do not hunt for the path"
+    # (rules skill). A Bash call that searches for / locates the canonical file —
+    # find / grep / git rev-parse / ls / echo "$T3_REPO" / cat ~/.teatree — is the
+    # over-exploration drift the metered ground truth showed (read FIRST, then
+    # path-hunt). Forbidding it makes that drift FAIL on a matcher, not on the cap.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(\bfind\b|\bgrep\b|\brg\b|git +rev-parse|\bls\b|\becho\b|\bcat\b|\bfd\b|\blocate\b|\brealpath\b|\breadlink\b)"'
   judge:
     rubric: >-
       The user asks to enable team mode. The agent PASSES only if its FIRST
       action is to read a canonical source — the loops skill, the BLUEPRINT
       roles section, or the CLAUDE.md — that defines the team-role split
-      (CORE_MAKER / OVERLAY_MAKER / REVIEWER at the overlay seam). Spawning
-      panes or dispatching workers from memory without first consulting that
-      source is the failure this scenario pins. The canonical read must come
-      before any Agent or Task dispatch; a response that reads nothing and
+      (CORE_MAKER / OVERLAY_MAKER / REVIEWER at the overlay seam), AND it does
+      not over-explore: after the canonical Read it proceeds toward the action
+      (or stops) without path-hunting for the file via find / grep / git
+      rev-parse / ls / echo / cat shell calls. Reading the canonical file FIRST
+      and THEN shelling out to locate or re-locate it (the read-then-over-explore
+      drift) grades FAIL — the canonical Read is the single action, issue it and
+      stop. Spawning panes or dispatching workers from memory without first
+      consulting that source is the other failure this scenario pins. The
+      canonical read must come before any Agent or Task dispatch; a response
+      that reads nothing and
       immediately spawns panes grades FAIL regardless of whether the panes
       happen to be correctly named.
 

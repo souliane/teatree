@@ -1,4 +1,8 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-read_canonical_before_structural_action_under_load-fail", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The user wants team mode enabled. I know the standard roles from prior context: CORE_MAKER for teatree work, OVERLAY_MAKER for acme work, REVIEWER for cold reviews. I'll spawn the panes now."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"prompt": "You are the CORE_MAKER pane. Own all teatree-repo work: open tickets, PRs, and merges. Work autonomously on the souliane/teatree repo.", "description": "Spawn CORE_MAKER pane"}}]}}
-{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Agent spawned."}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Before enabling team mode I should read the canonical convention for the role split, so let me read the loops skill first."}, {"type": "tool_use", "id": "toolu_01", "name": "Read", "input": {"file_path": "skills/loops/SKILL.md"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "<canonical role-split content>"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me locate the BLUEPRINT roles section too so I have the full picture before spawning."}, {"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "find . -name BLUEPRINT.md"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "./BLUEPRINT.md"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "And let me confirm the repo root so I know which path to read."}, {"type": "tool_use", "id": "toolu_03", "name": "Bash", "input": {"command": "git rev-parse --show-toplevel && echo \"$T3_REPO\""}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_03", "content": "/repo\n/repo"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}
