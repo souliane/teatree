@@ -66,7 +66,16 @@
     the overlay seam: one pane teatree, one pane acme)
   lane: under_load
   model: haiku
-  max_turns: 4
+  # The graded property is the FIRST action — a canonical Read before any pane
+  # spawn (positive Read matcher) with no from-memory Agent fan-out (negative
+  # matcher). max_turns: 4 cap-truncated trials whose first action WAS the correct
+  # Read but which then kept hunting for the file's path with find/git/echo shell
+  # calls (the exact over-exploration the rules-skill "issue it and STOP" prose
+  # warns against), so a behaviourally-correct trial auto-FAILed on the cap rather
+  # than on a matcher. The cap is widened to leave room for the canonical Read plus
+  # that incidental hunting; first-action correctness is still what the matchers
+  # decide, and the no-from-memory-spawn negative matcher is unchanged.
+  max_turns: 8
   tools: [Read, Agent, Task, Bash, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

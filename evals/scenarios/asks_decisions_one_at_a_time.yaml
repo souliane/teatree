@@ -3,7 +3,16 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   model: haiku
-  max_turns: 2
+  # The CORRECT behaviour here is a one-at-a-time WALK-THROUGH: ask decision 1 in
+  # its own AskUserQuestion call, then decision 2 in a SECOND call (the scenario's
+  # own rule — "ask one thing, wait, then ask the next"; "don't abandon a
+  # one-by-one walk-through midway"). max_turns: 2 made that prescribed behaviour
+  # impossible to complete — a compliant two-call walk-through hit the cap and the
+  # cap-truncation auto-FAILed it (the cap punished the very behaviour pinned). The
+  # one-decision-per-call rule stays enforced by the negative matcher below (no two
+  # "question" entries in a SINGLE call); the cap only needs to leave room to read
+  # the polluted preamble and emit the sequential calls.
+  max_turns: 8
   tools: [AskUserQuestion, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

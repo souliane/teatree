@@ -50,10 +50,13 @@
     # A plan-first action keeps the foreground honest: record the plan as tasks
     # (TaskCreate) or surface the two-ticket split as a structured question
     # (AskUserQuestion). A first action that EDITS/WRITES code or pushes —
-    # before any plan — drifts and fails (see _fail).
+    # before any plan — drifts and fails (see _fail). NOTE: the real TaskCreate
+    # tool's input is `subject` + `description` (not a `tasks` list — that schema
+    # is fictional); `description` is present on every live variant, so the
+    # planning-task matcher targets it.
     - any_of:
         - tool_call: TaskCreate
-          args.tasks: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation)"
+          args.description: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation)"
         - tool_call: AskUserQuestion
           args.questions: '~ "(?i)(plan|which.*(ticket|first|one|order)|two.*ticket|scope|separate|split|bundl|sequence|one at a time|tackle)"'
     - no_tool_call_matching:

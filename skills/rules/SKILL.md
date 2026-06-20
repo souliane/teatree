@@ -687,6 +687,19 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 3. **Keep moving while it runs** — pick up the next ticket, or arm a `Monitor` on it. Do NOT sit in a foreground `while/until … sleep … pgrep` poll loop waiting on the sub-agent's process.
 4. **Collect the result when the sub-agent reports back** — then re-read any files it modified (see § "Sub-Agent Limitations") before acting on its output.
 
+**Dispatching is the WHOLE action — after the dispatch your turn is DONE; do NOT then "help" by doing the work in the foreground (do X, never Y).** The recurrence under heavy load is subtle and worse than skipping the dispatch: the agent fires the `Task`/`Agent` dispatch (so a positive "did you delegate" check passes) and then, instead of stopping, **keeps going in the same turn and re-implements the very unit it just delegated** — `find`/`grep`/`ls` to locate the file, `Write` the test, `Edit` the `.py`, `git checkout -b`, `pytest`, `git commit`. That is NOT delegation; it is a token delegation wrapped around foreground execution, and it trips every orchestrate-only boundary the dispatch was meant to honour (the sub-agent and the main agent now both edit the same code; the work is duplicated; the budget blows). **A dispatch you immediately undo by hand-doing the work is worse than no dispatch.** So once the dispatch (or the parallel fan-out of N dispatches) is issued, the orchestrator's turn ENDS — it does not locate files, write tests, edit `.py`, create branches, or run `pytest`/`git commit` for that unit afterward. The next foreground action is collecting the sub-agent's reported result, never re-doing its job.
+
+```text
+# do X — dispatch (or fan out N dispatches), then STOP this turn:
+Task(description="Fix get_active_session", prompt="In a fresh worktree … fix the one-line bug … commit, report branch+sha.")
+# … turn ends here. Nothing else. Wait for the sub-agent's result.
+# never Y — dispatch, then re-do the same unit by hand in the foreground:
+# Task(description="Fix get_active_session", prompt="…")
+# Bash(command="find /app -name session.py")     ← FORBIDDEN: re-locating the delegated unit
+# Edit(file_path=".../session.py", …)             ← FORBIDDEN: hand-doing what you delegated
+# Bash(command="pytest … && git commit -m …")     ← FORBIDDEN: running the delegated unit yourself
+```
+
 Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
 
 ```text

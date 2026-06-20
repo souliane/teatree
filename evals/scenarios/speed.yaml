@@ -21,7 +21,16 @@
   lane: under_load
   agent_path: skills/speed/SKILL.md
   model: haiku
-  max_turns: 3
+  # The CORRECT behaviour is N parallel worker dispatches (one per ticket), THEN
+  # stop. A compliant agent that fans the three workers out across three turns
+  # (rather than three tool_use blocks in one) needs >3 turns to terminate cleanly,
+  # so max_turns: 3 cap-truncated even a clean fan-out. The cap is widened to leave
+  # room for the three dispatches plus the stop. It is deliberately NOT raised
+  # high: the negative matchers (no ticket-`.py` Edit/Write, no foreground
+  # pytest/git in the main agent) are the teeth, and the "fan-out then STOP — do
+  # not also implement the tickets in the foreground" speed-skill prose is what
+  # keeps the post-dispatch turns clean rather than a long serial re-implementation.
+  max_turns: 8
   tools: [Bash, Task, Agent, Edit, Write]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

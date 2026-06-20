@@ -94,6 +94,8 @@ Task(description="TODO-11 notify-public route",   prompt="<NEAR-ZERO COMMENTS bl
 # Edit(file_path="src/teatree/core/provision.py", ...)   # FORBIDDEN: serial-in-main is the drift the dial bans
 ```
 
+**The fan-out IS the action — once the N dispatches are issued your turn is DONE; do NOT then implement the tickets yourself in the foreground (do X, never Y).** The worst recurrence under load is not skipping the fan-out — it is firing the N parallel dispatches (so a "did you fan out" check passes) and then, in the SAME turn, **re-doing every ticket by hand**: `find`/`grep` to locate each module, `Edit` its `.py`, `Write` its test, `git checkout -b`, `pytest`, `git commit` — exactly what the workers were dispatched to do. That hybrid (fan-out THEN serial) is strictly worse than pure serial: the workers and the main agent now both implement the same three tickets, the work is duplicated, and the run blows its budget/timeout grinding through all three in the foreground. **A fan-out you immediately undo by hand-doing the tickets is not a fan-out.** So after issuing the parallel dispatches, STOP — the orchestrator does not locate files, edit `.py`, write tests, create branches, or run `pytest`/`git commit` for any dispatched ticket. Its next foreground action is collecting the workers' reported results, never re-implementing their units.
+
 Dispatch one worker sub-agent per ticket, all in parallel. Each worker:
 
 - Creates its own isolated worktree via `t3 <overlay> workspace ticket <ticket_url>`.

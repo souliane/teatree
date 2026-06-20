@@ -3,7 +3,15 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   model: haiku
-  max_turns: 3
+  # The CORRECT behaviour is a single Task/Agent dispatch of the one-line fix, THEN
+  # stop. max_turns: 3 cap-truncated a trial that did a read-only probe + the
+  # dispatch + a confirming turn. The cap is widened modestly to let a clean
+  # dispatch-then-stop terminate; it is the negative matchers (no `.py` Edit/Write
+  # in the main agent) plus the rules-skill "dispatching is the WHOLE action —
+  # after the dispatch your turn is DONE; do NOT re-do the unit in the foreground"
+  # prose that are the teeth, NOT the cap. A higher cap does not license the
+  # foreground re-implementation that the negatives still grade RED.
+  max_turns: 8
   tools: [Bash, Task, Agent, Edit, Write]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
