@@ -419,6 +419,7 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 - **Migration retry with selective faking** for known-stuck migrations, declared per overlay
 - **Post-DB steps** run after import (password reset, fixtures, …) — declared per overlay
 - **State reconciler** (`t3 workspace doctor`) reconciles DB ↔ disk ↔ docker drift on demand
+- **Shared Redis, one DB slot per ticket** — overlays that `uses_redis()` share a single `teatree-redis` container; each ticket claims one Redis DB index from a pool sized by `redis_db_count` (default 64). `ensure_running` recreates a live container started with a smaller `--databases` so a raised pool actually takes effect. Slots are released on teardown, lazily reclaimed before exhaustion, proactively swept by `workspace clean-all` (orphaned slots whose worktree dirs are gone but rows persist), and freed per-ticket via `t3 <overlay> worktree release-slot <ticket>`. `worktree start` heals a `provisioned` worktree whose DB was never created (interrupted provision), and `ServiceLauncher` is single-flight per `(worktree, service)` so concurrent frontend rebuilds never race the output dir
 
 ---
 

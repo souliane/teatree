@@ -15,6 +15,7 @@ import teatree.core.management.commands.tasks as tasks_cmd
 import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
@@ -174,6 +175,81 @@ class TestLifecycleCommands(TestCase):
             assert status["repo_path"] == "/tmp/backend"
             # Teardown folds the old `clean` step — the row is deleted, not reset
             assert not Worktree.objects.filter(pk=worktree_id).exists()
+
+
+class DbStrategyOverlay(CommandOverlay):
+    """A CommandOverlay variant that declares a DB import strategy."""
+
+    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+        return {"kind": "shared", "shared_postgres": True}
+
+
+class TestHealMissingProvisionedDb(TestCase):
+    """``worktree start`` re-provisions when a ``provisioned`` worktree's DB is gone (#1038).
+
+    An interrupted provision can leave the FSM at PROVISIONED with ``db_name``
+    set but no Postgres DB created — the start probe then dies with "database
+    does not exist". The start command heals it by re-running the idempotent
+    provision before advancing.
+    """
+
+    def _make_worktree(self, tmp: Path) -> tuple[Ticket, Worktree, str]:
+        wt_path = str(tmp / "wt-backend")
+        Path(wt_path).mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1038")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature",
+            db_name="wt_gone_db",
+            extra={"worktree_path": wt_path},
+            state=Worktree.State.PROVISIONED,
+        )
+        return ticket, wt, wt_path
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_reprovisions_when_db_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _ticket, _wt, wt_path = self._make_worktree(tmp_path)
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+            reprovision = MagicMock()
+            reprovision.run.return_value = MagicMock(ok=True, detail="healed")
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
+                patch.object(
+                    worktree_provision_mod, "WorktreeProvisionRunner", return_value=reprovision
+                ) as mock_runner,
+                patch("teatree.utils.db.db_exists", return_value=False),
+                patch.object(worktree_cmd, "reap_stale_local_stacks"),
+                patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                call_command("worktree", "start")
+            mock_runner.assert_called_once()
+            reprovision.run.assert_called_once()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_start_does_not_reprovision_when_db_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _ticket, _wt, wt_path = self._make_worktree(tmp_path)
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": DbStrategyOverlay()}),
+                patch.object(worktree_provision_mod, "WorktreeProvisionRunner") as mock_runner,
+                patch("teatree.utils.db.db_exists", return_value=True),
+                patch.object(worktree_cmd, "reap_stale_local_stacks"),
+                patch.object(worktree_cmd, "acquire_or_enqueue", return_value=False),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                call_command("worktree", "start")
+            mock_runner.assert_not_called()
 
 
 class TestProvisionTicketFlag(TestCase):

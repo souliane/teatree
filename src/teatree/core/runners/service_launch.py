@@ -1,10 +1,13 @@
+import re
 from typing import TYPE_CHECKING
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import run_provision_steps
+from teatree.core.worktree_env import compose_project
 from teatree.types import RunCommand
 from teatree.utils.run import run_streamed
+from teatree.utils.singleton import AlreadyRunningError, singleton
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
@@ -20,6 +23,14 @@ class ServiceLauncher(RunnerBase):
     ``node_modules``/``customer.json`` is structurally impossible: the command
     and its pre-run steps are bound together in one place instead of being
     re-decided by every caller.
+
+    Each ``run()`` is **single-flight per (worktree, service)** via a kernel
+    ``flock`` (#1038): a second concurrent launch of the same service for the
+    same worktree refuses immediately instead of racing. The motivating failure:
+    wait-loops auto-relaunched ``build-frontend`` 7 times concurrently and the
+    overlapping ``nx`` builds wrote a half-finished, empty ``dist/``. Only the
+    same (worktree, service) pair contends — different worktrees, and different
+    services on one worktree, run in parallel as before.
     """
 
     def __init__(self, worktree: "Worktree", service: str, *, overlay: "OverlayBase | None" = None) -> None:
@@ -50,7 +61,27 @@ class ServiceLauncher(RunnerBase):
             stop_on_required_failure=False,
         )
 
+    def _lock_name(self) -> str:
+        """Per-(worktree, service) singleton key; sanitised for a filename."""
+        raw = f"service-launch-{compose_project(self.worktree)}-{self.service}"
+        return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
+
     def run(self) -> RunnerResult:
+        try:
+            with singleton(self._lock_name()):
+                return self._run_locked()
+        except AlreadyRunningError as exc:
+            # A build for this exact (worktree, service) is already running.
+            # Refuse rather than launch a competing build that would race on the
+            # shared output dir (the empty-`dist/` failure, #1038).
+            return RunnerResult(
+                ok=False,
+                detail=(
+                    f"{self.service} already in flight for this worktree (PID {exc.pid}) — skipping duplicate launch"
+                ),
+            )
+
+    def _run_locked(self) -> RunnerResult:
         self.prepare()
         cmd = self.overlay.get_run_commands(self.worktree).get(self.service)
         if not cmd:

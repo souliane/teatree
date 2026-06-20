@@ -59,7 +59,7 @@ def _make_alias(tmp_path: Path) -> str:
     }
     with connections[alias].cursor() as cur:
         # Hand-maintained mirrors of the schemas queried by allocate_redis_slot
-        # and _reclaim_ghost_slots — add any new column here too.
+        # and release_orphaned_redis_slots — add any new column here too.
         cur.execute(
             """
             CREATE TABLE teatree_ticket (
@@ -193,8 +193,9 @@ class TestAllocateRedisSlotConcurrentExhaustion:
             for ticket in taken:
                 Ticket.objects.using(alias).allocate_redis_slot(ticket)
                 # Give each pre-allocated ticket a live-path Worktree row so
-                # _reclaim_ghost_slots does not treat them as ghosts and reclaim
-                # them before the two racing allocators contend for the last slot.
+                # release_orphaned_redis_slots does not treat them as ghosts and
+                # reclaim them before the two racing allocators contend for the
+                # last slot.
                 from django.db import connections as _conns  # noqa: PLC0415
 
                 with _conns[alias].cursor() as cur:

@@ -29,6 +29,7 @@ from teatree.core.runners import (
     WorktreeStartRunner,
     WorktreeTeardownRunner,
     WorktreeVerifyRunner,
+    heal_missing_provisioned_db,
 )
 from teatree.core.worktree_env import CACHE_FILENAME, compose_project
 from teatree.docker.build import ensure_base_image
@@ -182,6 +183,28 @@ class Command(TyperCommand):
             raise SystemExit(1)
         return int(worktree.pk)
 
+    @command(name="release-slot")
+    def release_slot(
+        self,
+        ticket: str = typer.Argument(..., help="Ticket pk, issue number, or issue URL whose Redis slot to free."),
+    ) -> int:
+        """Release a ticket's held Redis DB slot (FLUSHDB + clear the index).
+
+        The explicit, per-ticket counterpart to ``clean-all``'s orphaned-slot
+        sweep (#1038): when a worktree's dirs are already gone but its row + slot
+        persist, this frees the slot immediately so the next ``worktree provision``
+        does not fail with ``RedisSlotsExhaustedError``. Idempotent — a ticket with
+        no slot is a no-op. Returns the released index, or ``-1`` when none was held.
+        """
+        ticket_obj = Ticket.objects.resolve(ticket)
+        index = ticket_obj.redis_db_index
+        if index is None:
+            self.stdout.write(f"  Ticket #{ticket_obj.pk} holds no Redis slot — nothing to release.")
+            return -1
+        ticket_obj.release_redis_slot()
+        self.stdout.write(f"  Released Redis slot {index} from ticket #{ticket_obj.pk}.")
+        return int(index)
+
     def _resolve_ticket_hint(self, ticket: str) -> Ticket | None:
         """Resolve the ``--ticket`` number to a Ticket, or raise if it is unknown."""
         if not ticket:
@@ -191,6 +214,22 @@ class Command(TyperCommand):
             self.stderr.write(f"  No ticket found for --ticket {ticket}")
             raise SystemExit(1)
         return hint
+
+    def _heal_missing_provisioned_db(self, worktree: Worktree, overlay: OverlayBase) -> None:
+        """Heal a ``provisioned`` worktree whose DB was never created (#1038).
+
+        Thin CLI wrapper over :func:`heal_missing_provisioned_db`: reports the
+        re-provision to the operator and turns a heal failure into ``SystemExit(1)``.
+        """
+        try:
+            if heal_missing_provisioned_db(worktree, overlay):
+                self.stdout.write(
+                    f"  DB '{worktree.db_name}' was missing for a provisioned worktree "
+                    "(interrupted provision?) — re-provisioned before start."
+                )
+        except RuntimeError as exc:
+            self.stderr.write(f"  {exc}")
+            raise SystemExit(1) from exc
 
     def _check_readiness_probes(self, worktree: Worktree, overlay: OverlayBase) -> None:
         """Run overlay readiness probes; raise SystemExit(1) on any failure.
@@ -226,6 +265,12 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+        # #1038: a provision interrupted after the FSM flipped to PROVISIONED but
+        # before the DB import ran leaves a worktree that looks ready yet whose
+        # Postgres DB was never created — the start probe then dies with
+        # "database does not exist". Heal it here (re-run the idempotent provision
+        # to recreate the DB) so `provisioned` actually implies the DB exists.
+        self._heal_missing_provisioned_db(worktree, resolved_overlay)
         # #2207: abandoned unowned stacks (age-guarded) are reaped first so
         # they neither hold host resources nor distort the stack-cap picture.
         reap_stale_local_stacks(self.stdout.write)

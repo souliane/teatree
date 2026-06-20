@@ -12,7 +12,7 @@ from teatree.core.runners.provision import WorktreeProvisioner
 from teatree.core.runners.retro import RetroExecutor
 from teatree.core.runners.ship import ShipExecutor
 from teatree.core.runners.teardown import WorktreeTeardown
-from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
+from teatree.core.runners.worktree_provision import WorktreeProvisionRunner, heal_missing_provisioned_db
 from teatree.core.runners.worktree_start import WorktreeStartRunner
 from teatree.core.runners.worktree_teardown import WorktreeTeardownRunner
 from teatree.core.runners.worktree_verify import WorktreeVerifyRunner
@@ -28,4 +28,5 @@ __all__ = [
     "WorktreeTeardown",
     "WorktreeTeardownRunner",
     "WorktreeVerifyRunner",
+    "heal_missing_provisioned_db",
 ]

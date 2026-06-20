@@ -2,9 +2,16 @@
 
 Teatree runs a single Redis container (`teatree-redis`) on localhost:6379.
 Each ticket gets its own Redis DB index for isolation. Slot count is
-`teatree.redis_db_count` in `~/.teatree.toml` (default 16). Slots are
+`teatree.redis_db_count` in `~/.teatree.toml` (default 64). Slots are
 allocated by `Ticket.objects.allocate_redis_slot()` and released (with
 `FLUSHDB`) on teardown.
+
+Redis's ``databases`` is a *fixed* per-container setting baked in at
+``redis-server --databases N``; a running container created with a smaller
+``N`` does NOT pick up a raised config. :func:`ensure_running` therefore
+reconciles the live container's ``databases`` against the requested count and
+recreates it when it falls short — without that, raising ``redis_db_count``
+silently has no effect until the operator manually removes the container.
 """
 
 import logging
@@ -24,7 +31,10 @@ class NativeRedisSquatterError(RuntimeError):
     """A non-Docker process holds host 6379, so ``teatree-redis`` cannot bind it."""
 
 
-DEFAULT_DB_COUNT = 16
+DEFAULT_DB_COUNT = 64
+
+# `redis-cli CONFIG GET <key>` replies with two lines: the key, then its value.
+_CONFIG_GET_REPLY_LINES = 2
 
 
 def _docker() -> str:
@@ -64,6 +74,31 @@ def _host_port_published() -> bool:
     if result.returncode != 0:
         return False
     return bool(result.stdout.strip())
+
+
+def _configured_db_count() -> int | None:
+    """Return the live container's ``databases`` setting, or ``None`` if unknown.
+
+    ``redis-server --databases N`` fixes the number of selectable DBs for the
+    container's whole lifetime — a config reload cannot raise it. ``CONFIG GET
+    databases`` reports the value the running server was started with, so a
+    container created by an older teatree (``--databases 16``) reports ``16``
+    even after ``redis_db_count`` is raised. The probe returns ``None`` when the
+    container is unreachable or the reply is unparsable, so the caller treats an
+    inconclusive probe as "do not recreate" (fail-safe — never churn the shared
+    container on a transient docker hiccup).
+    """
+    result = _docker_tolerant("exec", CONTAINER_NAME, "redis-cli", "CONFIG", "GET", "databases")
+    if result.returncode != 0:
+        return None
+    # `redis-cli CONFIG GET databases` prints two lines: the key then the value.
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) < _CONFIG_GET_REPLY_LINES:
+        return None
+    try:
+        return int(lines[1])
+    except ValueError:
+        return None
 
 
 def _non_teatree_squatters_on_host_port() -> list[str]:
@@ -164,37 +199,52 @@ def _create(db_count: int) -> None:
     )
 
 
-def _recreate_with_port_publish(db_count: int) -> None:
-    logger.info(
-        "%s lacks the :%d host publish — recreating to reconcile the port mapping",
-        CONTAINER_NAME,
-        HOST_PORT,
-    )
+def _recreate(db_count: int, reason: str) -> None:
+    logger.info("%s %s — recreating to reconcile it", CONTAINER_NAME, reason)
     _docker_tolerant("stop", CONTAINER_NAME)
     _docker_tolerant("rm", CONTAINER_NAME)
+    _evict_squatters()
+    _guard_native_squatter()
     _create(db_count)
 
 
-def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
-    """Start the shared Redis container, self-healing the host port publish.
+def _needs_recreate(db_count: int) -> str:
+    """Reason a *running* container must be recreated, or ``""`` when it's fine.
 
-    Idempotent: a *running* container that lacks the ``-p 6379:6379`` publish
-    is reconciled (recreated), not left as-is. Without this, a container
-    created by an older code path stays "running" forever while every
-    worktree's ``host.docker.internal:6379`` is unreachable and every
-    cache/broker-touching request 500s. A non-``teatree-redis`` container
-    squatting on host port 6379 is evicted before any create/recreate so
-    ``docker run -p 6379:6379`` doesn't fail with ``address already in use``.
-    A *native* (non-Docker) ``redis-server`` holding the port cannot be safely
-    evicted, so it raises :class:`NativeRedisSquatterError` naming the process
-    instead of letting ``docker run`` fail with a cryptic bind error.
+    Two reconciliations share one recreate path: the missing ``-p 6379:6379``
+    host publish (#1373) and a ``databases`` count below the requested pool. The
+    db-count check is fail-safe — an inconclusive probe (``None``, docker hiccup)
+    reports "no recreate" so a transient error never churns the shared container.
+    """
+    if not _host_port_published():
+        return f"lacks the :{HOST_PORT} host publish"
+    configured = _configured_db_count()
+    if configured is not None and configured < db_count:
+        return f"has only {configured} Redis DBs (want {db_count})"
+    return ""
+
+
+def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
+    """Start the shared Redis container, self-healing publish and DB-count drift.
+
+    Idempotent. A *running* container is reconciled (recreated) when it lacks the
+    ``-p 6379:6379`` publish (#1373) OR was started with fewer ``databases`` than
+    the requested pool — Redis bakes ``--databases N`` in at boot, so a container
+    created by an older teatree (``--databases 16``) never picks up a raised
+    ``redis_db_count`` and slot allocation keeps failing with
+    ``RedisSlotsExhaustedError`` until the operator manually removes it. A
+    non-``teatree-redis`` container squatting on host port 6379 is evicted before
+    any create/recreate so ``docker run -p 6379:6379`` doesn't fail with
+    ``address already in use``. A *native* (non-Docker) ``redis-server`` holding
+    the port cannot be safely evicted, so it raises
+    :class:`NativeRedisSquatterError` naming the process instead of letting
+    ``docker run`` fail with a cryptic bind error.
     """
     current = status()
     if current == "running":
-        if not _host_port_published():
-            _evict_squatters()
-            _guard_native_squatter()
-            _recreate_with_port_publish(db_count)
+        reason = _needs_recreate(db_count)
+        if reason:
+            _recreate(db_count, reason)
         return
     if current == "missing":
         _evict_squatters()
@@ -203,10 +253,9 @@ def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
     _docker_checked("start", CONTAINER_NAME)
-    if not _host_port_published():
-        _evict_squatters()
-        _guard_native_squatter()
-        _recreate_with_port_publish(db_count)
+    reason = _needs_recreate(db_count)
+    if reason:
+        _recreate(db_count, reason)
 
 
 def stop() -> None:
