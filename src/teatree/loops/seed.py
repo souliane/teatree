@@ -11,6 +11,18 @@ creates nothing new and NEVER clobbers an operator-edited row (a disabled loop,
 a re-pointed cadence). The script-backed loops point at the shared per-loop
 runner ``src/teatree/loops/run.py`` (the loop XOR: exactly one of script/prompt);
 ``arch_review`` is the one prompt-backed default.
+
+**No orphan rows (#2584).** Every name in :data:`DEFAULT_LOOPS` has a registry
+``MiniLoop`` (a ``teatree.loops.<name>.loop`` package exposing ``MINI_LOOP``), so
+the seeded ``Loop``-table set equals :func:`teatree.loops.registry.iter_loops`.
+``slack_answer`` is intentionally NOT a default Loop row: it has no registry
+``MiniLoop`` — the autonomous ``build_loop_table_jobs`` / ``iter_loops`` fan-out
+can never run it. It runs ONLY via the won-tick piggyback cycle
+(:func:`teatree.loop.tick_piggyback.run_piggyback_cycles` →
+``teatree.loop.slack_answer.cycle.run_slack_answer_cycle``), behind its own
+``loop-slack-answer`` lease. Seeding a ``slack_answer`` Loop row would create an
+orphan the master tick can never fan out (the 19-vs-18 seed/registry mismatch
+this module's parity test pins).
 """
 
 import datetime as dt
@@ -47,7 +59,9 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
     LoopSeedSpec("idle_stack_reaper", 60),
     LoopSeedSpec("local_stack_queue", 60),
     LoopSeedSpec("resource_pressure", 60),
-    LoopSeedSpec("slack_answer", 20),
+    # NOTE: ``slack_answer`` is intentionally absent — it has no registry
+    # MiniLoop and runs only via the won-tick piggyback cycle (see the module
+    # docstring). A seeded row would be an orphan the master tick can never run.
     LoopSeedSpec("dispatch", 300),
     LoopSeedSpec("tickets", 300),
     LoopSeedSpec("review", 300),
