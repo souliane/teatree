@@ -194,6 +194,32 @@ class TestDbMigrateCoreDispatch:
         cmd = run_streamed.call_args.args[0]
         assert "manage.py" in " ".join(cmd), f"db refresh must route through the overlay manage.py, got {cmd!r}"
 
+    def test_db_approve_is_surfaced_and_core_dispatched(self) -> None:
+        # The #953 ``db approve`` command (records a DbApproval in the
+        # teatree-core control DB) must be both listed as a ``db`` subcommand
+        # AND opt into per-subcommand core dispatch — otherwise ``t3 <overlay>
+        # db approve`` returns "No such command 'approve'" (the gap this test
+        # pins) and a recorded approval never reaches the gate's control DB.
+        entry = DJANGO_GROUPS["db"]
+        sub_names = {name for name, _ in entry.subcommands}
+        assert "approve" in sub_names, f"db.approve must be a listed db subcommand (#953), got {sorted(sub_names)}"
+        assert "approve" in getattr(entry, "core_subcommands", frozenset()), (
+            f"db.approve must opt into per-subcommand core dispatch (#953/#126), got {entry!r}"
+        )
+
+    def test_db_approve_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["db", "approve", "fresh-dump", "acme-tenant", "--approver", "souliane"])
+        assert result.exit_code == 0, result.output
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"db approve must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"db approve must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"db approve must NOT route through manage.py, got {cmd!r}"
+        assert "db" in cmd
+        assert "approve" in cmd
+
 
 class TestShortcutCoreDispatch:
     """``full-status`` and ``daily`` shortcut to followup commands — same dispatch rule."""
