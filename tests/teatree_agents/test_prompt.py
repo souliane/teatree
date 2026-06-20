@@ -254,6 +254,29 @@ class TestBuildSystemContext(TestCase):
         assert "PHASE: reviewing" in ctx
         assert "code review" in ctx
 
+    def test_planning_phase_injects_persisted_intake_survey(self) -> None:
+        # #2541: the planner CONSUMES the survey the intake FSM step persisted —
+        # it appears in the planning context, so the planner does not re-derive it.
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        survey = {"open_prs": [{"url": "https://forge/pr/77"}], "worktrees": [], "recommendations": [], "warnings": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        ctx = build_system_context(task, skills=[])
+        assert "INTAKE LANDSCAPE SURVEY" in ctx
+        assert "https://forge/pr/77" in ctx
+
+    def test_planning_phase_omits_survey_block_when_none_persisted(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+
+        ctx = build_system_context(task, skills=[])
+        assert "INTAKE LANDSCAPE SURVEY" not in ctx
+
     def test_shipping_phase_embeds_reviewer_dispatch_skill_block(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

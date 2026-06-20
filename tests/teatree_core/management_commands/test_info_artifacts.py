@@ -14,7 +14,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
-from teatree.core.models import E2eMandatoryRun, PlanArtifact, Session, Task, Ticket, Worktree
+from teatree.core.models import E2eMandatoryRun, LandscapeArtifact, PlanArtifact, Session, Task, Ticket, Worktree
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -38,6 +38,16 @@ def _populated_ticket() -> Ticket:
         db_name="wt_273",
         state=Worktree.State.READY,
         extra={"worktree_path": "/ws/273/example-repo"},
+    )
+    LandscapeArtifact.record(
+        ticket=ticket,
+        survey={
+            "worktrees": [{"path": "/w", "in_flight": True}],
+            "open_prs": [{"url": "https://forge/pr/5"}],
+            "recommendations": [{"issue_url": "https://forge/issues/273", "action": "merge"}],
+            "warnings": ["a forge probe warning"],
+        },
+        recorded_by="t3:intake",
     )
     PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by="planner")
     session = Session.objects.create(ticket=ticket, agent_id="coding")
@@ -75,6 +85,9 @@ class TestInfoArtifactsText:
         assert "e2e/login.spec.ts" in out
         assert "https://github.com/example/repo/issues/273#note-1" in out
         assert "the plan" in out or "planner" in out
+        assert "Intake landscape survey" in out
+        assert "open_prs=1" in out
+        assert "t3:intake" in out
 
     def test_empty_ticket_is_a_clean_report(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://github.com/example/repo/issues/9")
@@ -101,6 +114,8 @@ class TestInfoArtifactsJson:
         assert payload["e2e_runs"][0]["spec"] == "e2e/login.spec.ts"
         assert payload["e2e_runs"][0]["posted_url"] == "https://github.com/example/repo/issues/273#note-1"
         assert payload["plan_artifacts"][0]["recorded_by"] == "planner"
+        assert payload["landscape"]["recorded_by"] == "t3:intake"
+        assert payload["landscape"]["survey"]["open_prs"][0]["url"] == "https://forge/pr/5"
 
     def test_json_empty_ticket_has_empty_collections(self) -> None:
         ticket = Ticket.objects.create()
@@ -109,6 +124,7 @@ class TestInfoArtifactsJson:
 
         assert payload["ticket_id"] == ticket.pk
         assert payload["worktrees"] == []
+        assert payload["landscape"] is None
         assert payload["plan_artifacts"] == []
         assert payload["result_artifact_paths"] == []
         assert payload["e2e_runs"] == []

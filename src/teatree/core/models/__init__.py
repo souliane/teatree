@@ -27,6 +27,7 @@ from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.landscape_artifact import LandscapeArtifact
 from teatree.core.models.live_post_approval import (
     LIVE_POST_APPROVAL_TTL_MINUTES,
     LivePostApproval,
@@ -67,7 +68,13 @@ from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.ticket_artifacts import E2eRunRef, PlanArtifactRef, TicketArtifacts, WorktreeArtifact
+from teatree.core.models.ticket_artifacts import (
+    E2eRunRef,
+    LandscapeArtifactRef,
+    PlanArtifactRef,
+    TicketArtifacts,
+    WorktreeArtifact,
+)
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
@@ -115,6 +122,8 @@ __all__ = [
     "IntentClassification",
     "InvalidTransitionError",
     "InvariantOutcome",
+    "LandscapeArtifact",
+    "LandscapeArtifactRef",
     "LivePostApproval",
     "LivePostApprovalError",
     "LocalStackQueueItem",
