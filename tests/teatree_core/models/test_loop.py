@@ -211,6 +211,17 @@ class TestLoopManager(TestCase):
         Loop.objects.mark_run("demo-mark", ts)
         assert Loop.objects.get(name="demo-mark").last_run_at == ts
 
+    def test_set_enabled_flips_the_row_toggle(self) -> None:
+        Loop.objects.create(name="demo-toggle", delay_seconds=60, prompt=_prompt(), enabled=False)
+        updated = Loop.objects.set_enabled("demo-toggle", enabled=True)
+        assert updated == 1
+        assert Loop.objects.get(name="demo-toggle").enabled is True
+        Loop.objects.set_enabled("demo-toggle", enabled=False)
+        assert Loop.objects.get(name="demo-toggle").enabled is False
+
+    def test_set_enabled_is_a_no_op_for_an_absent_row(self) -> None:
+        assert Loop.objects.set_enabled("demo-absent", enabled=True) == 0
+
 
 class TestLoopSeed(TestCase):
     """The data migration seeds one autonomous row per loop (#1796)."""

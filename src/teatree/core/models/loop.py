@@ -50,6 +50,19 @@ class LoopManager(models.Manager["Loop"]):
         """
         self.filter(name=name).update(last_run_at=ts)
 
+    def set_enabled(self, name: str, *, enabled: bool) -> int:
+        """Set the ``enabled`` toggle for *name*; return the number of rows updated.
+
+        ``Loop.enabled`` is the row-level source of truth the #2584 master tick
+        reads (``not row.enabled`` skips a loop, independent of the durable
+        ``LoopState`` control plane). The ``enable`` / ``disable`` loop verbs move
+        this column in lock-step with their ``LoopState`` write so both planes
+        agree. A direct ``update`` is idempotent; a name with no row is a no-op
+        (returns ``0``) — the loop-config verbs still record their ``LoopState``
+        intent for a not-yet-seeded name.
+        """
+        return self.filter(name=name).update(enabled=enabled)
+
 
 class Loop(models.Model):
     """One row per autonomous loop carrying its config and cadence anchor."""
