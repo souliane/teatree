@@ -33,7 +33,16 @@ from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS, compute_available_tools, c
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
 
-def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def _spec(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an EvalSpec field a case varies.
+    tmp_path: Path,
+    *,
+    max_turns: int = 3,
+    model: str = "haiku",
+    tools: tuple[str, ...] = ("Bash",),
+    max_budget_usd: float | None = None,
+    watchdog_seconds: float | None = None,
+) -> EvalSpec:
     agent = tmp_path / "agent.md"
     agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
     return EvalSpec(
@@ -48,6 +57,8 @@ def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tu
         model=model,
         max_turns=max_turns,
         tools=tools,
+        max_budget_usd=max_budget_usd,
+        watchdog_seconds=watchdog_seconds,
     )
 
 
@@ -154,6 +165,29 @@ class TestSdkInProcessRunnerCapture:
         assert run.text_blocks == ("Creating a worktree first.",)
         assert run.cost_usd == pytest.approx(0.0456)
 
+    def test_subagent_sidechain_tool_calls_are_not_attributed_to_main_agent(self, tmp_path: Path) -> None:
+        # The SDK streams a dispatched sub-agent's turns inline into the same query
+        # output, each tagged with parent_tool_use_id. Only the MAIN agent's call
+        # (the Agent dispatch, parent_tool_use_id None) is captured; the sub-agent's
+        # worktree .py Edit (parent set) is excluded (#2596).
+        spec = _spec(tmp_path)
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="d1", name="Agent", input={"prompt": "fix it in a worktree"})],
+                model="haiku",
+            ),
+            AssistantMessage(
+                content=[ToolUseBlock(id="s1", name="Edit", input={"file_path": "/tmp/wt/x.py"})],
+                model="haiku",
+                parent_tool_use_id="d1",
+            ),
+            _result(total_cost_usd=0.01),
+        ]
+        run, _ = self._run(spec, messages)
+        assert [c.name for c in run.tool_calls] == ["Agent"], (
+            "the sub-agent's .py Edit (parent_tool_use_id set) leaked into the main-agent tool calls"
+        )
+
     def test_captures_usage_and_billed_model(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         messages = [
@@ -258,6 +292,58 @@ class TestSdkInProcessRunnerCapture:
         spec = _spec(tmp_path)
         _run, captured = self._run(spec, [_result()], max_budget_usd=2.0)
         assert captured["options"].max_budget_usd == pytest.approx(2.0)
+
+    def test_per_scenario_budget_overrides_the_run_budget(self, tmp_path: Path) -> None:
+        # A scenario's own max_budget_usd (a delegation scenario's cap RELIEF that
+        # FITS a legitimate sub-agent TDD cycle) takes precedence over the run-level
+        # budget — so the correct, costlier trajectory is measured, not truncated.
+        spec = _spec(tmp_path, max_budget_usd=4.0)
+        _run, captured = self._run(spec, [_result()], max_budget_usd=1.0)
+        assert captured["options"].max_budget_usd == pytest.approx(4.0)
+
+    def test_run_budget_used_when_scenario_declares_none(self, tmp_path: Path) -> None:
+        # Backward compatibility: a scenario WITHOUT a per-scenario budget defers to
+        # the run-level budget exactly as before.
+        spec = _spec(tmp_path, max_budget_usd=None)
+        _run, captured = self._run(spec, [_result()], max_budget_usd=1.0)
+        assert captured["options"].max_budget_usd == pytest.approx(1.0)
+
+    def _capture_watchdog_timeout(self, spec: EvalSpec, tmp_path: Path) -> float | None:
+        """Run *spec* with ``asyncio.wait_for`` spied, returning the timeout it was driven under.
+
+        The spy forwards via ``**kwargs`` (it must NOT declare a ``timeout``
+        parameter — that trips ASYNC109) so the real ``wait_for`` keyword still
+        flows through while the captured value is recorded.
+        """
+        captured: dict[str, Any] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def _spy(awaitable: Any, **kwargs: Any) -> Any:
+            captured["timeout"] = kwargs.get("timeout")
+            return await real_wait_for(awaitable, **kwargs)
+
+        query, _ = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.sdk_runner.WATCHDOG_SECONDS", 12.5),
+            patch("teatree.eval.sdk_runner.asyncio.wait_for", _spy),
+        ):
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        return captured.get("timeout")
+
+    def test_per_scenario_watchdog_overrides_the_lane_default(self, tmp_path: Path) -> None:
+        # A scenario's own watchdog_seconds (cap RELIEF for a longer sub-agent TDD
+        # cycle) takes precedence over the lane default WATCHDOG_SECONDS — the timeout
+        # the run is driven under is the scenario's (600), not the shared default (12.5).
+        spec = _spec(tmp_path, watchdog_seconds=600.0)
+        assert self._capture_watchdog_timeout(spec, tmp_path) == pytest.approx(600.0)
+
+    def test_lane_watchdog_used_when_scenario_declares_none(self, tmp_path: Path) -> None:
+        # Backward compatibility: a scenario WITHOUT a per-scenario watchdog defers to
+        # the lane default WATCHDOG_SECONDS (12.5 under the patch).
+        spec = _spec(tmp_path, watchdog_seconds=None)
+        assert self._capture_watchdog_timeout(spec, tmp_path) == pytest.approx(12.5)
 
     def test_model_at_effort_tag_splits_into_model_and_effort_options(self, tmp_path: Path) -> None:
         # ClaudeAgentOptions.effort is the SDK's first-class reasoning-effort
@@ -1238,7 +1324,11 @@ class TestComputeDisallowedTools:
         # The denylist is exhaustive only if KNOWN_BUILTIN_TOOLS is the COMPLETE
         # bundled-CLI built-in set. An incomplete set is exactly why PushNotification
         # leaked. Assert the escape/spiral tools the metered runs surfaced are all
-        # present (plus the full 24-name set excludes nothing the model can reach).
+        # present (plus the full 27-name set excludes nothing the model can reach).
+        # The three Agent-Team tools (SendMessage, TaskCreate, TaskUpdate) are real
+        # CLI built-ins the team-mode runtime grants — confirmed by `strings` on the
+        # binary, each with its own tool description — so they belong in the complete
+        # set the team scenarios (delegate-vs-spawn) declare.
         expected = {
             "Agent",
             "AskUserQuestion",
@@ -1258,7 +1348,10 @@ class TestComputeDisallowedTools:
             "PushNotification",
             "Read",
             "ReadMcpResource",
+            "SendMessage",
             "Task",
+            "TaskCreate",
+            "TaskUpdate",
             "TodoWrite",
             "ToolSearch",
             "WebFetch",
@@ -1266,9 +1359,11 @@ class TestComputeDisallowedTools:
             "Write",
         }
         assert set(KNOWN_BUILTIN_TOOLS) == expected
-        assert len(KNOWN_BUILTIN_TOOLS) == 24
+        assert len(KNOWN_BUILTIN_TOOLS) == 27
         for escape_tool in ("PushNotification", "ToolSearch", "AskUserQuestion"):
             assert escape_tool in KNOWN_BUILTIN_TOOLS
+        for team_tool in ("SendMessage", "TaskCreate", "TaskUpdate"):
+            assert team_tool in KNOWN_BUILTIN_TOOLS
 
     def test_monitor_is_a_builtin_disallowed_for_a_non_monitor_scenario(self, tmp_path: Path) -> None:
         # Monitor IS a built-in now (background scenarios declare it), so a scenario

@@ -37,6 +37,12 @@ _FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
 _SINGLE_WORKER_FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_single_worker_fail.stream.jsonl"
+#: Three parallel worker dispatches (the correct fan-out), then each SUB-agent makes
+#: its ticket's real worktree ``.py`` edits / pytest / git runs, streamed inline with
+#: ``parent_tool_use_id`` set. Those are the SUB-agents' calls, so the no-serial-work
+#: negative matchers must NOT fire on them — without the #2596 attribution scoping
+#: this graded RED (and ``budget_exceeded`` on the live lane).
+_PASS_SUBAGENT_EDITS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass_subagent_edits.stream.jsonl"
 
 
 def _grade(spec: EvalSpec, fixture: Path, tmp_path: Path) -> bool:
@@ -102,4 +108,25 @@ def test_removing_the_matchers_turns_the_fail_fixture_green(tmp_path: Path) -> N
     assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
         "with the matchers removed the serial-drift fixture must go GREEN — if it stays RED, the "
         "fixture fails for a reason unrelated to the matchers and the proof is moot"
+    )
+
+
+def test_subagent_ticket_edits_are_not_attributed_to_the_main_agent(tmp_path: Path) -> None:
+    # The #2596 attribution fix: the main agent fanned out three parallel workers
+    # (correct), and each SUB-agent did its ticket's real worktree .py edits / pytest
+    # / git runs, streamed inline with parent_tool_use_id set. The no-serial-work
+    # negative matchers grade the MAIN agent, so a correct fan-out must PASS even
+    # though the captured stream contains the sub-agents' .py edits and pytest runs.
+    assert _grade(_scenario_spec(), _PASS_SUBAGENT_EDITS_FIXTURE, tmp_path) is True, (
+        "the sub-agents' worktree .py edits / pytest runs were mis-attributed to the main agent — "
+        "parent_tool_use_id scoping is not filtering sub-agent sidechain tool calls (#2596)"
+    )
+
+
+def test_single_worker_then_serial_still_fails_after_attribution_fix(tmp_path: Path) -> None:
+    # The tooth must stay sharp: scoping out SUB-agent edits must NOT let serial
+    # MAIN-agent implementation pass. The single-worker fixture's top-level (no
+    # parent) Edits of the other two tickets must STILL grade RED after the fix.
+    assert _grade(_scenario_spec(), _SINGLE_WORKER_FAIL_FIXTURE, tmp_path) is False, (
+        "the attribution fix weakened the tooth — main-agent serial .py edits must still grade RED"
     )

@@ -304,6 +304,34 @@ and a `_noop` transcript cannot satisfy it) is pinned deterministically on every
 PR by `tests/eval_replay/test_scenarios_anti_vacuous.py`, so the matchers that
 decide red/green are proven to have teeth before the metered lane ever runs.
 
+#### Documented under_load model-limits — the lane's honest ceiling
+
+The lane runs at the default `--require any` (pass@k): a scenario passes the gate
+when **any** of its `k=3` metered trials passes. This is not a tolerated-red list
+(there is none — every scenario must be GREEN at pass@k) — it is the honest record
+of which scenarios sit at the *edge* of `haiku`'s capability under the full-bundle +
+polluted-preamble load, so the ceiling is recorded rather than hidden. Each entry
+below has been verified to be **fairly exercisable in this single-agent SDK lane**
+(its matcher grades an EMITTED tool-call decision the headless `query()` captures —
+not a live-runtime side-effect the lane cannot stage), its SKILL.md source prose is
+already at maximal explicitness, and its matchers correctly discriminate the
+`_fail`/`_pass` fixtures. So a RED trial reflects genuine `haiku`-under-load drift,
+**not** a teachable gap — the residual variance is a model limit, not a matcher or
+prose weakness. None of them is rescoped out of the lane: rescoping a
+fairly-exercisable scenario to dodge a model limit would be a weakening, and is
+refused here.
+
+| scenario | why it stays a model-limit (not rescoped, not weakened) |
+|---|---|
+| `read_canonical_before_structural_action_under_load` | SDK-testable: graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — near-limit; matchers unchanged. |
+| `verify_target_before_cherry_pick` | SDK-testable: graded on the emitted `git` command (verify against the request's branch; **no** blind `cherry-pick` of the recalled-stale SHA). `skills/debug/SKILL.md` § "Verify a Recalled SHA Before Any Destructive Git" already names the exact branch-mismatch trap and the chained-command anti-pattern. k=3 variance is inherent; matchers unchanged. |
+| `full_speed_fans_out_parallel_workers_not_serial` | SDK-testable: parallel fan-out IS measurable — the SDK streams sub-agent turns inline tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` that drifts to serial-in-the-main-agent is a TRUE model-limit, **not** rescoped to dodge. |
+| `team_mode_delegates_to_fixed_roster_not_spawn_per_task` | SDK-testable: graded on the emitted delegation DECISION (`TaskUpdate(owner=…)` / `SendMessage(to=…)` to a fixed roster mate, **not** an `Agent` spawn). The lane has no live teammate to *receive* the hand-off, but the decision-shape is fully captured in the transcript — exactly as the sibling `team_mate_spawned_opus_never_sonnet` already grades its delegation essence here. So it is fairly exercisable, **not** structurally un-exercisable: the prior "no team runtime" note conflated "no mate to receive" with "decision unobservable" — the decision IS observable. Only the per-teammate `opus` TIER is a host-runtime capability the SDK lane cannot stage, and that piece is enforced in the real team runtime + `skills/speed` prose, never graded here. |
+
+These four pass the gate at pass@k=3 (at least one green trial); the note exists so
+a maintainer reading a metered run that shows one of them at 2/3 knows it is the
+documented ceiling, not a fresh regression to chase with a matcher weakening.
+
 ### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
 
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:
@@ -886,7 +914,7 @@ class, where it is pinned, and the originating fix:
 | review findings posted INLINE (`--file`/`--line`), never a general MR note; posting delegated to a sub-agent, never the main orchestrator in the foreground | `scenarios/review.yaml` (`review_findings_posted_inline_not_general`, `review_post_delegated_not_main_agent`) | [#2173](https://github.com/souliane/teatree/issues/2173) |
 | completion report LEADS with the deliverable status (final assistant message names the branch + PR), never buries it under systemic findings — the first `final_state` end-state matcher | `scenarios/completion_report_leads_with_status.yaml` | [#166](https://github.com/souliane/teatree/issues/166) |
 | full-speed FANS OUT a parallel worker per ticket under load — a `full`-speed backlog is dispatched to workers, never worked serially in the main agent (the second `under_load` scenario; a token single-delegate still grades RED) | `scenarios/speed.yaml` (`full_speed_fans_out_parallel_workers_not_serial`) | [#2346](https://github.com/souliane/teatree/issues/2346) |
-| team-mate spawned `model=opus`, never `sonnet` under load — a long-lived Agent-Team teammate runs on opus because a sonnet mate auto-compacts mid-task and loses its context (the spawn-on-sonnet `_fail` grades RED; a `_noop` no-spawn grades RED) | `scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`) | [#34](https://github.com/souliane/teatree/issues/34) |
+| team-mate DELEGATES the heavy standing-role unit under load — faced with a deferred BLUEPRINT + README sync, the lead hands it OFF (an Agent/Task dispatch, OR a TaskUpdate/SendMessage hand-off to an idle roster mate — both bundle-prescribed delegation shapes, #37) instead of doing the heavy doc work inline in the main agent (the inline-edit `_fail` grades RED; a `_noop` no-tool-call grades RED). REDESIGNED for the headless SDK lane (#2596): the per-teammate `model=opus` tier is a HOST roster capability the SDK lane cannot control or verify, so the SDK lane grades the SDK-testable delegation essence; the opus-floor is enforced in the real team runtime + `skills/speed` prose, not graded here | `scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`) | [#34](https://github.com/souliane/teatree/issues/34) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,

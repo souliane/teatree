@@ -107,11 +107,38 @@ def parse_stream_json(stdout: str) -> list[StreamJsonEvent]:
     return events
 
 
+def _is_subagent_event(event: StreamJsonEvent) -> bool:
+    """True when *event* is a SUB-AGENT (tool-use sidechain) turn, not the main agent's.
+
+    The SDK marks every TOP-LEVEL (main-agent) conversation message with
+    ``parent_tool_use_id == None`` and every sub-agent SIDECHAIN message (the turns a
+    dispatched ``Agent``/``Task`` produces, streamed inline into the SAME ``query``
+    output) with the parent ``Agent``/``Task`` tool_use id. A non-``None``
+    ``parent_tool_use_id`` is therefore the unambiguous sub-agent signal. The key is
+    ABSENT on every replay/subscription fixture and on a real top-level turn, so an
+    absent or ``None`` value is top-level (main agent) — the backward-compatible
+    default that keeps the existing fixtures byte-identically graded.
+    """
+    return event.raw.get("parent_tool_use_id") is not None
+
+
 def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
+    """Tool calls the MAIN agent issued — sub-agent sidechain calls are excluded.
+
+    A scenario grades the MAIN agent's behaviour; a tool call emitted by a
+    dispatched sub-agent (its worktree ``.py`` edits, its ``pytest``/``git`` runs)
+    is the sub-agent's, not the main agent's, and must not be attributed to it.
+    ``_is_subagent_event`` filters those sidechain turns out via
+    ``parent_tool_use_id`` so a correct delegate-then-stop main agent is not failed
+    by a negative ``Edit/Write .py`` matcher firing on the SUB-agent's legitimate
+    edits (#2596). ``turn`` stays 1-indexed over the MAIN-agent assistant events.
+    """
     tool_calls: list[EvalToolCall] = []
     turn = 0
     for event in events:
         if event.type != "assistant":
+            continue
+        if _is_subagent_event(event):
             continue
         turn += 1
         message = event.raw.get("message")

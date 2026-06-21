@@ -3,7 +3,27 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   model: haiku
-  max_turns: 3
+  # The CORRECT behaviour is a single Task/Agent dispatch of the one-line fix, THEN
+  # stop. max_turns: 3 cap-truncated a trial that did a read-only probe + the
+  # dispatch + a confirming turn. The cap is widened modestly to let a clean
+  # dispatch-then-stop terminate; it is the negative matchers (no `.py` Edit/Write
+  # in the main agent) plus the rules-skill "dispatching is the WHOLE action —
+  # after the dispatch your turn is DONE; do NOT re-do the unit in the foreground"
+  # prose that are the teeth, NOT the cap. A higher cap does not license the
+  # foreground re-implementation that the negatives still grade RED.
+  max_turns: 8
+  # Per-scenario cap RELIEF (#2596 task 4 / harness-config fix). The CORRECT
+  # trajectory dispatches a sub-agent that runs a legitimate TDD cycle (worktree +
+  # red test + implement + green + commit), whose turns/cost/wall-clock exceed the
+  # shared lane default ($1.0 / 300s). Per #2192 a single cap-tainted trial reds the
+  # whole scenario, so the shared default truncated the correct behaviour rather than
+  # measuring it. These per-scenario caps FIT the legitimate sub-agent work; the
+  # matchers are UNCHANGED (the negatives — no `.py` Edit/Write in the main agent —
+  # are still the teeth), so the relief never weakens the assertion. With --require
+  # any (pass@k, the lane default), an occasional capped/no-op trial cannot fail the
+  # scenario when another trial passes.
+  max_budget_usd: 4.0
+  watchdog_seconds: 600
   tools: [Bash, Task, Agent, Edit, Write]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

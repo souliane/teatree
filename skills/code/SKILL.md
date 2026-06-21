@@ -114,8 +114,8 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 **"Just fix it fast" is NOT a license to skip the plan — your single next action is the plan, never an edit/commit/push (do X, never Y).** Under urgency, especially across **multiple unrelated tickets** ("both tickets are tiny, just fix them both fast and push"), the drift is to start editing/committing/pushing with no plan. The plan-first step holds precisely when the user is in a hurry — a do-it-now directive changes nothing about ordering: plan first, then code. So when you are told to fix N tickets fast, your single next action is one of: **record the plan as tasks** (`TaskCreate` naming the tickets/scope), or **surface the two-ticket split** as a structured `AskUserQuestion` (which ticket first / keep them separate). It is **never** an `Edit`/`Write` on a ticket's source, and never `git commit` / `git push` / `gh pr create` / `gh pr merge`, before any plan is presented.
 
 ```python
-# Two unrelated tickets, user says "fix both fast and push". do X — plan FIRST (record tasks or ask the split):
-TaskCreate(tasks=[{"content": "Plan TODO-4 (guarantee-matrix tweak): scope, files"}, {"content": "Plan TODO-6 (translations refresh): scope, files"}])
+# Two unrelated tickets, user says "fix both fast and push". do X — plan FIRST (record one planning task per ticket, or ask the split):
+TaskCreate(subject="Plan TODO-4 (guarantee-matrix tweak)", description="Plan TODO-4 scope + files; keep separate from TODO-6 — do not bundle.")
 # never Y — do NOT start editing/committing/pushing across the tickets with no plan because the user is in a hurry:
 # Edit(file_path="...guarantee_matrix...", ...)   # FORBIDDEN before a plan
 # Bash(command="git commit -am ... && git push")  # FORBIDDEN before a plan

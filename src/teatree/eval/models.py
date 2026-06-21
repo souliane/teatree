@@ -148,6 +148,21 @@ class EvalSpec:
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE
     context_preamble: str = ""
+    #: Per-scenario USD budget ceiling, overriding the run-level
+    #: ``max_budget_usd``. ``None`` defers to the run default. A delegation scenario
+    #: whose CORRECT trajectory dispatches a sub-agent that runs a legitimate TDD
+    #: cycle (worktree provision + red test + implement + green + commit) costs more
+    #: than a single-turn scenario; capping it at the shared default would truncate
+    #: the correct behaviour rather than measure it (a #2192 cap-tainted trial reds
+    #: the whole scenario). A scenario raises this to FIT the legitimate sub-agent
+    #: work — the matchers are unchanged, so the cap relief never weakens the teeth.
+    max_budget_usd: float | None = None
+    #: Per-scenario wall-clock watchdog (seconds), overriding the lane default. Same
+    #: rationale as :attr:`max_budget_usd`: a sub-agent TDD cycle takes longer than a
+    #: single-turn probe, so a delegation scenario raises its watchdog to fit the
+    #: legitimate work rather than time out the correct trajectory. ``None`` defers
+    #: to the lane default.
+    watchdog_seconds: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)

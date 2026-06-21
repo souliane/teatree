@@ -65,25 +65,82 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("the NEW SHA, not the remembered one", "Never chain the verify and the act into one command"),
     ),
     # full-speed-fanout drifted by stalling the wave to ask for issue URLs instead of
-    # dispatching. The prose must name the dispatch-with-scope-you-have rule.
+    # dispatching, AND by fanning out then re-doing every ticket by hand in the
+    # foreground. The prose must name the dispatch-with-scope-you-have rule AND the
+    # fan-out-then-stop rule (the metered drift #3 fix — the genuine drift the cap
+    # raise alone would have masked).
     (
         "full_speed_fans_out_parallel_workers_not_serial",
         "skills/speed/SKILL.md",
-        ("never stall a wave to ask for issue URLs", "the WORKER resolves its own worktree"),
+        (
+            "never stall a wave to ask for issue URLs",
+            "the WORKER resolves its own worktree",
+            "The fan-out IS the action",
+            "A fan-out you immediately undo by hand-doing the tickets is not a fan-out",
+            # The #2596 strengthening: post-dispatch the turn ENDS and read-only
+            # RE-INVESTIGATION (find/cat/ls/grep/Read) is forbidden too, not only
+            # re-implementation. This is the genuine behaviour fix for the
+            # dispatch-then-re-do-in-foreground drift the matcher correctly catches.
+            "The fan-out is the LAST tool call of the turn",
+            "re-investigation is forbidden too, not only re-implementation",
+            "an empty post-fan-out turn is the correct shape",
+        ),
     ),
-    # opus-mates drifted by rendering the spawn as a Bash heredoc / replying "I don't
-    # have an Agent tool". The prose must name the real-tool-call requirement.
+    # delegates-under-load drifted by firing the Task/Agent dispatch (so the fan-out
+    # matcher passed) and then re-implementing the same unit by hand in the
+    # foreground. The prose must name the dispatch-then-stop rule (the metered drift
+    # #3 fix), so the efficacy does not rest solely on the metered re-run.
+    (
+        "delegates_under_load_not_edits_in_main_agent",
+        "skills/rules/SKILL.md",
+        (
+            "Dispatching is the WHOLE action",
+            "A dispatch you immediately undo by hand-doing the work is worse than no dispatch",
+            # The #2596 strengthening: a named post-dispatch checklist makes the
+            # turn-end mechanical and closes the read-only-investigation gap the
+            # brief named (find/cat/ls re-investigation, not just re-editing).
+            "Post-dispatch checklist",
+            "re-INVESTIGATION is forbidden too, not only re-implementation",
+            "an empty post-dispatch turn is the correct shape",
+        ),
+    ),
+    # team_mate REDESIGNED for the headless SDK lane (#2596): the per-teammate model
+    # tier is a HOST capability the SDK lane cannot control/verify, so the SDK lane
+    # now grades the DELEGATION essence — dispatch the heavy standing-role unit to a
+    # sub-agent, never do the heavy doc work inline in the main agent. The prose must
+    # name that delegate-don't-do-it-inline rule (the opus-floor stays as host-runtime
+    # prose, not the SDK-lane gate).
     (
         "team_mate_spawned_opus_never_sonnet",
         "skills/speed/SKILL.md",
-        ("Spawning a teammate is a real `Agent` tool call", "never narrate, echo, or shell it"),
+        (
+            "Delegate the heavy standing-role unit to a sub-agent",
+            "never do the heavy work inline in the main agent",
+        ),
     ),
-    # read-canonical drifted by shelling out to find the file and looping to max_turns.
-    # The prose must name the one-Read-then-stop rule.
+    # read-canonical drifted by reading the canonical file FIRST (correct) then path-
+    # hunting with find/grep/git-rev-parse/echo. The prose must name the one-Read-
+    # then-stop rule AND that the STOP is symmetric (no path-hunting AFTER the read),
+    # which is the over-exploration drift the rework's path-hunt negative tooth pins.
     (
         "read_canonical_before_structural_action_under_load",
         "skills/rules/SKILL.md",
-        ("The canonical `Read` IS the single action", "do not hunt for the path"),
+        (
+            "The canonical `Read` IS the single action",
+            "do not hunt for the path",
+            "do not path-hunt AFTER the read",
+        ),
+    ),
+    # asks-decisions drifted by re-emitting the SAME decision (target branch) turn
+    # after turn instead of asking one and stopping. The prose must name the
+    # ask-one-then-stop / never-re-ask rule that the rework's behavioural tooth pins.
+    (
+        "asks_decisions_one_at_a_time",
+        "skills/rules/SKILL.md",
+        (
+            "your turn ends; never re-ask the same decision",
+            "STOP and wait for the answer",
+        ),
     ),
 )
 

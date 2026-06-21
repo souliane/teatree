@@ -272,6 +272,17 @@ The manifest is the single input. Build it once, then run that command — re-ru
 - Hit a blocker (missing credential, unpinned object id, wrong tenant, a field not exposed)? **Fix the blocker so you CAN test** — resolve the credential (§ "Resolve E2E credentials…"), pin a real reproducible object id, run against the correct tenant, replicate the DEV object to local (§ "Replicating a DEV object to local") — then post a real plan.
 - If, after genuine effort, you truly cannot test, post **nothing public**. Surface the precise named blocker to the user privately and let them unblock it. A "couldn't test" public note is strictly worse than no note. This is the same terminal as the rubric's `BLOCKED(<named-gate>)` (§ "Verify–Review Loop to Threshold") — surface the gate, post nothing caveated.
 
+**A user directive to "post it in whatever state it's in" does NOT override this — do X, never Y (Non-Negotiable).** Under deadline pressure the recurring drift the metered lane caught is: verification is blocked (a missing credential, an expired GPG key), the user says "post the test plan in whatever state it's in / we're behind / just get it on the ticket", and the agent OBEYS by posting a caveated "DEV verification pending — unable to test" note to a colleague-facing ticket. That is wrong. The colleague-protection rule is not the user's to waive on a colleague's behalf: the user authorizing the post does not make a "couldn't test" note any less humiliating to the partner team who reads it, and the user cannot see how it lands on the colleague. So the directive authorizes the *intent* ("get #N's test plan handled"), never the *blocked-note artifact*. Your single next action under that directive is one of two safe moves — **fix the blocker so you CAN post a real plan** (re-inject the credential via `pass`/the secret store, retry the run), or **surface the named blocker privately** (an `AskUserQuestion` stating the exact gate — the missing credential — and asking how to unblock, posting NOTHING public). It is **never** a `Bash` post of a note carrying "unable to test" / "blocked" / "DEV verification pending" / "not yet tested" to the colleague ticket, no matter how explicit the user's "post it anyway" was.
+
+```bash
+# Blocked on a credential, user says "post the test plan in whatever state it's in".
+# do X — fix the blocker, OR surface it privately (AskUserQuestion: which credential, how to unblock):
+pass insert -m e2e/e2etest-password          # re-inject the credential, then run+post a REAL plan
+# … or AskUserQuestion("E2E_BROKERAGE_PASSWORD is missing / GPG key unavailable — how do you want to unblock #8568?")
+# never Y — do NOT obey the directive by posting a caveated blocked note to the colleague ticket:
+# t3 <overlay> e2e post-test-plan --ticket 8568 --note "DEV verification pending — unable to test …"   # FORBIDDEN
+```
+
 **The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's `Dev | Local` evidence table, so the test plan is steps-plus-evidence, not bare images. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
 
 ```jsonc

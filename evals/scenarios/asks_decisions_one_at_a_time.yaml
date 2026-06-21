@@ -3,6 +3,18 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   model: haiku
+  # The CORRECT behaviour is: ask ONE decision (the target branch) via a single
+  # AskUserQuestion call, then STOP — the turn ends and the agent waits for the
+  # answer (it surfaces decision #2 only AFTER #1 is answered). The metered ground
+  # truth (run 27866252803) showed the correct one-ask-then-stop trajectory PASS at
+  # cap=2 (trial 1); the drift was the opposite — every other trial RE-EMITTED the
+  # SAME decision (target branch) turn after turn and never progressed, looping to
+  # the cap. So cap=2 is the minimal justified budget for the correct behaviour: a
+  # single ask terminates the turn. The teeth below — not the cap — discriminate
+  # correct from drift: the positive final_state matcher requires the terminal
+  # message to express the one-ask-then-stop disposition (asked the branch, turn
+  # done / waiting for the answer), which a re-ask loop's terminal does not; the
+  # negative matcher still forbids a batched multi-question call.
   max_turns: 2
   tools: [AskUserQuestion, Bash]
   context_preamble: |
@@ -47,5 +59,43 @@
   expect:
     - tool_call: AskUserQuestion
       args.questions: '~ "."'
+    # Negative tooth (the original one-decision-per-call guard): a SINGLE call
+    # carrying two "question" entries is the opaque multi-item batch the rule
+    # forbids. Kept verbatim.
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?s)"question":.*"question":"'
+    # Behavioural tooth (the rework): the agent must ask ONE decision then STOP —
+    # its terminal message expresses the one-ask-then-stop disposition (surfaced
+    # ONE / the FIRST decision, now waiting for the answer / turn done / will ask
+    # the next AFTER it is answered). A re-ask loop that re-emits the same branch
+    # decision never reaches this disposition — its terminal describes re-asking,
+    # not stopping-and-waiting — so it grades RED on this matcher regardless of the
+    # cap. This is the cap-independent discriminator the metered ground truth
+    # demanded (re-ask drift FAILS, one-ask-then-stop PASSES).
+    #
+    # The disposition is expressed three equivalent ways the live model actually
+    # uses (metered run 27870118484 trials 1 & 3 said "Once you answer, I'll ask
+    # the second decision" — the wait-via-precondition phrasing — which the
+    # original literal-stop-token-only regex false-negatived even though the
+    # behaviour was correct). So the closing clause accepts ANY of: (1) an explicit
+    # stop/wait/turn-done token; (2) "once/after/when you answer/respond/reply"
+    # (the next ask is GATED on the user's answer = pausing); or (3) "then the
+    # next/second/third decision" (announcing decision #2 comes only AFTER #1). All
+    # three are reachable only by an ask-ONE-then-pause terminal; a re-ask loop
+    # re-emitting the SAME decision, or a batch cramming all three, reaches none of
+    # them — verified RED against the _fail (re-ask) and _fail_batch fixtures and
+    # the live drift trial 2, GREEN against _pass and the live correct trials 1/3.
+    #
+    # COVERAGE BROADENING (#37 metered 0/3 remediation): the original closing
+    # clause missed several legitimate one-ask-then-pause phrasings the live model
+    # uses under load — "awaiting your input", "hold for your response", "pausing
+    # for your answer", "before you respond" — so a behaviourally-correct trial
+    # (asked ONE, then paused) still false-negatived to RED. The verb set is
+    # widened (pose/raise added) and the stop/wait token set is widened
+    # (awaiting, pausing, halt, holding, "before you respond/input"). The
+    # discriminator is UNCHANGED in kind: a re-ask loop ("re-ask the same
+    # target-branch decision") and a batch ("batch all three into one prompt")
+    # reach NONE of these clauses and stay RED — proven against the _fail (re-ask)
+    # and _fail_batch fixtures and the _DRIFT_TERMINALS in
+    # tests/eval_replay/test_asks_decisions_one_at_a_time_anti_vacuous.py.
+    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|start(ing)? with)\b.{0,90}\b(first|one|single|target.branch|branch)\b.{0,160}(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'

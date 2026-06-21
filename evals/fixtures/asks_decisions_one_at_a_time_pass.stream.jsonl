@@ -1,4 +1,4 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-asks_decisions_one_at_a_time-pass", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Three decisions are pending. I'll surface them one at a time so each is evaluable and the Slack mirror shows a clean sequence, starting with the target branch."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Three decisions are pending. I'll surface them one at a time so each is evaluable and the Slack mirror shows a clean sequence. I'll ask the FIRST decision (the target branch) now, then STOP and wait for the answer before asking the next one."}]}}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Which branch should this ship target?", "header": "Branch", "options": [{"label": "main", "description": "the default branch"}, {"label": "develop", "description": "the integration branch"}]}]}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -290,7 +290,7 @@ Reference the variable (`"$TOKEN"`) in the call that needs it; never the literal
 Before a **structural** action — standing up an agent team / fleet, spawning panes, reorganizing worktrees, changing an extension-point contract, anything that commits the session to a topology — **read the canonical source that defines that structure FIRST**, in the same turn, before you dispatch anything. The structure's source of truth (a skill's SKILL.md, the BLUEPRINT roles section, the loops skill, CLAUDE.md) is the spec; acting from memory invents a divergent shape that then has to be unwound.
 
 - Asked to "enable team mode" / "enable agent team mode": your single next action is **one** `Read` of the canonical role split — for team mode that file is **`skills/loops/SKILL.md`** (the loops skill owns the team-role split; BLUEPRINT.md's roles section or CLAUDE.md are equivalent canonical sources) — and it names the panes/roles and the overlay seam (one pane teatree, one pane the overlay). Issue that `Read` **before** any `Agent`/`Task` dispatch. **You ALREADY know the canonical roles from prior context — that knowledge is NOT a license to skip the Read.** Spawning `CORE_MAKER`/`OVERLAY_MAKER`/`REVIEWER` panes "from memory" because you remember the role names is the exact drift: read the source first even when you are confident you recall it, because the source is the spec and your memory is not. The Read comes first; the spawn comes after.
-- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat ~/.teatree`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try.
+- **The canonical `Read` IS the single action — issue it and STOP.** Do not first shell out to locate the file (`find … BLUEPRINT.md`, `echo "$T3_REPO"`, `ls`, `cat ~/.teatree`), and do not loop retrying alternate paths if a `Read` comes back not-found. Read `BLUEPRINT.md` (or `skills/loops/SKILL.md`) by its repo-relative path in one call; that read is the structural-action gate, whether or not the file resolves on the first try. **And the STOP is symmetric — do not path-hunt AFTER the read either.** The metered drift the lane caught is read-FIRST-then-over-explore: the agent issues the correct canonical `Read`, then keeps going with `find`/`grep`/`git rev-parse`/`ls`/`echo`/`cat` calls to locate or re-locate the file "to be thorough" before acting. That over-exploration is the same violation in mirror image — the canonical read already gave you the spec, so once it returns, proceed to the structural action (or stop); do NOT shell out to hunt for the file again. One canonical Read, then act — no path-hunting on either side of it.
 
 ```bash
 # do X first — ONE canonical read by its repo-relative path, then stop:
@@ -688,6 +688,27 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 3. **Keep moving while it runs** — pick up the next ticket, or arm a `Monitor` on it. Do NOT sit in a foreground `while/until … sleep … pgrep` poll loop waiting on the sub-agent's process.
 4. **Collect the result when the sub-agent reports back** — then re-read any files it modified (see § "Sub-Agent Limitations") before acting on its output.
 
+**Dispatching is the WHOLE action — after the dispatch your turn is DONE; do NOT then "help" by doing the work in the foreground (do X, never Y).** The recurrence under heavy load is subtle and worse than skipping the dispatch: the agent fires the `Task`/`Agent` dispatch (so a positive "did you delegate" check passes) and then, instead of stopping, **keeps going in the same turn and re-implements the very unit it just delegated** — `find`/`grep`/`ls` to locate the file, `Write` the test, `Edit` the `.py`, `git checkout -b`, `pytest`, `git commit`. That is NOT delegation; it is a token delegation wrapped around foreground execution, and it trips every orchestrate-only boundary the dispatch was meant to honour (the sub-agent and the main agent now both edit the same code; the work is duplicated; the budget blows). **A dispatch you immediately undo by hand-doing the work is worse than no dispatch.** So once the dispatch (or the parallel fan-out of N dispatches) is issued, the orchestrator's turn ENDS — it does not locate files, write tests, edit `.py`, create branches, or run `pytest`/`git commit` for that unit afterward. The next foreground action is collecting the sub-agent's reported result, never re-doing its job.
+
+```text
+# do X — dispatch (or fan out N dispatches), then STOP this turn:
+Task(description="Fix get_active_session", prompt="In a fresh worktree … fix the one-line bug … commit, report branch+sha.")
+# … turn ends here. Nothing else. Wait for the sub-agent's result.
+# never Y — dispatch, then re-do the same unit by hand in the foreground:
+# Task(description="Fix get_active_session", prompt="…")
+# Bash(command="find /app -name session.py")     ← FORBIDDEN: re-locating the delegated unit
+# Edit(file_path=".../session.py", …)             ← FORBIDDEN: hand-doing what you delegated
+# Bash(command="pytest … && git commit -m …")     ← FORBIDDEN: running the delegated unit yourself
+```
+
+**Post-dispatch checklist — the dispatch is a HARD turn boundary; re-INVESTIGATION is forbidden too, not only re-implementation.** The drift hides in a softer move than re-editing: after the dispatch, the agent "just has a quick look" — `find`/`cat`/`ls`/`grep`/`rg`/`Read`/`Glob` to inspect the file it just delegated — and that read-only peek slides into editing, testing, and committing the unit in the foreground. A read-only probe of a delegated unit is NOT a harmless look; it is the first step of re-doing the work, and it has no purpose for the orchestrator (the worker reads its own files). So treat the dispatch as the **last tool call of the turn**. Concretely, once the dispatch (or the N-way fan-out) is issued:
+
+1. **The very next tool call is forbidden if it touches a dispatched unit's surface — in ANY tool.** Not just `Edit`/`Write`/`pytest`/`git commit` (re-implementation), but also `find`/`cat`/`ls`/`grep`/`rg`/`head`/`tail` in `Bash`, and `Read`/`Glob`/`Grep` (re-investigation). The orchestrator does not locate, open, inspect, diff, or test a file it just handed to a worker.
+2. **The only permitted next foreground actions are dispatcher work, never executor work** — fanning out the NEXT ticket's worker, arming a `Monitor`, or surfacing a `(b)`/`(c)` decision via `AskUserQuestion`. Each is dispatch/route/ask, never do.
+3. **End the turn.** When there is no further ticket to dispatch and no decision to surface, the turn is over — STOP and wait for the workers' reported results. Filling the post-dispatch silence with foreground `find`/`cat`/`Edit` is the recurrence; an empty post-dispatch turn is the correct shape.
+
+The test: after a dispatch, if your next tool call names or touches the file/module/ticket you just delegated — to read it OR to write it — you have re-entered executor mode. The dispatch was supposed to be the whole action; honour it by stopping.
+
 Worked dispatch — a one-line fix a reviewer found, delegated rather than edited in the foreground:
 
 ```text
@@ -735,6 +756,16 @@ AskUserQuestion(questions=[{"question": "Which target branch — main or develop
 A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
 
 **Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
+
+**After you ask a decision via `AskUserQuestion`, STOP and wait for the answer; your turn ends; never re-ask the same decision (do X, never Y).** The `AskUserQuestion` tool call IS the whole action for that decision: issuing it ENDS your turn and you WAIT for the answer. Under load the drift the metered lane caught is the opposite — the agent asks decision #1 (the target branch), does NOT get an answer in the same turn (it never does — the answer arrives on the NEXT turn), and so RE-EMITS the SAME decision turn after turn, looping on #1 and never reaching #2/#3. That re-ask loop is wrong: the answer is not missing, it simply has not arrived yet because your turn is over. So once you have asked one decision, do not ask it again, do not "make sure it landed", do not re-pose it a second time — stop, and let the answer come back. Surface the NEXT decision only after the current one is answered (the one-at-a-time walk-through above). A second `AskUserQuestion` call re-asking a decision you already asked is the failure this pins.
+
+```python
+# do X — ask ONE decision, then your turn is DONE; wait for the answer:
+AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", "options": [...]}])
+# … turn ends here. Do NOT re-ask. The next decision comes AFTER this one is answered.
+# never Y — re-emit the SAME decision because the answer "hasn't landed" (it just arrives next turn):
+# AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", ...}])  # FORBIDDEN re-ask
+```
 
 **Do the best autonomously — never ask a determinable quality/approach/scope decision (do X, never Y).** `AskUserQuestion` exists for things you genuinely cannot decide alone — it is NOT a place to offload a judgment call you can resolve by doing the best work. When a quality / approach / scope choice has a _determinable best answer_ — "fix all the issues or just some?", "which of these approaches?", "make it thorough or just okay?", "should I do the heavy/full version?" — the answer is always **do the best**: pick the best option, do the full/thorough work even when it is a lot more work, and briefly STATE the choice you made. Do not hand that decision back to the user. The user repeats this daily; deferring a determinable-best decision reads as the agent making the user do the agent's job.
 

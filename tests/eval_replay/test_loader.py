@@ -46,6 +46,57 @@ class TestLoadEvalYaml:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
         assert spec.tools == ("Bash",)
 
+    def test_defaults_per_scenario_caps_to_none(self, tmp_path: Path) -> None:
+        # A scenario that declares no per-scenario cap defers to the run/lane default
+        # (the override is None), so existing scenarios are unchanged.
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.max_budget_usd is None
+        assert spec.watchdog_seconds is None
+
+    def test_parses_per_scenario_budget_and_watchdog(self, tmp_path: Path) -> None:
+        # The cap-relief overrides: a delegation scenario raises both to FIT a
+        # legitimate sub-agent TDD cycle without widening the shared default.
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  max_budget_usd: 4.0\n"
+            "  watchdog_seconds: 600\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.max_budget_usd == pytest.approx(4.0)
+        assert spec.watchdog_seconds == pytest.approx(600.0)
+
+    def test_rejects_non_positive_budget(self, tmp_path: Path) -> None:
+        # A fat-fingered 0 must be a spec error, never a silent tighten-to-nothing.
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  max_budget_usd: 0\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        with pytest.raises(EvalSpecError, match="max_budget_usd"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_numeric_watchdog(self, tmp_path: Path) -> None:
+        body = (
+            "- name: example\n"
+            "  scenario: example scenario\n"
+            "  prompt: do the thing\n"
+            "  watchdog_seconds: soon\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "git worktree add"\n'
+        )
+        with pytest.raises(EvalSpecError, match="watchdog_seconds"):
+            load_eval_yaml(_write(tmp_path, body))
+
     def test_overrides_model_max_turns_and_tools(self, tmp_path: Path) -> None:
         body = (
             "- name: tuned\n"
