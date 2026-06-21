@@ -304,6 +304,34 @@ and a `_noop` transcript cannot satisfy it) is pinned deterministically on every
 PR by `tests/eval_replay/test_scenarios_anti_vacuous.py`, so the matchers that
 decide red/green are proven to have teeth before the metered lane ever runs.
 
+#### Documented under_load model-limits — the lane's honest ceiling
+
+The lane runs at the default `--require any` (pass@k): a scenario passes the gate
+when **any** of its `k=3` metered trials passes. This is not a tolerated-red list
+(there is none — every scenario must be GREEN at pass@k) — it is the honest record
+of which scenarios sit at the *edge* of `haiku`'s capability under the full-bundle +
+polluted-preamble load, so the ceiling is recorded rather than hidden. Each entry
+below has been verified to be **fairly exercisable in this single-agent SDK lane**
+(its matcher grades an EMITTED tool-call decision the headless `query()` captures —
+not a live-runtime side-effect the lane cannot stage), its SKILL.md source prose is
+already at maximal explicitness, and its matchers correctly discriminate the
+`_fail`/`_pass` fixtures. So a RED trial reflects genuine `haiku`-under-load drift,
+**not** a teachable gap — the residual variance is a model limit, not a matcher or
+prose weakness. None of them is rescoped out of the lane: rescoping a
+fairly-exercisable scenario to dodge a model limit would be a weakening, and is
+refused here.
+
+| scenario | why it stays a model-limit (not rescoped, not weakened) |
+|---|---|
+| `read_canonical_before_structural_action_under_load` | SDK-testable: graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — near-limit; matchers unchanged. |
+| `verify_target_before_cherry_pick` | SDK-testable: graded on the emitted `git` command (verify against the request's branch; **no** blind `cherry-pick` of the recalled-stale SHA). `skills/debug/SKILL.md` § "Verify a Recalled SHA Before Any Destructive Git" already names the exact branch-mismatch trap and the chained-command anti-pattern. k=3 variance is inherent; matchers unchanged. |
+| `full_speed_fans_out_parallel_workers_not_serial` | SDK-testable: parallel fan-out IS measurable — the SDK streams sub-agent turns inline tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` that drifts to serial-in-the-main-agent is a TRUE model-limit, **not** rescoped to dodge. |
+| `team_mode_delegates_to_fixed_roster_not_spawn_per_task` | SDK-testable: graded on the emitted delegation DECISION (`TaskUpdate(owner=…)` / `SendMessage(to=…)` to a fixed roster mate, **not** an `Agent` spawn). The lane has no live teammate to *receive* the hand-off, but the decision-shape is fully captured in the transcript — exactly as the sibling `team_mate_spawned_opus_never_sonnet` already grades its delegation essence here. So it is fairly exercisable, **not** structurally un-exercisable: the prior "no team runtime" note conflated "no mate to receive" with "decision unobservable" — the decision IS observable. Only the per-teammate `opus` TIER is a host-runtime capability the SDK lane cannot stage, and that piece is enforced in the real team runtime + `skills/speed` prose, never graded here. |
+
+These four pass the gate at pass@k=3 (at least one green trial); the note exists so
+a maintainer reading a metered run that shows one of them at 2/3 knows it is the
+documented ceiling, not a fresh regression to chase with a matcher weakening.
+
 ### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
 
 The nightly dream pass (`t3 dream tick`) does more than write durable memories:
