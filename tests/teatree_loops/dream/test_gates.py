@@ -21,7 +21,7 @@ from pathlib import Path
 from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import DreamQaProbe
-from teatree.loops.dream import gates
+from teatree.loops.dream import gates, reindex
 from teatree.loops.dream.decay import ArchivedMemory
 from teatree.loops.dream.gates import (
     DreamQaReport,
@@ -168,6 +168,47 @@ class TestGateC(SimpleTestCase):
             before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=2
         )
         assert not result.passed  # consolidation happened but a pruned line is orphaned
+
+    def test_homes_a_reworded_pointer_to_a_surviving_memory(self) -> None:
+        # Re-index (phase 5) clips a long curated summary to <=200 chars: the index
+        # LINE text changes, but feedback_x.md still exists and is still pointed at —
+        # the pointer was reworded, not lost. A reworded pointer is NOT a lost lesson,
+        # so the consolidation gate must NOT flag it as an unhomed prune (#2545 defect:
+        # this perpetually blocked the success marker, keeping staleness firing).
+        long_line = "- [feedback_x.md](feedback_x.md) — BINDING: " + "do the best autonomously; " * 12
+        clipped_line = "- [feedback_x.md](feedback_x.md) — BINDING: do the best autonomously"
+        before = _snapshot({"feedback_x.md": "real body, no summary verbatim"}, index=long_line + "\n")
+        after = _snapshot({"feedback_x.md": "real body, no summary verbatim"}, index=clipped_line + "\n")
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert result.passed
+
+    def test_a_pruned_pointer_to_a_vanished_memory_is_still_unhomed(self) -> None:
+        # The fix must NOT excuse a genuine loss: feedback_x.md is GONE from the set
+        # and its lesson is not findable elsewhere -> the pruned pointer stays unhomed.
+        line = "- [feedback_x.md](feedback_x.md) — a real lesson"
+        before = _snapshot({"feedback_x.md": "the lesson body", "a.md": "x" * 100}, index=line + "\n- a\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")  # feedback_x.md archived/deleted
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert not result.passed
+
+    def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
+        # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
+        # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link
+        # target only, never a .md token in the summary — else a real loss is masked.
+        line = "- [gone_x.md](gone_x.md) — superseded; see feedback_live.md for context"
+        before = _snapshot(
+            {"gone_x.md": "the lost lesson", "feedback_live.md": "x" * 50},
+            index=line + "\n- [feedback_live.md](feedback_live.md) — live\n",
+        )
+        after = _snapshot({"feedback_live.md": "x" * 50}, index="- [feedback_live.md](feedback_live.md) — live\n")
+        result = Gate.consolidation_happened(
+            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=3
+        )
+        assert not result.passed  # gone_x.md is gone; the summary's mention of a live file must not home it
 
 
 class TestGateD(SimpleTestCase):
@@ -338,6 +379,28 @@ class TestRunAcceptancePass(TestCase):
         snap = _snapshot({"a.md": "name: a\nfact ONE\n"}, index="- fact ONE\n")
         run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1, persist=False)
         assert DreamQaProbe.objects.count() == 0
+
+    def test_reindex_clipping_a_long_curated_summary_still_passes(self) -> None:
+        # End-to-end #2545 staleness defect: re-index (phase 5) clips a >200-char
+        # curated MEMORY.md summary, the gate flagged the old long line as an unhomed
+        # prune, and the success marker was never stamped (last_succeeded_at froze).
+        # The pointer still targets the live memory file, so the pass must PASS.
+        d = Path(tempfile.mkdtemp()) / "memory"
+        d.mkdir()
+        long_summary = "BINDING: " + "do the best autonomously and never introduce tech debt; " * 8
+        (d / "feedback_x.md").write_text(
+            f"---\nname: feedback_x\ndescription: {long_summary}\nmetadata:\n  type: feedback\n---\n\nbody\n",
+            encoding="utf-8",
+        )
+        long_index = reindex.render_index(d).replace("feedback_x.md) — ", "feedback_x.md) — " + "EXTRA " * 40, 1)
+        (d / "MEMORY.md").write_text(long_index, encoding="utf-8")
+        before = snapshot_memory_dir(d)
+        reindex.reindex_memory(d, dry_run=False)  # re-clips -> rewrites the long line
+        after = snapshot_memory_dir(d)
+        report = run_acceptance_pass(
+            before, after, overlay="acme", archived=[], schema_before=0, schema_after=0, clusters_recorded=3
+        )
+        assert report.passed, [g.detail for g in report.gate_results if not g.passed]
 
 
 class TestReportRender(SimpleTestCase):

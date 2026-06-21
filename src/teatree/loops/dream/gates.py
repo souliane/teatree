@@ -54,6 +54,13 @@ if TYPE_CHECKING:
 
 _INDEX_NAME = "MEMORY.md"
 _HEADING_RE = re.compile(r"^#{1,6}\s")
+#: The memory-file an index line POINTS AT — the ``](name.md)`` markdown link
+#: target the re-index writes (``- [name.md](name.md) — summary``). Anchored on
+#: the link href, not any ``.md`` token, so a ``.md`` filename merely mentioned
+#: in the free-text summary never counts as the line's target — only a reworded
+#: pointer to a still-present memory homes the line; a genuinely lost pointer
+#: stays unhomed even if its summary name-drops a surviving memory.
+_MEMORY_REF_RE = re.compile(r"]\(([\w.\-/]+\.md)\)")
 
 #: Load-warning thresholds for the rendered ``MEMORY.md`` index (gate d). The
 #: index is one short line per memory; past these the index has stopped being a
@@ -156,6 +163,17 @@ class DreamQaReport:
 
 def _normalize(text: str) -> str:
     return " ".join(text.split()).lower()
+
+
+def _line_targets_live_memory(line: str, snapshot: MemorySnapshot) -> bool:
+    """Whether a pruned index *line* still points at a memory file present after the pass.
+
+    The re-index phase rewrites an index line whenever a curated summary is
+    clipped/reworded — the line TEXT changes but the pointer (and its memory
+    file) survives. Such a line is NOT a lost lesson, so it must count as homed;
+    only a pointer to a memory that actually vanished stays unhomed.
+    """
+    return any(ref in snapshot.memories for ref in _MEMORY_REF_RE.findall(line))
 
 
 def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
@@ -280,12 +298,24 @@ class Gate:
         size drop, no schema growth, no clusters) fails. Independently, any index
         line the pass PRUNED must have a confirmed durable home — a prune with no
         home fails.
+
+        A pruned line is homed when it is in *homed_index_lines* (the durable
+        destination the caller supplies — e.g. a lesson still findable after the
+        pass), OR it still points at a memory file that survived the pass. The
+        latter case is the re-index merely rewording/clipping a curated summary:
+        the line text changes but the pointer is not lost, so it must not count as
+        a prune. Without it every summary clip looked like a lost prune and the
+        pass never stamped success (#2545 staleness defect).
         """
         size_reduced = snapshot_after.byte_size < snapshot_before.byte_size
         schema_grew = schema_after > schema_before
         distilled = clusters_recorded > 0
         pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
-        unhomed = sorted(line for line in pruned_lines if line not in homed_index_lines)
+        unhomed = sorted(
+            line
+            for line in pruned_lines
+            if line not in homed_index_lines and not _line_targets_live_memory(line, snapshot_after)
+        )
         consolidated = size_reduced or schema_grew or distilled
         passed = consolidated and not unhomed
         if not consolidated:
