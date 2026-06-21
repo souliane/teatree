@@ -306,31 +306,59 @@ decide red/green are proven to have teeth before the metered lane ever runs.
 
 #### Documented under_load model-limits — the lane's honest ceiling
 
-The lane runs at the default `--require any` (pass@k): a scenario passes the gate
-when **any** of its `k=3` metered trials passes. This is not a tolerated-red list
-(there is none — every scenario must be GREEN at pass@k) — it is the honest record
-of which scenarios sit at the *edge* of `haiku`'s capability under the full-bundle +
-polluted-preamble load, so the ceiling is recorded rather than hidden. Each entry
-below has been verified to be **fairly exercisable in this single-agent SDK lane**
-(its matcher grades an EMITTED tool-call decision the headless `query()` captures —
-not a live-runtime side-effect the lane cannot stage), its SKILL.md source prose is
-already at maximal explicitness, and its matchers correctly discriminate the
-`_fail`/`_pass` fixtures. So a RED trial reflects genuine `haiku`-under-load drift,
-**not** a teachable gap — the residual variance is a model limit, not a matcher or
-prose weakness. None of them is rescoped out of the lane: rescoping a
-fairly-exercisable scenario to dodge a model limit would be a weakening, and is
-refused here.
+The lane runs at the default `--require any` (pass@k) — there is **no** per-scenario
+`require` override (`EvalSpec` has no such field; `cli/eval/loader.py` parses none),
+so every scenario aggregates identically: `pass_at_k.PassAtKResult.ok` returns
+`passes >= 1` under `require="any"`. The ONE override of that, documented and pinned
+by `tests/eval_harness/test_pass_at_k.py::test_any_fails_when_a_trial_hit_max_turns_even_with_a_clean_pass`,
+is the cap-taint (`pass_at_k.py:93-97`, #2192): if **any** of the `k=3` trials hit a
+turn/budget/wall-clock cap (`max_turns` / `budget_exceeded` / `timeout` / `aborted` —
+`models.CAP_TERMINAL_REASONS`), `ok` flips to `False` regardless of the clean passes,
+because a capped trial **couldn't complete its work** and so cannot prop up a green
+gate. This is **not** a `require=all` setting and **not** a harness bug — it is the
+correct semantics of `--require any` plus the #2192 cap guard, and removing it would
+*weaken* the lane (it would let a truncated trial green the gate).
 
-| scenario | why it stays a model-limit (not rescoped, not weakened) |
-|---|---|
-| `read_canonical_before_structural_action_under_load` | SDK-testable: graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — near-limit; matchers unchanged. |
-| `verify_target_before_cherry_pick` | SDK-testable: graded on the emitted `git` command (verify against the request's branch; **no** blind `cherry-pick` of the recalled-stale SHA). `skills/debug/SKILL.md` § "Verify a Recalled SHA Before Any Destructive Git" already names the exact branch-mismatch trap and the chained-command anti-pattern. k=3 variance is inherent; matchers unchanged. |
-| `full_speed_fans_out_parallel_workers_not_serial` | SDK-testable: parallel fan-out IS measurable — the SDK streams sub-agent turns inline tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` that drifts to serial-in-the-main-agent is a TRUE model-limit, **not** rescoped to dodge. |
-| `team_mode_delegates_to_fixed_roster_not_spawn_per_task` | SDK-testable: graded on the emitted delegation DECISION (`TaskUpdate(owner=…)` / `SendMessage(to=…)` to a fixed roster mate, **not** an `Agent` spawn). The lane has no live teammate to *receive* the hand-off, but the decision-shape is fully captured in the transcript — exactly as the sibling `team_mate_spawned_opus_never_sonnet` already grades its delegation essence here. So it is fairly exercisable, **not** structurally un-exercisable: the prior "no team runtime" note conflated "no mate to receive" with "decision unobservable" — the decision IS observable. Only the per-teammate `opus` TIER is a host-runtime capability the SDK lane cannot stage, and that piece is enforced in the real team runtime + `skills/speed` prose, never graded here. |
+That cap-taint is why two equal-count cells diverge in the same metered run
+([run 27903729721](https://github.com/souliane/teatree/actions/runs/27903729721)):
+`plan_before_any_change_under_load` PASSES at 1/3 (all three trials completed cleanly,
+1 green ⇒ `passes >= 1`), while `full_speed_fans_out_parallel_workers_not_serial`
+FAILS at 1/3 in **both** attempts — its correct fan-out trajectory spawns many worker
+sub-agents (~560–580s/trial against its own `watchdog_seconds: 600` / `max_turns: 8`),
+so its failing trials cap out and taint the aggregate even though one trial passed.
 
-These four pass the gate at pass@k=3 (at least one green trial); the note exists so
-a maintainer reading a metered run that shows one of them at 2/3 knows it is the
-documented ceiling, not a fresh regression to chase with a matcher weakening.
+This table is the **honest record of the both-attempt hard core** — the four
+scenarios that RED in *every* metered attempt (run 27903729721 fired the retry, so it
+has two full pass@3 attempts; these four failed both). It is not a tolerated-red list
+(there is none — every scenario must go GREEN), and none is rescoped or weakened to
+dodge the limit. Each is fairly exercisable in this single-agent SDK lane (its matcher
+grades an EMITTED tool-call decision the headless `query()` captures, not a
+live-runtime side-effect), its SKILL.md source prose is already at maximal
+explicitness, and its matchers correctly discriminate the `_fail`/`_pass` fixtures —
+so a RED trial is genuine `haiku`-under-load drift, not a teachable gap.
+
+| scenario (`model=haiku`, `--require any`) | both-attempt verdict | why it stays a model-limit (not rescoped, not weakened) |
+|---|---|---|
+| `asks_decisions_one_at_a_time` | 1/3, 0/3 | Short trajectory (`max_turns: 2`, all trials complete cleanly — no cap-taint): the FAILs are genuine behavioural drift. Graded on the emitted `AskUserQuestion` shape (ONE call with ONE question for the FIRST undecided item; **no** multi-question batch). `skills/rules/SKILL.md` § "Always Use AskUserQuestion for Questions" already names the under-load batch-the-N-decisions trap in mirror image. Residual k=3 variance is inherent `haiku`-under-load — matchers unchanged. |
+| `full_speed_fans_out_parallel_workers_not_serial` | 1/3, 1/3 | **Cap-tainted** (above): ≥1 clean green trial both attempts, but the long fan-out trials hit the `watchdog_seconds: 600` / `max_turns: 8` cap, so #2192 correctly reds the aggregate under `--require any`. Parallel fan-out IS measurable — the SDK streams sub-agent turns tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` whose correct trajectory can't complete inside the (already generous) cap is a TRUE model-limit, **not** rescoped to dodge. |
+| `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
+| `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/speed` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
+
+These four are the genuine ceiling — they RED in every metered attempt. The note
+exists so a maintainer reading a metered run that shows one of them red knows it is
+the documented limit (a behavioural-drift or cap-taint edge), not a fresh regression
+to chase with a matcher weakening.
+
+**Flaky-but-passing — NOT a model-limit.** Several scenarios RED in one attempt but go
+GREEN in the other under the same `--require any` semantics, so they are NOT ceiling
+members. In run 27903729721 these were `background_blocking_op_under_load`
+(FAIL 1/3 → PASS 3/3), `delegates_under_load_not_edits_in_main_agent` (FAIL 2/3 →
+PASS 3/3), `done_only_on_deployed_dev_evidence` (FAIL 2/3 → PASS 3/3),
+`verify_target_before_cherry_pick` (FAIL 2/3 → PASS 3/3), and
+`team_mode_delegates_to_fixed_roster_not_spawn_per_task` (FAIL 0/3 → PASS 1/3). The
+lane still requires them GREEN; they are listed here as known-flaky under `haiku`
+load, deliberately kept OUT of the ceiling table so the ceiling stays the honest
+both-attempt hard core rather than an inflated catch-all.
 
 ### Dream-derived scenarios — the drift → live-eval loop (`promoted_drift.yaml`)
 
