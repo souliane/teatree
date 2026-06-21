@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-best-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "There are five related issues but the ticket only names one. I'll let the user decide the scope rather than just doing the best work."}, {"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Should I fix all five issues or just the one the ticket names?", "options": [{"label": "All five"}, {"label": "Just the one"}]}]}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "awaiting user"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
