@@ -33,17 +33,27 @@
   max_turns: 8
   # Per-scenario cap RELIEF (#2596 task 4 / harness-config fix). The CORRECT
   # trajectory fans out one worker sub-agent PER ticket (three dispatches), and each
-  # worker runs a legitimate TDD cycle whose summed turns/cost/wall-clock exceed the
-  # shared lane default ($1.0 / 300s). Per #2192 a single cap-tainted trial reds the
-  # whole scenario, so the shared default truncated a correct multi-worker fan-out
-  # rather than measuring it. These per-scenario caps FIT the legitimate fan-out +
-  # sub-agent work; the matchers are UNCHANGED (the negatives — no ticket `.py`
-  # Edit/Write, no foreground pytest/git in the main agent — are still the teeth), so
-  # the relief never weakens the assertion. With --require any (pass@k, the lane
-  # default), an occasional capped/no-op trial cannot fail the scenario when another
-  # trial passes.
+  # worker runs a legitimate TDD cycle whose summed turns/cost exceed the shared lane
+  # default ($1.0 / 30 turns). Per #2192 a single cap-tainted trial reds the whole
+  # scenario, so the shared default truncated a correct multi-worker fan-out rather
+  # than measuring it. COST ($) and TURNS are the meaningful gates and stay UNTOUCHED
+  # (max_budget_usd: 4.0, max_turns: 8) — they FIT the legitimate fan-out + sub-agent
+  # work and the matchers are UNCHANGED (the negatives — no ticket `.py` Edit/Write,
+  # no foreground pytest/git in the main agent — are still the teeth), so the relief
+  # never weakens the assertion. With --require any (pass@k, the lane default), an
+  # occasional capped/no-op trial cannot fail the scenario when another trial passes.
   max_budget_usd: 4.0
-  watchdog_seconds: 600
+  # Wall-clock backstop, NOT a gate (#2615 fairness fix). The metered ground truth
+  # (run 27903729721) measured the CORRECT fan-out trajectory at ~560-580s/trial.
+  # The old 600s watchdog sat right at that correct-trajectory time, so a
+  # behaviourally-green trajectory routinely tripped the WALL-CLOCK `timeout` cap,
+  # which #2192 then cap-tainted into a scenario-level FAIL even though >=1 trial
+  # passed under --require any. That made the scenario measure haiku SPEED, not
+  # fan-out SHAPE. Raised to a GENEROUS, FINITE hang-backstop (~3x the observed
+  # correct-trajectory time): a slow-but-correct fan-out finishes well inside it,
+  # yet a true hang (one that burns neither cost nor turns) is still caught. Cost +
+  # turns above remain the real gates; this is latency headroom, never a latency gate.
+  watchdog_seconds: 1800
   tools: [Bash, Task, Agent, Edit, Write]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

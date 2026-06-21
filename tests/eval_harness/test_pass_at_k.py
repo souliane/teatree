@@ -202,6 +202,66 @@ class TestRunPassAtK:
         assert result.ok  # pass@k noise tolerance preserved
 
 
+class TestCostAndTurnGatesRetainTeethAfterWatchdogFix:
+    """Anti-weakening proof for the #2615 wall-clock watchdog fairness fix.
+
+    The fix raises ONLY the wall-clock backstop (``DEFAULT_WATCHDOG_SECONDS``
+    300 -> 900; ``full_speed`` ``watchdog_seconds`` 600 -> 1800) so latency alone
+    can no longer falsely red a cost/turn-bounded correct trajectory. It touches
+    NEITHER ``pass_at_k.py`` NOR ``CAP_TERMINAL_REASONS`` — so the COST ($) and
+    TURN gates must still have teeth: a trial that hits ``budget_exceeded`` or
+    ``max_turns`` STILL cap-taints the aggregate under the real CI lane
+    (``--require any``), even when a clean trial passed. These tests pin that the
+    fix removed latency noise, NOT the real gates. (Companion to the existing
+    ``test_any_fails_when_a_trial_hit_max_turns_even_with_a_clean_pass`` #2192
+    cap-taint test, which stays green.)
+    """
+
+    def test_budget_exceeded_still_cap_taints_under_require_any(self) -> None:
+        # COST gate retains teeth: one budget-blown trial reds the aggregate even
+        # though a clean trial passed (passes >= 1) — the watchdog fix did not
+        # weaken the $ gate.
+        spec = _spec()
+        it = iter(["success", "budget_exceeded", "success"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert result.passes == 2  # the clean trials still count — diagnostic
+        assert result.terminal_reason == "budget_exceeded"
+        assert not result.ok  # the $ gate still reds the cap-tainted aggregate
+
+    def test_max_turns_still_cap_taints_under_require_any(self) -> None:
+        # TURN gate retains teeth: one turn-capped trial reds the aggregate even
+        # though a clean trial passed — the watchdog fix did not weaken the turn gate.
+        spec = _spec()
+        it = iter(["success", "max_turns", "success"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert result.passes == 2
+        assert result.terminal_reason == "max_turns"
+        assert not result.ok  # the turn gate still reds the cap-tainted aggregate
+
+    def test_timeout_remains_a_finite_hang_backstop_that_still_cap_taints(self) -> None:
+        # The watchdog stays a FINITE backstop: a `timeout` is still a cap reason,
+        # so a genuine hang (a trial that burns neither cost nor turns yet never
+        # ends) is still caught and still cap-taints. The fix RAISES the threshold
+        # at which a timeout fires — it does not exempt `timeout` from the gate.
+        spec = _spec()
+        it = iter(["success", "timeout", "success"])
+
+        def _run(_spec: EvalSpec) -> ScenarioResult:
+            return _result(spec, passed=True, terminal_reason=next(it))
+
+        result = run_pass_at_k(spec, _run, k=3, require="any")
+        assert result.terminal_reason == "timeout"
+        assert not result.ok
+
+
 class TestRetainsPerTrialResults:
     """The aggregate must retain each trial's ScenarioResult — the transcript evidence.
 
