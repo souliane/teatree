@@ -7,11 +7,16 @@ that table is unreachable via the overlay CLI even though the core
 """
 
 from teatree.cli.overlay import DJANGO_GROUPS
+from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
 
 
 def _ticket_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["ticket"].subcommands}
+
+
+def _honesty_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["honesty"].subcommands}
 
 
 def _lifecycle_subcommands() -> set[str]:
@@ -57,3 +62,23 @@ def test_e2e_group_exposes_deprecated_post_evidence_alias() -> None:
 def test_pr_group_exposes_deprecated_post_evidence_alias() -> None:
     # Same as above for the ``pr`` group.
     assert "post-evidence" in _pr_subcommands()
+
+
+def test_honesty_group_exposes_escalate() -> None:
+    # ``skills/rules/SKILL.md`` § "Escalate Honesty-Critical Verification"
+    # tells the agent to run ``t3 <overlay> honesty escalate``. The Django
+    # management command exists, but without a DJANGO_GROUPS bridge entry the
+    # overlay CLI returned "No such command 'honesty'" — the rule referenced a
+    # CLI that did not resolve. This pins the bridge so the rule stays runnable.
+    assert "escalate" in _honesty_subcommands()
+
+
+def test_honesty_group_dispatches_to_core() -> None:
+    # The honesty command lives in ``teatree.core.management.commands``; it must
+    # route via ``managepy_core`` (python -m teatree), not the overlay manage.py.
+    assert DJANGO_GROUPS["honesty"].dispatches_to_core("escalate") is True
+
+
+def test_honesty_subcommands_map_to_real_command_methods() -> None:
+    for name in _honesty_subcommands():
+        assert hasattr(HonestyCommand, name.replace("-", "_")), name

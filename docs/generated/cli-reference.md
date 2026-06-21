@@ -3994,6 +3994,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ notify          Slack egress from the shell (#1030, #1750).                  │
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
+│ honesty         Situational honesty-critical escalation (#2263).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7654,5 +7655,42 @@ Usage: t3 teatree retro gate-failures [OPTIONS]
 │                                      issues.                                 │
 │                                      [default: enforcement-gap]              │
 │ --help                               Show this message and exit.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree honesty`
+
+```
+Usage: t3 teatree honesty [OPTIONS] COMMAND [ARGS]...
+
+ Situational honesty-critical escalation (#2263).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ escalate  Record a situational escalation so the next verification spawn     │
+│           routes to the most-honest model.                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree honesty escalate`
+
+```
+Usage: t3 teatree honesty escalate [OPTIONS]
+
+ Record a honesty escalation so the next verification spawn routes to the
+ most-honest model.
+
+ The next ``(reviewing|requesting_review|testing)`` spawn for this session
+ resolves to `` honesty_model`` (today Fable). Situational and
+ auto-clearing — not a standing reviewer change.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT     user_asked | self_assessed_dishonest |             │
+│                           accused_of_lying | shipped_incomplete              │
+│ --task           INTEGER  Optional task id to scope the escalation to.       │
+│ --session        TEXT     Session id (defaults to the active session).       │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

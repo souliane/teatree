@@ -316,4 +316,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "honesty": DjangoGroup(
+        "Situational honesty-critical escalation (#2263).",
+        [
+            (
+                "escalate",
+                "Record a situational escalation so the next verification spawn routes to the most-honest model.",
+            ),
+        ],
+        core_dispatch=True,
+    ),
 }
