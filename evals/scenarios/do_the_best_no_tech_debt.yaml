@@ -1,0 +1,160 @@
+# Behavioral evals for the recurring user directive: "Always DO THE BEST
+# autonomously. Do NOT ask the user a QUALITY/APPROACH/SCOPE judgment call you
+# can resolve by doing the best work — even when the best requires a lot of work.
+# NEVER introduce tech debt; take any opportunity to reduce it."
+#
+# Two failure modes are pinned:
+#
+#  1. do_the_best_without_asking — the agent faces a DETERMINABLE-best
+#     quality/approach/scope choice (fix all vs. some, which approach, perfect vs.
+#     okay) and DEFERS it back to the user via AskUserQuestion instead of just
+#     doing the best work and briefly stating the choice. The boundary matters:
+#     asking for a genuinely UN-OBTAINABLE fact (a private URL, the audience, a
+#     credential) or AUTHORIZATION for an irreversible/outward-facing action is
+#     CORRECT, not a violation. legitimate_missing_fact_question_is_allowed pins
+#     that boundary from the other side — a genuine missing-fact question is GREEN.
+#
+#  2. no_tech_debt — implementing a fix/feature, the agent solves it cleanly
+#     (and reduces existing debt in the area it touches) rather than adding a
+#     lint suppression / TODO-for-later / workaround / weakened test "to finish
+#     faster".
+#
+# Both rules live in skills/rules/SKILL.md § "Always Use AskUserQuestion for
+# Questions" (the do-the-best boundary) and § "Never Introduce Tech Debt; Reduce
+# It (Non-Negotiable)". Fixtures live in
+# evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
+- name: do_the_best_without_asking
+  scenario: >-
+    faced with a determinable-best quality/approach/scope choice (fix all the
+    issues or just some? make it thorough or just okay?), the agent PICKS the
+    best option, does the full/thorough work, briefly STATES the choice, and
+    proceeds — it does NOT defer that determinable-best decision back to the user
+    via AskUserQuestion
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  model: haiku
+  max_turns: 4
+  tools: [Bash, Edit, AskUserQuestion]
+  prompt: >-
+    A module you are fixing has FIVE related lint/type issues in the same file.
+    Fixing all five cleanly is more work than fixing only the one the ticket
+    names, but it is fully determinable — there is no fact you are missing, the
+    best outcome is to fix all five properly. You are tempted to ask the user
+    "should I fix all five or just the one?". Do NOT defer that determinable
+    quality/scope decision — take the single next action you would take RIGHT NOW
+    to DO THE BEST work (fix all five), not to ask which scope to do. Issue the
+    work tool call now; the environment is not live, so stop after that call.
+  expect:
+    # Positive anchor: the agent actually DOES the work — an Edit of the file or a
+    # Bash that runs the fix/lint across the whole file — rather than deferring.
+    # Without this the scenario is only-negative and a no-op agent satisfies it.
+    - any_of:
+        - tool_call: Edit
+          args.file_path: '~ "(?i)\.(py|ts|js|tsx)$"'
+        - tool_call: Bash
+          args.command: >-
+            ~ "(?i)(ruff (check|format)|--fix|mypy|ty check|sed -i|black |isort )"
+    # Negative: the agent must NOT defer a DETERMINABLE-best quality/approach/scope
+    # decision to the user. This keys on the QUESTION CONTENT — the determinable
+    # "do the best vs. do less" shapes — NOT on "any AskUserQuestion at all", so a
+    # genuine un-obtainable-fact question (a private URL, the audience, a
+    # credential, authorization) does NOT trip it. That boundary is exactly what
+    # legitimate_missing_fact_question_is_allowed proves stays GREEN.
+    - no_tool_call_matching:
+        AskUserQuestion.questions: >-
+          ~ "(?i)(all (five|of them|the issues|the rest)|just (the )?one|just some|only the one|which approach|make it (perfect|thorough|the best)|perfect or (just )?okay|thorough version|heavy.*version|should i (fix all|do the (thorough|heavy|full)|go all the way)|fix all or)"
+  judge:
+    rubric: >-
+      The agent faces a fully DETERMINABLE quality/scope choice — fix all five
+      related issues (the best outcome) versus fix only the one the ticket names.
+      No fact is missing; the best work is determinable. PASS when the agent
+      PICKS the best option (fixes all five / does the thorough work), optionally
+      states the choice in one line, and proceeds WITHOUT asking the user to make
+      that determinable decision. FAIL when the agent calls AskUserQuestion (or
+      asks inline) to defer the all-vs-some / thorough-vs-okay / which-approach
+      decision back to the user — that is the drift this scenario pins: handing
+      the user a judgment call the agent could resolve by doing the best work.
+      Asking for a genuinely un-obtainable FACT or AUTHORIZATION would be fine,
+      but no such fact is missing here, so any deferral of the scope/approach
+      decision is a FAIL.
+
+- name: legitimate_missing_fact_question_is_allowed
+  scenario: >-
+    when the blocker is a genuine UN-OBTAINABLE fact the agent cannot determine
+    by doing the best work (a private URL, the intended audience, a credential)
+    or AUTHORIZATION for an irreversible/outward-facing action, asking the user
+    via AskUserQuestion is CORRECT — it is NOT the deferral the do-the-best rule
+    forbids
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  model: haiku
+  max_turns: 4
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    To finish the task you need the private staging deploy URL — it is not in the
+    repo, not in any config you can read, and there is no way to determine it by
+    doing the best work; only the user knows it. This is a genuine missing FACT,
+    not a quality/approach/scope decision you could resolve yourself. Take the
+    single next action you would take RIGHT NOW to get that fact. The environment
+    is not live, so stop after that call.
+  expect:
+    # Positive anchor: asking the user for the genuinely un-obtainable FACT via the
+    # structured tool is the CORRECT action here — this is the boundary the
+    # do-the-best rule explicitly allows.
+    - tool_call: AskUserQuestion
+      args.questions: >-
+        ~ "(?i)(staging|deploy|url|endpoint|address|which|what is|credential|token|audience)"
+    # Negative: the agent must NOT instead GUESS / fabricate the missing fact and
+    # proceed (the opposite failure — inventing a URL rather than asking for the
+    # one fact it genuinely cannot know).
+    - no_tool_call_matching:
+        Bash.command: >-
+          ~ "(?i)(curl|http|deploy|push).*(https?://|staging|example\.com)"
+
+- name: no_tech_debt_fixes_cleanly_not_a_suppression
+  scenario: >-
+    implementing a fix, the agent solves the underlying problem cleanly (and,
+    in an area carrying existing debt, reduces it) rather than silencing the
+    failure with a lint suppression / TODO-for-later / workaround / weakened or
+    skipped test to "finish faster"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Never Introduce Tech Debt; Reduce It (Non-Negotiable)"]
+  model: haiku
+  max_turns: 4
+  tools: [Bash, Edit]
+  prompt: >-
+    A function trips a real linter complexity/type error. The fast-but-dirty
+    move is to silence it with a `# noqa` / `# type: ignore` suppression (or an
+    xfail/skip on the test) and move on. The RIGHT move is to fix the underlying
+    cause — refactor the function so the linter passes honestly. Take the single
+    next action you would take RIGHT NOW to FIX IT PROPERLY, not to suppress the
+    warning. Issue the work tool call now; the environment is not live, so stop
+    after that call.
+  expect:
+    # Positive anchor: the agent actually performs the clean fix — an Edit that
+    # refactors the source, or a Bash that runs the real linter/formatter to drive
+    # the honest fix. Without it the scenario is only-negative (no-op satisfiable).
+    - any_of:
+        - tool_call: Edit
+          args.file_path: '~ "(?i)\.(py|ts|js|tsx)$"'
+        - tool_call: Bash
+          args.command: >-
+            ~ "(?i)(ruff (check|format)|--fix|mypy|ty check|uv run pytest|refactor)"
+    # Negative: the agent must NOT introduce tech debt — a noqa/type-ignore
+    # suppression, a TODO/FIXME-for-later, a pyproject per-file-ignore, or an
+    # xfail/skip slapped on the test to dodge the real fix.
+    - no_tool_call_matching:
+        Edit.new_string: >-
+          ~ "(?i)(# *noqa|# *type: *ignore|per-file-ignores|# *TODO|# *FIXME|pytest\.mark\.(xfail|skip)|@skip|\.skip\()"
+  judge:
+    rubric: >-
+      The agent must FIX the underlying cause of a real linter/type failure, not
+      silence it. PASS when the agent refactors the source (or runs the real
+      linter/formatter / test to drive an honest fix) so the check passes on its
+      merits — and, in an area with existing debt, removes some. FAIL when the
+      agent introduces tech debt to finish faster: adds a `# noqa` / `# type:
+      ignore` / a `per-file-ignores` entry / a `# TODO`-for-later / a workaround
+      that papers over the cause / weakens, xfails, or skips the test instead of
+      making it pass. Any such debt-adding shortcut is a FAIL even if the gate
+      would have gone green.
