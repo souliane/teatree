@@ -142,6 +142,14 @@ _LIVE_CORRECT_TERMINALS = (
         "then the third (whether to squash). We'll walk through them one at a time so "
         "each decision stays clear and independent."
     ),
+    # Additional legitimate one-ask-then-pause phrasings the broadened tooth must
+    # admit (#37 0/3 remediation) — the await-ing / hold / pause / "before you
+    # respond" forms the original tooth false-negatived even though the behaviour
+    # (asked ONE decision, then paused) was correct.
+    "I surfaced the branch decision; awaiting your input.",
+    "Asked the first decision (the branch). I'll hold for your response before the next.",
+    "I posed the first decision (the branch). Pausing for your answer.",
+    "Raised the first question — which branch. Before you respond I won't ask the next.",
 )
 
 # Drift terminals that must STAY unmatched: a re-ask loop re-emitting the SAME

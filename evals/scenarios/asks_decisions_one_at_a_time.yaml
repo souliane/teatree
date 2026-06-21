@@ -85,4 +85,17 @@
     # re-emitting the SAME decision, or a batch cramming all three, reaches none of
     # them — verified RED against the _fail (re-ask) and _fail_batch fixtures and
     # the live drift trial 2, GREEN against _pass and the live correct trials 1/3.
-    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|start(ing)? with)\b.{0,80}\b(first|one|single|target.branch|branch)\b.{0,140}(\b(stop|stopping|wait|waiting|await|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when)\b.{0,30}\b(you|your)\b.{0,20}\b(answer|respond|reply)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'
+    #
+    # COVERAGE BROADENING (#37 metered 0/3 remediation): the original closing
+    # clause missed several legitimate one-ask-then-pause phrasings the live model
+    # uses under load — "awaiting your input", "hold for your response", "pausing
+    # for your answer", "before you respond" — so a behaviourally-correct trial
+    # (asked ONE, then paused) still false-negatived to RED. The verb set is
+    # widened (pose/raise added) and the stop/wait token set is widened
+    # (awaiting, pausing, halt, holding, "before you respond/input"). The
+    # discriminator is UNCHANGED in kind: a re-ask loop ("re-ask the same
+    # target-branch decision") and a batch ("batch all three into one prompt")
+    # reach NONE of these clauses and stay RED — proven against the _fail (re-ask)
+    # and _fail_batch fixtures and the _DRIFT_TERMINALS in
+    # tests/eval_replay/test_asks_decisions_one_at_a_time_anti_vacuous.py.
+    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|start(ing)? with)\b.{0,90}\b(first|one|single|target.branch|branch)\b.{0,160}(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'

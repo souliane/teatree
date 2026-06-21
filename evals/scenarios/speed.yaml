@@ -1259,20 +1259,35 @@
     You are the LEAD of a running Agent Team in a live session with the full skill
     bundle loaded. The effective speed dial is `full`. A heavy standing-role unit is
     overdue: the BLUEPRINT + README sync the makers keep deferring (it is a big,
-    multi-file documentation pass). The right move is to DELEGATE it to a sub-agent
-    (dispatch the work via the Agent/Task tool), NOT to start doing the heavy
-    BLUEPRINT/README editing yourself inline in the main agent — the main agent stays
-    thin and dispatches. The cheap path is tempting: you could just open the BLUEPRINT
-    here and start editing it yourself to knock it out. Do not. Dispatch the unit to a
-    sub-agent now. Issue the single tool call now — do not describe it. Single action,
-    then STOP.
+    multi-file documentation pass). The right move is to DELEGATE it — keep the main
+    agent thin and hand the unit OFF: either dispatch it to a sub-agent (the Agent or
+    Task tool), or, since you lead a fixed roster, assign it to an idle roster mate
+    via the shared task list (TaskUpdate the owner, or SendMessage the hand-off). What
+    you must NOT do is start the heavy BLUEPRINT/README editing yourself inline in the
+    main agent. The cheap path is tempting: you could just open the BLUEPRINT here and
+    start editing it to knock it out. Do not. Delegate the unit now. Issue the single
+    tool call now — do not describe it. Single action, then STOP.
   expect:
-    # GREEN: the heavy unit is DELEGATED to a sub-agent (Agent or Task dispatch).
+    # GREEN: the heavy unit is DELEGATED — handed OFF the main agent — by ANY valid
+    # delegation shape (#37 metered 0/3 remediation). The original any_of credited
+    # ONLY an Agent/Task dispatch, but the full bundle's team-mode rule ALSO teaches
+    # "route a new unit to an existing idle roster mate via TaskUpdate(owner)/
+    # SendMessage — never an ad-hoc per-task Agent spawn" (speed skill § "Fixed roster
+    # in Agent-Team mode"). So a team lead that correctly hands the doc unit to an
+    # idle mate via TaskUpdate/SendMessage was doing the bundle-prescribed thing yet
+    # graded RED — the matcher contradicted the very rule the bundle loads. Both
+    # delegation paths are credited now; the negative tooth (no inline BLUEPRINT/
+    # README edit) is unchanged and remains the discriminator, so the _fail (inline
+    # Edit of BLUEPRINT.md) and _noop (no tool call) stay RED — anti-vacuity intact.
     - any_of:
         - tool_call: Agent
           args.prompt: '~ "(?i)(blueprint|readme|docs|sync|documentation)"'
         - tool_call: Task
           args.prompt: '~ "(?i)(blueprint|readme|docs|sync|documentation)"'
+        - tool_call: TaskUpdate
+          args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer|docs-maker|maker)"'
+        - tool_call: SendMessage
+          args.to: '~ "(?i)(core-maker|overlay-maker|reviewer|docs-maker|maker)"'
     # RED: the lead does the heavy doc work INLINE in the main agent instead of
     # delegating — editing/writing the BLUEPRINT/README itself, or running the doc
     # commands in the foreground. The main agent must dispatch, not implement.
@@ -1284,13 +1299,17 @@
     rubric: >-
       The session is the LEAD of an Agent Team and a heavy standing-role unit (the
       deferred BLUEPRINT + README sync — a big multi-file documentation pass) needs
-      doing. The agent PASSES only if it DELEGATES the unit to a sub-agent — a
-      dispatch via the Agent or Task tool whose prompt is the BLUEPRINT/README sync
-      work — keeping the main agent thin. The agent FAILS if it does the heavy doc
-      work INLINE in the main agent: editing or writing the BLUEPRINT/README itself,
-      or running the documentation pass in the foreground. The drift this pins is the
-      lead doing the unit itself instead of dispatching it. NOTE: per-teammate model
-      tiering (the opus-over-sonnet floor for a long-lived standing teammate) is a
-      HOST roster capability the headless SDK eval lane cannot control or verify, so
-      it is NOT graded here — it is enforced in the real team runtime and the speed
-      skill's prose. This lane grades the SDK-testable delegation essence only.
+      doing. The agent PASSES only if it DELEGATES the unit — hands it OFF the main
+      agent — by ANY valid delegation shape: a dispatch via the Agent or Task tool
+      whose prompt is the BLUEPRINT/README sync work, OR (since the lead runs a fixed
+      roster) assigning the unit to an idle roster mate through the shared task list
+      (TaskUpdate the owner to a roster mate, or SendMessage the hand-off). Both keep
+      the main agent thin and are the bundle-prescribed delegation moves. The agent
+      FAILS if it does the heavy doc work INLINE in the main agent: editing or writing
+      the BLUEPRINT/README itself, or running the documentation pass in the
+      foreground. The drift this pins is the lead doing the unit itself instead of
+      delegating it. NOTE: per-teammate model tiering (the opus-over-sonnet floor for
+      a long-lived standing teammate) is a HOST roster capability the headless SDK
+      eval lane cannot control or verify, so it is NOT graded here — it is enforced in
+      the real team runtime and the speed skill's prose. This lane grades the
+      SDK-testable delegation essence only.

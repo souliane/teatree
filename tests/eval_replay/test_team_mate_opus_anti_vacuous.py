@@ -13,6 +13,11 @@ doc work INLINE in the main agent. The teeth:
     main agent instead of delegating — so the matchers must drive it RED;
 *   the ``_pass`` fixture dispatches the BLUEPRINT/README sync to a sub-agent and
     must grade GREEN;
+*   the ``_delegate_to_mate_pass`` fixture hands the unit to an idle roster mate via
+    ``TaskUpdate(owner=…)`` (the bundle-prescribed team-mode delegation) and must
+    grade GREEN too — #37 broadened the positive any_of to credit a TaskUpdate /
+    SendMessage hand-off, since the full bundle's team-mode rule actively teaches it
+    and the original Agent/Task-only matcher contradicted that rule;
 *   the ``_noop`` fixture (no tool call at all) must grade RED — the positive
     delegation matcher is unsatisfiable by doing nothing;
 *   the model tier carried on the spawn is NOT graded (a delegating spawn passes
@@ -39,6 +44,7 @@ _SCENARIO = "team_mate_spawned_opus_never_sonnet"
 _FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
+_DELEGATE_TO_MATE_PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_delegate_to_mate_pass.stream.jsonl"
 _NOOP_FIXTURE = _FIXTURES / f"{_SCENARIO}_noop.stream.jsonl"
 
 
@@ -75,6 +81,17 @@ def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:
 def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
     assert _grade(_scenario_spec(), _PASS_FIXTURE, tmp_path) is True, (
         "the delegation _pass fixture (Agent dispatch of the BLUEPRINT/README sync) must grade GREEN"
+    )
+
+
+def test_delegate_to_mate_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
+    # #37: a team lead handing the standing-role unit to an idle roster mate via
+    # TaskUpdate(owner=…) is the bundle-prescribed team-mode delegation — it must
+    # grade GREEN now that the positive any_of credits the TaskUpdate/SendMessage
+    # hand-off, not only an Agent/Task dispatch. The negative tooth (no inline
+    # BLUEPRINT/README edit) is unchanged, so this broadening does not weaken the gate.
+    assert _grade(_scenario_spec(), _DELEGATE_TO_MATE_PASS_FIXTURE, tmp_path) is True, (
+        "the delegate-to-idle-mate _pass fixture (TaskUpdate owner=core-maker, no inline edit) must grade GREEN"
     )
 
 
