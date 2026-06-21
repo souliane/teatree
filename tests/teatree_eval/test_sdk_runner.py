@@ -33,7 +33,16 @@ from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS, compute_available_tools, c
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
 
-def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def _spec(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an EvalSpec field a case varies.
+    tmp_path: Path,
+    *,
+    max_turns: int = 3,
+    model: str = "haiku",
+    tools: tuple[str, ...] = ("Bash",),
+    max_budget_usd: float | None = None,
+    watchdog_seconds: float | None = None,
+) -> EvalSpec:
     agent = tmp_path / "agent.md"
     agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
     return EvalSpec(
@@ -48,6 +57,8 @@ def _spec(tmp_path: Path, *, max_turns: int = 3, model: str = "haiku", tools: tu
         model=model,
         max_turns=max_turns,
         tools=tools,
+        max_budget_usd=max_budget_usd,
+        watchdog_seconds=watchdog_seconds,
     )
 
 
@@ -281,6 +292,58 @@ class TestSdkInProcessRunnerCapture:
         spec = _spec(tmp_path)
         _run, captured = self._run(spec, [_result()], max_budget_usd=2.0)
         assert captured["options"].max_budget_usd == pytest.approx(2.0)
+
+    def test_per_scenario_budget_overrides_the_run_budget(self, tmp_path: Path) -> None:
+        # A scenario's own max_budget_usd (a delegation scenario's cap RELIEF that
+        # FITS a legitimate sub-agent TDD cycle) takes precedence over the run-level
+        # budget — so the correct, costlier trajectory is measured, not truncated.
+        spec = _spec(tmp_path, max_budget_usd=4.0)
+        _run, captured = self._run(spec, [_result()], max_budget_usd=1.0)
+        assert captured["options"].max_budget_usd == pytest.approx(4.0)
+
+    def test_run_budget_used_when_scenario_declares_none(self, tmp_path: Path) -> None:
+        # Backward compatibility: a scenario WITHOUT a per-scenario budget defers to
+        # the run-level budget exactly as before.
+        spec = _spec(tmp_path, max_budget_usd=None)
+        _run, captured = self._run(spec, [_result()], max_budget_usd=1.0)
+        assert captured["options"].max_budget_usd == pytest.approx(1.0)
+
+    def _capture_watchdog_timeout(self, spec: EvalSpec, tmp_path: Path) -> float | None:
+        """Run *spec* with ``asyncio.wait_for`` spied, returning the timeout it was driven under.
+
+        The spy forwards via ``**kwargs`` (it must NOT declare a ``timeout``
+        parameter — that trips ASYNC109) so the real ``wait_for`` keyword still
+        flows through while the captured value is recorded.
+        """
+        captured: dict[str, Any] = {}
+        real_wait_for = asyncio.wait_for
+
+        async def _spy(awaitable: Any, **kwargs: Any) -> Any:
+            captured["timeout"] = kwargs.get("timeout")
+            return await real_wait_for(awaitable, **kwargs)
+
+        query, _ = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.sdk_runner.WATCHDOG_SECONDS", 12.5),
+            patch("teatree.eval.sdk_runner.asyncio.wait_for", _spy),
+        ):
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        return captured.get("timeout")
+
+    def test_per_scenario_watchdog_overrides_the_lane_default(self, tmp_path: Path) -> None:
+        # A scenario's own watchdog_seconds (cap RELIEF for a longer sub-agent TDD
+        # cycle) takes precedence over the lane default WATCHDOG_SECONDS — the timeout
+        # the run is driven under is the scenario's (600), not the shared default (12.5).
+        spec = _spec(tmp_path, watchdog_seconds=600.0)
+        assert self._capture_watchdog_timeout(spec, tmp_path) == pytest.approx(600.0)
+
+    def test_lane_watchdog_used_when_scenario_declares_none(self, tmp_path: Path) -> None:
+        # Backward compatibility: a scenario WITHOUT a per-scenario watchdog defers to
+        # the lane default WATCHDOG_SECONDS (12.5 under the patch).
+        spec = _spec(tmp_path, watchdog_seconds=None)
+        assert self._capture_watchdog_timeout(spec, tmp_path) == pytest.approx(12.5)
 
     def test_model_at_effort_tag_splits_into_model_and_effort_options(self, tmp_path: Path) -> None:
         # ClaudeAgentOptions.effort is the SDK's first-class reasoning-effort

@@ -30,11 +30,13 @@ _SCENARIO = "team_mode_delegates_to_fixed_roster_not_spawn_per_task"
 _FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 _FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
 _PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
-#: The create-and-assign pass shape: the lead files the new unit as a task ALREADY
-#: owned by the idle core-maker (TaskCreate with an owner) instead of TaskUpdate /
-#: SendMessage. This is the natural delegation the live agent takes under load; it
-#: must be CREDITED (the matcher's TaskCreate branch) so a real delegation does not
-#: grade RED. It exercises only the new branch, no Agent spawn.
+#: The create-and-assign pass shape, in the REAL two-call form: the lead files the
+#: new unit (TaskCreate, subject+description only — the live tool schema has NO
+#: `owner` field) then assigns it to the idle core-maker (TaskUpdate owner=…). This
+#: is genuine delegation to a standing roster mate and lands on the canonical
+#: `TaskUpdate.owner` matcher branch — it must grade GREEN with NO Agent spawn. The
+#: fake one-call `TaskCreate {…, "owner": …}` shape (an owner the tool silently
+#: drops) is no longer credited; the matcher only rewards an assignment that lands.
 _CREATE_ASSIGN_PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_create_assign_pass.stream.jsonl"
 
 
@@ -75,13 +77,37 @@ def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
 
 
 def test_create_and_assign_fixture_drives_scenario_green(tmp_path: Path) -> None:
-    # The NATURAL delegation the live agent takes under load — file the new unit as
-    # a task already owned by the idle core-maker (TaskCreate with an owner). It must
-    # be credited (the matcher's TaskCreate branch) so a real delegation passes; a
-    # toothless matcher set would have graded this RED for lack of TaskUpdate.
+    # Genuine create-and-assign in the REAL two-call form: file the new unit
+    # (TaskCreate, subject+description) THEN assign it to the idle core-maker
+    # (TaskUpdate owner=core-maker). The assignment lands on the canonical
+    # TaskUpdate.owner branch, so a real delegation passes with NO Agent spawn. The
+    # old fake one-call shape (TaskCreate with an `owner` the tool drops) is no
+    # longer credited — the matcher only rewards an assignment that actually lands.
     assert _grade(_scenario_spec(), _CREATE_ASSIGN_PASS_FIXTURE, tmp_path) is True, (
-        "the create-and-assign fixture (TaskCreate owned by core-maker, no Agent spawn) must grade GREEN — "
-        "the matcher must credit create-and-assign to an existing roster mate as delegation"
+        "the create-and-assign fixture (TaskCreate then TaskUpdate owner=core-maker, no Agent spawn) must "
+        "grade GREEN — the matcher must credit the two-call create-and-assign to an existing roster mate"
+    )
+
+
+def test_one_call_taskcreate_owner_is_not_credited(tmp_path: Path) -> None:
+    # The fake-green path this fix closes: a lone TaskCreate carrying an `owner`
+    # argument the live tool silently drops (TaskCreateInput has no `owner` field)
+    # is NOT a landed assignment, so it must NOT pass on its own. This pins the
+    # matcher to the real tool schema — crediting it would reward a no-op argument.
+    one_call_owner = (
+        '{"type": "system", "subtype": "init", "session_id": "vac-taskcreate-owner", "model": "haiku"}\n'
+        '{"type": "assistant", "message": {"role": "assistant", "content": ['
+        '{"type": "tool_use", "id": "t1", "name": "TaskCreate", '
+        '"input": {"subject": "feat(ship): add --dry-run flag", '
+        '"description": "Add a --dry-run flag.", "owner": "core-maker"}}]}}\n'
+        '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}\n'
+    )
+    spec = _scenario_spec()
+    (tmp_path / f"{spec.name}.jsonl").write_text(one_call_owner, encoding="utf-8")
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
+    assert evaluate(spec, run).passed is False, (
+        "a lone TaskCreate with an `owner` the live tool ignores must grade RED — it never assigns the unit, "
+        "so crediting it would be a fake-green path divorced from the real tool schema"
     )
 
 

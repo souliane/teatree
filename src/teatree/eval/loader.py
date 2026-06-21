@@ -92,6 +92,8 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         agent_sections=agent_sections,
         lane=lane,
         context_preamble=context_preamble,
+        max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
+        watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
     )
 
 
@@ -122,6 +124,21 @@ def _parse_max_turns(entry: Mapping[str, Any], spec_name: str, path: Path) -> in
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `max_turns` must be a positive integer")
     return raw
+
+
+def _parse_positive_float(entry: Mapping[str, Any], key: str, spec_name: str, path: Path) -> float | None:
+    """Parse an optional positive ``float`` per-scenario cap override, or ``None``.
+
+    Used for ``max_budget_usd`` / ``watchdog_seconds``: absent yields ``None``
+    (defer to the run/lane default); a present non-positive or non-numeric value is
+    a spec error so a fat-fingered ``0`` never silently tightens the cap to nothing.
+    """
+    raw = entry.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `{key}` must be a positive number")
+    return float(raw)
 
 
 def _parse_tools(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:

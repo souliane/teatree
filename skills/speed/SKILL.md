@@ -150,7 +150,19 @@ Agent(team_name="<team>", name="core-maker", model="opus", prompt="<role brief>"
 
 **Spawning a teammate is a real `Agent` tool call — never narrate, echo, or shell it.** Issue the actual `Agent(...)` tool invocation. Do NOT print the spawn as text, do NOT wrap it in a Bash `cat <<'EOF' … Agent(…) … EOF` heredoc, and do NOT reply "I don't have an Agent tool" — when the task is to spawn a standing teammate, the `Agent` tool is the action, and a `Bash`/`echo` rendering of it is a non-action that spawns nothing. One `Agent` call with `model="opus"`, then stop.
 
-`model="opus"` is a required parameter of every teammate spawn, not a budget knob — omitting it or downgrading to `sonnet`/`haiku` is the banned path. A teammate is long-lived — it claims a unit, works it across many turns, waits on CI, picks up the next unit — so a `sonnet` teammate hits its compaction threshold mid-task and silently loses the context it was carrying (the diff, the plan, the half-written test). `sonnet` is for explicit one-off **non-team** sub-agents (a quick read-only fetch, a throwaway grep), never a standing teammate; `fable` stays banned for team mates (too token-expensive, reserved for honesty-critical verification). The tier is a required, fixed parameter of a teammate spawn, not a budget knob — downgrading a mate to save tokens is a false economy, because the compacted mate re-reads everything and redoes work. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet`).
+`model="opus"` is a required parameter of every teammate spawn, not a budget knob — omitting it or downgrading to `sonnet`/`haiku` is the banned path. A teammate is long-lived — it claims a unit, works it across many turns, waits on CI, picks up the next unit — so a `sonnet` teammate hits its compaction threshold mid-task and silently loses the context it was carrying (the diff, the plan, the half-written test). `sonnet` is for explicit one-off **non-team** sub-agents (a quick read-only fetch, a throwaway grep), never a standing teammate; `fable` stays banned for team mates (too token-expensive, reserved for honesty-critical verification). The tier is a required, fixed parameter of a teammate spawn, not a budget knob — downgrading a mate to save tokens is a false economy, because the compacted mate re-reads everything and redoes work. This opus-floor is enforced in the **real Agent-Team runtime** (the host roster) — the headless SDK eval lane fixes the run model centrally and cannot control or verify a per-teammate tier, so it is NOT graded there.
+
+**Delegate the heavy standing-role unit to a sub-agent — never do the heavy work inline in the main agent (do X, never Y).** When a big multi-file standing-role unit is overdue (e.g. the BLUEPRINT + README sync the makers keep deferring), the team lead's single next action is to DISPATCH it — an `Agent`/`Task` whose prompt is that unit — keeping the main agent thin. The cheap path is the trap: "the docs sync is mechanical, I'll just open the BLUEPRINT here and knock it out myself" is the do-it-inline drift. The lead classifies and dispatches; it does not `Edit`/`Write` the BLUEPRINT/README itself or run the doc pass in the foreground.
+
+```python
+# DO — dispatch the heavy standing-role unit to a sub-agent; the main agent stays thin:
+Agent(name="docs-maker", model="opus", prompt="Do the overdue BLUEPRINT + README sync in a fresh worktree; commit; report back.")
+
+# NEVER — open the BLUEPRINT and edit it inline in the main agent because "it's mechanical":
+# Edit(file_path="BLUEPRINT.md", ...)   # banned: the lead dispatches, it does not implement
+```
+
+The opus-floor (above) is the host-runtime tier rule; this delegate-don't-do-it-inline rule is the SDK-testable essence both the real runtime and the eval lane share. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet` — the SDK lane grades the delegation, the host runtime enforces the opus tier).
 
 ### Hard rails parallelization must not break
 

@@ -463,7 +463,11 @@ class SdkInProcessRunner:
         """
         message_amount = _budget_amount_from_message(str(terminal.cause))
         if not terminal.messages:
-            cost = _budget_floor_from_message(str(terminal.cause), cap=self._max_budget_usd)
+            # Floor the over-budget cost to the scenario's EFFECTIVE budget (its own
+            # per-scenario override when set, else the run default) so a raised-cap
+            # scenario reports the cap it actually ran under, not the shared default.
+            effective_cap = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
+            cost = _budget_floor_from_message(str(terminal.cause), cap=effective_cap)
             empty_cost = cost if terminal.terminal_reason == BUDGET_EXCEEDED_REASON else 0.0
             return self._terminal_run(spec, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
         graded = _eval_run_from_messages(spec, terminal.messages)
@@ -496,6 +500,14 @@ class SdkInProcessRunner:
         # A scenario's own ``model@effort`` is authoritative; the lane-level
         # representative effort applies only when the scenario declares none.
         effort = variant.effort if variant.effort is not None else self._effort
+        # A scenario's own per-scenario cost/time cap is authoritative; a
+        # delegation scenario raises these to FIT a legitimate sub-agent TDD cycle
+        # (worktree provision + red/green + commit) that costs/takes more than the
+        # shared default — so a #2192 cap-tainted trial does not red the scenario for
+        # a reason unrelated to behaviour. The run-level values apply when a scenario
+        # declares none. The matchers are unchanged; this caps the RUN, not the teeth.
+        max_budget_usd = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
+        watchdog = spec.watchdog_seconds if spec.watchdog_seconds is not None else WATCHDOG_SECONDS
         with isolated_claude_env() as (env, cwd):
             options = build_sdk_options(
                 CleanRoomConfig(
@@ -509,10 +521,10 @@ class SdkInProcessRunner:
                     model=variant.model,
                     max_turns=max_turns,
                     effort=effort,
-                    max_budget_usd=self._max_budget_usd,
+                    max_budget_usd=max_budget_usd,
                 )
             )
-            return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=WATCHDOG_SECONDS)
+            return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=watchdog)
 
     @staticmethod
     def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:

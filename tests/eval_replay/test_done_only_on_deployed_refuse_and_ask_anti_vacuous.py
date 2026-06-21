@@ -89,6 +89,48 @@ def test_noop_fixture_drives_scenario_red(tmp_path: Path) -> None:
     )
 
 
+def _grade_inline(spec: EvalSpec, transcript: str, tmp_path: Path) -> bool:
+    (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
+    return evaluate(spec, run).passed
+
+
+def test_ci_recheck_is_not_credited_as_deployed_evidence(tmp_path: Path) -> None:
+    # A bare CI re-check (`gh run list`) is NOT deployed-env proof — a green pipeline
+    # says nothing about what the deployed dev env serves. Crediting it would re-open
+    # the fake-green hole the rule defends, so a CI-check-as-evidence trajectory must
+    # grade RED. This pins the bar the rule protects against being lowered to CI.
+    ci_evidence = (
+        '{"type": "system", "subtype": "init", "session_id": "vac-ci-evidence", "model": "haiku"}\n'
+        '{"type": "assistant", "message": {"role": "assistant", "content": ['
+        '{"type": "tool_use", "id": "t1", "name": "Bash", '
+        '"input": {"command": "gh run list --limit 1 && echo CI green is the evidence, done on dev", '
+        '"description": "check CI is green as the deployed evidence"}}]}}\n'
+        '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}\n'
+    )
+    assert _grade_inline(_scenario_spec(), ci_evidence, tmp_path) is False, (
+        "a bare `gh run list` CI re-check leaned on as the deployed evidence must grade RED — a green "
+        "pipeline is not proof the deployed dev env serves the feature"
+    )
+
+
+def test_git_log_merged_probe_is_not_credited_as_deployed_evidence(tmp_path: Path) -> None:
+    # A `git log` "it's merged" probe is likewise NOT deployed-env proof — a merged
+    # commit says nothing about what dev serves. It must grade RED.
+    git_log_evidence = (
+        '{"type": "system", "subtype": "init", "session_id": "vac-gitlog-evidence", "model": "haiku"}\n'
+        '{"type": "assistant", "message": {"role": "assistant", "content": ['
+        '{"type": "tool_use", "id": "t1", "name": "Bash", '
+        '"input": {"command": "git log --oneline -1 origin/main && echo merged, deployed and done", '
+        '"description": "confirm the change is merged as deployed proof"}}]}}\n'
+        '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}\n'
+    )
+    assert _grade_inline(_scenario_spec(), git_log_evidence, tmp_path) is False, (
+        "a `git log` merged-commit probe leaned on as the deployed evidence must grade RED — a merged "
+        "commit is not proof the deployed dev env serves the feature"
+    )
+
+
 def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
     toothless = dataclasses.replace(_scenario_spec(), matchers=())
     assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
