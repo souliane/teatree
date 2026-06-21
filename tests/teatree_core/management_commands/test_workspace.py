@@ -2858,6 +2858,76 @@ def _init_repo_with_remote(tmp: Path) -> tuple[Path, Path]:
     return remote, work
 
 
+class TestWorkspaceFinalizeMainCloneGuard(TestCase):
+    """Defense-in-depth: finalize must never commit on a managed main clone (#752)."""
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_finalize_refuses_commit_on_main_clone_default_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _remote, clone = _init_repo_with_remote(Path(tmp))
+            # Two committed changes on the default branch with a clean tree:
+            # absent the guard, finalize would soft-reset + commit (squash) here.
+            (clone / "feature.py").write_text("x = 1\n")
+            _git(clone, "add", "feature.py")
+            _git(clone, "commit", "-q", "-m", "first change")
+            (clone / "feature2.py").write_text("y = 2\n")
+            _git(clone, "add", "feature2.py")
+            _git(clone, "commit", "-q", "-m", "second change")
+
+            head_before = _git(clone, "rev-parse", "HEAD")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/752")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path=str(clone),
+                branch="main",
+                extra={"worktree_path": str(clone)},
+            )
+
+            with pytest.raises(SystemExit) as exc:
+                call_command("workspace", "finalize", str(ticket.pk))
+
+            assert "main clone" in str(exc.value).lower()
+            assert "worktree" in str(exc.value).lower()
+            # No commit was created on the main clone.
+            assert _git(clone, "rev-parse", "HEAD") == head_before
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_finalize_commits_in_real_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _remote, clone = _init_repo_with_remote(tmp_path)
+
+            wt = tmp_path / "wt-feature"
+            _git(clone, "worktree", "add", "-q", "-b", "feature-x", str(wt))
+            # Two commits so finalize squashes them (exercises the commit path).
+            (wt / "a.py").write_text("a = 1\n")
+            _git(wt, "add", "a.py")
+            _git(wt, "commit", "-q", "-m", "first change")
+            (wt / "b.py").write_text("b = 2\n")
+            _git(wt, "add", "b.py")
+            _git(wt, "commit", "-q", "-m", "second change")
+
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/753")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path=str(wt),
+                branch="feature-x",
+                extra={"worktree_path": str(wt)},
+            )
+
+            result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
+
+            assert "squashed 2 commits" in result
+            # The squash produced exactly one commit ahead of the base.
+            base = _git(wt, "merge-base", "HEAD", "origin/main")
+            assert _git(wt, "rev-list", "--count", f"{base}..HEAD") == "1"
+
+
 class TestPruneSquashMergedDataLossGuard(TestCase):
     """#710 — ``_prune_squash_merged`` must honor the #706 data-loss guard.
 
