@@ -18,6 +18,7 @@ from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
 from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace_finalize import refuse_finalize_on_main_clone_default
 from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
@@ -406,6 +407,8 @@ class Command(TyperCommand):
                 if status:
                     results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
                     continue
+
+                refuse_finalize_on_main_clone_default(repo_dir, default_br)
 
                 git.fetch(repo_dir, "origin", default_br)
 
