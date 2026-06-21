@@ -13,6 +13,25 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     running editable ``t3`` must never silently rot behind origin). A
     tracked-dirty tree is refused loudly. Untracked-only files do not block.
 4. Otherwise ``git pull --ff-only`` — fast-forward only, never merge/rebase.
+    When the ff-pull aborts on divergence ("Not possible to fast-forward")
+    because the clone's local commits already landed *squash-merged* upstream
+    (the recurring overlay brick — ``[ahead N, behind M]`` with N already-upstream
+    duplicates), the clone SELF-HEALS. The subject classifier
+    (``core.branch_classification.classify_branch_commits``) is only a cheap
+    PRE-FILTER — it must NOT authorize the destructive reset (it matches by
+    canonicalized subject alone, with no content check). Before any
+    ``git reset --hard origin/<default>`` an AUTHORITATIVE content gate runs:
+    the reset proceeds ONLY when ``git cherry origin/<default> HEAD`` reports
+    every unique non-merge commit as patch-equivalent upstream (no ``+`` line)
+    AND ``git rev-list --merges`` finds no merge commit in the unique range.
+    Either failure blocks the reset and is surfaced loudly — genuine work
+    (subject collisions, amended content, evil-merges) is never destroyed
+    (#2400). Immediately before the authorized reset a recoverable
+    ``refs/t3-reconcile-backup/<sha>`` ref is created at the pre-reset HEAD (and
+    named in the log) so a future misclassification is trivially recoverable.
+    Only ever resets on the default branch (guard 4 is upheld by the step-3 gate,
+    which short-circuits a feature-branch checkout before the pull is reached).
+    The content-gated reconcile itself lives in ``cli/_update_reconcile.py``.
 5. Reinstalls editable installs + runs ``t3 setup`` when a repo advanced this
     run OR when the tool venv is missing a declared dep — gated on actual
     dep-closure drift, NOT only a same-run advance, so an out-of-band ff-merge
@@ -295,15 +314,26 @@ def _precondition_block(name: str, repo: Path, *, is_primary: bool) -> RepoUpdat
 def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdate:
     """Fetch and fast-forward *repo* to its default branch, or skip safely.
 
-    Never stashes, resets, or clobbers.  For an *overlay* repo a non-default
+    Never stashes or clobbers genuine work.  For an *overlay* repo a non-default
     branch or a missing upstream yields a soft :class:`UpdateStatus.SKIPPED`.
     For the *primary*/running clone (``is_primary=True``) those same states are
     a fail-loud currency hazard — the editable ``t3`` the agent runs would
     silently diverge from origin/main — so they yield
     :class:`UpdateStatus.FAILED` plus a prominent warning (#2134).  An
     untracked-only tree is NOT dirt — the ff-pull proceeds.  A failed ``git
-    fetch`` / ``git pull`` always yields :class:`UpdateStatus.FAILED`.
+    fetch`` always yields :class:`UpdateStatus.FAILED`.
+
+    A failed ``git pull --ff-only`` is NOT always terminal: when the divergence
+    is purely already-upstream squash-merged duplicates (zero genuinely-ahead
+    work), the clone self-heals via
+    :func:`teatree.cli._update_reconcile.reconcile_squash_merged` (#2400) —
+    ``git reset --hard origin/<default>``, authorized by an AUTHORITATIVE
+    *content* gate (``git cherry`` patch-id + a merge-commit check), never by
+    subject. Genuine un-upstreamed work blocks the reconcile and is surfaced
+    loudly, and a recoverable backup ref is created before any reset.
     """
+    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415
+
     blocked = _precondition_block(name, repo, is_primary=is_primary)
     if blocked is not None:
         return blocked
@@ -311,7 +341,7 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
     old_sha = _short_sha(repo)
     pull = _git(repo, "pull", "--ff-only", expected_codes=None)
     if pull.returncode != 0:
-        return RepoUpdate(name, UpdateStatus.FAILED, reason=f"git pull --ff-only failed: {pull.stderr.strip()}")
+        return reconcile_squash_merged(name, repo, old_sha, pull.stderr.strip())
 
     new_sha = _short_sha(repo)
     if new_sha == old_sha:
