@@ -96,6 +96,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
+44. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
 
 ## Invoke Skills Before ANY Response
 
@@ -955,3 +956,7 @@ t3 <overlay> honesty escalate --reason <user_asked|self_assessed_dishonest|accus
 ```
 
 The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → kill-switch → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.
+
+## Re-Validate a Reused Guard in a New Destructive Context
+
+A guard or classifier that is safe for gating one action is not automatically safe for authorizing another. Before reusing an existing guard to authorize a NEW destructive operation (`git reset --hard`, force-delete, force-push, `DROP`/`DELETE`), re-validate that the guard's safety property actually holds for THIS operation — e.g. subject-matching is sufficient to clean up a forge-merged branch, but only content-equivalence (patch-id) is safe before resetting a branch. In a sub-agent brief, never assert a safety property you have not verified; require the implementer to prove the property holds in the new context, and route any change that introduces a destructive operation through an adversarial review that specifically attacks the data-loss path.

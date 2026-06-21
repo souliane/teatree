@@ -24,6 +24,21 @@ def _run() -> str:
 
 @django.test.override_settings(USE_TZ=True)
 class TestSeedDefaultLoops(django.test.TestCase):
+    def setUp(self) -> None:
+        # Exercise the seed FUNCTION's defaults, NOT the migration's output.
+        # Migration 0094 (and friends) seed the same Loop/Prompt rows at
+        # migrate-time, and ``seed_default_loops_and_prompts`` uses
+        # ``get_or_create(name=...)`` — on the migrated test DB those rows
+        # already exist, so the ``defaults`` block never runs and the
+        # assertions would silently test the MIGRATION's output instead of the
+        # seed function. Clearing the migration-seeded rows first forces every
+        # ``get_or_create`` here to create from the seed's OWN ``defaults`` —
+        # catching a seed.py regression (e.g. reverting ``script`` to the shared
+        # ``run.py``) that the migration's rows would otherwise mask. The
+        # TestCase transaction rolls this back, so it is test-local.
+        Loop.objects.all().delete()
+        Prompt.objects.all().delete()
+
     def test_seeds_every_default_loop(self) -> None:
         seed_default_loops_and_prompts()
         names = set(Loop.objects.values_list("name", flat=True))
@@ -74,6 +89,37 @@ class TestSeedDefaultLoops(django.test.TestCase):
             has_prompt = loop.prompt_id is not None
             has_script = bool(loop.script)
             assert has_prompt != has_script, loop.name
+
+    def test_each_script_loop_points_at_its_own_module(self) -> None:
+        # The #2513 regression fix: a script loop's ``script`` is its OWN on-disk
+        # module (``src/teatree/loops/<name>/loop.py``), never the retired shared
+        # ``run.py``. The DB ``script`` column is now PER-LOOP and load-bearing.
+        seed_default_loops_and_prompts()
+        for loop in Loop.objects.filter(name__in=[s.name for s in DEFAULT_LOOPS]):
+            if loop.script:
+                assert loop.script == f"src/teatree/loops/{loop.name}/loop.py", loop.name
+
+    def test_no_loop_points_at_the_retired_shared_runner(self) -> None:
+        # No seeded row may carry the retired shared ``run.py`` entry point.
+        seed_default_loops_and_prompts()
+        assert not Loop.objects.filter(script="src/teatree/loops/run.py").exists()
+
+    def test_no_two_script_loops_share_an_entry_point(self) -> None:
+        # The owner's rule: the script is not shared — it is specific to one loop.
+        # Every script-backed row must carry a DISTINCT entry point.
+        seed_default_loops_and_prompts()
+        scripts = list(Loop.objects.exclude(script="").values_list("script", flat=True))
+        assert len(scripts) == len(set(scripts)), scripts
+
+    def test_arch_review_is_prompt_backed_and_references_the_review_skill(self) -> None:
+        # arch_review stays the single PROMPT-backed default; its body is a real
+        # instruction telling the sub-agent to run an architectural review using
+        # the ``ac-reviewing-codebase`` skill (owner decision) — not a script.
+        seed_default_loops_and_prompts()
+        arch = Loop.objects.get(name="arch_review")
+        assert arch.script == ""
+        assert arch.prompt_id is not None
+        assert "ac-reviewing-codebase" in arch.prompt.body
 
     def test_management_command_seeds_and_reports(self) -> None:
         out = _run()

@@ -177,3 +177,64 @@ class TestMasterHonoursLoopStateAndEnv(django.test.TestCase):
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-anchor"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="m-anchor").last_run_at is None
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMasterColumnIsLoadBearing(django.test.TestCase):
+    """The live tick dispatches each row via ITS OWN ``script``/``prompt`` column.
+
+    The #2513 regression: the master selected behaviour by a name-only registry
+    lookup, so the DB ``script`` column was dead. These pin that the column is
+    now LOAD-BEARING — which loop's jobs fan out is decided by reading
+    ``Loop.script`` (resolved to a loop name), not by the row's name.
+    """
+
+    def test_dispatch_follows_the_script_column_not_the_row_name(self) -> None:
+        # A row NAMED "m-alias" whose ``script`` points at "m-target"'s OWN module
+        # must dispatch "m-target"'s jobs — proving the column drives selection.
+        # On the pre-fix name-only lookup this would dispatch "m-alias".
+        now = timezone.now()
+        Loop.objects.create(name="m-alias", delay_seconds=60, script="src/teatree/loops/m-target/loop.py")
+        registry = (_mini("m-alias"), _mini("m-target"))
+        with patch("teatree.loops.master.iter_loops", return_value=registry):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-target" in jobs
+        assert "job-m-alias" not in jobs
+
+    def test_script_row_pointing_at_its_own_module_dispatches_itself(self) -> None:
+        # The seeded shape: a row's ``script`` is its OWN module, so it dispatches
+        # its own jobs.
+        now = timezone.now()
+        Loop.objects.create(name="m-self", delay_seconds=60, script="src/teatree/loops/m-self/loop.py")
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-self"),)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-self" in jobs
+
+    def test_stale_shared_script_row_is_logged_and_skipped_never_silent(self) -> None:
+        # A row still holding the retired shared ``run.py`` does NOT resolve to a
+        # registered loop module: the resolver raises loudly, the master logs it
+        # and skips that row (never a silent no-op), and the healthy sibling still
+        # runs — one bad row never aborts the tick. The stale row is not bumped.
+        now = timezone.now()
+        Loop.objects.create(name="m-stale", delay_seconds=60, script="src/teatree/loops/run.py")
+        Loop.objects.create(name="m-good", delay_seconds=60, script="src/teatree/loops/m-good/loop.py")
+        registry = (_mini("m-stale"), _mini("m-good"))
+        with (
+            patch("teatree.loops.master.iter_loops", return_value=registry),
+            self.assertLogs("teatree.loops.master", level="ERROR") as logs,
+        ):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-good" in jobs
+        assert "job-m-stale" not in jobs
+        assert any("m-stale" in line or "run.py" in line for line in logs.output)
+        assert Loop.objects.get(name="m-stale").last_run_at is None
+        assert Loop.objects.get(name="m-good").last_run_at == now
+
+    def test_prompt_row_dispatches_its_own_loop_jobs(self) -> None:
+        # A prompt-backed row (arch_review shape) dispatches its OWN loop's jobs —
+        # the column is read (prompt-backed) and the row's own loop fans out.
+        now = timezone.now()
+        Loop.objects.create(name="m-prompt", delay_seconds=60, prompt=_prompt())
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-prompt"),)):
+            jobs = build_loop_table_jobs({}, now=now)
+        assert "job-m-prompt" in jobs

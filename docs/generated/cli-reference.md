@@ -3994,6 +3994,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ notify          Slack egress from the shell (#1030, #1750).                  │
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
+│ honesty         Situational honesty-critical escalation (#2263).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4606,6 +4607,9 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 
  Idempotent: re-running over an already-started ticket merges new repos
  into ``ticket.repos`` so the next ``execute_provision`` picks them up.
+ Per-repo branches (#33): a ``--repos`` token may carry its branch as
+ ``repo:branch`` so split-branch repos provision as siblings in one dir
+ (the dir is ``extra['branch']``; a bare token falls back to it).
 
  Filesystem-evidence double-dispatch guard (#2217): before materialising a
  worktree for issue ``N``, refuse when a *foreign* ``N-*`` worktree dir
@@ -5328,6 +5332,8 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │ migrate          Apply pending migrations to the runtime self-DB             │
 │                  (non-destructive self-rescue).                              │
 │ refresh          Re-import the worktree database from dump/DSLR.             │
+│ approve          Record a single-use DbApproval that satisfies the #777      │
+│                  fresh-dump gate without a TTY (#953).                       │
 │ restore-ci       Restore database from the latest CI dump.                   │
 │ reset-passwords  Reset all user passwords to a known dev value.              │
 │ query            Run a read-only SQL query against the control DB; emit rows │
@@ -5410,6 +5416,39 @@ Usage: t3 teatree db refresh [OPTIONS]
 │                                               interactive-TTY approval is    │
 │                                               required instead.              │
 │ --help                                        Show this message and exit.    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db approve`
+
+```
+Usage: t3 teatree db approve [OPTIONS] OP TENANT
+
+ Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY
+ (#953/#126).
+
+ The recorded-approval channel is the no-TTY satisfier for
+ ``db refresh --fresh-dump``: a chat-only operator records the
+ approval here, then the agent re-runs ``db refresh --fresh-dump
+ --user-authorized <id>`` which consumes the row single-use. The
+ scope is normalized identically at record and consume, so the
+ recorded ``(op, tenant)`` matches the gate's expected scope (named
+ in its refusal message) regardless of case/whitespace.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    op          TEXT  The DB op to authorize (e.g. `fresh-dump`).           │
+│                        [required]                                            │
+│ *    tenant      TEXT  The tenant / source database the op is scoped to.     │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Id of the human user recording the approval.      │
+│                            Refused if it names a maker/coding-agent/loop     │
+│                            role — the executing agent can never              │
+│                            self-authorize the op (#953, mirrors MergeClear   │
+│                            §17.8 / approve-on-behalf #960).                  │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7616,5 +7655,42 @@ Usage: t3 teatree retro gate-failures [OPTIONS]
 │                                      issues.                                 │
 │                                      [default: enforcement-gap]              │
 │ --help                               Show this message and exit.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree honesty`
+
+```
+Usage: t3 teatree honesty [OPTIONS] COMMAND [ARGS]...
+
+ Situational honesty-critical escalation (#2263).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ escalate  Record a situational escalation so the next verification spawn     │
+│           routes to the most-honest model.                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree honesty escalate`
+
+```
+Usage: t3 teatree honesty escalate [OPTIONS]
+
+ Record a honesty escalation so the next verification spawn routes to the
+ most-honest model.
+
+ The next ``(reviewing|requesting_review|testing)`` spawn for this session
+ resolves to `` honesty_model`` (today Fable). Situational and
+ auto-clearing — not a standing reviewer change.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT     user_asked | self_assessed_dishonest |             │
+│                           accused_of_lying | shipped_incomplete              │
+│ --task           INTEGER  Optional task id to scope the escalation to.       │
+│ --session        TEXT     Session id (defaults to the active session).       │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

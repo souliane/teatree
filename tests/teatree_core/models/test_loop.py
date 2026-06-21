@@ -54,9 +54,9 @@ class TestLoopAdditiveFields(TestCase):
         assert loop.overlay == ""
 
     def test_script_only_loop_round_trips(self) -> None:
-        Loop.objects.create(name="demo-script", delay_seconds=60, prompt=None, script="src/teatree/loops/run.py")
+        Loop.objects.create(name="demo-script", delay_seconds=60, prompt=None, script="src/teatree/loops/demo/loop.py")
         reloaded = Loop.objects.get(name="demo-script")
-        assert reloaded.script == "src/teatree/loops/run.py"
+        assert reloaded.script == "src/teatree/loops/demo/loop.py"
         assert reloaded.prompt_id is None
 
     def test_overlay_stores_backend_name_generically(self) -> None:
@@ -211,6 +211,17 @@ class TestLoopManager(TestCase):
         Loop.objects.mark_run("demo-mark", ts)
         assert Loop.objects.get(name="demo-mark").last_run_at == ts
 
+    def test_set_enabled_flips_the_row_toggle(self) -> None:
+        Loop.objects.create(name="demo-toggle", delay_seconds=60, prompt=_prompt(), enabled=False)
+        updated = Loop.objects.set_enabled("demo-toggle", enabled=True)
+        assert updated == 1
+        assert Loop.objects.get(name="demo-toggle").enabled is True
+        Loop.objects.set_enabled("demo-toggle", enabled=False)
+        assert Loop.objects.get(name="demo-toggle").enabled is False
+
+    def test_set_enabled_is_a_no_op_for_an_absent_row(self) -> None:
+        assert Loop.objects.set_enabled("demo-absent", enabled=True) == 0
+
 
 class TestLoopSeed(TestCase):
     """The data migration seeds one autonomous row per loop (#1796)."""
@@ -263,7 +274,11 @@ class TestLoopBackfillSatisfiesXor(TestCase):
         assert loop.prompt.body != ""
         assert loop.script == ""
 
-    def test_other_loops_run_the_script_entry_point(self) -> None:
+    def test_other_loops_run_their_own_per_loop_module(self) -> None:
+        # #2513: each script loop's ``script`` is its OWN module, never the
+        # retired shared ``run.py``. The DB ``script`` column is per-loop and
+        # load-bearing — migration 0094 repointed every default script row.
         loop = Loop.objects.get(name="dispatch")
-        assert loop.script == "src/teatree/loops/run.py"
+        assert loop.script == "src/teatree/loops/dispatch/loop.py"
         assert loop.prompt_id is None
+        assert not Loop.objects.filter(script="src/teatree/loops/run.py").exists()

@@ -46,6 +46,24 @@ class _WorktreeTaskTest(TestCase):
             extra={"worktree_path": "/tmp/wt"},
         )
 
+    def _unknown_overlay_worktree(self, *, state: Worktree.State) -> Worktree:
+        """A worktree whose overlay is no longer registered (uninstalled/foreign).
+
+        ``resolve_overlay_name("ghost-overlay")`` returns ``None`` under the
+        ``{"test": CommandOverlay()}`` registry, so a worker that constructs its
+        runner would call ``get_overlay_for_worktree`` and raise ``Overlay not
+        found`` on every re-fire.
+        """
+        ticket = Ticket.objects.create(overlay="ghost-overlay", issue_url="https://example.com/ghost")
+        return Worktree.objects.create(
+            ticket=ticket,
+            overlay="ghost-overlay",
+            repo_path="repo",
+            branch="feat-x",
+            state=state,
+            extra={"worktree_path": "/tmp/wt"},
+        )
+
 
 class TestExecuteWorktreeProvision(_WorktreeTaskTest):
     def test_skips_when_state_is_not_provisioned(self) -> None:
@@ -92,6 +110,24 @@ class TestExecuteWorktreeStart(_WorktreeTaskTest):
             result = execute_worktree_start.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "docker-error"}
 
+    def test_unknown_overlay_fails_permanently_not_raises(self) -> None:
+        """An unregistered overlay degrades to a recorded ``ok=False`` — never raises.
+
+        Parity with ``execute_worktree_provision``'s poison-pill guard
+        (souliane/teatree#1975). The real start runner resolves the overlay in
+        its ``__init__`` (``get_overlay_for_worktree``), which raises ``Overlay
+        not found`` on every re-fire for a worktree whose overlay was
+        uninstalled. The runner is left UNMOCKED so the test reproduces the
+        actual production raise; the worker must short-circuit BEFORE
+        constructing the runner so one bad worktree never crashes its FSM
+        worker forever.
+        """
+        wt = self._unknown_overlay_worktree(state=Worktree.State.SERVICES_UP)
+        result = execute_worktree_start.call(wt.pk)
+        assert result["worktree_id"] == wt.pk
+        assert result["ok"] is False
+        assert "ghost-overlay" in result["detail"]
+
 
 class TestExecuteWorktreeVerify(_WorktreeTaskTest):
     def test_skips_when_state_is_not_ready(self) -> None:
@@ -114,6 +150,23 @@ class TestExecuteWorktreeVerify(_WorktreeTaskTest):
             runner.return_value.run.return_value = RunnerResult(ok=False, detail="sick")
             result = execute_worktree_verify.call(wt.pk)
         assert result == {"worktree_id": wt.pk, "ok": False, "detail": "sick"}
+
+    def test_unknown_overlay_fails_permanently_not_raises(self) -> None:
+        """An unregistered overlay degrades to a recorded ``ok=False`` — never raises.
+
+        Parity with ``execute_worktree_provision``'s poison-pill guard
+        (souliane/teatree#1975). The real verify runner resolves the overlay in
+        its ``__init__`` (``get_overlay_for_worktree``), which raises ``Overlay
+        not found`` on every re-fire for a worktree whose overlay was
+        uninstalled. The runner is left UNMOCKED so the test reproduces the
+        actual production raise; the worker must short-circuit BEFORE
+        constructing the runner.
+        """
+        wt = self._unknown_overlay_worktree(state=Worktree.State.READY)
+        result = execute_worktree_verify.call(wt.pk)
+        assert result["worktree_id"] == wt.pk
+        assert result["ok"] is False
+        assert "ghost-overlay" in result["detail"]
 
 
 class TestExecuteWorktreeTeardown(_WorktreeTaskTest):

@@ -12,7 +12,6 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
-from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
@@ -22,7 +21,8 @@ from teatree.core.management.commands._workspace_docker import reap_stale_local_
 from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
-    TicketIntake,
+    RawTicketInputs,
+    build_intake,
     build_ticket,
 )
 from teatree.core.models import Ticket, Worktree
@@ -168,6 +168,9 @@ class Command(TyperCommand):
 
         Idempotent: re-running over an already-started ticket merges new repos
         into ``ticket.repos`` so the next ``execute_provision`` picks them up.
+        Per-repo branches (#33): a ``--repos`` token may carry its branch as
+        ``repo:branch`` so split-branch repos provision as siblings in one dir
+        (the dir is ``extra['branch']``; a bare token falls back to it).
 
         Filesystem-evidence double-dispatch guard (#2217): before materialising a
         worktree for issue ``N``, refuse when a *foreign* ``N-*`` worktree dir
@@ -180,15 +183,8 @@ class Command(TyperCommand):
         # Infer from the issue URL whose workspace repos own it; the
         # default ``get_overlay()`` env-var path still wins when set.
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
-        repo_names = resolve_repo_names(overlay, issue_url, repos)
-
-        intake = TicketIntake(
-            issue_url=issue_url,
-            variant=variant,
-            repo_names=repo_names,
-            description=description,
-            take_over=take_over,
-        )
+        raw = RawTicketInputs(issue_url, repos, variant, description, take_over)
+        intake = build_intake(overlay, raw)
         try:
             ticket = build_ticket(self.stderr.write, overlay, intake, _workspace_dir())
         except ForeignIssueWorktreeRefusedError:

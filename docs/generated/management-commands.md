@@ -194,9 +194,9 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 | Subcommand | Description |
 | --- | --- |
 | `pause` | Move *name* into the reversible PAUSED hold |
-| `resume` | Return *name* to ENABLED, clearing a pause OR a disable |
-| `disable` | Move *name* into the durable DISABLED kill-switch |
-| `enable` | Return *name* to ENABLED (alias of resume) |
+| `resume` | Return *name* to ENABLED, clearing a pause OR a disable — both planes |
+| `disable` | Move *name* into the durable DISABLED kill-switch — both planes |
+| `enable` | Return *name* to ENABLED (alias of resume) — both planes |
 | `status` | Report *name*'s durable state (ENABLED when no row exists) |
 
 ## `loop_tick`

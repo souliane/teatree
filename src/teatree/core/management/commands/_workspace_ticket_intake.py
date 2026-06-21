@@ -9,12 +9,13 @@ freshly-created ticket back and leaves no DB trace.
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from django.db import transaction
 
+from teatree.core.dev_repo import parse_repo_branch_map, resolve_repo_names
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
@@ -43,6 +44,39 @@ class TicketIntake:
     repo_names: list[str]
     description: str
     take_over: bool
+    # #33: per-repo branch map (repo -> branch). The ticket DIR is still the
+    # single ``extra['branch']``; only the per-repo git branch differs, so split
+    # branches provision as SIBLINGS in one dir. A repo absent from the map
+    # falls back to ``extra['branch']`` in the provisioner. Empty = uniform.
+    branches: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RawTicketInputs:
+    """The raw ``workspace ticket`` CLI flags, before repo/branch resolution."""
+
+    issue_url: str
+    repos: str
+    variant: str
+    description: str
+    take_over: bool
+
+
+def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
+    """Resolve the raw ``workspace ticket`` CLI inputs into a :class:`TicketIntake`.
+
+    Splits the ``--repos`` string into bare repo names and, per #33, the
+    per-repo ``repo:branch`` override map — both derived from the one string
+    so the CLI command body stays thin.
+    """
+    return TicketIntake(
+        issue_url=raw.issue_url,
+        variant=raw.variant,
+        repo_names=resolve_repo_names(overlay, raw.issue_url, raw.repos),
+        description=raw.description,
+        take_over=raw.take_over,
+        branches=parse_repo_branch_map(raw.repos),
+    )
 
 
 def slugify(text: str, max_length: int = 40) -> str:
@@ -107,6 +141,14 @@ def build_ticket(
             extra["branch"] = build_branch_name(intake.repo_names, ticket.ticket_number, description)
         if description and not extra.get("description"):
             extra["description"] = description
+        # #33: merge any per-repo branch overrides so a split-branch ticket
+        # provisions each repo on its own branch while sharing one ticket dir.
+        # Merge (not replace) so re-running ``ticket`` to add a repo's branch
+        # keeps the branches already recorded for sibling repos.
+        if intake.branches:
+            merged = dict(extra.get("branches") or {})
+            merged.update(intake.branches)
+            extra["branches"] = merged
         ticket.extra = extra
         ticket.save()
 

@@ -109,15 +109,20 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("migrate", "Apply pending migrations to the runtime self-DB (non-destructive self-rescue)."),
             ("refresh", "Re-import the worktree database from dump/DSLR."),
+            ("approve", "Record a single-use DbApproval that satisfies the #777 fresh-dump gate without a TTY (#953)."),
             ("restore-ci", "Restore database from the latest CI dump."),
             ("reset-passwords", "Reset all user passwords to a known dev value."),
             ("query", "Run a read-only SQL query against the control DB; emit rows as JSON."),
             ("shell", "Drop into a Django shell against the resolved (gate) control DB."),
         ],
         # `migrate` migrates the teatree-core control DB the merge gate reads,
-        # so it must run in the runtime process (#126); its siblings keep
-        # routing through the overlay manage.py.
-        core_subcommands=frozenset({"migrate"}),
+        # so it must run in the runtime process (#126). `approve` records a
+        # DbApproval row in that same teatree-core control DB (the gate reads it
+        # at consume time), so it must also run in the runtime process rather
+        # than route through an overlay manage.py whose self-DB lacks the row.
+        # Their siblings (refresh/restore-ci/reset-passwords) keep routing
+        # through the overlay manage.py for the overlay's db_import strategy.
+        core_subcommands=frozenset({"migrate", "approve"}),
     ),
     "pr": DjangoGroup(
         "Pull request helpers.",
@@ -307,6 +312,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                     "Extract a session's gate failures, classify preventable/environmental, "
                     "and --escalate a deduped enforcement issue per recurring preventable one."
                 ),
+            ),
+        ],
+        core_dispatch=True,
+    ),
+    "honesty": DjangoGroup(
+        "Situational honesty-critical escalation (#2263).",
+        [
+            (
+                "escalate",
+                "Record a situational escalation so the next verification spawn routes to the most-honest model.",
             ),
         ],
         core_dispatch=True,
