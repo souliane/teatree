@@ -767,6 +767,23 @@ AskUserQuestion(questions=[{"question": "Which target branch — main or develop
 # AskUserQuestion(questions=[{"question": "Which target branch — main or develop?", ...}])  # FORBIDDEN re-ask
 ```
 
+**Do the best autonomously — never ask a determinable quality/approach/scope decision (do X, never Y).** `AskUserQuestion` exists for things you genuinely cannot decide alone — it is NOT a place to offload a judgment call you can resolve by doing the best work. When a quality / approach / scope choice has a _determinable best answer_ — "fix all the issues or just some?", "which of these approaches?", "make it thorough or just okay?", "should I do the heavy/full version?" — the answer is always **do the best**: pick the best option, do the full/thorough work even when it is a lot more work, and briefly STATE the choice you made. Do not hand that decision back to the user. The user repeats this daily; deferring a determinable-best decision reads as the agent making the user do the agent's job.
+
+```python
+# Determinable-best scope/approach decision — do X: pick the best, do the full work, state it. NO AskUserQuestion.
+# "Fixing all five related issues is the best outcome and fully determinable — done all five; stating it here."
+Edit(file_path="module.py", ...)   # do the thorough fix
+# never Y — do NOT defer a decision you can resolve by doing the best work:
+# AskUserQuestion(questions=[{"question": "Fix all five issues or just the one the ticket names?", ...}])  # FORBIDDEN
+```
+
+**The boundary — what you SHOULD still ask (do ask Z).** Asking is correct, not a violation, when the blocker is something you genuinely cannot know or decide alone:
+
+- a **fact you cannot obtain** — a private URL/endpoint, the intended audience, a credential/token, a value that lives only in the user's head and is in no repo/config you can read;
+- **authorization for an irreversible or outward-facing action** — a force-push to a default branch, a destructive DB op, a post/PR/merge that leaves the machine (per the always-gated and on-behalf rules below).
+
+The test is sharp: _can I reach the best outcome by doing the work?_ If yes → do it, don't ask. If the blocker is a missing fact or an authorization gate → ask via `AskUserQuestion`. "I could resolve this by doing the best work" is RED; "I truly cannot know this / am not authorized" is GREEN. Pinned by `do_the_best_without_asking` and `legitimate_missing_fact_question_is_allowed` (`evals/scenarios/do_the_best_no_tech_debt.yaml`).
+
 **Don't abandon an in-progress one-by-one walk-through.** If you have started taking the user through items one at a time, finish the sequence. Do not switch to autonomous work mid-walk-through and leave the remaining items dangling.
 
 **Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
@@ -785,6 +802,30 @@ Asking is half the contract; **applying the right answer** is the other half. A 
 4. **One answer resolves one question.** A single injected answer applies to exactly the one question it cites — never fan it out across other open or already-closed questions.
 
 The failure mode this prevents: flipping a deploy target / region mid-action because a late or superseded "1"/"yes" landed in chat after the real decision was already made and acted on. Pinned by `evals/scenarios/askuserquestion_slack_resolution.yaml` (`applies_injected_askuserquestion_answer`, `does_not_apply_stale_locally_answered_reply`, `does_not_apply_superseded_generation_reply`).
+
+## Never Introduce Tech Debt; Reduce It (Non-Negotiable)
+
+Doing the best (the rule above) extends to HOW the work lands, not only whether you ask. **Solve the underlying problem cleanly — never introduce tech debt to finish faster, and take any opportunity to reduce existing debt in the area you touch (do X, never Y).**
+
+When a fix trips a real linter/type error, a failing test, or an awkward edge, the right move is to fix the _cause_. The drift this pins is the fast-but-dirty shortcut that papers over the cause to go green sooner:
+
+- a lint/type **suppression** — `# noqa`, `# type: ignore`, a new `per-file-ignores` entry, a relaxed ruff rule;
+- a **TODO/FIXME-for-later** left in code instead of the fix;
+- a **workaround** that masks the cause rather than removing it;
+- a **weakened, xfailed, or skipped test** (`pytest.mark.xfail` / `.skip`) slapped on instead of making the assertion pass honestly;
+- lowering a **coverage threshold** or adding a file to a coverage/omit list.
+
+```python
+# Linter complains the function is too complex — do X: refactor so it passes on its merits.
+Edit(file_path="module.py", old_string="<the tangled function>", new_string="<the cleanly split version>")
+# never Y — do NOT silence the cause to finish faster:
+# Edit(file_path="module.py", new_string="def f(...):  # noqa: C901  TODO: refactor later")  # FORBIDDEN
+# Edit(file_path="test_module.py", new_string="@pytest.mark.skip  # flaky, fix later")        # FORBIDDEN
+```
+
+**Reduce debt when you are already there.** If the file you are fixing carries existing debt — a stale suppression you can now remove, a duplicated helper you can collapse, a misleading name you can rename — clean it in the same change. You are already in the file; leaving the debt for "later" is the deferral the rule above forbids, applied to code health.
+
+**The carve-out is the same as everywhere else: ASK, don't suppress silently.** If a clean fix genuinely needs significant refactoring or a structural config change (a ruff rule, a coverage floor), surface the trade-off via `AskUserQuestion` with concrete options — never quietly add the suppression and move on. Introducing debt is a decision the user makes explicitly, not a shortcut the agent takes to save time. Pinned by `no_tech_debt_fixes_cleanly_not_a_suppression` (`evals/scenarios/do_the_best_no_tech_debt.yaml`); the project-level bar is `CLAUDE.md` § "No tech debt without explicit approval".
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
