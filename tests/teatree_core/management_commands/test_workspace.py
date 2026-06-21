@@ -2826,15 +2826,23 @@ class TestDropOrphanDatabases(TestCase):
         assert not any("other_db" in " ".join(c) for c in commands_run if "dropdb" in c)
 
 
+# A deterministic git identity for tests. The CI image (dev/Dockerfile.test,
+# Ubuntu, user ``testuser``) configures no ``user.name``/``user.email`` and,
+# unlike a dev box's git, cannot auto-detect one — so any ``git commit`` with no
+# identity in the environment aborts with rc=128 "Author identity unknown". A
+# test must therefore inject this identity into the environment of *every* commit
+# it triggers, including the one ``workspace finalize`` runs as a subprocess.
+_GIT_IDENTITY_ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+}
+
+
 def _git(repo: Path, *args: str) -> str:
     """Run git in ``repo`` with a deterministic identity, returning stdout."""
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@t",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@t",
-    }
+    env = {**os.environ, **_GIT_IDENTITY_ENV}
     out = subprocess.run(
         ["git", "-C", str(repo), *args],  # noqa: S607
         check=True,
@@ -2920,7 +2928,12 @@ class TestWorkspaceFinalizeMainCloneGuard(TestCase):
                 extra={"worktree_path": str(wt)},
             )
 
-            result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
+            # finalize squashes via a real ``git commit`` subprocess, which
+            # inherits this process's environment — give it the same identity
+            # ``_git`` uses so it never aborts on "Author identity unknown" in
+            # the identity-less CI image.
+            with patch.dict(os.environ, _GIT_IDENTITY_ENV):
+                result = cast("str", call_command("workspace", "finalize", str(ticket.pk)))
 
             assert "squashed 2 commits" in result
             # The squash produced exactly one commit ahead of the base.
