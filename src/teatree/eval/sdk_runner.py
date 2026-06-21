@@ -88,7 +88,19 @@ _METERED_EFFORT_ENV_VAR = "T3_EVAL_EFFORT"
 #: sub-agent-spawning scenarios (an orchestrator that delegates an investigation
 #: timed out before it finished), so the default is raised. Override via
 #: ``T3_EVAL_WATCHDOG_SECONDS``.
-DEFAULT_WATCHDOG_SECONDS = 300
+#:
+#: In the EVAL lane, COST ($) and TURNS are the meaningful gates — a
+#: behaviourally-correct trajectory bounded by its ``max_budget_usd`` /
+#: ``max_turns`` must NOT be falsely red'd by latency alone (#2192: a
+#: ``timeout`` cap-taints the pass@k aggregate exactly like a budget/turn cap,
+#: so a slow-but-correct trial reds a scenario whose other trial passed). The
+#: wall-clock watchdog is therefore only a GENEROUS hang-backstop: high enough
+#: that a slow-but-correct fan-out/delegation trajectory finishes inside it,
+#: yet FINITE so a true hang (one that burns neither cost nor turns) is still
+#: caught. It is deliberately NOT a latency gate. Provisioning / E2E / workspace
+#: timeouts are unaffected — those legitimately catch I/O waste and live
+#: elsewhere; this constant scopes strictly to the eval lane.
+DEFAULT_WATCHDOG_SECONDS = 900
 
 #: GENEROUS default per-run budget for the metered ``t3 eval run --backend sdk``
 #: lane — distinct from the cheap-lane :data:`MAX_BUDGET_USD` runner floor (0.10),
