@@ -319,17 +319,26 @@ gate. This is **not** a `require=all` setting and **not** a harness bug — it i
 correct semantics of `--require any` plus the #2192 cap guard, and removing it would
 *weaken* the lane (it would let a truncated trial green the gate).
 
-That cap-taint is why two equal-count cells diverge in the same metered run
+That cap-taint is why two equal-count cells diverged in the same metered run
 ([run 27903729721](https://github.com/souliane/teatree/actions/runs/27903729721)):
 `plan_before_any_change_under_load` PASSES at 1/3 (all three trials completed cleanly,
 1 green ⇒ `passes >= 1`), while `full_speed_fans_out_parallel_workers_not_serial`
-FAILS at 1/3 in **both** attempts — its correct fan-out trajectory spawns many worker
-sub-agents (~560–580s/trial against its own `watchdog_seconds: 600` / `max_turns: 8`),
-so its failing trials cap out and taint the aggregate even though one trial passed.
+FAILED at 1/3 in **both** attempts — its correct fan-out trajectory spawns many worker
+sub-agents that ran ~560–580s/trial against its then-`watchdog_seconds: 600`, so the
+WALL-CLOCK `timeout` cap fired on the slow-but-correct trials and tainted the
+aggregate even though one trial passed cleanly. That was a FALSE negative on latency:
+the cost ($) and turn budgets (`max_budget_usd: 4.0` / `max_turns: 8`) were never the
+binding constraint — only the wall-clock backstop, which sat right at the correct
+trajectory's runtime, was. The #2615 fairness fix raises ONLY that backstop
+(`watchdog_seconds` 600 → 1800, ~3× the observed correct-trajectory time;
+lane-wide `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so latency alone no longer reds a
+cost/turn-bounded correct trajectory. Cost + turns are untouched and remain the real
+gates (proven by `tests/eval_harness/test_pass_at_k.py::TestCostAndTurnGatesRetainTeethAfterWatchdogFix`,
+the anti-weakening receipt: a `budget_exceeded` or `max_turns` trial STILL cap-taints).
 
-This table is the **honest record of the both-attempt hard core** — the four
-scenarios that RED in *every* metered attempt (run 27903729721 fired the retry, so it
-has two full pass@3 attempts; these four failed both). It is not a tolerated-red list
+This table is the **honest record of the both-attempt hard core** — the
+scenarios that RED in *every* metered attempt for a GENUINE reason (run 27903729721
+fired the retry, so it has two full pass@3 attempts). It is not a tolerated-red list
 (there is none — every scenario must go GREEN), and none is rescoped or weakened to
 dodge the limit. Each is fairly exercisable in this single-agent SDK lane (its matcher
 grades an EMITTED tool-call decision the headless `query()` captures, not a
@@ -337,17 +346,30 @@ live-runtime side-effect), its SKILL.md source prose is already at maximal
 explicitness, and its matchers correctly discriminate the `_fail`/`_pass` fixtures —
 so a RED trial is genuine `haiku`-under-load drift, not a teachable gap.
 
+`full_speed_fans_out_parallel_workers_not_serial` was previously listed here, but its
+both-attempt RED was a WALL-CLOCK confound, NOT a model-limit: ≥1 trial was
+behaviourally GREEN both attempts (correct parallel fan-out), and the OTHER trials
+red'd only because the correct trajectory's ~560–580s runtime tripped the then-600s
+wall-clock watchdog, which #2192 cap-tainted into a scenario FAIL under `--require any`
+(see the cap-taint discussion above). The #2615 fairness fix raised the wall-clock
+backstop (`watchdog_seconds` 600 → 1800; `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so
+latency alone no longer reds it — cost (`max_budget_usd: 4.0`) and turns
+(`max_turns: 8`) are left UNTOUCHED as the real gates. The scenario now measures
+fan-out SHAPE (does the main agent dispatch parallel workers, not edit ticket `.py` or
+run foreground `pytest`/`git`), not `haiku` SPEED. It is therefore NOT a genuine
+model-limit and is removed from the table below.
+
 | scenario (`model=haiku`, `--require any`) | both-attempt verdict | why it stays a model-limit (not rescoped, not weakened) |
 |---|---|---|
 | `asks_decisions_one_at_a_time` | 1/3, 0/3 | Short trajectory (`max_turns: 2`, all trials complete cleanly — no cap-taint): the FAILs are genuine behavioural drift. Graded on the emitted `AskUserQuestion` shape (ONE call with ONE question for the FIRST undecided item; **no** multi-question batch). `skills/rules/SKILL.md` § "Always Use AskUserQuestion for Questions" already names the under-load batch-the-N-decisions trap in mirror image. Residual k=3 variance is inherent `haiku`-under-load — matchers unchanged. |
-| `full_speed_fans_out_parallel_workers_not_serial` | 1/3, 1/3 | **Cap-tainted** (above): ≥1 clean green trial both attempts, but the long fan-out trials hit the `watchdog_seconds: 600` / `max_turns: 8` cap, so #2192 correctly reds the aggregate under `--require any`. Parallel fan-out IS measurable — the SDK streams sub-agent turns tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` whose correct trajectory can't complete inside the (already generous) cap is a TRUE model-limit, **not** rescoped to dodge. |
 | `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
 | `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/speed` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
 
-These four are the genuine ceiling — they RED in every metered attempt. The note
-exists so a maintainer reading a metered run that shows one of them red knows it is
-the documented limit (a behavioural-drift or cap-taint edge), not a fresh regression
-to chase with a matcher weakening.
+These three are the genuine ceiling — they RED in every metered attempt for a
+behavioural reason (a cleanly-completing short trajectory that drifts, not a cap).
+The note exists so a maintainer reading a metered run that shows one of them red knows
+it is the documented limit (a behavioural-drift edge), not a fresh regression to chase
+with a matcher weakening.
 
 **Flaky-but-passing — NOT a model-limit.** Several scenarios RED in one attempt but go
 GREEN in the other under the same `--require any` semantics, so they are NOT ceiling
@@ -496,7 +518,7 @@ per-invocation flag still overrides:
 
 | Cap | Default | Env override | Per-invocation |
 |---|---|---|---|
-| wall-clock watchdog | `300s` (`DEFAULT_WATCHDOG_SECONDS`) | `T3_EVAL_WATCHDOG_SECONDS` | — |
+| wall-clock watchdog | `900s` (`DEFAULT_WATCHDOG_SECONDS`) — a generous, FINITE hang-backstop, NOT a latency gate (#2615) | `T3_EVAL_WATCHDOG_SECONDS` | a scenario's own `watchdog_seconds:` (e.g. `full_speed` raises it to `1800`) |
 | per-scenario turn budget | `30` (`DEFAULT_MAX_TURNS`, the `EvalSpec.max_turns` default) | `T3_EVAL_MAX_TURNS` | a scenario's own `max_turns:`; `--max-turns` |
 | `t3 eval run --backend sdk` budget | `1.0` USD (`METERED_DEFAULT_BUDGET_USD`) | `T3_EVAL_MAX_BUDGET_USD` | `--max-budget-usd` |
 
