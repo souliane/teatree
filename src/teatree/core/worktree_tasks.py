@@ -39,6 +39,25 @@ class WorktreeTransitionResult(TypedDict, total=False):
     detail: str
 
 
+def _unknown_overlay_reason(worktree: Worktree, *, verb: str) -> str | None:
+    """Return why *worktree*'s overlay is unresolvable, or ``None`` when it resolves.
+
+    The shared poison-pill guard (souliane/teatree#1975, mirroring #1959/#1969):
+    a worktree whose effective overlay (its own field, falling back to the
+    ticket's) names a non-empty overlay that no longer resolves can never run a
+    runner that constructs ``get_overlay_for_worktree`` — it raises ``Overlay
+    not found`` on every re-fire, crashing the FSM worker forever. The workers
+    short-circuit to a recorded ``ok=False`` instead of raising. A blank overlay
+    is the ambient single-overlay default and stays dispatchable (``None``).
+    """
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+
+    effective_overlay = worktree.overlay or worktree.ticket.overlay
+    if effective_overlay and resolve_overlay_name(effective_overlay) is None:
+        return f"unknown overlay {effective_overlay!r}: worktree {worktree.pk} cannot be {verb}"
+    return None
+
+
 @task()
 def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     """Run heavy provisioning side-effects for a single worktree.
@@ -58,11 +77,9 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     ticket's) names a non-empty overlay that no longer resolves can never
     provision — ``get_overlay_for_worktree`` raises ``Overlay not found``
     every re-fire. Fail it permanently with a recorded result instead of
-    raising forever. A blank overlay is the ambient single-overlay default
-    and stays dispatchable.
+    raising forever (:func:`_unknown_overlay_reason`). A blank overlay is the
+    ambient single-overlay default and stays dispatchable.
     """
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
-
     with transaction.atomic():
         worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
         if worktree.state != Worktree.State.PROVISIONED:
@@ -73,9 +90,8 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
 
-        effective_overlay = worktree.overlay or worktree.ticket.overlay
-        if effective_overlay and resolve_overlay_name(effective_overlay) is None:
-            reason = f"unknown overlay {effective_overlay!r}: worktree {worktree_id} cannot be provisioned"
+        reason = _unknown_overlay_reason(worktree, verb="provisioned")
+        if reason is not None:
             logger.warning("execute_worktree_provision: %s", reason)
             return {"worktree_id": worktree_id, "ok": False, "detail": reason}
 
@@ -96,9 +112,16 @@ def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
     overlay pre-run steps, and starts ``docker compose up -d``. State stays
     in ``SERVICES_UP`` even on failure so re-firing ``start_services()``
     replays the docker cycle.
+
+    Poison-pill guard at parity with ``execute_worktree_provision``
+    (:func:`_unknown_overlay_reason`): ``WorktreeStartRunner`` resolves the
+    overlay in its ``__init__`` (``get_overlay_for_worktree``), so a worktree
+    whose overlay was uninstalled would raise ``Overlay not found`` on every
+    re-fire. Short-circuit to a recorded ``ok=False`` before constructing the
+    runner so one bad worktree never crashes its FSM worker forever.
     """
     with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().get(pk=worktree_id)
+        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
         if worktree.state != Worktree.State.SERVICES_UP:
             logger.info(
                 "execute_worktree_start skipped for worktree %s: state=%s (not SERVICES_UP)",
@@ -106,6 +129,11 @@ def execute_worktree_start(worktree_id: int) -> WorktreeTransitionResult:
                 worktree.state,
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+
+        reason = _unknown_overlay_reason(worktree, verb="started")
+        if reason is not None:
+            logger.warning("execute_worktree_start: %s", reason)
+            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
 
         result = WorktreeStartRunner(worktree).run()
         if not result.ok:
@@ -162,9 +190,16 @@ def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
     Fired by ``Worktree.verify()``'s on_commit. Health checks are
     best-effort — failures are reported in the result detail but the
     worker does not bounce the FSM back to SERVICES_UP.
+
+    Poison-pill guard at parity with ``execute_worktree_provision``
+    (:func:`_unknown_overlay_reason`): ``WorktreeVerifyRunner`` resolves the
+    overlay in its ``__init__`` (``get_overlay_for_worktree``), so a worktree
+    whose overlay was uninstalled would raise ``Overlay not found`` on every
+    re-fire. Short-circuit to a recorded ``ok=False`` before constructing the
+    runner.
     """
     with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().get(pk=worktree_id)
+        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
         if worktree.state != Worktree.State.READY:
             logger.info(
                 "execute_worktree_verify skipped for worktree %s: state=%s (not READY)",
@@ -172,6 +207,11 @@ def execute_worktree_verify(worktree_id: int) -> WorktreeTransitionResult:
                 worktree.state,
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+
+        reason = _unknown_overlay_reason(worktree, verb="verified")
+        if reason is not None:
+            logger.warning("execute_worktree_verify: %s", reason)
+            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
 
         result = WorktreeVerifyRunner(worktree).run()
         if not result.ok:
