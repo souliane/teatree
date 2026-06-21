@@ -1,11 +1,12 @@
 """Tests for the structured step execution engine."""
 
 import subprocess
+import time
 from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from teatree.core.overlay import ProvisionStep
 from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
@@ -126,6 +127,28 @@ class TestRunCallableStep(TestCase):
         result = run_callable_step("sp-fail", lambda: completed)
         assert result.success is False
         assert "err" in result.error
+
+    @override_settings()
+    def test_callable_step_timeout_protection(self) -> None:
+        with patch("teatree.core.provision.resolve_provision_step_timeout_seconds", return_value=1):
+
+            def slow_step() -> None:
+                time.sleep(2)
+
+            result = run_callable_step("slow-step", slow_step)
+            assert result.success is False
+            assert "timed out" in result.error.lower()
+            assert "slow-step" in result.error
+
+    @override_settings()
+    def test_callable_step_completes_before_timeout(self) -> None:
+        with patch("teatree.core.provision.resolve_provision_step_timeout_seconds", return_value=2):
+
+            def fast_step() -> None:
+                time.sleep(0.1)
+
+            result = run_callable_step("fast-step", fast_step)
+            assert result.success is True
 
 
 class TestRunProvisionSteps(TestCase):
