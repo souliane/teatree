@@ -20,6 +20,7 @@ import typer
 import teatree.cli.setup as setup_mod
 import teatree.config as config_mod
 from teatree.cli import update as update_mod
+from teatree.cli._update_reconcile import _cherry_not_upstream, _merge_commits_in_range
 from teatree.cli.update import (
     ReinstallResult,
     RepoUpdate,
@@ -648,20 +649,27 @@ class TestSelfDbMigrationOnUpdate:
             update_mod._run_update()
 
 
-def _squash_merge_into_remote(tmp_path: Path, bare: Path, *, local_subject: str, file_content: str) -> str:
+def _squash_merge_into_remote(
+    tmp_path: Path, bare: Path, *, local_subject: str, file_content: str, filename: str = "feature.txt"
+) -> str:
     """Apply *file_content* under a NEW squash commit on the remote ``main``.
 
     Models a forge squash-merge: the local branch's work (subject
     *local_subject*) lands on ``origin/main`` as a single NEW commit whose
     subject carries the canonical ``(#NNN)`` suffix the PR-merge adds — so the
     classifier matches it by subject, not by SHA. Returns the remote head sha.
+
+    *filename* lets a multi-commit scenario land each local commit's patch
+    under a distinct path, so the upstream commit is patch-equivalent to the
+    local one (``git cherry`` reports ``-``) — a true per-commit squash-merge,
+    not a content-divergent approximation.
     """
     work = tmp_path / f"squash-{local_subject.replace(' ', '-')}"
     _git(tmp_path, "clone", str(bare), str(work))
     _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
     _git(work, "config", "user.name", "Tester")
-    (work / "feature.txt").write_text(file_content)
-    _git(work, "add", "feature.txt")
+    (work / filename).write_text(file_content)
+    _git(work, "add", filename)
     # The squash commit's subject = the local subject + the (#NNN) suffix the
     # forge adds on merge — exactly the shape _canonicalize_subject strips.
     _git(work, "commit", "-m", f"{local_subject} (#42)")
@@ -684,21 +692,30 @@ class TestUpdateReconcilesSquashMergedClone:
     def test_update_reconciles_squash_merged_clone(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
-        # Local commit (the work that will be squash-merged upstream).
-        (clone / "feature.txt").write_text("the feature\n")
-        _git(clone, "add", "feature.txt")
-        _git(clone, "commit", "-m", "add the feature")
-        # A second local commit, also destined to land squashed (ahead 2).
-        (clone / "feature.txt").write_text("the feature\nrefined\n")
-        _git(clone, "add", "feature.txt")
-        _git(clone, "commit", "-m", "refine the feature")
-        # Upstream squash-merges that work (one new commit) AND moves on with
-        # unrelated commits → the clone is now [ahead 2, behind M].
+        # Two local commits, each a self-contained patch (distinct file) so each
+        # lands PATCH-EQUIVALENT upstream — a true per-commit squash-merge that
+        # `git cherry` confirms with a leading '-'.
+        (clone / "first.txt").write_text("the first feature\n")
+        _git(clone, "add", "first.txt")
+        _git(clone, "commit", "-m", "add the first feature")
+        (clone / "second.txt").write_text("the second feature\n")
+        _git(clone, "add", "second.txt")
+        _git(clone, "commit", "-m", "add the second feature")
+        # Upstream squash-merges each commit (verbatim patch, new SHA) AND moves
+        # on with unrelated commits → the clone is now [ahead 2, behind M].
         _squash_merge_into_remote(
-            tmp_path, bare, local_subject="add the feature", file_content="the feature\nrefined\n"
+            tmp_path,
+            bare,
+            local_subject="add the first feature",
+            file_content="the first feature\n",
+            filename="first.txt",
         )
         _squash_merge_into_remote(
-            tmp_path, bare, local_subject="refine the feature", file_content="the feature\nrefined\nagain\n"
+            tmp_path,
+            bare,
+            local_subject="add the second feature",
+            file_content="the second feature\n",
+            filename="second.txt",
         )
         _advance_remote(tmp_path, bare, commits=2)
 
@@ -809,6 +826,161 @@ class TestUpdateReconcilesSquashMergedClone:
         assert result.status is UpdateStatus.FAILED
         assert result.is_error is True
         assert "reconcile reset failed" in result.reason
+
+    def test_reconcile_refuses_subject_colliding_genuine_commit(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Vector B: a GENUINE un-upstreamed file change whose subject happens to
+        # collide with an unrelated upstream commit of the same canonicalized
+        # subject (a routine "chore: update dependencies" — exactly what a retro
+        # commit looks like). The subject classifier buckets it ``squash_merged``,
+        # but its PATCH is not upstream → the content gate must refuse the reset,
+        # warn loudly naming the genuine sha, and preserve the file.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        # Genuine local work with a routine, collision-prone subject.
+        (clone / "genuine.txt").write_text("genuine un-upstreamed content\n")
+        _git(clone, "add", "genuine.txt")
+        _git(clone, "commit", "-m", "chore: update dependencies")
+        genuine_sha = _git(clone, "rev-parse", "HEAD")
+        # Upstream has an UNRELATED commit with the same canonicalized subject
+        # (different content), then moves on — so the clone is [ahead 1, behind M].
+        _squash_merge_into_remote(
+            tmp_path, bare, local_subject="chore: update dependencies", file_content="totally unrelated upstream\n"
+        )
+        _advance_remote(tmp_path, bare, commits=1)
+
+        result = update_repo("ovl", clone)
+
+        # Subject collides → subject classifier says "squash-merged", but the
+        # patch is NOT upstream → content gate refuses the reset.
+        assert result.status is UpdateStatus.FAILED
+        assert _git(clone, "rev-parse", "HEAD") == genuine_sha
+        assert (clone / "genuine.txt").read_text() == "genuine un-upstreamed content\n"
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert genuine_sha[:7] in out
+
+    def test_reconcile_refuses_amended_commit_adding_content(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Vector C: a commit was squash-merged upstream, then AMENDED locally to
+        # add NEW content while keeping the same subject. Subject still matches an
+        # upstream subject → subject classifier says ``squash_merged``, but the
+        # amended patch carries content that never reached origin → the content
+        # gate must refuse the reset and preserve the amendment.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        (clone / "feature.txt").write_text("the feature\n")
+        _git(clone, "add", "feature.txt")
+        _git(clone, "commit", "-m", "add the feature")
+        # Upstream squash-merges the ORIGINAL content under a new sha.
+        _squash_merge_into_remote(tmp_path, bare, local_subject="add the feature", file_content="the feature\n")
+        _advance_remote(tmp_path, bare, commits=1)
+        # Locally AMEND to add new content the squash never captured, same subject.
+        (clone / "feature.txt").write_text("the feature\nplus a NEW amended line\n")
+        _git(clone, "add", "feature.txt")
+        _git(clone, "commit", "--amend", "-m", "add the feature")
+        amended_sha = _git(clone, "rev-parse", "HEAD")
+
+        result = update_repo("ovl", clone)
+
+        assert result.status is UpdateStatus.FAILED
+        assert _git(clone, "rev-parse", "HEAD") == amended_sha
+        assert (clone / "feature.txt").read_text() == "the feature\nplus a NEW amended line\n"
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert amended_sha[:7] in out
+
+    def test_reconcile_refuses_merge_commit_with_unique_content(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Vector D (evil-merge): a merge commit carrying unique content not in
+        # either parent. Merge commits are bucketed safe by ``merge_commits`` and
+        # carry no patch-id, so the subject/patch classifier sees nothing genuine
+        # to refuse on. The content gate must conservatively refuse any reset
+        # while a merge commit exists in the unique range, preserving the content.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        # A side branch with a squash-merged-upstream commit subject.
+        _git(clone, "checkout", "-b", "side")
+        (clone / "feature.txt").write_text("the feature\n")
+        _git(clone, "add", "feature.txt")
+        _git(clone, "commit", "-m", "add the feature")
+        _git(clone, "checkout", "main")
+        # Merge the side branch with --no-ff AND inject unique content into the
+        # merge commit itself (the evil-merge: content in neither parent).
+        _git(clone, "merge", "--no-ff", "--no-commit", "side")
+        (clone / "evil.txt").write_text("merge-only content in neither parent\n")
+        _git(clone, "add", "evil.txt")
+        _git(clone, "commit", "-m", "Merge branch 'side'")
+        merge_sha = _git(clone, "rev-parse", "HEAD")
+        # Upstream squash-merges only the feature subject, then moves on.
+        _squash_merge_into_remote(tmp_path, bare, local_subject="add the feature", file_content="the feature\n")
+        _advance_remote(tmp_path, bare, commits=1)
+
+        result = update_repo("ovl", clone)
+
+        # A merge commit in the unique range → conservative refuse, never reset.
+        assert result.status is UpdateStatus.FAILED
+        assert _git(clone, "rev-parse", "HEAD") == merge_sha
+        assert (clone / "evil.txt").read_text() == "merge-only content in neither parent\n"
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+
+    def test_reconcile_creates_recoverable_backup_ref(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Vector A defense-in-depth: a legit squash-merge still reconciles to
+        # origin, AND a recoverable backup ref/tag pointing at the OLD HEAD now
+        # exists and is named in the reconcile log line — so any future
+        # misclassification is trivially recoverable, not just via the reflog.
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        (clone / "feature.txt").write_text("the feature\n")
+        _git(clone, "add", "feature.txt")
+        _git(clone, "commit", "-m", "add the feature")
+        pre_reset_head = _git(clone, "rev-parse", "HEAD")
+        _squash_merge_into_remote(tmp_path, bare, local_subject="add the feature", file_content="the feature\n")
+        _advance_remote(tmp_path, bare, commits=1)
+
+        result = update_repo("ovl", clone)
+
+        # The legit squash-merge still reconciles to origin/main.
+        assert result.status is UpdateStatus.UPDATED
+        assert _git(clone, "rev-parse", "HEAD") == _git(clone, "rev-parse", "origin/main")
+        # A backup ref at the OLD HEAD now exists and is recoverable.
+        backup_refs = _git(clone, "for-each-ref", "--format=%(refname)", "refs/t3-reconcile-backup/").splitlines()
+        assert backup_refs, "expected a t3-reconcile-backup ref pointing at the old HEAD"
+        recovered = {_git(clone, "rev-parse", ref) for ref in backup_refs}
+        assert pre_reset_head in recovered
+        # The backup ref name AND the pre-reset HEAD sha are surfaced in the log.
+        out = capsys.readouterr().out
+        assert "t3-reconcile-backup" in out
+        assert pre_reset_head[:7] in out
+
+
+class TestContentGateFailsSafe:
+    """An inconclusive content check must REFUSE the reset, never authorize it.
+
+    Both gate probes (``git cherry`` and ``git rev-list --merges``) fail safe:
+    a non-zero git exit (a corrupt ref, a missing target) is inconclusive, so
+    the helper reports an opaque genuine "sha" and the caller keeps the
+    conservative refuse — ambiguity never reaps real work.
+    """
+
+    def test_cherry_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        # An unresolvable target makes `git cherry` exit non-zero (rc 128).
+        blockers = _cherry_not_upstream(clone, "origin/does-not-exist")
+        assert blockers, "an inconclusive git cherry must report a blocker, not an empty pass"
+        assert "inconclusive" in blockers[0]
+
+    def test_rev_list_merges_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        blockers = _merge_commits_in_range(clone, "origin/does-not-exist")
+        assert blockers, "an inconclusive git rev-list --merges must report a blocker, not an empty pass"
+        assert "inconclusive" in blockers[0]
 
 
 class TestRunCallback:

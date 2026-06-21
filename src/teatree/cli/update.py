@@ -16,14 +16,22 @@ For teatree core (``$T3_REPO``) and every registered overlay repo, this:
     When the ff-pull aborts on divergence ("Not possible to fast-forward")
     because the clone's local commits already landed *squash-merged* upstream
     (the recurring overlay brick — ``[ahead N, behind M]`` with N already-upstream
-    duplicates), the clone SELF-HEALS: it reuses the clean-all reaper's
-    classifier (``core.branch_classification.classify_branch_commits``) and, only
-    when EVERY local-unique commit is an already-upstream duplicate (zero
-    genuinely-ahead work), ``git reset --hard origin/<default>`` reconciles it
-    (#2400). ANY genuine un-upstreamed commit blocks the reset and is surfaced
-    loudly — genuine work is never destroyed. Data-loss-free by classifier proof;
-    only ever resets on the default branch (guard 4 is upheld by the step-3 gate,
+    duplicates), the clone SELF-HEALS. The subject classifier
+    (``core.branch_classification.classify_branch_commits``) is only a cheap
+    PRE-FILTER — it must NOT authorize the destructive reset (it matches by
+    canonicalized subject alone, with no content check). Before any
+    ``git reset --hard origin/<default>`` an AUTHORITATIVE content gate runs:
+    the reset proceeds ONLY when ``git cherry origin/<default> HEAD`` reports
+    every unique non-merge commit as patch-equivalent upstream (no ``+`` line)
+    AND ``git rev-list --merges`` finds no merge commit in the unique range.
+    Either failure blocks the reset and is surfaced loudly — genuine work
+    (subject collisions, amended content, evil-merges) is never destroyed
+    (#2400). Immediately before the authorized reset a recoverable
+    ``refs/t3-reconcile-backup/<sha>`` ref is created at the pre-reset HEAD (and
+    named in the log) so a future misclassification is trivially recoverable.
+    Only ever resets on the default branch (guard 4 is upheld by the step-3 gate,
     which short-circuits a feature-branch checkout before the pull is reached).
+    The content-gated reconcile itself lives in ``cli/_update_reconcile.py``.
 5. Reinstalls editable installs + runs ``t3 setup`` when a repo advanced this
     run OR when the tool venv is missing a declared dep — gated on actual
     dep-closure drift, NOT only a same-run advance, so an out-of-band ff-merge
@@ -52,7 +60,6 @@ from pathlib import Path
 
 import typer
 
-from teatree.core.branch_classification import classify_branch_commits
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
 from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
@@ -80,10 +87,6 @@ update_app = typer.Typer(
 _CORE_REPO_NAME = "teatree"
 _RUNNING_REPO_NAME = "teatree (running)"
 _PRIMARY_REPO_NAMES = frozenset({_CORE_REPO_NAME, _RUNNING_REPO_NAME})
-
-# How many commit subjects to list in a divergence warning before eliding —
-# mirrors the clean-all reaper's preview cap (``core.cleanup._SUBJECT_PREVIEW_LIMIT``).
-_SUBJECT_PREVIEW_LIMIT = 3
 
 
 class UpdateStatus(enum.Enum):
@@ -308,77 +311,6 @@ def _precondition_block(name: str, repo: Path, *, is_primary: bool) -> RepoUpdat
     return None
 
 
-def _reconcile_squash_merged(name: str, repo: Path, old_sha: str, pull_stderr: str) -> RepoUpdate:
-    """Self-heal a clone whose ff-pull failed purely on squash-merged divergence (#2400).
-
-    The recurring brick: an overlay clone shows ``[ahead N, behind M]`` because its
-    local-unique commits were squash-merged upstream — their patches already landed
-    under a NEW SHA on ``origin/<default>``. ``git pull --ff-only`` then aborts with
-    "Not possible to fast-forward", bricking the overlay's update (and, downstream,
-    leaving the overlay unregistered).
-
-    This is reached ONLY after :func:`_precondition_block` confirmed the clone is on
-    its default branch with an upstream (guard 4: a feature-branch checkout never gets
-    here — it short-circuits to SKIPPED earlier), so a reconcile here always acts on
-    the default branch.
-
-    The disposition reuses the clean-all reaper's classifier
-    (:func:`teatree.core.branch_classification.classify_branch_commits`) — the single
-    source of truth for "squash-merged duplicate vs genuinely-ahead work". The branch
-    is the current default branch; the target is the freshly-fetched
-    ``origin/<default>``.
-
-    Data-loss-free by construction. Zero genuinely-ahead commits (every
-    local-unique commit a squash-merged / merge duplicate) → ``git reset --hard
-    origin/<default>`` fast-forwards in the behind commits too, and a clear
-    reconcile log line names the dropped duplicate count. ANY genuinely-ahead
-    commit (real un-upstreamed work) → NEVER reset: the clone is kept and a LOUD
-    multi-line warning names the genuine sha(s) plus a remediation hint, mirroring
-    :func:`_check_clean`'s shape, so genuine work is never destroyed.
-    """
-    default_branch = _default_branch(repo)
-    target = f"origin/{default_branch}" if default_branch else "origin/main"
-    branch = _current_branch(repo)
-    classification = classify_branch_commits(str(repo), branch, target=target)
-
-    if classification.genuinely_ahead:
-        preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
-        listed = ", ".join(f"{c.sha[:7]} {c.subject}" for c in preview)
-        if len(classification.genuinely_ahead) > _SUBJECT_PREVIEW_LIMIT:
-            listed += ", …"
-        typer.echo("")
-        typer.echo(f"!! WARNING: {name} has diverged from {target} with genuine un-upstreamed commit(s).")
-        typer.echo(f"!! Genuine commit(s) NOT on {target}: {listed}")
-        typer.echo(f"!! Refusing to reconcile {repo} — pushing them to a new branch preserves the work.")
-        typer.echo(f"!! Fix: git -C {repo} push origin HEAD:refs/heads/<a-new-branch>, then re-run `t3 update`.")
-        typer.echo("")
-        return RepoUpdate(
-            name,
-            UpdateStatus.FAILED,
-            reason=(
-                f"diverged with {len(classification.genuinely_ahead)} genuine un-upstreamed "
-                f"commit(s) ({listed}) — push them to a new branch, then re-run `t3 update`"
-            ),
-        )
-
-    dropped = len(classification.squash_merged) + len(classification.merge_commits)
-    reset = _git(repo, "reset", "--hard", target, expected_codes=None)
-    if reset.returncode != 0:
-        return RepoUpdate(
-            name,
-            UpdateStatus.FAILED,
-            reason=f"git pull --ff-only failed: {pull_stderr} (reconcile reset failed: {reset.stderr.strip()})",
-        )
-    plural = "commit" if dropped == 1 else "commits"
-    typer.echo(
-        f"OK    reconciled squash-merged clone {repo} -> {target} "
-        f"(dropped {dropped} already-upstream duplicate {plural})"
-    )
-    new_sha = _short_sha(repo)
-    advanced = _commit_count(repo, old_sha, new_sha) if new_sha != old_sha else 0
-    return RepoUpdate(name, UpdateStatus.UPDATED, old_sha=old_sha, new_sha=new_sha, advanced=advanced)
-
-
 def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdate:
     """Fetch and fast-forward *repo* to its default branch, or skip safely.
 
@@ -393,10 +325,15 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
 
     A failed ``git pull --ff-only`` is NOT always terminal: when the divergence
     is purely already-upstream squash-merged duplicates (zero genuinely-ahead
-    work), the clone self-heals via :func:`_reconcile_squash_merged` (#2400) —
-    ``git reset --hard origin/<default>``, data-loss-free by classifier proof.
-    Genuine un-upstreamed work blocks the reconcile and is surfaced loudly.
+    work), the clone self-heals via
+    :func:`teatree.cli._update_reconcile.reconcile_squash_merged` (#2400) —
+    ``git reset --hard origin/<default>``, authorized by an AUTHORITATIVE
+    *content* gate (``git cherry`` patch-id + a merge-commit check), never by
+    subject. Genuine un-upstreamed work blocks the reconcile and is surfaced
+    loudly, and a recoverable backup ref is created before any reset.
     """
+    from teatree.cli._update_reconcile import reconcile_squash_merged  # noqa: PLC0415
+
     blocked = _precondition_block(name, repo, is_primary=is_primary)
     if blocked is not None:
         return blocked
@@ -404,7 +341,7 @@ def update_repo(name: str, repo: Path, *, is_primary: bool = False) -> RepoUpdat
     old_sha = _short_sha(repo)
     pull = _git(repo, "pull", "--ff-only", expected_codes=None)
     if pull.returncode != 0:
-        return _reconcile_squash_merged(name, repo, old_sha, pull.stderr.strip())
+        return reconcile_squash_merged(name, repo, old_sha, pull.stderr.strip())
 
     new_sha = _short_sha(repo)
     if new_sha == old_sha:
