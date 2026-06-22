@@ -113,19 +113,38 @@ class FinalStateMatcher:
 # assertion about the run's final assistant message (the end state).
 ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
-#: Case aliases mapping a tool name's lowercase form to its canonical name. Only
-#: ``bash`` differs from a passthrough today; the single source of truth so the
-#: grader (``report._canonicalize_tool``) and the metered runner's toolset
-#: restriction (``sdk_runner.compute_disallowed_tools``) canonicalize identically.
-_TOOL_ALIASES = {"bash": "Bash"}
+#: Case aliases mapping a tool name's lowercase form to its canonical name. The
+#: single source of truth so the grader (``report._canonicalize_tool``) and the
+#: metered runner's toolset restriction (``sdk_runner.compute_disallowed_tools``)
+#: canonicalize identically.
+#:
+#: ``task`` -> ``Agent`` because the bundled ``claude`` CLI names the SUB-AGENT
+#: SPAWN tool ``Agent``, NOT ``Task`` — there is no ``Task`` tool in the registry
+#: (``Task`` resolves to no known tool and is silently dropped, the same
+#: toolset-drift class as the removed ``MultiEdit`` in #2627). Scenarios and their
+#: matchers historically wrote ``Task`` (the user-facing/UI name), so a declared
+#: ``tools: [..., Task]`` produced a ``--tools`` allowlist with the phantom
+#: ``Task`` AND pushed the REAL ``Agent`` onto the ``--disallowedTools`` denylist —
+#: the delegation scenarios could therefore NEVER call a spawn tool, and their
+#: ``tool_call: Task`` matchers could never match the emitted ``Agent`` call.
+#: Aliasing ``Task`` -> ``Agent`` here makes BOTH sides agree on the real CLI tool:
+#: the allowlist exposes ``Agent`` (no longer disallowed) and the matcher's
+#: expected tool canonicalizes to the ``Agent`` name the model actually emits.
+#: The exact-key lowercase lookup never touches the distinct team-mode task-list
+#: built-ins (``TaskCreate`` / ``TaskUpdate`` / ``TaskList`` / ``TaskGet`` / …) —
+#: their lowercase forms (``taskcreate`` etc.) are not the key ``task``.
+_TOOL_ALIASES = {"bash": "Bash", "task": "Agent"}
 
 
 def canonicalize_tool(name: str) -> str:
-    """Canonicalize a tool *name* (``bash`` -> ``Bash``, else passthrough).
+    """Canonicalize a tool *name* (``bash`` -> ``Bash``, ``Task`` -> ``Agent``, else passthrough).
 
     The single normalization both the grader and the metered-lane toolset
     restriction apply, so a matcher's tool and a declared ``tools`` entry are
-    compared in the same canonical space.
+    compared in the same canonical space. ``Task`` maps to the bundled CLI's real
+    sub-agent spawn tool ``Agent`` (the CLI registers no ``Task`` tool); the
+    exact-key match leaves ``TaskCreate`` / ``TaskUpdate`` / ``TaskList`` (the
+    team-mode task-list built-ins) untouched.
     """
     return _TOOL_ALIASES.get(name.lower(), name)
 

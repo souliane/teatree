@@ -11,7 +11,14 @@ The PRIMARY ``--tools`` allowlist (``ClaudeAgentOptions.tools``) is
 independent of ``permission_mode``. The DEFENSE-IN-DEPTH ``--disallowedTools``
 complement is :func:`compute_disallowed_tools` = :data:`KNOWN_BUILTIN_TOOLS`
 MINUS the available set — exhaustive even if a CLI build ignored ``--tools``.
+
+Delegation scenarios additionally need the ``Agent`` SPAWN tool both ALLOWLISTED
+and BACKED by a sub-agent definition: :func:`scenario_exposes_subagent_spawn`
+decides when a scenario can reach a spawn tool, and :func:`build_delegation_agents`
+provisions the generic delegate the runner hands to ``ClaudeAgentOptions.agents``.
 """
+
+from claude_agent_sdk import AgentDefinition
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
 
@@ -127,8 +134,74 @@ def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
     return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - _available_tool_set(spec)))
 
 
+#: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
+#: the delegate-to-a-sub-agent tool as ``Agent`` (NOT ``Task`` — ``Task`` resolves
+#: to no known tool; see ``models._TOOL_ALIASES``). Co-located with the toolset
+#: seam so the runner and the toolset agree on the one name that gates delegation.
+SUBAGENT_SPAWN_TOOL = "Agent"
+
+#: The name of the generic delegation subagent the runner provisions for any
+#: scenario whose toolset exposes :data:`SUBAGENT_SPAWN_TOOL`. The model invokes it
+#: via ``Agent(subagent_type="delegate", prompt=...)``.
+DELEGATION_SUBAGENT_NAME = "delegate"
+
+
+def scenario_exposes_subagent_spawn(spec: EvalSpec) -> bool:
+    """True when *spec*'s toolset exposes the CLI's ``Agent`` sub-agent spawn tool.
+
+    A scenario opts into delegation by declaring ``Task`` (canonicalized to
+    ``Agent``) or ``Agent`` in its ``tools`` — or by referencing it from a matcher.
+    Both routes land :data:`SUBAGENT_SPAWN_TOOL` in :func:`compute_available_tools`,
+    so the runner provisions an ``agents`` definition exactly when the model can
+    actually reach a spawn tool (and never for a non-delegation scenario).
+    """
+    return SUBAGENT_SPAWN_TOOL in _available_tool_set(spec)
+
+
+def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None:
+    """A generic delegation sub-agent for *spec*, or ``None`` when it can't delegate.
+
+    Returns a single ``{DELEGATION_SUBAGENT_NAME: AgentDefinition}`` when the
+    scenario's toolset exposes the ``Agent`` spawn tool
+    (:func:`scenario_exposes_subagent_spawn`) — so the model can actually delegate
+    to a defined sub-agent rather than only the built-in ``general-purpose`` one —
+    and ``None`` otherwise, leaving every non-delegation scenario's
+    ``ClaudeAgentOptions.agents`` at its ``None`` default (no behaviour change).
+
+    The sub-agent is deliberately GENERIC: the delegation scenarios assert that the
+    main agent ISSUES a spawn call (``tool_call: Agent`` with a prompt describing
+    the delegated unit) and does NOT do the work in the foreground — they do not
+    grade the sub-agent's own trajectory. A broad description + the inherited model
+    is enough to make the spawn legitimate. ``model="inherit"`` keeps the sub-agent
+    on the scenario's own model so a delegation trial is not billed at a surprise tier.
+    """
+    if not scenario_exposes_subagent_spawn(spec):
+        return None
+    return {
+        DELEGATION_SUBAGENT_NAME: AgentDefinition(
+            description=(
+                "General-purpose delegate. Use this sub-agent to carry out a bounded "
+                "unit of delegated work off the main agent's foreground — a multi-file "
+                "investigation, a refactor, writing a test suite, or a scoped code fix — "
+                "and report the result back."
+            ),
+            prompt=(
+                "You are a delegated worker sub-agent. Carry out the bounded unit of work "
+                "described in your prompt — investigate, refactor, write tests, or apply a "
+                "scoped fix as asked — then report your findings or the result back to the "
+                "orchestrator. Stay within the unit you were handed."
+            ),
+            model="inherit",
+        )
+    }
+
+
 __all__ = [
+    "DELEGATION_SUBAGENT_NAME",
     "KNOWN_BUILTIN_TOOLS",
+    "SUBAGENT_SPAWN_TOOL",
+    "build_delegation_agents",
     "compute_available_tools",
     "compute_disallowed_tools",
+    "scenario_exposes_subagent_spawn",
 ]

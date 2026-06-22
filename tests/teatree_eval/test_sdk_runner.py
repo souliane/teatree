@@ -15,7 +15,16 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
+from teatree.eval.models import (
+    DEFAULT_MAX_TURNS,
+    AnyOf,
+    EvalSpec,
+    ExpectItem,
+    FinalStateMatcher,
+    Matcher,
+    TokenUsage,
+    canonicalize_tool,
+)
 from teatree.eval.sdk_runner import (
     DEFAULT_WATCHDOG_SECONDS,
     MAX_BUDGET_USD,
@@ -29,7 +38,15 @@ from teatree.eval.sdk_runner import (
     is_success_result_error,
 )
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
-from teatree.eval.toolset import KNOWN_BUILTIN_TOOLS, compute_available_tools, compute_disallowed_tools
+from teatree.eval.toolset import (
+    DELEGATION_SUBAGENT_NAME,
+    KNOWN_BUILTIN_TOOLS,
+    SUBAGENT_SPAWN_TOOL,
+    build_delegation_agents,
+    compute_available_tools,
+    compute_disallowed_tools,
+    scenario_exposes_subagent_spawn,
+)
 from teatree.eval.transcript import _USAGE_KEY_TO_FIELD
 
 
@@ -1278,7 +1295,11 @@ class TestComputeDisallowedTools:
         # The orchestrator_delegates_test_writing shape: tools=[Bash, Edit, Task]
         # with a NEGATIVE Write matcher (the orchestrator must DELEGATE, not write
         # code itself). Write must stay AVAILABLE so the negative assertion is not
-        # vacuous; the declared tools must not be disallowed either.
+        # vacuous; the declared tools must not be disallowed either. The declared
+        # spawn tool ``Task`` canonicalizes to the CLI's real ``Agent`` tool — so
+        # ``Agent`` (not the phantom ``Task``) must NOT be disallowed: that is the
+        # whole delegation fix (#2639). ``Task`` is no CLI built-in, so it can never
+        # appear in the denylist regardless.
         spec = _spec_with(
             tmp_path,
             tools=("Bash", "Edit", "Task"),
@@ -1291,7 +1312,7 @@ class TestComputeDisallowedTools:
         assert "Write" not in disallowed
         assert "Bash" not in disallowed
         assert "Edit" not in disallowed
-        assert "Task" not in disallowed
+        assert "Agent" not in disallowed
 
     def test_lowercase_declared_tool_is_canonicalized(self, tmp_path: Path) -> None:
         # A spec declaring the lowercase alias "bash" must NOT have Bash disallowed
@@ -1306,7 +1327,9 @@ class TestComputeDisallowedTools:
 
     def test_any_of_alternative_tools_are_never_disallowed(self, tmp_path: Path) -> None:
         # Each AnyOf alternative is a positive matcher; its tool must stay available
-        # so the disjunction can hold on either branch.
+        # so the disjunction can hold on either branch. A ``Task`` alternative
+        # canonicalizes to the CLI's real ``Agent`` spawn tool, so ``Agent`` must
+        # stay available (#2639) — not the phantom ``Task``.
         spec = _spec_with(
             tmp_path,
             tools=(),
@@ -1320,7 +1343,7 @@ class TestComputeDisallowedTools:
             ),
         )
         disallowed = compute_disallowed_tools(spec)
-        assert "Task" not in disallowed
+        assert "Agent" not in disallowed
         assert "Bash" not in disallowed
 
     def test_final_state_matcher_contributes_no_tool(self, tmp_path: Path) -> None:
@@ -1447,7 +1470,10 @@ class TestComputeAvailableTools:
     def test_negative_matcher_tool_is_available_so_assertion_is_not_vacuous(self, tmp_path: Path) -> None:
         # orchestrator_delegates_test_writing shape: tools=[Bash, Edit, Task] with a
         # NEGATIVE Write matcher. Write must be AVAILABLE so the model CAN call it —
-        # otherwise the no_tool_call assertion passes vacuously.
+        # otherwise the no_tool_call assertion passes vacuously. The declared spawn
+        # tool ``Task`` canonicalizes to the CLI's real ``Agent`` tool (#2639), so the
+        # allowlist exposes ``Agent`` — the model can actually delegate — never the
+        # phantom ``Task`` the bundled CLI does not register.
         spec = _spec_with(
             tmp_path,
             tools=("Bash", "Edit", "Task"),
@@ -1457,7 +1483,7 @@ class TestComputeAvailableTools:
             ),
         )
         available = compute_available_tools(spec)
-        assert set(available) == {"Bash", "Edit", "Task", "Write"}
+        assert set(available) == {"Agent", "Bash", "Edit", "Write"}
 
     def test_lowercase_declared_tool_is_canonicalized(self, tmp_path: Path) -> None:
         spec = _spec_with(
@@ -1613,3 +1639,164 @@ class TestDisallowedToolsFlowToOptions:
         )
         captured = self._run(spec)
         assert "Write" in captured["options"].tools
+
+
+class TestTaskAliasesToAgentSpawnTool:
+    """``Task`` (the scenario/UI name) canonicalizes to the CLI's real ``Agent`` tool (#2639).
+
+    The bundled ``claude`` CLI registers the sub-agent SPAWN tool as ``Agent`` — it
+    has NO ``Task`` tool (``Task`` resolves to no known tool and is silently
+    dropped, the same toolset-drift class as the removed ``MultiEdit`` in #2627).
+    Before the fix, a scenario declaring ``tools: [..., Task]`` produced a ``--tools``
+    allowlist with the phantom ``Task`` AND pushed the REAL ``Agent`` onto the
+    ``--disallowedTools`` denylist, so the orchestrator-delegation scenarios could
+    never call a spawn tool and their ``tool_call: Task`` matchers could never match
+    the emitted ``Agent`` call.
+    """
+
+    def test_canonicalize_maps_task_to_agent(self) -> None:
+        # The single normalization both the grader and the toolset restriction apply:
+        # a matcher's `tool: Task` and a declared `tools: [Task]` both resolve to the
+        # CLI's real `Agent` spawn tool — so the matcher's expected name and the
+        # emitted call name agree.
+        assert canonicalize_tool("Task") == "Agent"
+        assert canonicalize_tool("task") == "Agent"
+
+    def test_team_task_list_builtins_are_not_aliased(self) -> None:
+        # The exact-key lowercase lookup must leave the DISTINCT team-mode task-list
+        # built-ins untouched — they are real, separate CLI tools, not the spawn tool.
+        for name in ("TaskCreate", "TaskUpdate", "TaskList", "TaskGet"):
+            assert canonicalize_tool(name) == name
+
+    def test_declared_task_exposes_agent_in_the_allowlist(self, tmp_path: Path) -> None:
+        # tools=[Bash, Task]: the allowlist exposes Agent (the real spawn tool), never
+        # the phantom Task — so the model can actually delegate.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        available = compute_available_tools(spec)
+        assert "Agent" in available
+        assert "Task" not in available
+
+    def test_declared_task_does_not_disallow_agent(self, tmp_path: Path) -> None:
+        # The regression: before the fix Agent (the only usable spawn tool) was on
+        # the denylist for a Task-declaring scenario, so delegation was impossible.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        assert "Agent" not in compute_disallowed_tools(spec)
+
+    def test_matcher_only_task_reference_exposes_agent(self, tmp_path: Path) -> None:
+        # A scenario need not DECLARE Task — a matcher that references Task is enough
+        # to land Agent in the available set, so the negative/positive assertion can
+        # observe the real spawn call.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        assert "Agent" in compute_available_tools(spec)
+        assert "Agent" not in compute_disallowed_tools(spec)
+
+
+class TestDelegationAgentsProvisioning:
+    """A delegation scenario is given an ``agents`` definition so ``Agent`` is usable.
+
+    The ``Agent`` tool is only genuinely usable when the SDK is handed sub-agent
+    definitions over the initialize request — the SDK documents ``agents`` as the
+    way to programmatically define custom sub-agents the ``Agent`` tool can spawn.
+    The runner provisions a generic delegation sub-agent for exactly the scenarios
+    whose toolset exposes the spawn tool, and leaves every other scenario's
+    ``agents`` at ``None``.
+    """
+
+    def _run(self, spec: EvalSpec, **kwargs: Any):
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+        return captured
+
+    def test_spawn_tool_constant_is_agent(self) -> None:
+        # Pins the one name the runner and toolset agree gates delegation.
+        assert SUBAGENT_SPAWN_TOOL == "Agent"
+
+    def test_delegation_scenario_exposes_spawn(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        assert scenario_exposes_subagent_spawn(spec) is True
+
+    def test_non_delegation_scenario_does_not_expose_spawn(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
+        )
+        assert scenario_exposes_subagent_spawn(spec) is False
+
+    def test_build_delegation_agents_for_delegation_scenario(self, tmp_path: Path) -> None:
+        # A scenario exposing the spawn tool gets a single generic delegate sub-agent
+        # keyed by DELEGATION_SUBAGENT_NAME, on the inherited model.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        agents = build_delegation_agents(spec)
+        assert agents is not None
+        assert set(agents) == {DELEGATION_SUBAGENT_NAME}
+        assert agents[DELEGATION_SUBAGENT_NAME].model == "inherit"
+
+    def test_build_delegation_agents_none_for_non_delegation_scenario(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
+        )
+        assert build_delegation_agents(spec) is None
+
+    def test_build_sdk_options_defaults_agents_to_none_for_judge_path(self, tmp_path: Path) -> None:
+        # CleanRoomConfig defaults agents to None so the judge / non-delegation path
+        # (which shares build_sdk_options) is unchanged — no sub-agents.
+        config = CleanRoomConfig(
+            system_prompt="sp",
+            workspace=tmp_path,
+            cwd=str(tmp_path),
+            env={},
+            allowed_tools=("Bash",),
+            model="haiku",
+            max_turns=3,
+        )
+        assert config.agents is None
+        assert build_sdk_options(config).agents is None
+
+    def test_runner_forwards_agents_for_a_delegation_scenario(self, tmp_path: Path) -> None:
+        # End-to-end: a Task-declaring scenario reaches the SDK options with both the
+        # Agent tool allowlisted AND an agents definition, so the model can delegate.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        captured = self._run(spec)
+        options = captured["options"]
+        assert "Agent" in options.tools
+        assert options.agents is not None
+        assert DELEGATION_SUBAGENT_NAME in options.agents
+
+    def test_runner_forwards_no_agents_for_a_non_delegation_scenario(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
+        )
+        assert self._run(spec)["options"].agents is None
