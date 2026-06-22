@@ -34,6 +34,13 @@ class DelegSpec:
     forbid_call: Call
     yaml_file: str
     fixture_phrase: str = ""
+    #: Per-scenario metered-budget ceiling (USD). The CORRECT trajectory for a
+    #: delegation scenario dispatches a sub-agent whose work burns more than the
+    #: lane default ($1.0); without relief a budget-capped trial reds the pass@k
+    #: aggregate (#2192) even though the delegation matcher passed and the agent
+    #: did the right thing. ``None`` keeps the default for the cheap scenarios that
+    #: finish under it (investigation/refactor pass 3/3 at the default).
+    max_budget_usd: float | None = None
 
     def green_fixture_phrase(self) -> str:
         return self.fixture_phrase or self.keyword
@@ -55,4 +62,5 @@ def delegation_scenario(spec: DelegSpec) -> Scenario:
         ),
         tools=("Bash", "Task", "Edit"),
         yaml_file=spec.yaml_file,
+        max_budget_usd=spec.max_budget_usd,
     )

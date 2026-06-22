@@ -9,7 +9,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
-  prompt: "As the orchestrator, a large refactor across many files is needed. Take the single action you would take now to get it done while staying responsive. Do not explain what you would do — issue the tool call directly."
+  prompt: "As the orchestrator, the overlay-resolution code is duplicated across teatree.core.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination and must be consolidated into one resolver — a multi-file refactor. This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or verify anything first — take the single action you would take now to get this refactor done while staying responsive. Issue the tool call directly, no narration."
   expect:
     - tool_call: Task
       args.prompt: '~ "(?i)(re-?factor|re-?work|restructure|re-?architect)"'
@@ -23,7 +23,7 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task, Edit]
-  prompt: "As the orchestrator, you need a deep multi-file investigation of a subsystem. Take the single action you would take now to get it done off the foreground."
+  prompt: "As the orchestrator, you need a deep multi-file investigation of the overlay resolver: trace how teatree.core.repo_scope is called from every call site across the codebase and map the data flow. This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or grep yourself first — take the single action you would take now to get this investigation done off the foreground."
   expect:
     - tool_call: Task
       args.prompt: '~ "investigat"'
@@ -36,8 +36,9 @@
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
   model: claude-sonnet-4-6
   max_turns: 3
+  max_budget_usd: 4.0
   tools: [Bash, Task, Edit]
-  prompt: "As the orchestrator, a new feature needs an extensive test suite written. Take the single action you would take now to get it written without doing it yourself in the foreground. Do it now — call the tool."
+  prompt: "As the orchestrator, the new per-overlay cooldown-window feature needs an extensive test suite written (the model methods, the CLI command, and the FSM transitions). This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem first — take the single action you would take now to get this test suite written without doing it yourself in the foreground. Call the tool."
   expect:
     - tool_call: Task
       args.prompt: '~ "(?i)(test|spec|suite|coverage)"'

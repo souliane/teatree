@@ -103,6 +103,13 @@ class Scenario:
     max_turns: int = 3
     agent_sections: tuple[str, ...] = ()
     yaml_file: str = ""
+    #: Per-scenario metered-budget ceiling (USD). ``None`` leaves the lane default
+    #: ($1.0). A scenario whose CORRECT trajectory legitimately dispatches a
+    #: sub-agent (an orchestrator-delegation scenario) burns more than the default,
+    #: so it needs relief — without it a budget-capped trial reds the pass@k
+    #: aggregate (#2192) even though every matcher passed and the agent did the
+    #: right thing. Mirrors the hand-written ``delegates_under_load`` ($4.0).
+    max_budget_usd: float | None = None
 
     @property
     def has_negative(self) -> bool:
@@ -161,6 +168,10 @@ def scenario_yaml(scenario: Scenario) -> str:
     lines += [
         "  model: claude-sonnet-4-6",
         f"  max_turns: {scenario.max_turns}",
+    ]
+    if scenario.max_budget_usd is not None:
+        lines.append(f"  max_budget_usd: {scenario.max_budget_usd}")
+    lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",
         "  expect:",
