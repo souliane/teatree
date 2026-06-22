@@ -8,17 +8,20 @@ Unlike subprocess-based timeouts (subprocess.TimeoutExpired), the
 signal-based approach here works for Python callables that block in C/extension
 code, allowing the timeout to fire even when a long-running operation is
 executing native code.
+
+Configuration: the timeout ceiling is tunable via
+``[teatree] provision_step_timeout_seconds`` (per-overlay overridable, global
+fallback, or :data:`DEFAULT_STEP_TIMEOUT_SECONDS`). A non-positive or
+unparsable value always degrades to the default, so misconfiguration can
+never disable the time-box — the "never hang" invariant is non-negotiable.
 """
 
-import logging
 import signal
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from teatree.config import get_effective_settings
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_STEP_TIMEOUT_SECONDS = 1800
 

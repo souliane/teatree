@@ -1,9 +1,8 @@
-"""Timeout guard for callable-based provisioning steps (#TODO-7).
+"""Tests for the signal-based timeout guard on callable-based provision steps.
 
-A callable-based provision step (e.g., db_import, overlay installation) can hang
-indefinitely without progress output. This test suite verifies that the signal-based
-timeout guard (:mod:`teatree.core.provision`) prevents hung steps and fails loud
-with a clear error, never silently hanging.
+Verify that :mod:`teatree.core.provision` prevents hung provision steps
+(e.g., db_import, overlay installation) by enforcing a configurable timeout
+ceiling and failing loud with a clear error, never silently hanging.
 """
 
 import signal
