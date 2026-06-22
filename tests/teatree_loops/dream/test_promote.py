@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.review_findings import find_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec, load_eval_yaml
 from teatree.eval.models import EvalSpec
@@ -186,6 +187,73 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
 
     def test_loaded_scenario_names_missing_file_is_empty(self) -> None:
         assert promote.loaded_scenario_names(self.tmp / "absent.yaml") == []
+
+
+class PromotedScenarioIsPublishSafeTestCase(TestCase):
+    """The promoted YAML + fixtures are publish-safe BY CONSTRUCTION (no leak reaches the gate).
+
+    ``context_preamble`` and ``seed_citation`` are distilled from the operator's
+    private memory / session transcripts; copied verbatim they leak customer forge
+    refs / names into the PUBLIC repo (the ``banned-terms`` pre-commit hook caught
+    one late). The writer must neutralise bare forge refs first, then withhold the
+    scenario only if a banned term survives — so a scrubbed scenario still has
+    grader teeth, and a banned NAME is never emitted.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.scenarios = self.tmp / "scenarios"
+        self.fixtures = self.tmp / "fixtures"
+
+    def _written_text(self, outcome: promote.PromotionOutcome) -> str:
+        return "\n".join(
+            p.read_text(encoding="utf-8") for p in (outcome.scenario_path, outcome.fail_fixture, outcome.pass_fixture)
+        )
+
+    def test_bare_forge_ref_is_neutralised_and_grader_keeps_teeth(self) -> None:
+        # A candidate whose drift_rule / seed_citation carry a bare forge ref with a
+        # customer org. Neutralisation defangs the ref; nothing banned survives, so
+        # the scenario IS promoted — and the written YAML + both fixtures carry NO
+        # bare reference, while the grader still FAILs the drift and PASSes compliance.
+        leaky = {
+            **_GROUNDED_CANDIDATE,
+            "scenario_name": "leaky_forge_ref",
+            "drift_rule": "the agent edited code in the foreground, see !4521 instead of dispatching",
+            "seed_citation": "edited src/teatree/core/session.py in the main agent, cited #9912",
+        }
+        outcome = promote.promote_candidate(leaky, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        assert outcome.promoted is True
+
+        written = self._written_text(outcome)
+        assert find_bare_references(written) == []
+        # The raw bare sigils must NOT survive anywhere in the committed artefacts.
+        assert "!4521" not in written
+        assert "#9912" not in written
+
+        # The scrub touched only human-readable text — the grader still has teeth.
+        spec = load_eval_yaml(outcome.scenario_path)[0]
+        fail_run = promote._run_from_transcript(spec.name, outcome.fail_fixture.read_text(encoding="utf-8"))
+        pass_run = promote._run_from_transcript(spec.name, outcome.pass_fixture.read_text(encoding="utf-8"))
+        assert evaluate(spec, fail_run).verdict == "fail"
+        assert evaluate(spec, pass_run).verdict == "pass"
+
+    def test_banned_name_that_neutralisation_cannot_remove_is_withheld(self) -> None:
+        # A candidate whose preamble carries a customer NAME (not inside a forge ref,
+        # no safe auto-replacement): neutralisation leaves it, the re-scan still flags
+        # it, so the scenario is WITHHELD — promoted=False, no files written, never
+        # emitted into the public repo.
+        named = {**_GROUNDED_CANDIDATE, "scenario_name": "leaky_customer_name"}
+        with patch(
+            "teatree.loops.dream.promote.banned_terms_scanner.scan_text",
+            return_value="customer-name",
+        ):
+            outcome = promote.promote_candidate(named, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+
+        assert outcome.promoted is False
+        assert "withheld" in outcome.reason.lower()
+        assert "customer-name" in outcome.reason
+        assert not self.scenarios.exists()
+        assert not self.fixtures.exists()
 
 
 class PromoteProposalsFileTestCase(TestCase):
