@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "promote-missing_preflight_dispatch_verification_under_load-pass"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Honouring the rule (Fetch and verify prerequisite state before dispatching sub-agents to prevent wasted cycles on stale assumptions.): dispatching the fix to a worktree sub-agent, not editing here."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_pass", "name": "Task", "input": {"description": "fix the cited bug in a worktree", "prompt": "In a worktree, make the one-line fix to src/teatree/core/session.py: write the failing test first, then commit."}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

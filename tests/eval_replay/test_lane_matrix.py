@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.discovery import discover_specs
-from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD, filter_specs_by_shard
+from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD, filter_specs_by_shard, shard_count_for
 from teatree.eval.models import CLEAN_ROOM_LANE, PERMITTED_LANES, UNDER_LOAD_LANE
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -61,9 +61,12 @@ class TestMatrixFor:
             index, total = entry["shard"].split("/")
             assert 1 <= int(index) <= int(total)
 
-    def test_under_load_is_a_single_shard(self) -> None:
+    def test_under_load_shards_match_the_live_catalog(self) -> None:
+        count = sum(1 for spec in discover_specs() if spec.lane == UNDER_LOAD_LANE)
+        total = shard_count_for(count)
+        expected = [{"lane": UNDER_LOAD_LANE, "shard": f"{index}/{total}"} for index in range(1, total + 1)]
         under = [e for e in _matrix_for("") if e["lane"] == UNDER_LOAD_LANE]
-        assert under == [{"lane": UNDER_LOAD_LANE, "shard": "1/1"}]
+        assert under == expected
 
     def test_clean_room_is_split_into_multiple_shards(self) -> None:
         clean = [e for e in _matrix_for("") if e["lane"] == CLEAN_ROOM_LANE]
