@@ -236,6 +236,67 @@ class TestInferOverlayForUrl:
             assert infer_overlay_for_url(url) == "gl"
 
 
+class TestInferOverlayForPathOnlyOverlay:
+    """``infer_overlay_for_url`` attributes a URL to a PATH-ONLY overlay (#2231).
+
+    A path-only TOML overlay (``path``, no ``class``) is skipped by
+    ``get_all_overlays()``, so its repos were invisible to inference: an MR
+    owned by an external-forge path-only overlay (in the teatree-core process)
+    resolved to ``""``, the review-request routing fell back to the wrong
+    overlay, and every post suppressed with ``no_review_channel_or_token``.
+    Inference now also reads the slugs a path-only overlay declares in its TOML
+    table via ``OverlayConfigResolver.path_only_workspace_repos``.
+    """
+
+    def _patch_landscape(self, overlays: dict, discovered: dict | None):
+        from contextlib import ExitStack  # noqa: PLC0415
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(config_mod, "load_config", return_value=_make_config(overlays)))
+        stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=discovered or {}))
+        stack.enter_context(patch("teatree.core.overlay_loader.get_all_overlays", return_value=discovered or {}))
+        return stack
+
+    def test_path_only_workspace_repos_owns_full_slug_url(self):
+        overlays = {
+            "t3-ext": {"path": "~/x/t3-ext", "workspace_repos": ["acme-eng/acme-product"]},
+        }
+        url = "https://gitlab.com/acme-eng/acme-product/-/merge_requests/7659"
+        with self._patch_landscape(overlays, discovered={}):
+            assert infer_overlay_for_url(url) == "t3-ext"
+
+    def test_path_only_owned_repos_values_own_url(self):
+        overlays = {
+            "t3-ext": {"path": "~/x/t3-ext", "owned_repos": {"gitlab.com": ["acme-eng/acme-product"]}},
+        }
+        url = "https://gitlab.com/acme-eng/acme-product/-/merge_requests/7659"
+        with self._patch_landscape(overlays, discovered={}):
+            assert infer_overlay_for_url(url) == "t3-ext"
+
+    def test_path_only_owned_repos_wildcard_is_not_an_owner(self):
+        """A bare ``*`` host wildcard never claims a specific URL by itself."""
+        overlays = {"t3-ext": {"path": "~/x/t3-ext", "owned_repos": {"gitlab.com": ["*"]}}}
+        url = "https://gitlab.com/acme-eng/acme-product/-/merge_requests/7659"
+        with self._patch_landscape(overlays, discovered={}):
+            assert infer_overlay_for_url(url) == ""
+
+    def test_path_only_overlay_without_repos_does_not_match(self):
+        overlays = {"t3-ext": {"path": "~/x/t3-ext", "frontend_repos": ["acme-web"]}}
+        url = "https://gitlab.com/acme-eng/acme-product/-/merge_requests/7659"
+        with self._patch_landscape(overlays, discovered={}):
+            assert infer_overlay_for_url(url) == ""
+
+    def test_path_only_workspace_repos_helper_yields_declared_slugs(self):
+        overlays = {
+            "instantiable": {"class": "tests.test_overlay_loader:_StubOverlay"},
+            "t3-ext": {"path": "~/x/t3-ext", "workspace_repos": ["acme-eng/acme-product"]},
+        }
+        with self._patch_landscape(overlays, discovered={"instantiable": _StubOverlay()}):
+            assert OverlayConfigResolver.path_only_workspace_repos() == [
+                ("t3-ext", ["acme-eng/acme-product"]),
+            ]
+
+
 def _init_repo_with_origin(path: Path, origin_url: str) -> None:
     """Create a real git repo at ``path`` with ``origin`` set to ``origin_url``."""
     path.mkdir(parents=True, exist_ok=True)

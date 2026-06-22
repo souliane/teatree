@@ -64,21 +64,25 @@ class TestActiveProjectOverlayRouting:
 
 
 class TestOverlayInferenceFromMrUrl:
-    """``check``/``post`` fall back to MR-URL inference when cwd resolution is blank (#1471).
+    """``check``/``post`` route by the MR-URL owner over the cwd dev fallback (#1471, #2231).
 
-    Bug: run from a clone whose directory name is not an overlay name (the
-    teatree clone is dir ``teatree`` while the entry point is ``t3-teatree``)
-    on a multi-overlay install, ``_active_project()`` returns an empty
-    overlay name. The dispatch then ran with no ``T3_OVERLAY_NAME``, so the
-    command subprocess hit ``get_overlay()`` multi-overlay ambiguity,
-    ``resolve_guard_target()`` returned ``None``, and the request suppressed
-    with ``no_review_channel_or_token``. The MR URL is the authoritative
-    owner signal and must drive the routing when cwd/env yields nothing.
+    Bug (#2231): run from the teatree clone (dir ``teatree``, entry point
+    ``t3-teatree``) on a multi-overlay install, ``_active_project()`` resolves
+    the cwd-``manage.py`` dev fallback to ``t3-teatree`` — which does NOT own
+    a foreign-forge MR. The earlier ordering preferred that non-empty cwd name
+    and only fell back to URL inference when it was blank (#1471), so the
+    dispatch went to ``t3-teatree``'s empty review channel and every
+    cross-overlay request suppressed with ``no_review_channel_or_token``. The
+    MR URL is the authoritative owner signal: when inference resolves an
+    overlay it WINS over the weak cwd dev fallback. An explicit
+    ``T3_OVERLAY_NAME`` env still wins over both (deliberate operator scoping).
     """
 
-    def test_blank_active_project_falls_back_to_url_inference(self) -> None:
+    def test_url_owner_wins_over_mismatched_cwd_dev_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The #2231 fix: a cwd dev-fallback overlay that does NOT own the URL must yield."""
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         with (
-            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_TEATREE_PATH, "t3-teatree")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME) as infer,
         ):
@@ -86,10 +90,10 @@ class TestOverlayInferenceFromMrUrl:
         infer.assert_called_once_with(_MR_URL)
         assert resolved == _OTHER_NAME
 
-    def test_resolved_active_project_wins_over_url_inference(self) -> None:
-        """A cwd/env-resolved overlay name short-circuits — URL inference is never consulted."""
+    def test_explicit_env_overlay_name_wins_over_url_inference(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An explicit ``T3_OVERLAY_NAME`` is deliberate operator scoping — it wins, no inference."""
+        monkeypatch.setenv("T3_OVERLAY_NAME", _OTHER_NAME)
         with (
-            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, _OTHER_NAME)),
             patch("django.setup") as setup,
             patch("teatree.core.overlay_loader.infer_overlay_for_url") as infer,
         ):
@@ -98,9 +102,22 @@ class TestOverlayInferenceFromMrUrl:
         setup.assert_not_called()
         assert resolved == _OTHER_NAME
 
-    def test_check_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
+    def test_cwd_fallback_used_only_when_inference_is_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An un-ownable URL (inference blank) falls back to the cwd dev overlay."""
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         with (
-            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_TEATREE_PATH, "t3-teatree")),
+            patch("django.setup"),
+            patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value="") as infer,
+        ):
+            resolved = _overlay_name_for_mr(_MR_URL)
+        infer.assert_called_once_with(_MR_URL)
+        assert resolved == "t3-teatree"
+
+    def test_check_threads_url_inferred_overlay_over_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        with (
+            patch("teatree.cli.review.request._active_project", return_value=(_TEATREE_PATH, "t3-teatree")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
             patch("teatree.cli.review.request.managepy_core") as managepy_core,
@@ -110,9 +127,10 @@ class TestOverlayInferenceFromMrUrl:
             check(mr_url=_MR_URL)
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
 
-    def test_post_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
+    def test_post_threads_url_inferred_overlay_over_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         with (
-            patch("teatree.cli.review.request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("teatree.cli.review.request._active_project", return_value=(_TEATREE_PATH, "t3-teatree")),
             patch("django.setup"),
             patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
             patch("teatree.cli.review.request.managepy_core") as managepy_core,
