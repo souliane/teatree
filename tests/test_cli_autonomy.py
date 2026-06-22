@@ -15,10 +15,14 @@ Integration-first: the ``set`` write is asserted on the persisted
 so the gates collapse — and the safety floor does NOT.
 """
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import typer
+from django.core.management import call_command
 from django.test import TestCase
 from typer.testing import CliRunner
 
@@ -33,6 +37,34 @@ def _app() -> typer.Typer:
     app = typer.Typer()
     register_autonomy_commands(app)
     return app
+
+
+def _in_process_managepy_core(*args: str, overlay_name: str = "") -> None:
+    """In-process stand-in for the ``config_setting`` subprocess seam.
+
+    The real ``set`` path delegates the ORM write to a ``python -m teatree
+    config_setting set`` subprocess (#2622) so it runs where ``django.setup()``
+    has been called. A subprocess is an unstoppable external the test-doctrine
+    permits mocking: in-process tests replace ONLY the subprocess boundary with
+    a ``call_command`` against the same management command and the test DB, so
+    the typer command's resolution logic and the real delegation arg shape are
+    still exercised, and the row lands where the assertions can read it. The
+    actual unbootstrapped-process behaviour is proven separately by
+    :class:`TestAutonomySetBootstrapsDjangoInRealProcess`.
+    """
+    call_command(*args)
+
+
+@pytest.fixture(autouse=True)
+def _stub_subprocess_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route the ``autonomy set`` subprocess delegation in-process for the CliRunner tests.
+
+    ``_write_setting_row`` imports ``managepy_core`` lazily from
+    ``teatree.cli.overlay`` (to avoid a circular import at module load), so the
+    patch target is the source module attribute, not a re-export on
+    ``teatree.cli.autonomy``.
+    """
+    monkeypatch.setattr("teatree.cli.overlay.managepy_core", _in_process_managepy_core)
 
 
 class TestAutonomySetGlobal(TestCase):
@@ -211,3 +243,102 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
         assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
         assert settings.require_human_approval_to_merge is True
         assert settings.require_human_approval_to_answer is True
+
+
+_UNBOOTSTRAPPED_CLI_DRIVER = """
+import sys
+from typer.testing import CliRunner
+import typer
+from teatree.cli.autonomy import register_autonomy_commands
+
+app = typer.Typer()
+register_autonomy_commands(app)
+result = CliRunner().invoke(app, sys.argv[1:])
+sys.stdout.write(result.output)
+if result.exception is not None and not isinstance(result.exception, SystemExit):
+    import traceback
+    traceback.print_exception(type(result.exception), result.exception, result.exception.__traceback__)
+raise SystemExit(result.exit_code)
+"""
+"""A subprocess driver that exercises the ``autonomy`` typer commands without
+``django.setup()`` — reproducing the real ``t3`` console-script condition
+cheaply. It imports ONLY ``teatree.cli.autonomy`` + Typer (not the whole
+``teatree.cli`` app tree), so it stays fast, but it still never configures
+Django before invoking the command — the exact condition #2622 fires under."""
+
+
+@pytest.mark.timeout(180)
+class TestAutonomySetBootstrapsDjangoInRealProcess:
+    """``autonomy set`` / ``show`` work from a process where Django is NOT pre-configured.
+
+    No in-process DB: each case spawns a clean subprocess against its OWN
+    isolated ``XDG_DATA_HOME`` SQLite control DB and asserts only on subprocess
+    output — so the class needs neither ``TestCase`` nor ``@pytest.mark.django_db``.
+
+    The in-process :class:`~typer.testing.CliRunner` tests above all run inside
+    pytest, where ``django.setup()`` has already configured settings — so they
+    cannot observe souliane/teatree#2622: the real ``t3`` console-script process
+    never runs ``django.setup()`` before dispatching the typer overlay app, so
+    the ``set`` body crashed with ``ImproperlyConfigured: Requested setting
+    INSTALLED_APPS …`` the moment it touched the ``ConfigSetting`` ORM, and
+    ``show`` silently reported the dataclass default (its DB tier fails safe to
+    ``{}`` when Django is unconfigured).
+
+    The subprocess invokes ``register_autonomy_commands`` directly in a process
+    with no ``DJANGO_SETTINGS_MODULE`` — RED on the unbootstrapped code, GREEN
+    once ``set`` delegates to the subprocess seam and ``show`` bootstraps Django.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parents[1]
+    _SRC_ROOT = _REPO_ROOT / "src"
+
+    def _clean_env(self, data_home: Path) -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        env["XDG_DATA_HOME"] = str(data_home)
+        env["PYTHONPATH"] = os.pathsep.join([str(self._SRC_ROOT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        return env
+
+    def _migrate(self, env: dict[str, str]) -> None:
+        # The ``config_setting`` write needs the ``ConfigSetting`` table; migrate
+        # the isolated control DB once up front (this step DOES configure Django).
+        subprocess.run(
+            [sys.executable, "-m", "teatree", "migrate", "--no-input"],
+            cwd=str(self._REPO_ROOT),
+            env={**env, "DJANGO_SETTINGS_MODULE": "teatree.settings"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def _autonomy(self, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+        """Invoke the ``autonomy`` typer subgroup in an UNbootstrapped subprocess."""
+        return subprocess.run(
+            [sys.executable, "-c", _UNBOOTSTRAPPED_CLI_DRIVER, "autonomy", *args],
+            cwd=str(self._REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_set_global_then_show_round_trips_without_improperly_configured(self, tmp_path: Path) -> None:
+        env = self._clean_env(tmp_path / "xdg")
+        self._migrate(env)
+        result = self._autonomy(env, "set", "notify", "--global")
+        combined = result.stdout + result.stderr
+        # The bug surfaced as this exact exception class from the ORM touch.
+        assert "ImproperlyConfigured" not in combined, combined
+        assert "settings are not configured" not in combined, combined
+        assert result.returncode == 0, combined
+        # And the value actually persisted — round-tripped through ``show`` (which
+        # would silently report the ``babysit`` default if it skipped the DB tier).
+        shown = self._autonomy(env, "show")
+        assert shown.stdout.strip() == Autonomy.NOTIFY.value, shown.stdout + shown.stderr
+
+    def test_set_per_overlay_persists_without_improperly_configured(self, tmp_path: Path) -> None:
+        env = self._clean_env(tmp_path / "xdg")
+        self._migrate(env)
+        result = self._autonomy(env, "set", "notify", "--overlay", "t3-teatree")
+        combined = result.stdout + result.stderr
+        assert "ImproperlyConfigured" not in combined, combined
+        assert result.returncode == 0, combined
