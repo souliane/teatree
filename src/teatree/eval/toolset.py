@@ -80,6 +80,17 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "Write",
 )
 
+#: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
+#: the delegate-to-a-sub-agent tool as ``Agent`` (NOT ``Task`` — ``Task`` resolves
+#: to no known tool; see ``models._TOOL_ALIASES``). Co-located with the toolset
+#: seam so the runner and the toolset agree on the one name that gates delegation.
+SUBAGENT_SPAWN_TOOL = "Agent"
+
+#: The name of the generic delegation subagent the runner provisions for any
+#: scenario whose toolset exposes :data:`SUBAGENT_SPAWN_TOOL`. The model invokes it
+#: via ``Agent(subagent_type="delegate", prompt=...)``.
+DELEGATION_SUBAGENT_NAME = "delegate"
+
 
 def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     """The canonical tool names every MATCHER in *spec* references.
@@ -130,20 +141,22 @@ def compute_disallowed_tools(spec: EvalSpec) -> tuple[str, ...]:
     complete :data:`KNOWN_BUILTIN_TOOLS`: a built-in is disallowed unless it is in
     the available set. Because the set is complete, this is exhaustive even if a
     CLI build ignored ``--tools``. Sorted for a deterministic, idempotent set.
+
+    EXCEPTION — a delegation scenario gets an EMPTY denylist. The bundled CLI
+    disables the ``Agent`` SPAWN tool whenever ANY ``--disallowedTools`` denylist
+    is present (verified against the binary: with ``Agent`` in the ``--tools``
+    allowlist and NOT in the denylist, a non-empty denylist still strips ``Agent``
+    from the model's toolset — the sub-agent capability is gated on the denylist
+    being empty, not on ``Agent`` itself being denied). The ``--tools`` allowlist
+    is the PRIMARY restriction and ALONE confines the toolset to the declared set
+    (verified: ``tools=[Agent, Bash]`` + empty denylist shows the model exactly
+    ``Agent`` + ``Bash`` — no spiral tools leak), so dropping the defense-in-depth
+    denylist for delegation scenarios keeps the spawn tool usable WITHOUT widening
+    the toolset. Non-delegation scenarios keep the full denylist unchanged.
     """
+    if SUBAGENT_SPAWN_TOOL in _available_tool_set(spec):
+        return ()
     return tuple(sorted(set(KNOWN_BUILTIN_TOOLS) - _available_tool_set(spec)))
-
-
-#: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
-#: the delegate-to-a-sub-agent tool as ``Agent`` (NOT ``Task`` — ``Task`` resolves
-#: to no known tool; see ``models._TOOL_ALIASES``). Co-located with the toolset
-#: seam so the runner and the toolset agree on the one name that gates delegation.
-SUBAGENT_SPAWN_TOOL = "Agent"
-
-#: The name of the generic delegation subagent the runner provisions for any
-#: scenario whose toolset exposes :data:`SUBAGENT_SPAWN_TOOL`. The model invokes it
-#: via ``Agent(subagent_type="delegate", prompt=...)``.
-DELEGATION_SUBAGENT_NAME = "delegate"
 
 
 def scenario_exposes_subagent_spawn(spec: EvalSpec) -> bool:

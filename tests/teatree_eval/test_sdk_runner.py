@@ -1703,6 +1703,60 @@ class TestTaskAliasesToAgentSpawnTool:
         assert "Agent" not in compute_disallowed_tools(spec)
 
 
+class TestDelegationScenarioGetsEmptyDenylist:
+    """A delegation scenario gets an EMPTY ``--disallowedTools`` so ``Agent`` survives.
+
+    The bundled CLI disables the ``Agent`` SPAWN tool whenever ANY
+    ``--disallowedTools`` denylist is present — even one that does NOT name
+    ``Agent``. The ``--tools`` allowlist is the PRIMARY restriction and alone
+    confines the toolset, so a delegation scenario drops the defense-in-depth
+    denylist entirely; a non-delegation scenario keeps it. Without this, ``Agent``
+    is allowlisted yet the model still reports having no spawn tool (#2639).
+    """
+
+    def test_delegation_scenario_has_empty_denylist(self, tmp_path: Path) -> None:
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        assert compute_disallowed_tools(spec) == ()
+
+    def test_non_delegation_scenario_keeps_a_denylist(self, tmp_path: Path) -> None:
+        # The denylist is unchanged for scenarios that do NOT reach the spawn tool:
+        # the spiral tools are still removed so a tools=[Bash] scenario can't wander.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
+        )
+        disallowed = compute_disallowed_tools(spec)
+        assert disallowed != ()
+        assert "ToolSearch" in disallowed
+        assert "AskUserQuestion" in disallowed
+
+    def test_runner_forwards_empty_denylist_for_delegation_scenario(self, tmp_path: Path) -> None:
+        # End-to-end: a delegation scenario reaches the SDK options with Agent
+        # allowlisted, an agents def, AND no disallowed_tools — the combination the
+        # bundled CLI needs to actually expose the spawn tool to the model.
+        spec = _spec_with(
+            tmp_path,
+            tools=("Bash", "Task"),
+            matchers=(Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="x"),),
+        )
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=spec.source_path.parent).run(spec)
+        options = captured["options"]
+        assert "Agent" in options.tools
+        assert list(options.disallowed_tools) == []
+        assert options.agents is not None
+        assert DELEGATION_SUBAGENT_NAME in options.agents
+
+
 class TestDelegationAgentsProvisioning:
     """A delegation scenario is given an ``agents`` definition so ``Agent`` is usable.
 
