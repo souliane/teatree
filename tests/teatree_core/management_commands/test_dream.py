@@ -446,6 +446,59 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
 
+class DreamZeroClusterMaintenanceStampsSucceededTestCase(TestCase):
+    """A 0-NEW-cluster pass whose file-side phases did real work stamps success (#2626).
+
+    A live ``run --full`` replayed members, distilled 0 NEW clusters (no new drift
+    that night), but cross-linked memory edges and re-indexed MEMORY.md — real
+    consolidation maintenance. The §4 consolidation gate must count that as
+    consolidation so the ``DreamRunMarker`` is stamped succeeded and the staleness
+    alarm clears. The memory dir is a TMP fixture; ``~/.claude`` is never touched.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+
+    def _zero_cluster_tick(self, stdout: StringIO) -> None:
+        # members replayed > 0 (transcript was processed) but 0 NEW clusters distilled.
+        zero_cluster = DreamRunResult(clusters_recorded=0, members_replayed=1110, dry_run=False)
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=zero_cluster),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "",
+                    "T3_DREAM_CROSS_LINK": "",
+                    "T3_DREAM_REINDEX": "",
+                    "T3_DREAM_DECAY": "",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_zero_clusters_with_maintenance_stamps_succeeded(self) -> None:
+        stdout = StringIO()
+        self._zero_cluster_tick(stdout)
+        out = stdout.getvalue()
+        # The file-side phases did real work (cross-link + re-index).
+        assert "cross-linked" in out
+        assert "re-indexed" in out
+        # The consolidation gate counted that maintenance: success stamped, staleness cleared.
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert "all acceptance gates passed" in out
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is False
+
+
 class DreamMemoryPromotionWiringTestCase(TestCase):
     """Pass-2 memory promotion only runs when its default-OFF toggle is on (#2426)."""
 

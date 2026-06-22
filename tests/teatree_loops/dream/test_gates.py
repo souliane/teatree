@@ -195,6 +195,53 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed
 
+    def test_passes_on_zero_clusters_when_maintenance_was_performed(self) -> None:
+        # A quiet-night pass: 0 NEW clusters distilled, no net size drop, no schema
+        # growth — but the file-side phases cross-linked edges / re-indexed / decayed.
+        # That IS real consolidation maintenance, so the gate must PASS (#2626 staleness).
+        same = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            same,
+            same,
+            schema_before=2,
+            schema_after=2,
+            homed_index_lines=set(),
+            clusters_recorded=0,
+            maintenance_performed=True,
+        )
+        assert result.passed
+
+    def test_true_no_op_still_fails_even_without_maintenance(self) -> None:
+        # NOTHING happened: 0 clusters, no size drop, no schema growth, no maintenance.
+        # The no-op detection must stay intact — the gate FAILS with the no-consolidation
+        # detail rather than being weakened into always-pass.
+        same = _snapshot({"a.md": "x" * 100}, index="- a\n")
+        result = Gate.consolidation_happened(
+            same,
+            same,
+            schema_before=2,
+            schema_after=2,
+            homed_index_lines=set(),
+            clusters_recorded=0,
+            maintenance_performed=False,
+        )
+        assert not result.passed
+        assert "no consolidation" in result.detail
+
+    def test_maintenance_does_not_excuse_an_unhomed_prune(self) -> None:
+        before = _snapshot({"a.md": "x" * 100}, index="- a\n- b\n")
+        after = _snapshot({"a.md": "x" * 100}, index="- a\n")  # 'b' pruned, no home
+        result = Gate.consolidation_happened(
+            before,
+            after,
+            schema_before=0,
+            schema_after=0,
+            homed_index_lines=set(),
+            clusters_recorded=0,
+            maintenance_performed=True,
+        )
+        assert not result.passed  # maintenance happened but a pruned line is orphaned
+
     def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
         # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
         # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link

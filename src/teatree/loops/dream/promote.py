@@ -389,6 +389,14 @@ def _append_scenario_yaml(path: Path, candidate: Mapping[str, object], drift_rul
     path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, width=10_000), encoding="utf-8")
 
 
+#: Terminal queue states. A ``promoted`` row is DONE — a later pass skips it
+#: rather than re-promoting (idempotent). A ``rejected`` row is NOT terminal
+#: (rejection isn't a verdict on the candidate's worth, only that this attempt's
+#: grader had no teeth), so it MAY be retried on a subsequent pass — the cleaner
+#: semantics than silently abandoning a candidate that a later derivation could fix.
+_PROMOTED_STATUS = "promoted"
+
+
 def promote_proposals_file(
     proposals_path: Path,
     *,
@@ -396,32 +404,62 @@ def promote_proposals_file(
     fixtures_dir: Path | None = None,
     dry_run: bool = False,
 ) -> list[PromotionOutcome]:
-    """Promote every candidate row in a proposals JSONL through the guarded path.
+    """Promote every candidate row in a proposals JSONL, writing each outcome back.
 
     Reads the candidate review queue the eval-proposer wrote, attempts each row,
-    and returns one outcome per row (promoted or rejected). A malformed line is
-    skipped (logged in its outcome reason), never fatal — the queue is appended
-    by a separate phase and one bad row must not block the rest.
+    and returns one outcome per row (promoted or rejected). Unless *dry_run*, the
+    queue is REWRITTEN so each row records its outcome (``status: promoted`` /
+    ``status: rejected`` plus a ``promotion_reason``) — so promoted candidates do
+    not get re-attempted on the next pass. Idempotent: a row already
+    ``status: promoted`` is SKIPPED (not re-promoted, not re-appended, its scenario
+    not duplicated); a ``rejected`` row may be retried. A malformed line is skipped
+    (logged in its outcome reason), never fatal, and preserved verbatim in the
+    rewrite — the queue is appended by a separate phase and one bad row must not
+    block the rest. Under *dry_run* the file is left byte-identical.
     """
     if not proposals_path.is_file():
         return []
     outcomes: list[PromotionOutcome] = []
+    rewritten: list[str] = []
     for line in proposals_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
+            rewritten.append(line)
             continue
         try:
             candidate = json.loads(stripped)
         except json.JSONDecodeError as exc:
             outcomes.append(PromotionOutcome(scenario_name="", promoted=False, reason=f"malformed JSONL row: {exc}"))
+            rewritten.append(line)  # malformed rows are preserved verbatim
             continue
         if not isinstance(candidate, Mapping):
             outcomes.append(PromotionOutcome(scenario_name="", promoted=False, reason="row is not a JSON object"))
+            rewritten.append(line)
             continue
-        outcomes.append(
-            promote_candidate(candidate, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir, dry_run=dry_run)
-        )
+        if candidate.get("status") == _PROMOTED_STATUS:
+            name = str(candidate.get("scenario_name") or "")
+            outcomes.append(
+                PromotionOutcome(scenario_name=name, promoted=True, reason="already promoted (skipped on re-run)")
+            )
+            rewritten.append(line)  # already terminal — left as-is
+            continue
+        outcome = promote_candidate(candidate, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir, dry_run=dry_run)
+        outcomes.append(outcome)
+        rewritten.append(_row_with_outcome(candidate, outcome))
+    if not dry_run:
+        proposals_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     return outcomes
+
+
+def _row_with_outcome(candidate: Mapping[str, object], outcome: PromotionOutcome) -> str:
+    """The candidate row re-serialised with its promotion outcome recorded.
+
+    Preserves every existing field, sets/overwrites ``status`` to ``promoted`` /
+    ``rejected``, and records the decision under ``promotion_reason`` — so the next
+    pass can skip a terminal ``promoted`` row instead of re-attempting it.
+    """
+    status = _PROMOTED_STATUS if outcome.promoted else "rejected"
+    return json.dumps({**candidate, "status": status, "promotion_reason": outcome.reason})
 
 
 def loaded_scenario_names(scenario_path: Path) -> Sequence[str]:

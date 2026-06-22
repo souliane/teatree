@@ -320,12 +320,12 @@ class Command(TyperCommand):
         memory_dirs = discover_memory_dirs()
         if not memory_dirs:
             return ""
-        phases: list[tuple[str, Callable[..., str | None]]] = [
+        phases: list[tuple[str, Callable[..., int]]] = [
             ("cross-link", self._cross_link_dirs),
             ("re-index", self._reindex_dirs),
             ("decay", self._decay_dirs),
         ]
-        parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run) for label, runner in phases]
+        parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run)[0] for label, runner in phases]
         return "".join(part for part in parts if part)
 
     def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
@@ -352,7 +352,7 @@ class Command(TyperCommand):
 
         before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
         schema_before = self._ledger_schema_count()
-        phase_summary, archived_by_dir = self._run_phases(memory_dirs, dry_run=dry_run)
+        phase_summary, archived_by_dir, maintenance_performed = self._run_phases(memory_dirs, dry_run=dry_run)
         schema_after = self._ledger_schema_count()
 
         all_passed = True
@@ -367,6 +367,7 @@ class Command(TyperCommand):
                     schema_before=schema_before,
                     schema_after=schema_after,
                     clusters_recorded=clusters_recorded,
+                    maintenance_performed=maintenance_performed,
                     persist=not dry_run,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -381,15 +382,24 @@ class Command(TyperCommand):
 
     def _run_phases(
         self, memory_dirs: list[Path], *, dry_run: bool
-    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
-        """Run phases 4 (cross-link) + 5 (re-index) then decay, returning decay's archives per dir."""
-        parts = [
-            self._phase_summary("cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run),
-            self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run),
-        ]
+    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]], bool]":
+        """Run phases 4 (cross-link) + 5 (re-index) then decay.
+
+        Returns the summary clause, decay's archives per dir, and a
+        ``maintenance_performed`` flag — True when ANY file-side phase did real
+        work (cross-link edges added, MEMORY.md re-indexed, or stale memories
+        archived). The gate uses that flag to count a quiet 0-cluster maintenance
+        pass as genuine consolidation (#2626).
+        """
+        cross_link_summary, links_added = self._phase_summary(
+            "cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run
+        )
+        reindex_summary, reindexed = self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run)
         decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
-        parts.append(decay_summary)
-        return "".join(part for part in parts if part), archived_by_dir
+        archived = sum(len(a) for a in archived_by_dir.values())
+        maintenance_performed = links_added > 0 or reindexed > 0 or archived > 0
+        parts = [cross_link_summary, reindex_summary, decay_summary]
+        return "".join(part for part in parts if part), archived_by_dir, maintenance_performed
 
     @staticmethod
     def _ledger_schema_count() -> int:
@@ -420,44 +430,58 @@ class Command(TyperCommand):
     def _phase_summary(
         self,
         label: str,
-        runner: "Callable[..., str | None]",
+        runner: "Callable[..., int]",
         memory_dirs: list[Path],
         *,
         dry_run: bool,
-    ) -> str:
-        """Run one phase's per-dir runner under fault isolation, returning its summary clause."""
-        try:
-            summary = runner(memory_dirs, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
-            return f"; WARN {label} raised: {type(exc).__name__}: {exc}"
-        return f"; {summary}" if summary else ""
+    ) -> tuple[str, int]:
+        """Run one phase's per-dir runner under fault isolation.
 
-    def _cross_link_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+        Returns ``(summary_clause, work_count)`` — the work count is the phase's
+        own unit (edges added / MEMORY.md re-indexed / memories archived) and feeds
+        the ``maintenance_performed`` gate signal. A fault-isolated failure returns
+        a WARN clause and a 0 count (the phase did no provable work).
+        """
+        try:
+            count = runner(memory_dirs, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN {label} raised: {type(exc).__name__}: {exc}", 0
+        clause = self._phase_clause(label, count)
+        return (f"; {clause}" if clause else ""), count
+
+    @staticmethod
+    def _phase_clause(label: str, count: int) -> str:
+        if not count:
+            return ""
+        return {
+            "cross-link": f"cross-linked {count} memory edge(s)",
+            "re-index": f"re-indexed {count} MEMORY.md",
+            "decay": f"archived {count} stale memory(ies)",
+        }[label]
+
+    def _cross_link_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
         from teatree.loops.dream import cross_link  # noqa: PLC0415
         from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415
 
         if not cross_link_enabled():
-            return None
-        added = sum(cross_link.cross_link_memories(d, dry_run=dry_run).links_added for d in memory_dirs)
-        return f"cross-linked {added} memory edge(s)" if added else None
+            return 0
+        return sum(cross_link.cross_link_memories(d, dry_run=dry_run).links_added for d in memory_dirs)
 
-    def _reindex_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+    def _reindex_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
         from teatree.loops.dream import reindex  # noqa: PLC0415
         from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415
 
         if not reindex_enabled():
-            return None
-        changed = sum(1 for d in memory_dirs if reindex.reindex_memory(d, dry_run=dry_run).changed)
-        return f"re-indexed {changed} MEMORY.md" if changed else None
+            return 0
+        return sum(1 for d in memory_dirs if reindex.reindex_memory(d, dry_run=dry_run).changed)
 
-    def _decay_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> str | None:
+    def _decay_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
         from teatree.loops.dream import decay  # noqa: PLC0415
         from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
 
         if not decay_enabled():
-            return None
-        archived = sum(decay.decay_memories(d, dry_run=dry_run).archived_count for d in memory_dirs)
-        return f"archived {archived} stale memory(ies)" if archived else None
+            return 0
+        return sum(decay.decay_memories(d, dry_run=dry_run).archived_count for d in memory_dirs)
 
 
 def _env_propose_evals() -> bool:

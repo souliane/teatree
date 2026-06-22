@@ -288,16 +288,21 @@ class Gate:
         schema_after: int,
         homed_index_lines: set[str],
         clusters_recorded: int = 0,
+        maintenance_performed: bool = False,
     ) -> GateResult:
         """(c) Consolidation actually happened, AND every pruned index line is homed.
 
         Consolidation "happened" when ANY of: the memory set's net byte size
-        REDUCED, the ledger schema/cluster count INCREASED, or this pass RECORDED
+        REDUCED, the ledger schema/cluster count INCREASED, this pass RECORDED
         clusters (``clusters_recorded > 0`` — distillation landed rules in the DB
-        ledger even when the on-disk file set did not shrink). A do-nothing pass (no
-        size drop, no schema growth, no clusters) fails. Independently, any index
-        line the pass PRUNED must have a confirmed durable home — a prune with no
-        home fails.
+        ledger even when the on-disk file set did not shrink), or the file-side
+        maintenance phases did real work (``maintenance_performed`` — cross-link
+        edges added, MEMORY.md re-indexed, or stale memories archived). A quiet-night
+        pass that distils 0 NEW clusters yet cross-links / re-indexes / decays IS
+        real consolidation maintenance and PASSES. A do-nothing pass (no size drop,
+        no schema growth, no clusters, no maintenance) still fails. Independently,
+        any index line the pass PRUNED must have a confirmed durable home — a prune
+        with no home fails.
 
         A pruned line is homed when it is in *homed_index_lines* (the durable
         destination the caller supplies — e.g. a lesson still findable after the
@@ -316,10 +321,10 @@ class Gate:
             for line in pruned_lines
             if line not in homed_index_lines and not _line_targets_live_memory(line, snapshot_after)
         )
-        consolidated = size_reduced or schema_grew or distilled
+        consolidated = size_reduced or schema_grew or distilled or maintenance_performed
         passed = consolidated and not unhomed
         if not consolidated:
-            detail = "no consolidation: no size reduction, no schema growth, no clusters recorded"
+            detail = "no consolidation: no size reduction, no schema growth, no clusters recorded, no maintenance work"
         elif unhomed:
             detail = f"{len(unhomed)} pruned index line(s) have no confirmed durable home"
         else:
@@ -367,6 +372,7 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
     pass_rate_second: float,
     archived: "Sequence[ArchivedMemory]",
     clusters_recorded: int = 0,
+    maintenance_performed: bool = False,
     probes: Sequence[QaProbe] | None = None,
     prior_probes: Sequence[QaProbe] | None = None,
     answerer: ProbeAnswerer | None = None,
@@ -390,6 +396,7 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
                 schema_after=schema_after,
                 homed_index_lines=homed_index_lines,
                 clusters_recorded=clusters_recorded,
+                maintenance_performed=maintenance_performed,
             ),
             Gate.index_budget(snapshot_after),
             Gate.monotonicity(pass_rate_first=pass_rate_first, pass_rate_second=pass_rate_second),
@@ -461,6 +468,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     schema_before: int,
     schema_after: int,
     clusters_recorded: int = 0,
+    maintenance_performed: bool = False,
     persist: bool = True,
 ) -> DreamQaReport:
     """Run the §4 acceptance gates for one memory dir and persist the probe corpus.
@@ -469,7 +477,10 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     BEFORE snapshot, reads the recorded prior-session pass-rate as the monotonicity
     / interference baseline, computes the durable-home set for the consolidation
     gate as the pruned index lines whose lesson is still findable in the AFTER
-    snapshot (transfer-before-prune), runs all six gates, and — unless *persist* is
+    snapshot (transfer-before-prune), threads the caller's *maintenance_performed*
+    signal (file-side phases did real cross-link / re-index / decay work) into the
+    consolidation gate so a quiet 0-cluster maintenance pass still counts as
+    consolidation, runs all six gates, and — unless *persist* is
     off (dry-run) — records each probe's outcome to :class:`DreamQaProbe` (so the
     formerly-dead model is populated and the next pass has a prior baseline).
     """
@@ -489,6 +500,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
         pass_rate_second=now_rate,
         archived=archived,
         clusters_recorded=clusters_recorded,
+        maintenance_performed=maintenance_performed,
         probes=probes,
     )
     if persist:

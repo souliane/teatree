@@ -15,6 +15,7 @@ These tests prove the dreaming side now closes the drift -> live-eval loop:
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -175,8 +176,6 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
     def test_guard_reject_writes_no_files(self) -> None:
         # When the (non-bypassable) guard rejects, promote_candidate writes nothing
         # and surfaces the guard's reason — the unproven candidate never lands.
-        from unittest.mock import patch  # noqa: PLC0415
-
         reject = promote.GuardResult(can_fail=False, reason="matchers are vacuous")
         with patch("teatree.loops.dream.promote.guard_can_fail", return_value=reject):
             outcome = self._promote(_GROUNDED_CANDIDATE)
@@ -217,3 +216,63 @@ class PromoteProposalsFileTestCase(TestCase):
 
     def test_missing_queue_is_empty_list(self) -> None:
         assert promote.promote_proposals_file(self.tmp / "absent.jsonl") == []
+
+    def _queue_rows(self) -> list[dict[str, object]]:
+        return [json.loads(line) for line in self.queue.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def test_writes_status_back_to_the_queue(self) -> None:
+        rows = [
+            json.dumps(_GROUNDED_CANDIDATE),
+            json.dumps({**_GROUNDED_CANDIDATE, "scenario_name": "no_drift_rule_reject", "drift_rule": ""}),
+        ]
+        # The second row's matcher is satisfiable by the bad transcript -> guard rejects.
+        rejecting = {**_GROUNDED_CANDIDATE, "scenario_name": "rejected_candidate"}
+        del rejecting["drift_rule"]
+        rows[1] = json.dumps(rejecting)
+        self.queue.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+        with patch.object(
+            promote,
+            "promote_candidate",
+            side_effect=[
+                promote.PromotionOutcome(scenario_name="derived_delegate_under_load", promoted=True, reason="ok"),
+                promote.PromotionOutcome(scenario_name="rejected_candidate", promoted=False, reason="REJECTED"),
+            ],
+        ):
+            promote.promote_proposals_file(self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+
+        written = self._queue_rows()
+        by_name = {r["scenario_name"]: r for r in written}
+        assert by_name["derived_delegate_under_load"]["status"] == "promoted"
+        assert by_name["rejected_candidate"]["status"] == "rejected"
+        # The original fields are preserved alongside the new status.
+        assert by_name["derived_delegate_under_load"]["lane"] == "under_load"
+        assert "promotion_reason" in by_name["derived_delegate_under_load"]
+
+    def test_second_call_skips_already_promoted_rows(self) -> None:
+        self.queue.write_text(json.dumps(_GROUNDED_CANDIDATE) + "\n", encoding="utf-8")
+        first = promote.promote_proposals_file(self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        assert [o.promoted for o in first] == [True]
+        scenario_file = self.scenarios / "promoted_drift.yaml"
+        names_after_first = list(promote.loaded_scenario_names(scenario_file))
+
+        # A second run must SKIP the already-promoted row: no re-promotion, no duplicate.
+        with patch.object(promote, "promote_candidate") as promote_fn:
+            second = promote.promote_proposals_file(
+                self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures
+            )
+            promote_fn.assert_not_called()
+        assert [o.promoted for o in second] == [True]
+        assert second[0].reason.startswith("already promoted")
+        # The scenario file was not duplicated.
+        assert list(promote.loaded_scenario_names(scenario_file)) == names_after_first
+
+    def test_dry_run_leaves_the_queue_byte_identical(self) -> None:
+        rows = [json.dumps(_GROUNDED_CANDIDATE), json.dumps({**_GROUNDED_CANDIDATE, "scenario_name": "second"})]
+        original = "\n".join(rows) + "\n"
+        self.queue.write_text(original, encoding="utf-8")
+        before = self.queue.read_bytes()
+        promote.promote_proposals_file(
+            self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, dry_run=True
+        )
+        assert self.queue.read_bytes() == before
