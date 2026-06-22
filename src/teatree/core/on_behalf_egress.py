@@ -70,13 +70,16 @@ class OnBehalfSlackEgress:
         Reuses the single #1750 destination test rather than inventing a
         second classifier: the on-behalf carve-out boundary and the
         token-routing boundary are the same line of truth, so a colleague's
-        ``D…`` id can never be mistaken for self. Fail-closed: a backend
-        with no ``route_token`` accessor (a fake / Noop with no #1750
-        router) is treated as a colleague surface — an unclassifiable
-        destination fires the gate rather than slipping past it.
+        ``D…`` id can never be mistaken for self. Fails closed: an
+        unclassifiable surface (backend with no ``route_token`` accessor)
+        raises :class:`OnBehalfPostBlockedError` rather than silently
+        defaulting to colleague.
         """
         if getattr(self._messaging, "route_token", None) is None:
-            return False
+            raise OnBehalfPostBlockedError(
+                target=channel,
+                action="unknown_surface",
+            )
         return bool(self._messaging._is_self_dm(channel))  # type: ignore[attr-defined]  # noqa: SLF001
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
