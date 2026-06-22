@@ -9,6 +9,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PullRequestSp
 from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
@@ -432,6 +433,11 @@ class ShipExecutor(RunnerBase):
         title = sanitized_title
         sanitized_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
         description = f"{sanitized_title}\n\n{sanitized_body}" if sanitized_body else sanitized_title
+        description = ensure_standard_body(
+            description,
+            required_sections=overlay.metadata.get_required_description_sections(),
+            section_defaults=overlay.metadata.get_description_section_defaults(),
+        )
         description = apply_publish_gate(
             description,
             repo=repo_path,

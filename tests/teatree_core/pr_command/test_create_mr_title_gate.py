@@ -43,16 +43,18 @@ class TestPrCreateMrTitleGate(TestCase):
         details = cast("list[str]", result["details"])
         assert any(DEFAULT_MR_TITLE_REGEX in d for d in details)
 
-    def test_missing_what_why_description_is_rejected_before_shipping(self) -> None:
+    def test_missing_what_why_body_is_scaffolded_by_the_generator(self) -> None:
+        # #312: the generator emits the standard What/Why body by default, so a
+        # conforming title with a flat-paragraph body no longer trips the gate —
+        # the scaffold is added and the MR ships. (The What/Why gate still
+        # protects an explicitly-authored description that bypasses the
+        # generator; the commit-body path is now self-healing.)
         self._ticket = _shippable_ticket()
-        # Conforming title, but the body carries no What/Why header.
         result = self._run("feat(ship): add the gate (#1540)", "Just a flat paragraph.")
 
         self._ticket.refresh_from_db()
-        assert self._ticket.state == Ticket.State.REVIEWED
-        assert result["error"] == "PR validation failed"
-        details = cast("list[str]", result["details"])
-        assert any("What" in d and "Why" in d for d in details)
+        assert self._ticket.state == Ticket.State.SHIPPED
+        assert "error" not in result
 
     def test_conforming_title_and_what_why_passes(self) -> None:
         self._ticket = _shippable_ticket()

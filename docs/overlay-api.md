@@ -70,8 +70,10 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 
 | Method | Default | Purpose |
 |--------|---------|---------|
-| `validate_pr(title, description)` | reject a title or a description **first line** not matching the effective `mr_title_regex` (Conventional Commits plus the release-notes types `improvement\|config\|techdebt` some overlays narrow to), or a description missing a What/Why header (#1540, #1367); the first-line check mirrors the GitLab `validate_mr_title_and_description` CI gate, which parses the literal first line and never falls back to the title | Validate PR title and description against project conventions; override to assemble a different grammar, but the default is a real gate enforced at `pr create` |
+| `validate_pr(title, description)` | reject a title or a description **first line** not matching the effective `mr_title_regex` (Conventional Commits plus the release-notes types `improvement\|config\|techdebt` some overlays narrow to), a description missing a What/Why header (#1540, #1367), or a description missing any section declared in `get_required_description_sections()` (#312); the first-line check mirrors the GitLab `validate_mr_title_and_description` CI gate, which parses the literal first line and never falls back to the title | Validate PR title and description against project conventions; override to assemble a different grammar, but the default is a real gate enforced at `pr create` |
 | `build_pr_title(branch, subject, body, issue_url)` | the commit `subject` | Produce the PR title from structured ticket data so the ship path generates a compliant title instead of copying a raw subject |
+| `get_required_description_sections()` | `[]` | MR-description sections (beyond What/Why) the gate requires and the generator emits by default — e.g. `["Configuration"]` (#312) |
+| `get_description_section_defaults()` | `{}` | Default body text the generator writes under a missing required section — e.g. a `Configuration` no-config line (#312) |
 | `get_followup_repos()` | `[]` | Repos to check during follow-up sync |
 | `get_skill_metadata()` | `{}` | Skill path, remote patterns, trigger index for the overlay's companion skills |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |

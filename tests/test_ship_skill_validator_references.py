@@ -15,7 +15,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHIP_SKILL = REPO_ROOT / "skills" / "ship" / "SKILL.md"
-OVERLAY_MODULE = REPO_ROOT / "src" / "teatree" / "core" / "overlay.py"
+# ``validate_pr`` lives on ``OverlayMetadata``, which the #1983 "split by
+# concern" extraction moved out of ``overlay.py`` into its own module. The
+# guard points at the file that actually defines the hook, not the composer.
+OVERLAY_METADATA_MODULE = REPO_ROOT / "src" / "teatree" / "core" / "overlay_metadata.py"
 TOOLS_CLI = REPO_ROOT / "src" / "teatree" / "cli" / "tools.py"
 
 _STALE_SYMBOL = "validate_mr_title_and_description"
@@ -40,7 +43,7 @@ class TestShipSkillNamesRealValidators:
 
 class TestReferencedSymbolsExistInCode:
     def test_validate_pr_hook_exists_on_overlay_metadata(self) -> None:
-        assert "def validate_pr(" in OVERLAY_MODULE.read_text(encoding="utf-8")
+        assert "def validate_pr(" in OVERLAY_METADATA_MODULE.read_text(encoding="utf-8")
 
     def test_validate_mr_cli_command_exists(self) -> None:
         assert 'command("validate-mr")' in TOOLS_CLI.read_text(encoding="utf-8")

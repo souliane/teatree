@@ -20,6 +20,8 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `get_checking_sources` | No | `() -> list[str]` | Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report. |
 | `metadata.validate_pr` | No | `(title: str, description: str) -> teatree.types.ValidationResult` | Return PR validation problems for this overlay. |
 | `metadata.build_pr_title` | No | `(*, branch: str, subject: str, body: str, issue_url: str) -> str` | Produce the PR title from structured ticket data (default: the commit subject). |
+| `metadata.get_required_description_sections` | No | `() -> list[str]` | Declare MR-description sections (beyond What/Why) the gate requires and the generator emits. |
+| `metadata.get_description_section_defaults` | No | `() -> dict[str, str]` | Map a required section to the default body the generator writes when the commit omits it. |
 | `metadata.get_skill_metadata` | No | `() -> teatree.types.SkillMetadata` | Return the active overlay skill path and remote match patterns. |
 | `metadata.get_ci_project_path` | No | `() -> str` | Return the GitLab project path for CI operations. |
 | `metadata.get_e2e_config` | No | `() -> dict[str, str]` | Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref). |
