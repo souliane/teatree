@@ -50,6 +50,11 @@ def run_command(
         "--propose-evals",
         help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
     ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Run the WHOLE pipeline: also file core-gap tickets and stage LLM-derived evals.",
+    ),
 ) -> None:
     """Run one consolidation pass NOW (ignores cadence)."""
     ensure_django()
@@ -61,6 +66,8 @@ def run_command(
         args.append("--dry-run")
     if propose_evals:
         args.append("--propose-evals")
+    if full:
+        args.append("--full")
     if since:
         args.extend(["--since", since])
     call_command("dream", *args)

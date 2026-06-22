@@ -506,6 +506,91 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         assert "no teatree code host resolved" in stdout.getvalue()
 
 
+class DreamFullFlagTestCase(TestCase):
+    """``run --full`` forces every phase on for one manual pass (Gap B)."""
+
+    def test_full_requests_eval_proposals(self) -> None:
+        seen: dict[str, object] = {}
+
+        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+            seen["eval_proposals"] = eval_proposals
+            return _ok_result()
+
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=_capture),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": "0", "T3_DREAM_DERIVE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        assert seen["eval_proposals"] is not None
+
+    def test_full_runs_memory_promotion_despite_toggle_off(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]) as file_fn,
+            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": "0"}, clear=False),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        file_fn.assert_called_once()
+
+    def test_full_runs_eval_derivation_despite_toggle_off(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]) as stage_fn,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        stage_fn.assert_called_once()
+
+    def test_full_dry_run_previews_but_writes_nothing(self) -> None:
+        seen: dict[str, object] = {}
+
+        def _capture(*, overlay: str, since: object, dry_run: bool, eval_proposals: object = None) -> DreamRunResult:
+            seen["dry_run"] = dry_run
+            seen["eval_proposals"] = eval_proposals
+            return _ok_result(dry_run=dry_run)
+
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=_capture),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": "0", "T3_DREAM_DERIVE_EVALS": "0"}, clear=False),
+        ):
+            call_command("dream", "run", "--full", "--dry-run", stdout=StringIO())
+        # --full composes with --dry-run: the engine previews with proposals requested,
+        # but no marker is stamped and no rows are written.
+        assert seen["dry_run"] is True
+        assert seen["eval_proposals"] is not None
+        assert not DreamRunMarker.objects.exists()
+
+
 class DreamLeaseTtlTestCase(TestCase):
     def test_run_acquires_lease_sized_to_the_pass_budget(self) -> None:
         # The default 120s lease would expire under a wall-clock-capped pass and

@@ -217,6 +217,60 @@ class WriteClustersTestCase(TestCase):
         row.refresh_from_db()
         assert row.rule == original_rule
 
+    def test_persists_durable_destination_on_create(self) -> None:
+        member = self._member_with_body("feedback_dd.md", f"line\n{_CITATION}\n")
+        cluster = DistilledCluster(
+            cluster_key="dd",
+            rule="rule",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation=_CITATION,
+            durable_destination="src/teatree/loops/dream/engine.py",
+        )
+        write_clusters([cluster], _extract_of(member), dry_run=False)
+        row = ConsolidatedMemory.objects.get(cluster_key="dd")
+        assert row.durable_destination == "src/teatree/loops/dream/engine.py"
+
+    def test_rerun_updates_durable_destination_on_binding_row(self) -> None:
+        member = self._member_with_body("feedback_ddb.md", f"line\n{_CITATION}\n")
+        first = DistilledCluster(
+            cluster_key="ddb",
+            rule="rule",
+            source_files=[str(member.path)],
+            is_binding=True,
+            verified_citation=_CITATION,
+            durable_destination="",
+        )
+        write_clusters([first], _extract_of(member), dry_run=False)
+        refreshed = DistilledCluster(
+            cluster_key="ddb",
+            rule="rule",
+            source_files=[str(member.path)],
+            is_binding=True,
+            verified_citation=_CITATION,
+            durable_destination="skills/code/SKILL.md",
+        )
+        write_clusters([refreshed], _extract_of(member), dry_run=False)
+        row = ConsolidatedMemory.objects.get(cluster_key="ddb")
+        assert row.is_binding is True
+        assert row.durable_destination == "skills/code/SKILL.md"
+
+    def test_core_destination_makes_triage_return_core_gap(self) -> None:
+        from teatree.loops.dream.promote_memory import MemoryDisposition, triage_disposition  # noqa: PLC0415
+
+        member = self._member_with_body("feedback_core.md", f"line\n{_CITATION}\n")
+        cluster = DistilledCluster(
+            cluster_key="core",
+            rule="A generic teatree workflow gap.",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation=_CITATION,
+            durable_destination="src/teatree/loops/dream/promote_memory.py",
+        )
+        write_clusters([cluster], _extract_of(member), dry_run=False)
+        row = ConsolidatedMemory.objects.get(cluster_key="core")
+        assert triage_disposition(row) is MemoryDisposition.CORE_GAP
+
     def test_rerun_refreshes_rule_for_non_binding(self) -> None:
         member = _write_member(self.tmp)
         write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)

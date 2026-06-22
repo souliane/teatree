@@ -3889,6 +3889,8 @@ Usage: t3 dream run [OPTIONS]
 │                              rows / the marker.                              │
 │ --propose-evals              Also derive inert eval candidates from grounded │
 │                              drift clusters (default OFF).                   │
+│ --full                       Run the WHOLE pipeline: also file core-gap      │
+│                              tickets and stage LLM-derived evals.            │
 │ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5139,17 +5141,19 @@ Usage: t3 teatree e2e trigger-ci [OPTIONS]
 ```
 Usage: t3 teatree e2e external [OPTIONS]
 
- Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
+ Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or
+ --repo).
 
- Two sources for the Playwright working directory:
+ Three sources for the Playwright working directory (first match wins):
 
- - ``--repo <name>``: clone/update the named repo from ```` in
-     ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
- - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``.private_tests``
-     config key.
+ - ``--repo <name>``: clone ```` (``~/.teatree.toml``) and use its ``e2e_dir``.
+ - else the overlay's ``get_e2e_config`` repo (its ``url`` cloned at ``ref``),
+ when declared.
+ - else the ``T3_PRIVATE_TESTS`` env var / ``.private_tests`` directory.
 
- ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
- ``.branch`` default) to run from an open MR's branch.
+ ``--branch``/``--ref`` overrides a clone's specs ref (the ``--repo`` default
+ or the
+ overlay ``ref``) to run from an open MR's branch.
 
  ``--target dev|qa|local`` is deterministic: remote targets keep the
  pre-set ``BASE_URL`` and never scan local ports; ``local`` always

@@ -33,6 +33,15 @@ class TestDreamCliDelegation:
         assert result.exit_code == 0
         call_mock.assert_called_once_with("dream", "run", "--dry-run", "--since", "2026-06-01T00:00:00+00:00")
 
+    def test_run_passes_full(self) -> None:
+        with (
+            patch("teatree.cli.dream.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(dream_app, ["run", "--full"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("dream", "run", "--full")
+
     def test_tick_delegates_to_management_command(self) -> None:
         with (
             patch("teatree.cli.dream.ensure_django"),
