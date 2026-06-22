@@ -119,9 +119,10 @@ ExpectItem = Matcher | AnyOf | FinalStateMatcher
 #: canonicalize identically.
 #:
 #: ``task`` -> ``Agent`` because the bundled ``claude`` CLI names the SUB-AGENT
-#: SPAWN tool ``Agent``, NOT ``Task`` — there is no ``Task`` tool in the registry
-#: (``Task`` resolves to no known tool and is silently dropped, the same
-#: toolset-drift class as the removed ``MultiEdit`` in #2627). Scenarios and their
+#: SPAWN tool ``Agent``, NOT ``Task`` — there is no ``Task`` *spawn* tool (the CLI
+#: does register a ``Task`` tool, but ``Task`` resolves to no known *spawn* tool
+#: and delegation silently never happens, the same toolset-drift class as the
+#: removed ``MultiEdit`` in #2627). Scenarios and their
 #: matchers historically wrote ``Task`` (the user-facing/UI name), so a declared
 #: ``tools: [..., Task]`` produced a ``--tools`` allowlist with the phantom
 #: ``Task`` AND pushed the REAL ``Agent`` onto the ``--disallowedTools`` denylist —
@@ -142,7 +143,7 @@ def canonicalize_tool(name: str) -> str:
     The single normalization both the grader and the metered-lane toolset
     restriction apply, so a matcher's tool and a declared ``tools`` entry are
     compared in the same canonical space. ``Task`` maps to the bundled CLI's real
-    sub-agent spawn tool ``Agent`` (the CLI registers no ``Task`` tool); the
+    sub-agent spawn tool ``Agent`` (the CLI registers no ``Task`` *spawn* tool); the
     exact-key match leaves ``TaskCreate`` / ``TaskUpdate`` / ``TaskList`` (the
     team-mode task-list built-ins) untouched.
     """
