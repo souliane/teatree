@@ -147,7 +147,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
 
 
 @task()
-def sync_followup() -> dict[str, int | list[str]]:
+def sync_followup() -> dict[str, int | list[str] | list[dict[str, int | str]]]:
     from teatree.core.sync import sync_followup as _sync  # noqa: PLC0415
 
     result = _sync()
@@ -156,6 +156,7 @@ def sync_followup() -> dict[str, int | list[str]]:
         "tickets_created": result.tickets_created,
         "tickets_updated": result.tickets_updated,
         "errors": result.errors,
+        "conflicted_mrs": [c.to_dict() for c in result.conflicted_mrs],
     }
 
 

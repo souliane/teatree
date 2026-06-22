@@ -16,6 +16,7 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab.sync_conflicts import collect_conflicted_mrs
 from teatree.backends.gitlab.sync_issues import fetch_assigned_issues, fetch_issue_labels
 from teatree.backends.gitlab.sync_prs import _PRContext, extract_repo_path, upsert_ticket_from_pr
 from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
@@ -82,10 +83,28 @@ class GitLabSyncBackend(SyncBackend):
         detect_closed_prs(client, username, result, last_sync)
         fetch_review_permalinks(result)
         self._sync_reviewer_prs(host, username, result)
+        self._detect_conflicted_prs(host, username, result)
 
         cache.set(LAST_SYNC_CACHE_KEY, sync_started_at.isoformat(), timeout=None)
 
         return result
+
+    @classmethod
+    def _detect_conflicted_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:
+        """Re-check every open authored MR's mergeability — never incremental.
+
+        A merge conflict re-arises whenever master advances under an open MR,
+        so the conflict set is fetched WITHOUT ``updated_after`` (the
+        incremental ticket-upsert fetch above would miss a conflicted MR whose
+        ``updated_at`` predates the last sync). Detection only — no rebase,
+        no push (#78). A failed fetch is recorded as an error, never fatal.
+        """
+        try:
+            open_prs = host.list_my_prs(author=username)
+        except Exception as exc:  # noqa: BLE001
+            result.errors.append(f"Conflict-check PR fetch failed: {exc}")
+            return
+        collect_conflicted_mrs(open_prs, result)
 
     @classmethod
     def _sync_reviewer_prs(cls, host: GitLabCodeHost, username: str, result: SyncResult) -> None:

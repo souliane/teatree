@@ -5,7 +5,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.types import RawAPIDict
+from teatree.types import ConflictedMR, RawAPIDict
 from teatree.url_classify import pr_ref
 
 
@@ -54,17 +54,40 @@ class Command(TyperCommand):
         }
 
     @command()
-    def sync(self) -> dict[str, int | list[str]]:
+    def sync(self) -> dict[str, int | list[str] | list[dict[str, int | str]]]:
         from teatree.core.sync import sync_followup  # noqa: PLC0415
 
         result = sync_followup()
+        self._warn_conflicted_mrs(result.conflicted_mrs)
         return {
             "prs_found": result.prs_found,
             "tickets_created": result.tickets_created,
             "tickets_updated": result.tickets_updated,
             "worktrees_cleaned": result.worktrees_cleaned,
             "errors": result.errors,
+            "conflicted_mrs": [c.to_dict() for c in result.conflicted_mrs],
         }
+
+    def _warn_conflicted_mrs(self, conflicted: list[ConflictedMR]) -> None:
+        """Surface conflicted open authored MRs LOUDLY, never buried like errors.
+
+        A conflicted MR sits invisibly until someone resolves it, and re-arises
+        as master advances — so the sweep prints a clearly-visible WARNING
+        block naming each one. Detection only: resolution stays an explicit,
+        separate action (#78).
+        """
+        if not conflicted:
+            return
+        count = len(conflicted)
+        plural = "s" if count != 1 else ""
+        self.stdout.write("")
+        self.stdout.write(f"{'=' * 64}")
+        self.stdout.write(f"WARNING: {count} open MR{plural} in merge conflict — resolve before merge:")
+        self.stdout.write(f"{'=' * 64}")
+        for mr in conflicted:
+            self.stdout.write(f"  CONFLICT  !{mr.iid}  {mr.repo}  {mr.title}")
+            self.stdout.write(f"            {mr.web_url}")
+        self.stdout.write(f"{'=' * 64}")
 
     @command(name="discover-mrs")
     def discover_mrs(self) -> RawAPIDict:

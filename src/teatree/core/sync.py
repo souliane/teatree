@@ -25,6 +25,7 @@ def _merge_results(a: SyncResult, b: SyncResult) -> SyncResult:
         reviews_synced=a.reviews_synced + b.reviews_synced,
         worktrees_cleaned=a.worktrees_cleaned + b.worktrees_cleaned,
         errors=[*a.errors, *b.errors],
+        conflicted_mrs=[*a.conflicted_mrs, *b.conflicted_mrs],
     )
 
 
