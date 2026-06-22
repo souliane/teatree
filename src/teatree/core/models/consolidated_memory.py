@@ -147,6 +147,7 @@ class ConsolidatedMemory(models.Model):
         max_member_weight: int,
         is_binding: bool,
         overlay: str = "",
+        durable_destination: str = "",
     ) -> "ConsolidatedMemory":
         """Idempotently record one cluster keyed on ``cluster_key``.
 
@@ -163,6 +164,7 @@ class ConsolidatedMemory(models.Model):
                 "max_member_weight": max_member_weight,
                 "is_binding": is_binding,
                 "overlay": overlay,
+                "durable_destination": durable_destination,
             },
         )
         return row

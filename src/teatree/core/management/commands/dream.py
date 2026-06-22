@@ -61,9 +61,22 @@ class Command(TyperCommand):
                 help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
             ),
         ] = False,
+        full: Annotated[
+            bool,
+            typer.Option(
+                "--full",
+                help="Run the WHOLE pipeline: also file core-gap tickets and stage LLM-derived evals.",
+            ),
+        ] = False,
     ) -> None:
         """Run one consolidation pass NOW (manual escape hatch; ignores cadence)."""
-        self._run_pass(since=_parse_since(since), dry_run=dry_run, enforce_cadence=False, propose_evals=propose_evals)
+        self._run_pass(
+            since=_parse_since(since),
+            dry_run=dry_run,
+            enforce_cadence=False,
+            propose_evals=propose_evals or full,
+            force_all_phases=full,
+        )
 
     @command(name="tick")
     def tick(self) -> None:
@@ -79,7 +92,13 @@ class Command(TyperCommand):
         self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
 
     def _run_pass(
-        self, *, since: dt.datetime | None, dry_run: bool, enforce_cadence: bool, propose_evals: bool
+        self,
+        *,
+        since: dt.datetime | None,
+        dry_run: bool,
+        enforce_cadence: bool,
+        propose_evals: bool,
+        force_all_phases: bool = False,
     ) -> None:
         import os  # noqa: PLC0415
 
@@ -104,7 +123,9 @@ class Command(TyperCommand):
 
         enabled = propose_evals or _env_propose_evals()
         try:
-            succeeded = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now, propose_evals=enabled)
+            succeeded = self._consolidate_and_mark(
+                since=since, dry_run=dry_run, now=now, propose_evals=enabled, force_all_phases=force_all_phases
+            )
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
@@ -118,7 +139,13 @@ class Command(TyperCommand):
             self.stdout.write(f"      dream marker last_succeeded_at={stamped}")
 
     def _consolidate_and_mark(
-        self, *, since: dt.datetime | None, dry_run: bool, now: dt.datetime, propose_evals: bool
+        self,
+        *,
+        since: dt.datetime | None,
+        dry_run: bool,
+        now: dt.datetime,
+        propose_evals: bool,
+        force_all_phases: bool = False,
     ) -> bool:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415
         from teatree.loops.dream import engine  # noqa: PLC0415
@@ -161,11 +188,13 @@ class Command(TyperCommand):
             )
             return False
 
-        promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
+        promoted = self._promote_candidates(
+            propose_evals=propose_evals, dry_run=dry_run, force_all_phases=force_all_phases
+        )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
-        memory_promote = self._run_memory_promotion(dry_run=dry_run)
+        memory_promote = self._run_memory_promotion(dry_run=dry_run, force_all_phases=force_all_phases)
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
@@ -187,7 +216,7 @@ class Command(TyperCommand):
         )
         return True
 
-    def _promote_candidates(self, *, propose_evals: bool, dry_run: bool) -> str:
+    def _promote_candidates(self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False) -> str:
         """Promote the freshly-derived candidates to live scenarios (guarded; never raises).
 
         Runs only when proposals were requested. Each candidate clears the
@@ -208,12 +237,12 @@ class Command(TyperCommand):
             return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
         promoted = sum(1 for o in outcomes if o.promoted)
         rejected = len(outcomes) - promoted
-        derived = self._derive_evals(dry_run=dry_run)
+        derived = self._derive_evals(dry_run=dry_run, force_all_phases=force_all_phases)
         if not outcomes:
             return derived
         return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s){derived}"
 
-    def _derive_evals(self, *, dry_run: bool) -> str:
+    def _derive_evals(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
         """Stage LLM-derived full scenarios from the candidate queue (default OFF; never raises).
 
         Runs only when the default-OFF ``derive_evals`` toggle is on (#2447). Each
@@ -223,7 +252,7 @@ class Command(TyperCommand):
         """
         from teatree.loops.dream.loop import derive_evals_enabled  # noqa: PLC0415
 
-        if not derive_evals_enabled():
+        if not force_all_phases and not derive_evals_enabled():
             return ""
         try:
             from teatree.loops.dream import llm_eval_proposer  # noqa: PLC0415
@@ -237,7 +266,7 @@ class Command(TyperCommand):
         staged = sum(1 for o in outcomes if o.derived)
         return f"; staged {staged} derived eval(s) for review, dropped {len(outcomes) - staged}"
 
-    def _run_memory_promotion(self, *, dry_run: bool) -> str:
+    def _run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
         """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
 
         Runs only when the default-OFF ``memory_promote`` toggle is on, because it
@@ -248,7 +277,7 @@ class Command(TyperCommand):
         """
         from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
 
-        if not memory_promote_enabled():
+        if not force_all_phases and not memory_promote_enabled():
             return ""
         try:
             from teatree.loops.dream import promote_memory  # noqa: PLC0415

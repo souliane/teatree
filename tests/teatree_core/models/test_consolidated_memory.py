@@ -41,6 +41,25 @@ class TestRecordCluster(TestCase):
         assert row.member_count == 3
         assert row.max_member_weight == 5
 
+    def test_persists_durable_destination_on_create(self) -> None:
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=_key("dd"),
+            rule="Always run the gate before pushing.",
+            source_files=[],
+            member_count=1,
+            max_member_weight=5,
+            is_binding=False,
+            durable_destination="src/teatree/loops/dream/engine.py",
+        )
+
+        row.refresh_from_db()
+        assert row.durable_destination == "src/teatree/loops/dream/engine.py"
+
+    def test_durable_destination_defaults_empty(self) -> None:
+        row = _record()
+
+        assert row.durable_destination == ""
+
     def test_is_idempotent_on_cluster_key(self) -> None:
         first = _record("same-members")
         again = ConsolidatedMemory.record_cluster(

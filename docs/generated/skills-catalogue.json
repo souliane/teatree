@@ -33,6 +33,10 @@
       "summary": "Troubleshooting and fixing \u2014 something is broken, find and fix it"
     },
     {
+      "name": "dreaming",
+      "summary": "Runs the idle-time \"dreaming\" memory-consolidation pipeline end to end with one command \u2014 replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the \u00a74 acceptance gates, triage each row into keep-as-memory vs core-gap \u2192 file a needs-triage teatree ticket, and promote/stage eval candidates"
+    },
+    {
       "name": "e2e",
       "summary": "End-to-end testing with Playwright \u2014 writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate"
     },
