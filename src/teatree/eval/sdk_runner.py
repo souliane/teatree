@@ -41,38 +41,18 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ContentBlock,
-    Message,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    query,
-)
+from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
+from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
-from teatree.eval.toolset import compute_available_tools, compute_disallowed_tools
-from teatree.eval.transcript import (
-    extract_billed_model,
-    extract_cost_usd,
-    extract_model_cost_split,
-    extract_terminal_reason,
-    extract_text_blocks,
-    extract_tool_calls,
-    extract_usage,
-    parse_stream_json,
-    requested_model_present,
-)
+from teatree.eval.toolset import build_delegation_agents, compute_available_tools, compute_disallowed_tools
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
 
 #: Env var names for the metered lane's GENEROUS, configurable resource caps. A
@@ -347,6 +327,15 @@ class CleanRoomConfig:
     #: scenario's set via :func:`compute_available_tools`. An empty value renders
     #: as ``tools=None`` (CLI default), NEVER an empty ``--tools ""`` (no tools).
     available_tools: tuple[str, ...] = ()
+    #: Programmatic sub-agent definitions (the SDK's ``ClaudeAgentOptions.agents``),
+    #: sent over the initialize request so the ``Agent`` spawn tool is genuinely
+    #: usable — the same way the real agent gets its sub-agents. The SDK documents
+    #: ``agents`` as the way to programmatically define custom sub-agents the
+    #: ``Agent`` tool can spawn. Defaults ``None`` (no sub-agents, the
+    #: judge/non-delegation shape); the runner provisions a generic delegation
+    #: subagent for a scenario whose toolset exposes the spawn tool
+    #: (:func:`scenario_exposes_subagent_spawn`).
+    agents: dict[str, AgentDefinition] | None = None
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -370,6 +359,12 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     an empty list — the SDK renders ``[]`` as ``--tools ""`` (no tools), which
     would silently strip every tool from a scenario that did not opt into an
     allowlist.
+
+    ``agents`` is sent over the SDK initialize request (NOT a CLI argv flag, so a
+    sub-agent definition never blows ``ARG_MAX``). It is what makes the ``Agent``
+    spawn tool genuinely usable: a delegation scenario exposes ``Agent`` in its
+    allowlist AND ships a sub-agent definition, mirroring how the real agent gets
+    its sub-agents. ``None`` (the default) is the judge/non-delegation shape.
     """
     available = list(config.available_tools) if config.available_tools else None
     return ClaudeAgentOptions(
@@ -383,6 +378,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         tools=available,
         allowed_tools=list(config.allowed_tools),
         disallowed_tools=list(config.disallowed_tools),
+        agents=config.agents,
         permission_mode="bypassPermissions",
         max_turns=config.max_turns,
         max_budget_usd=config.max_budget_usd,
@@ -463,13 +459,13 @@ class SdkInProcessRunner:
             return self._terminal_capped_run(spec, terminal)
         except _SuccessMislabelResultError as mislabel:
             return self._success_mislabel_run(spec, mislabel)
-        return _eval_run_from_messages(spec, messages)
+        return eval_run_from_messages(spec, messages)
 
     def _terminal_capped_run(self, spec: EvalSpec, terminal: _TerminalResultError) -> EvalRun:
         """Grade a run the SDK terminated at a known cap (budget/max-turns).
 
         When the agent produced a trajectory before the cap, grade the REAL
-        trajectory: build via :func:`_eval_run_from_messages` so the matchers
+        trajectory: build via :func:`eval_run_from_messages` so the matchers
         decide pass/fail on what the agent actually did, then stamp the classified
         ``terminal_reason`` (so the renderer shows ``max_turns``/``budget_exceeded``)
         and clear ``is_error`` — a capped run that satisfied its matchers must not
@@ -490,7 +486,7 @@ class SdkInProcessRunner:
             cost = _budget_floor_from_message(str(terminal.cause), cap=effective_cap)
             empty_cost = cost if terminal.terminal_reason == BUDGET_EXCEEDED_REASON else 0.0
             return self._terminal_run(spec, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
-        graded = _eval_run_from_messages(spec, terminal.messages)
+        graded = eval_run_from_messages(spec, terminal.messages)
         cost = message_amount if message_amount is not None else graded.cost_usd
         return dataclasses.replace(
             graded,
@@ -505,14 +501,14 @@ class SdkInProcessRunner:
 
         The captured ``result`` event reads ``subtype="success"`` but carries a
         stray ``is_error=True`` (the CLI exited non-zero on the success subtype).
-        Grade the REAL trajectory via :func:`_eval_run_from_messages` so the
+        Grade the REAL trajectory via :func:`eval_run_from_messages` so the
         matchers decide pass/fail, then clear ``is_error`` — exactly the correction
         :meth:`_terminal_capped_run` applies — so a finished, all-matchers-pass run
         is not forced to FAIL on the flag alone (:attr:`ScenarioResult.passed` fails
         on ``is_error`` BEFORE consulting matchers). The ``terminal_reason`` already
         reads ``success`` and is left untouched — this is a finished run, not a cap.
         """
-        graded = _eval_run_from_messages(spec, mislabel.messages)
+        graded = eval_run_from_messages(spec, mislabel.messages)
         return dataclasses.replace(graded, is_error=False)
 
     async def _drive(self, spec: EvalSpec, *, system_prompt: str, max_turns: int) -> list[Message]:
@@ -538,6 +534,7 @@ class SdkInProcessRunner:
                     allowed_tools=spec.tools,
                     available_tools=compute_available_tools(spec),
                     disallowed_tools=compute_disallowed_tools(spec),
+                    agents=build_delegation_agents(spec),
                     model=variant.model,
                     max_turns=max_turns,
                     effort=effort,
@@ -609,82 +606,6 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             raise
         raise _TerminalResultError(terminal_reason=reason, messages=messages, cause=exc) from exc
     return messages
-
-
-def _eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
-    """Map the typed SDK messages onto the shared transcript extraction path.
-
-    Each typed message is rendered to the stream-json event dict the
-    :mod:`teatree.eval.transcript` extractors already parse, so tool/text/
-    terminal/cost extraction is identical to the subscription transcript path.
-    """
-    raw_stdout = _synthesize_stream_json(messages)
-    events = parse_stream_json(raw_stdout)
-    terminal_reason, is_error = extract_terminal_reason(events)
-    present = requested_model_present(events, spec.model)
-    split = extract_model_cost_split(events, spec.model)
-    return EvalRun(
-        spec_name=spec.name,
-        tool_calls=tuple(extract_tool_calls(events)),
-        text_blocks=tuple(extract_text_blocks(events)),
-        terminal_reason=terminal_reason,
-        is_error=is_error,
-        raw_stdout=raw_stdout,
-        raw_stderr="",
-        cost_usd=extract_cost_usd(events),
-        usage=extract_usage(events),
-        billed_model=extract_billed_model(events),
-        fell_back=None if present is None else not present,
-        main_cost_usd=split.main_cost_usd,
-        aux_cost_usd=split.aux_cost_usd,
-        main_usage=split.main_usage,
-        aux_usage=split.aux_usage,
-    )
-
-
-def _synthesize_stream_json(messages: list[Message]) -> str:
-    import json  # noqa: PLC0415
-
-    lines: list[str] = []
-    for message in messages:
-        event = _message_to_event(message)
-        if event is not None:
-            lines.append(json.dumps(event))
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def _message_to_event(message: Message) -> dict[str, Any] | None:
-    if isinstance(message, AssistantMessage):
-        # ``parent_tool_use_id`` distinguishes a TOP-LEVEL (main-agent) turn —
-        # ``None`` per the SDK contract — from a sub-agent SIDECHAIN turn, which
-        # carries the parent ``Agent``/``Task`` tool_use id. Threading it through
-        # to the synthesized event lets :func:`extract_tool_calls` count only the
-        # main agent's own calls; a sub-agent's worktree ``.py`` edits, emitted
-        # inline into the same ``query`` stream, must NOT be attributed to the main
-        # agent (the #2596 mis-attribution that failed delegates/full_speed RED).
-        return {
-            "type": "assistant",
-            "message": {"content": [_block_to_dict(b) for b in message.content]},
-            "parent_tool_use_id": message.parent_tool_use_id,
-        }
-    if isinstance(message, ResultMessage):
-        return {
-            "type": "result",
-            "subtype": message.subtype,
-            "is_error": message.is_error,
-            "total_cost_usd": message.total_cost_usd,
-            "usage": message.usage,
-            "model_usage": message.model_usage,
-        }
-    return None
-
-
-def _block_to_dict(block: ContentBlock) -> dict[str, Any]:
-    if isinstance(block, ToolUseBlock):
-        return {"type": "tool_use", "name": block.name, "input": dict(block.input)}
-    if isinstance(block, TextBlock):
-        return {"type": "text", "text": block.text}
-    return {"type": "unknown"}
 
 
 def _teatree_root() -> Path:

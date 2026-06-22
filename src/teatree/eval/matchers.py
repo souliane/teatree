@@ -8,7 +8,7 @@ it didn't match.
 import json
 import re
 
-from teatree.eval.models import EvalRun, EvalToolCall
+from teatree.eval.models import EvalRun, EvalToolCall, canonicalize_tool
 
 
 def _get_arg(call: EvalToolCall, arg_path: str) -> object:
@@ -47,7 +47,7 @@ def _format_calls(run: EvalRun) -> str:
 
 def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, substring: str) -> None:
     for call in run.tool_calls:
-        if call.name != tool_name:
+        if canonicalize_tool(call.name) != tool_name:
             continue
         value = _as_text(_get_arg(call, arg_path))
         if value is not None and substring in value:
@@ -62,7 +62,7 @@ def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, subst
 def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
     pattern = re.compile(regex)
     for call in run.tool_calls:
-        if call.name != tool_name:
+        if canonicalize_tool(call.name) != tool_name:
             continue
         value = _as_text(_get_arg(call, arg_path))
         if value is not None and pattern.search(value):
@@ -77,7 +77,7 @@ def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex
 def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
     pattern = re.compile(regex)
     for call in run.tool_calls:
-        if call.name != tool_name:
+        if canonicalize_tool(call.name) != tool_name:
             continue
         value = _as_text(_get_arg(call, arg_path))
         if value is not None and pattern.search(value):
