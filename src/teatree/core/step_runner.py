@@ -110,11 +110,16 @@ def run_step(  # noqa: PLR0913
 def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
     """Execute a Python callable and return a structured result.
 
-    Wraps arbitrary callables with timing and error capture.
+    Wraps arbitrary callables with timing, timeout guard, and error capture.
+    Provision steps are protected by a signal-based timeout that prevents
+    indefinite hangs (e.g., during DB imports, overlay installations).
     """
+    from teatree.core.provision import ProvisionTimeoutError, timeout_provision_step  # noqa: PLC0415
+
     start = time.monotonic()
     try:
-        result = fn()
+        with timeout_provision_step(name):
+            result = fn()
         duration = time.monotonic() - start
         if isinstance(result, subprocess.CompletedProcess):
             stdout = result.stdout if isinstance(result.stdout, str) else ""
@@ -131,6 +136,10 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
                 )
             return StepResult(name=name, success=True, duration=duration, stdout=stdout, stderr=stderr)
         return StepResult(name=name, success=True, duration=duration)
+    except ProvisionTimeoutError as exc:
+        duration = time.monotonic() - start
+        logger.warning("Step %r %s", name, exc)
+        return StepResult(name=name, success=False, duration=duration, error=str(exc))
     except Exception as exc:  # noqa: BLE001
         duration = time.monotonic() - start
         error = str(exc)[:500]
