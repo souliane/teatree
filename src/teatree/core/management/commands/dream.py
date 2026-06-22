@@ -21,6 +21,7 @@ here via ``call_command``.
 """
 
 import datetime as dt
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
@@ -37,6 +38,23 @@ if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models import ConsolidatedMemory
     from teatree.loops.dream.decay import ArchivedMemory
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineMode:
+    """The full-pipeline mode toggles for one dream pass.
+
+    ``force_all_phases`` runs the WHOLE pipeline (core-gap tickets + LLM-derived
+    eval staging); ``validate_live`` gates eval-promotion on a METERED live-model
+    pass@k. Both are ``--full``-implied opt-ins, so they travel as ONE cohesive
+    value rather than two loose flags threaded through every pass helper.
+    """
+
+    force_all_phases: bool = False
+    validate_live: bool = False
+
+
+_DEFAULT_MODE = PipelineMode()
 
 
 class Command(TyperCommand):
@@ -68,6 +86,17 @@ class Command(TyperCommand):
                 help="Run the WHOLE pipeline: also file core-gap tickets and stage LLM-derived evals.",
             ),
         ] = False,
+        validate_live: Annotated[
+            bool,
+            typer.Option(
+                "--validate-live",
+                help=(
+                    "Gate eval-promotion on a METERED live-model pass@k (implied by --full). "
+                    "Without it, candidates that clear the anti-vacuity guard are WITHHELD "
+                    "rather than auto-landed in the gating suite."
+                ),
+            ),
+        ] = False,
     ) -> None:
         """Run one consolidation pass NOW (manual escape hatch; ignores cadence)."""
         self._run_pass(
@@ -75,7 +104,7 @@ class Command(TyperCommand):
             dry_run=dry_run,
             enforce_cadence=False,
             propose_evals=propose_evals or full,
-            force_all_phases=full,
+            mode=PipelineMode(force_all_phases=full, validate_live=validate_live or full),
         )
 
     @command(name="tick")
@@ -98,7 +127,7 @@ class Command(TyperCommand):
         dry_run: bool,
         enforce_cadence: bool,
         propose_evals: bool,
-        force_all_phases: bool = False,
+        mode: PipelineMode = _DEFAULT_MODE,
     ) -> None:
         import os  # noqa: PLC0415
 
@@ -124,7 +153,7 @@ class Command(TyperCommand):
         enabled = propose_evals or _env_propose_evals()
         try:
             succeeded = self._consolidate_and_mark(
-                since=since, dry_run=dry_run, now=now, propose_evals=enabled, force_all_phases=force_all_phases
+                since=since, dry_run=dry_run, now=now, propose_evals=enabled, mode=mode
             )
         finally:
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
@@ -145,7 +174,7 @@ class Command(TyperCommand):
         dry_run: bool,
         now: dt.datetime,
         propose_evals: bool,
-        force_all_phases: bool = False,
+        mode: PipelineMode = _DEFAULT_MODE,
     ) -> bool:
         from teatree.core.models import DreamRunMarker  # noqa: PLC0415
         from teatree.loops.dream import engine  # noqa: PLC0415
@@ -189,12 +218,15 @@ class Command(TyperCommand):
             return False
 
         promoted = self._promote_candidates(
-            propose_evals=propose_evals, dry_run=dry_run, force_all_phases=force_all_phases
+            propose_evals=propose_evals,
+            dry_run=dry_run,
+            force_all_phases=mode.force_all_phases,
+            validate_live=mode.validate_live,
         )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
-        memory_promote = self._run_memory_promotion(dry_run=dry_run, force_all_phases=force_all_phases)
+        memory_promote = self._run_memory_promotion(dry_run=dry_run, force_all_phases=mode.force_all_phases)
 
         # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
         # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
@@ -216,15 +248,21 @@ class Command(TyperCommand):
         )
         return True
 
-    def _promote_candidates(self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False) -> str:
+    def _promote_candidates(
+        self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False, validate_live: bool = False
+    ) -> str:
         """Promote the freshly-derived candidates to live scenarios (guarded; never raises).
 
         Runs only when proposals were requested. Each candidate clears the
-        NON-BYPASSABLE anti-vacuity guard (:func:`teatree.loops.dream.promote.guard_can_fail`)
-        or is rejected (no file written). A promotion failure is reported in the
-        summary line, never crashing the pass that already stamped success. When the
-        default-OFF LLM derivation (#2447) is enabled, each candidate is additionally
-        synthesized into a full scenario and STAGED (never auto-committed).
+        NON-BYPASSABLE anti-vacuity guard
+        (:func:`teatree.loops.dream.promote.guard_can_fail`) AND a live-model pass@k
+        before it lands. *validate_live* (set by ``--validate-live`` / ``--full``)
+        supplies the real METERED validator (:func:`promote.build_live_validator`);
+        WITHOUT it nothing auto-lands — every clearing candidate is WITHHELD, the key
+        safety property for the nightly ``tick``. A promotion failure is reported in
+        the summary line, never crashing the pass that already stamped success. When
+        the default-OFF LLM derivation (#2447) is enabled, each candidate is
+        additionally synthesized into a full scenario and STAGED (never auto-committed).
         """
         if not propose_evals:
             return ""
@@ -232,15 +270,18 @@ class Command(TyperCommand):
             from teatree.loops.dream import promote  # noqa: PLC0415
             from teatree.loops.dream.eval_proposer import _default_proposals_path  # noqa: PLC0415
 
-            outcomes = promote.promote_proposals_file(_default_proposals_path(), dry_run=dry_run)
+            validator = promote.build_live_validator() if validate_live else None
+            outcomes = promote.promote_proposals_file(
+                _default_proposals_path(), dry_run=dry_run, live_gate=promote.LiveGate(validator=validator)
+            )
         except Exception as exc:  # noqa: BLE001
             return f"; WARN eval promotion raised: {type(exc).__name__}: {exc}"
         promoted = sum(1 for o in outcomes if o.promoted)
-        rejected = len(outcomes) - promoted
+        withheld = len(outcomes) - promoted
         derived = self._derive_evals(dry_run=dry_run, force_all_phases=force_all_phases)
         if not outcomes:
             return derived
-        return f"; promoted {promoted} live eval(s), rejected {rejected} vacuous candidate(s){derived}"
+        return f"; promoted {promoted} live eval(s), withheld {withheld} unvalidated candidate(s){derived}"
 
     def _derive_evals(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
         """Stage LLM-derived full scenarios from the candidate queue (default OFF; never raises).

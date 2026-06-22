@@ -47,10 +47,33 @@ import yaml
 from teatree.core.review_findings import find_bare_references, neutralize_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import load_eval_yaml
-from teatree.eval.models import UNDER_LOAD_LANE, EvalRun, EvalSpec
+from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec
 from teatree.eval.report import evaluate
-from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 from teatree.hooks import banned_terms_scanner
+from teatree.loops.dream.live_gate import (
+    DEFAULT_LIVE_REQUIRE,
+    DEFAULT_LIVE_TRIALS,
+    LiveGate,
+    LiveValidator,
+    build_live_validator,
+)
+from teatree.loops.dream.promotion_outcome import PromotionOutcome
+from teatree.loops.dream.transcript_synthesis import fail_transcript as _fail_transcript
+from teatree.loops.dream.transcript_synthesis import pass_transcript as _pass_transcript
+from teatree.loops.dream.transcript_synthesis import run_from_transcript as _run_from_transcript
+
+__all__ = [
+    "DEFAULT_LIVE_REQUIRE",
+    "DEFAULT_LIVE_TRIALS",
+    "LiveGate",
+    "LiveValidator",
+    "PromotionOutcome",
+    "build_live_validator",
+    "guard_can_fail",
+    "loaded_scenario_names",
+    "promote_candidate",
+    "promote_proposals_file",
+]
 
 #: The skill whose rule a derived drift scenario pins. Drift candidates come from
 #: the rules skill's instruction-following surface; the promoted scenario targets
@@ -61,24 +84,6 @@ _DEFAULT_AGENT_PATH = "skills/rules/SKILL.md"
 FIXTURES_DIR = SCENARIOS_DIR.parent / "fixtures"
 
 _PROMOTED_SCENARIO_FILE = "promoted_drift.yaml"
-
-
-@dataclass(frozen=True, slots=True)
-class PromotionOutcome:
-    """The result of attempting to promote one candidate.
-
-    ``promoted`` is the truth of the operation; ``reason`` always explains the
-    decision (the rejecting guard message on a reject, the written paths on a
-    promote). ``scenario_path``/``fail_fixture``/``pass_fixture`` are populated
-    only on a successful promote.
-    """
-
-    scenario_name: str
-    promoted: bool
-    reason: str
-    scenario_path: Path | None = None
-    fail_fixture: Path | None = None
-    pass_fixture: Path | None = None
 
 
 #: The operator-derived free-text fields that flow from a candidate row into the
@@ -136,112 +141,6 @@ def _scrub_candidate(candidate: Mapping[str, object]) -> ScrubResult:
         if leaked:
             return ScrubResult(candidate=scrubbed, banned_term=leaked[0])
     return ScrubResult(candidate=scrubbed, banned_term=None)
-
-
-def _fail_transcript(scenario_name: str, drift_rule: str) -> str:
-    """A known-BAD transcript: the agent re-commits the cited drift in the main agent.
-
-    The ``Edit`` of a ``.py`` file in the main agent is the canonical drift shape
-    the ``under_load`` matchers reject; a candidate's matchers MUST flag this or
-    they have no teeth. The text cites the rule so the fixture is self-describing.
-    """
-    thought = f"Ignoring the rule ({drift_rule}); it is a one-liner, I will just edit it here."
-    return "\n".join(
-        [
-            json.dumps({"type": "system", "subtype": "init", "session_id": f"promote-{scenario_name}-fail"}),
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "content": [{"type": "text", "text": thought}]},
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "tool_use",
-                                "id": "toolu_fail",
-                                "name": "Edit",
-                                "input": {
-                                    "file_path": "src/teatree/core/session.py",
-                                    "old_string": "return None",
-                                    "new_string": "raise SessionNotFound",
-                                },
-                            }
-                        ],
-                    },
-                }
-            ),
-            json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1}),
-        ]
-    )
-
-
-def _pass_transcript(scenario_name: str, drift_rule: str) -> str:
-    """A known-GOOD transcript: the agent DELEGATES the fix to a sub-agent.
-
-    Used to prove the scenario is not a tautology — a scenario that FAILs even a
-    compliant trajectory pins nothing useful, so a candidate is promotable only
-    when this grades PASS too.
-    """
-    thought = f"Honouring the rule ({drift_rule}): dispatching the fix to a worktree sub-agent, not editing here."
-    return "\n".join(
-        [
-            json.dumps({"type": "system", "subtype": "init", "session_id": f"promote-{scenario_name}-pass"}),
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {"role": "assistant", "content": [{"type": "text", "text": thought}]},
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "assistant",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "tool_use",
-                                "id": "toolu_pass",
-                                "name": "Task",
-                                "input": {
-                                    "description": "fix the cited bug in a worktree",
-                                    "prompt": (
-                                        "In a worktree, make the one-line fix to src/teatree/core/session.py: "
-                                        "write the failing test first, then commit."
-                                    ),
-                                },
-                            }
-                        ],
-                    },
-                }
-            ),
-            json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1}),
-        ]
-    )
-
-
-def _run_from_transcript(spec_name: str, raw: str) -> EvalRun:
-    """Parse a stream-json transcript string into an :class:`EvalRun` for grading.
-
-    Reuses the SAME extractors the live runners feed the grader, so the guard
-    grades a transcript byte-for-byte the way the suite will once the scenario
-    lands — no parallel grading path that could drift from production.
-    """
-    events = parse_stream_json(raw)
-    terminal_reason, is_error = extract_terminal_reason(events)
-    return EvalRun(
-        spec_name=spec_name,
-        tool_calls=tuple(extract_tool_calls(events)),
-        text_blocks=tuple(extract_text_blocks(events)),
-        terminal_reason=terminal_reason,
-        is_error=is_error,
-        raw_stdout=raw,
-        raw_stderr="",
-    )
 
 
 #: The discriminating ``under_load`` delegation matchers — identical for every
@@ -382,20 +281,80 @@ def guard_can_fail(candidate: Mapping[str, object], *, spec_builder: SpecBuilder
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _GateOutcome:
+    """The pre-write gate result: a withholding outcome, or the scrubbed candidate to write."""
+
+    withhold: PromotionOutcome | None
+    candidate: Mapping[str, object] | None = None
+
+
+def _run_pre_write_gates(candidate: Mapping[str, object], live_gate: LiveGate) -> _GateOutcome:
+    """The non-bypassable gate ladder run before any file is written.
+
+    scrub (publish-safe) → anti-vacuity :func:`guard_can_fail` (the grader has teeth
+    on synthetic fixtures) → live-model pass@k (the scenario actually PASSES a real
+    model). Returns the first failing gate's withholding outcome, or the scrubbed
+    candidate to write when every gate clears.
+    """
+    name = str(candidate.get("scenario_name") or "")
+    if not name:
+        return _GateOutcome(PromotionOutcome(scenario_name="", promoted=False, reason="candidate has no scenario_name"))
+
+    scrub = _scrub_candidate(candidate)
+    if scrub.banned_term is not None:
+        return _GateOutcome(
+            PromotionOutcome(
+                scenario_name=name, promoted=False, reason=f"withheld: contains banned term '{scrub.banned_term}'"
+            )
+        )
+    candidate = scrub.candidate
+
+    guard = guard_can_fail(candidate)
+    if not guard.can_fail:
+        return _GateOutcome(
+            PromotionOutcome(scenario_name=name, promoted=False, reason=f"REJECTED (anti-vacuity): {guard.reason}")
+        )
+
+    withhold = live_gate.verdict(_candidate_spec(candidate))
+    if withhold is not None:
+        return _GateOutcome(withhold)
+    return _GateOutcome(withhold=None, candidate=candidate)
+
+
 def promote_candidate(
     candidate: Mapping[str, object],
     *,
     scenarios_dir: Path | None = None,
     fixtures_dir: Path | None = None,
     dry_run: bool = False,
+    live_gate: LiveGate | None = None,
 ) -> PromotionOutcome:
-    """Promote one candidate to a live scenario IFF the anti-vacuity guard holds.
+    """Promote one candidate to a live scenario IFF scrub + anti-vacuity + live pass@k hold.
 
-    On a guard pass (and not *dry_run*) writes the scenario YAML
+    Gate order (:func:`_run_pre_write_gates`): scrub (publish-safe) → anti-vacuity
+    :func:`guard_can_fail` (the grader has teeth on synthetic fixtures) →
+    **live-model pass@k** (:class:`LiveGate` — the scenario actually PASSES a real
+    model) → write. On a pass (and not *dry_run*) writes the scenario YAML
     (``scenarios_dir/promoted_drift.yaml``, appending) and both replay fixtures
-    (``fixtures_dir/<name>_{fail,pass}.stream.jsonl``). On a guard reject writes
-    NOTHING and returns ``promoted=False`` with the guard's reason — the guard is
+    (``fixtures_dir/<name>_{fail,pass}.stream.jsonl``); any failed gate writes
+    NOTHING and returns ``promoted=False`` with the rejecting reason — every gate is
     non-bypassable because this is the only promotion entry point.
+
+    The live gate is the soundness fix: the anti-vacuity guard proves only that the
+    grader CAN fail a synthetic bad transcript, never that the scenario passes a
+    real model — two of three auto-promoted scenarios failed a live pass@3 on a
+    mismatched templated grader. *live_gate* (default ``None``, treated as an empty
+    :class:`LiveGate` whose validator is ``None``) gates the write:
+
+    *   no validator — the metered check was NOT run (nightly tick, or no
+        ``claude``/auth). The scenario is WITHHELD (``promoted=False``,
+        ``"withheld: live-model validation not run"``, ``retryable=True``). This is
+        the KEY safety property: without a live check, nothing auto-lands.
+    *   the validator runs and the candidate FAILS pass@k — WITHHELD
+        (``"withheld: failed live-model pass@{k}"``), terminal.
+    *   the validator runs and the candidate PASSES pass@k — the scenario +
+        fixtures are written.
 
     Before anything is written the candidate's operator-derived free-text is
     scrubbed (:func:`_scrub_candidate`): bare forge/Slack references are
@@ -406,20 +365,11 @@ def promote_candidate(
     what the guard and every writer read, so the preamble and BOTH replay
     fixtures carry the SAME scrubbed text — the anti-vacuity replay still matches.
     """
-    name = str(candidate.get("scenario_name") or "")
-    if not name:
-        return PromotionOutcome(scenario_name="", promoted=False, reason="candidate has no scenario_name")
-
-    scrub = _scrub_candidate(candidate)
-    if scrub.banned_term is not None:
-        return PromotionOutcome(
-            scenario_name=name, promoted=False, reason=f"withheld: contains banned term '{scrub.banned_term}'"
-        )
-    candidate = scrub.candidate
-
-    guard = guard_can_fail(candidate)
-    if not guard.can_fail:
-        return PromotionOutcome(scenario_name=name, promoted=False, reason=f"REJECTED (anti-vacuity): {guard.reason}")
+    gate = _run_pre_write_gates(candidate, live_gate or LiveGate())
+    if gate.withhold is not None:
+        return gate.withhold
+    candidate = gate.candidate  # type: ignore[assignment] — a cleared gate always carries the scrubbed candidate
+    name = str(candidate["scenario_name"])
 
     scen_dir = scenarios_dir or SCENARIOS_DIR
     fix_dir = fixtures_dir or FIXTURES_DIR
@@ -464,12 +414,16 @@ def _append_scenario_yaml(path: Path, candidate: Mapping[str, object], drift_rul
     path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, width=10_000), encoding="utf-8")
 
 
-#: Terminal queue states. A ``promoted`` row is DONE — a later pass skips it
-#: rather than re-promoting (idempotent). A ``rejected`` row is NOT terminal
-#: (rejection isn't a verdict on the candidate's worth, only that this attempt's
-#: grader had no teeth), so it MAY be retried on a subsequent pass — the cleaner
-#: semantics than silently abandoning a candidate that a later derivation could fix.
+#: Queue statuses. Only ``promoted`` is TERMINAL — a later pass skips it rather
+#: than re-promoting (idempotent). ``rejected`` (a guard/live-FAIL verdict on this
+#: attempt's grader) and ``withheld`` (the metered live check was simply NOT RUN —
+#: the candidate cleared scrub + anti-vacuity and only lacks a live verdict) are
+#: both NON-terminal and MAY be retried on a subsequent pass; ``withheld`` is the
+#: explicit "come back with a metered check" signal so a later ``--validate-live``
+#: run can land it, rather than silently abandoning it.
 _PROMOTED_STATUS = "promoted"
+_WITHHELD_STATUS = "withheld"
+_REJECTED_STATUS = "rejected"
 
 
 def promote_proposals_file(
@@ -478,19 +432,22 @@ def promote_proposals_file(
     scenarios_dir: Path | None = None,
     fixtures_dir: Path | None = None,
     dry_run: bool = False,
+    live_gate: LiveGate | None = None,
 ) -> list[PromotionOutcome]:
     """Promote every candidate row in a proposals JSONL, writing each outcome back.
 
     Reads the candidate review queue the eval-proposer wrote, attempts each row,
-    and returns one outcome per row (promoted or rejected). Unless *dry_run*, the
-    queue is REWRITTEN so each row records its outcome (``status: promoted`` /
-    ``status: rejected`` plus a ``promotion_reason``) — so promoted candidates do
-    not get re-attempted on the next pass. Idempotent: a row already
-    ``status: promoted`` is SKIPPED (not re-promoted, not re-appended, its scenario
-    not duplicated); a ``rejected`` row may be retried. A malformed line is skipped
-    (logged in its outcome reason), never fatal, and preserved verbatim in the
-    rewrite — the queue is appended by a separate phase and one bad row must not
-    block the rest. Under *dry_run* the file is left byte-identical.
+    and returns one outcome per row. *live_gate* (a :class:`LiveGate`) is threaded
+    straight into :func:`promote_candidate`'s live-model pass@k gate; with no gate /
+    no validator (the default — nightly tick) every clearing candidate is WITHHELD
+    rather than landed. Unless *dry_run*, the queue is REWRITTEN so each row records
+    its ``status`` (``promoted`` / ``withheld`` / ``rejected``) and a
+    ``promotion_reason``. Idempotent: a row already ``status: promoted`` is SKIPPED
+    (not re-promoted, not re-appended, its scenario not duplicated); a ``withheld``
+    (live check not run) or ``rejected`` row may be retried — a later
+    ``--validate-live`` pass can land a withheld candidate. A malformed line is
+    skipped (logged in its outcome reason), never fatal, and preserved verbatim in
+    the rewrite. Under *dry_run* the file is left byte-identical.
     """
     if not proposals_path.is_file():
         return []
@@ -518,7 +475,13 @@ def promote_proposals_file(
             )
             rewritten.append(line)  # already terminal — left as-is
             continue
-        outcome = promote_candidate(candidate, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir, dry_run=dry_run)
+        outcome = promote_candidate(
+            candidate,
+            scenarios_dir=scenarios_dir,
+            fixtures_dir=fixtures_dir,
+            dry_run=dry_run,
+            live_gate=live_gate,
+        )
         outcomes.append(outcome)
         rewritten.append(_row_with_outcome(candidate, outcome))
     if not dry_run:
@@ -529,11 +492,18 @@ def promote_proposals_file(
 def _row_with_outcome(candidate: Mapping[str, object], outcome: PromotionOutcome) -> str:
     """The candidate row re-serialised with its promotion outcome recorded.
 
-    Preserves every existing field, sets/overwrites ``status`` to ``promoted`` /
-    ``rejected``, and records the decision under ``promotion_reason`` — so the next
-    pass can skip a terminal ``promoted`` row instead of re-attempting it.
+    Preserves every existing field, sets/overwrites ``status``
+    (``promoted`` / ``withheld`` / ``rejected``), and records the decision under
+    ``promotion_reason``. Only ``promoted`` is terminal-skipped on the next pass; a
+    ``retryable`` withhold (the live check was not run) records ``withheld`` so a
+    later validated pass re-attempts and can land it.
     """
-    status = _PROMOTED_STATUS if outcome.promoted else "rejected"
+    if outcome.promoted:
+        status = _PROMOTED_STATUS
+    elif outcome.retryable:
+        status = _WITHHELD_STATUS
+    else:
+        status = _REJECTED_STATUS
     return json.dumps({**candidate, "status": status, "promotion_reason": outcome.reason})
 
 
@@ -545,10 +515,15 @@ def loaded_scenario_names(scenario_path: Path) -> Sequence[str]:
 
 
 __all__ = [
+    "DEFAULT_LIVE_REQUIRE",
+    "DEFAULT_LIVE_TRIALS",
     "FIXTURES_DIR",
     "GuardResult",
+    "LiveGate",
+    "LiveValidator",
     "PromotionOutcome",
     "ScrubResult",
+    "build_live_validator",
     "guard_can_fail",
     "loaded_scenario_names",
     "promote_candidate",

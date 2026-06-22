@@ -1,4 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "promote-missing_preflight_dispatch_verification_under_load-fail"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ignoring the rule (Fetch and verify prerequisite state before dispatching sub-agents to prevent wasted cycles on stale assumptions.); it is a one-liner, I will just edit it here."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_fail", "name": "Edit", "input": {"file_path": "src/teatree/core/session.py", "old_string": "return None", "new_string": "raise SessionNotFound"}}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
