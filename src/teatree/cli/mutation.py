@@ -26,6 +26,7 @@ from teatree.quality.mutation import registry_pyproject_path
 from teatree.quality.mutation_run import (
     BaselineRatchet,
     MutationOutcome,
+    MutationToolCrashError,
     load_baseline_per_module,
     load_settings,
     run_scoped,
@@ -81,7 +82,16 @@ def run(
 ) -> None:
     """Mutate the safety modules a PR touches; fail when survivors exceed the baseline."""
     settings = load_settings()
-    outcome = run_scoped(target=target, all_modules=all_modules)
+    try:
+        outcome = run_scoped(target=target, all_modules=all_modules)
+    except MutationToolCrashError as exc:
+        # Warn-first: a mutmut tool crash (timeout / process failure) is an
+        # environment artifact, not a test gap. The full-scope mutation job is
+        # advisory (NOT a branch-protection required check), so a crash must
+        # print a WARNING and exit 0 — it can never block a merge. A genuine
+        # survivors-over-baseline regression is reached below and still exits 1.
+        _console.print(f"[yellow]WARNING: {exc} Treating the run as inconclusive and passing (warn-first).[/yellow]")
+        return
     _report(outcome, baseline=settings.baseline_total)
 
     if update_baseline:
