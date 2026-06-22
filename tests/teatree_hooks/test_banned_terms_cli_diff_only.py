@@ -192,6 +192,70 @@ def test_diff_only_falls_back_to_full_scan_outside_a_git_repo(tmp_path: Path) ->
     assert "BANNED TERM in loose.md" in result.stdout
 
 
+# ── (c) diff-evasion: a banned term on a content line that begins with ``+`` ──
+# In ``git diff --cached -U0`` output an ADDED content line is rendered as the
+# add-marker ``+`` followed by the line's own text. So a staged content line
+# ``++acme`` appears as ``+++acme``, ``+++acme`` as ``++++acme``, and ``+++ acme``
+# as ``++++ acme``. A naive ``not line.startswith("+++")`` filter (meant only to
+# drop the unified-diff ``+++ <file>`` header) ALSO drops these real content
+# lines, so a banned term staged on such a line slips the commit gate (fail-open
+# diff-evasion). The hunk-aware parse keeps them — they live inside a hunk body,
+# whereas the ``+++ b/<file>`` header is pre-hunk and never collected.
+
+
+@pytest.mark.parametrize(
+    "content_line",
+    [
+        "++acme glued evasion line",  # rendered as +++acme... in the diff
+        "+++acme triple evasion line",  # rendered as ++++acme...
+        "+++ acme spaced evasion line",  # rendered as ++++ acme... — defeats a "+++ " match too
+    ],
+)
+def test_diff_only_blocks_added_content_line_starting_with_plus(tmp_path: Path, content_line: str) -> None:
+    repo, config = _init_repo_with_committed_banned_line(tmp_path)
+    doc = repo / "doc.md"
+    # Add a NEW content line whose own text begins with ``+`` and carries the
+    # banned term. The committed line 1 stays untouched.
+    doc.write_text(
+        f"acme reference on a pre-existing committed line\nclean line two\n{content_line}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "doc.md")
+
+    result = _run_cli(repo, config, "doc.md", diff_only=True)
+
+    assert result.returncode == 1, (
+        f"a banned term on an added content line beginning with '+' must STILL block "
+        f"(diff-evasion); got:\n{result.stdout}\n{result.stderr}"
+    )
+    assert "BANNED TERM in doc.md" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "content_line",
+    [
+        "++acme glued evasion line",
+        "+++acme triple evasion line",
+        "+++ acme spaced evasion line",
+    ],
+)
+def test_staged_added_lines_keeps_content_line_starting_with_plus(tmp_path: Path, content_line: str) -> None:
+    # Helper-level proof: the extractor returns the full content line verbatim
+    # (leading ``+`` chars preserved), never confusing it with the ``+++`` file
+    # header. This is the unit guard for the diff-evasion regression above.
+    repo, _config = _init_repo_with_committed_banned_line(tmp_path)
+    doc = repo / "doc.md"
+    doc.write_text(
+        f"acme reference on a pre-existing committed line\nclean line two\n{content_line}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "doc.md")
+
+    added = staged_added_lines(repo, "doc.md")
+
+    assert added == [content_line]
+
+
 # ── helper-level unit tests: staged added-line extraction ──
 
 

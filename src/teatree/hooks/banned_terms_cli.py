@@ -73,12 +73,22 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
     """Return *file*'s ADDED lines from the staged diff, or ``None`` on failure.
 
     Runs ``git diff --cached -U0 --diff-filter=ACMR -- <file>`` from *repo* and
-    keeps the body of each ``+`` line (dropping the ``+++`` file header; ``-U0``
-    emits no context lines). An EMPTY list means the file has no staged
-    additions; ``None`` is the distinct sentinel for "could not resolve the
-    staged diff" (not a git repo, git missing, a non-zero exit, a timeout) so
-    the caller can fall back to a full-file scan and NEVER fail open on a
-    security gate.
+    keeps the body of each ``+`` line inside a hunk (``-U0`` emits no context
+    lines). An EMPTY list means the file has no staged additions; ``None`` is
+    the distinct sentinel for "could not resolve the staged diff" (not a git
+    repo, git missing, a non-zero exit, a timeout) so the caller can fall back
+    to a full-file scan and NEVER fail open on a security gate.
+
+    The extraction is HUNK-AWARE, not prefix-matching. The ``--- ``/``+++ ``
+    file headers appear exactly once per file, BEFORE the first ``@@`` hunk
+    header; ADDED content lines only appear inside a hunk body. A naive
+    ``not line.startswith("+++")`` filter would silently drop a real added
+    content line whose own text begins with ``++`` — git renders that as the
+    add-marker ``+`` plus ``++text`` = ``+++text`` — so a banned term staged on
+    such a line would slip the commit gate (fail-open diff-evasion). Tracking
+    hunk state instead keeps ``++text``/``+++text``/``+++ text`` content lines
+    (they live in a hunk body) while never seeing the ``+++ b/<file>`` header
+    (it is pre-hunk).
     """
     try:
         result = run_allowed_to_fail(
@@ -89,7 +99,16 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
         )
     except (CommandFailedError, TimeoutExpired, OSError):
         return None
-    return [line[1:] for line in result.stdout.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    added: list[str] = []
+    in_hunk = False
+    for line in result.stdout.splitlines():
+        if line.startswith("diff --git"):
+            in_hunk = False  # back to per-file headers; ``+++ b/<file>`` is pre-hunk
+        elif line.startswith("@@"):
+            in_hunk = True  # hunk body begins; subsequent ``+`` lines are added content
+        elif in_hunk and line.startswith("+"):
+            added.append(line[1:])
+    return added
 
 
 def _diff_only_report(files: list[str], terms: tuple[str, ...], repo: Path) -> list[str]:
