@@ -44,11 +44,13 @@ from typing import TypedDict
 
 import yaml
 
+from teatree.core.review_findings import find_bare_references, neutralize_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import UNDER_LOAD_LANE, EvalRun, EvalSpec
 from teatree.eval.report import evaluate
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
+from teatree.hooks import banned_terms_scanner
 
 #: The skill whose rule a derived drift scenario pins. Drift candidates come from
 #: the rules skill's instruction-following surface; the promoted scenario targets
@@ -77,6 +79,63 @@ class PromotionOutcome:
     scenario_path: Path | None = None
     fail_fixture: Path | None = None
     pass_fixture: Path | None = None
+
+
+#: The operator-derived free-text fields that flow from a candidate row into the
+#: COMMITTED scenario YAML and its replay fixtures. ``drift_rule`` lands in the
+#: scenario description, the context preamble, and both transcript thoughts;
+#: ``seed_citation`` is the cited prior mistake interpolated into the preamble.
+#: Both are distilled from private memory files / session transcripts, so both
+#: must be neutralised before they reach the public repo.
+_OPERATOR_TEXT_FIELDS: tuple[str, ...] = ("drift_rule", "seed_citation")
+
+
+@dataclass(frozen=True, slots=True)
+class ScrubResult:
+    """A candidate whose operator-derived text is publish-safe, or the term that blocks it.
+
+    ``candidate`` is the input row with every operator-derived free-text field
+    neutralised (bare forge/Slack refs defanged). ``banned_term`` is non-``None``
+    only when a banned term SURVIVES neutralisation (a customer NAME not inside a
+    forge ref, with no safe auto-replacement) — the signal to WITHHOLD the
+    scenario rather than leak it into the public repo.
+    """
+
+    candidate: Mapping[str, object]
+    banned_term: str | None
+
+
+def _scrub_candidate(candidate: Mapping[str, object]) -> ScrubResult:
+    """Neutralise the candidate's operator-derived text, then re-scan for banned terms.
+
+    The publish-safe-by-construction step: each operator-derived free-text field
+    (:data:`_OPERATOR_TEXT_FIELDS`) is first run through
+    :func:`neutralize_bare_references` — turning a bare ``gitlab.com/<org>/<repo>``
+    forge reference into a generic placeholder, which removes the customer
+    org/repo token in the common case — and the NEUTRALISED text is re-scanned
+    with :func:`banned_terms_scanner.scan_text`. A surviving banned term (or a
+    bare reference the neutraliser could not defang) means there is no safe
+    auto-replacement, so the scenario must be WITHHELD; otherwise the scrubbed
+    candidate is safe to promote and every downstream builder reads the scrubbed
+    text, so the committed YAML, the preamble, and BOTH replay fixtures stay in
+    lockstep (the replay still matches) and carry no leak.
+    """
+    scrubbed = dict(candidate)
+    for field in _OPERATOR_TEXT_FIELDS:
+        raw = candidate.get(field)
+        if isinstance(raw, str) and raw:
+            scrubbed[field] = neutralize_bare_references(raw)
+    for field in _OPERATOR_TEXT_FIELDS:
+        value = scrubbed.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        banned = banned_terms_scanner.scan_text(value)
+        if banned is not None:
+            return ScrubResult(candidate=scrubbed, banned_term=banned)
+        leaked = find_bare_references(value)
+        if leaked:
+            return ScrubResult(candidate=scrubbed, banned_term=leaked[0])
+    return ScrubResult(candidate=scrubbed, banned_term=None)
 
 
 def _fail_transcript(scenario_name: str, drift_rule: str) -> str:
@@ -337,10 +396,26 @@ def promote_candidate(
     (``fixtures_dir/<name>_{fail,pass}.stream.jsonl``). On a guard reject writes
     NOTHING and returns ``promoted=False`` with the guard's reason — the guard is
     non-bypassable because this is the only promotion entry point.
+
+    Before anything is written the candidate's operator-derived free-text is
+    scrubbed (:func:`_scrub_candidate`): bare forge/Slack references are
+    neutralised so the committed YAML and fixtures are publish-safe by
+    construction. A banned term that SURVIVES neutralisation has no safe
+    auto-replacement, so the scenario is WITHHELD (``promoted=False``, no files
+    written) rather than leaked into the public repo. The scrubbed candidate is
+    what the guard and every writer read, so the preamble and BOTH replay
+    fixtures carry the SAME scrubbed text — the anti-vacuity replay still matches.
     """
     name = str(candidate.get("scenario_name") or "")
     if not name:
         return PromotionOutcome(scenario_name="", promoted=False, reason="candidate has no scenario_name")
+
+    scrub = _scrub_candidate(candidate)
+    if scrub.banned_term is not None:
+        return PromotionOutcome(
+            scenario_name=name, promoted=False, reason=f"withheld: contains banned term '{scrub.banned_term}'"
+        )
+    candidate = scrub.candidate
 
     guard = guard_can_fail(candidate)
     if not guard.can_fail:
@@ -389,6 +464,14 @@ def _append_scenario_yaml(path: Path, candidate: Mapping[str, object], drift_rul
     path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, width=10_000), encoding="utf-8")
 
 
+#: Terminal queue states. A ``promoted`` row is DONE — a later pass skips it
+#: rather than re-promoting (idempotent). A ``rejected`` row is NOT terminal
+#: (rejection isn't a verdict on the candidate's worth, only that this attempt's
+#: grader had no teeth), so it MAY be retried on a subsequent pass — the cleaner
+#: semantics than silently abandoning a candidate that a later derivation could fix.
+_PROMOTED_STATUS = "promoted"
+
+
 def promote_proposals_file(
     proposals_path: Path,
     *,
@@ -396,32 +479,62 @@ def promote_proposals_file(
     fixtures_dir: Path | None = None,
     dry_run: bool = False,
 ) -> list[PromotionOutcome]:
-    """Promote every candidate row in a proposals JSONL through the guarded path.
+    """Promote every candidate row in a proposals JSONL, writing each outcome back.
 
     Reads the candidate review queue the eval-proposer wrote, attempts each row,
-    and returns one outcome per row (promoted or rejected). A malformed line is
-    skipped (logged in its outcome reason), never fatal — the queue is appended
-    by a separate phase and one bad row must not block the rest.
+    and returns one outcome per row (promoted or rejected). Unless *dry_run*, the
+    queue is REWRITTEN so each row records its outcome (``status: promoted`` /
+    ``status: rejected`` plus a ``promotion_reason``) — so promoted candidates do
+    not get re-attempted on the next pass. Idempotent: a row already
+    ``status: promoted`` is SKIPPED (not re-promoted, not re-appended, its scenario
+    not duplicated); a ``rejected`` row may be retried. A malformed line is skipped
+    (logged in its outcome reason), never fatal, and preserved verbatim in the
+    rewrite — the queue is appended by a separate phase and one bad row must not
+    block the rest. Under *dry_run* the file is left byte-identical.
     """
     if not proposals_path.is_file():
         return []
     outcomes: list[PromotionOutcome] = []
+    rewritten: list[str] = []
     for line in proposals_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped:
+            rewritten.append(line)
             continue
         try:
             candidate = json.loads(stripped)
         except json.JSONDecodeError as exc:
             outcomes.append(PromotionOutcome(scenario_name="", promoted=False, reason=f"malformed JSONL row: {exc}"))
+            rewritten.append(line)  # malformed rows are preserved verbatim
             continue
         if not isinstance(candidate, Mapping):
             outcomes.append(PromotionOutcome(scenario_name="", promoted=False, reason="row is not a JSON object"))
+            rewritten.append(line)
             continue
-        outcomes.append(
-            promote_candidate(candidate, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir, dry_run=dry_run)
-        )
+        if candidate.get("status") == _PROMOTED_STATUS:
+            name = str(candidate.get("scenario_name") or "")
+            outcomes.append(
+                PromotionOutcome(scenario_name=name, promoted=True, reason="already promoted (skipped on re-run)")
+            )
+            rewritten.append(line)  # already terminal — left as-is
+            continue
+        outcome = promote_candidate(candidate, scenarios_dir=scenarios_dir, fixtures_dir=fixtures_dir, dry_run=dry_run)
+        outcomes.append(outcome)
+        rewritten.append(_row_with_outcome(candidate, outcome))
+    if not dry_run:
+        proposals_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     return outcomes
+
+
+def _row_with_outcome(candidate: Mapping[str, object], outcome: PromotionOutcome) -> str:
+    """The candidate row re-serialised with its promotion outcome recorded.
+
+    Preserves every existing field, sets/overwrites ``status`` to ``promoted`` /
+    ``rejected``, and records the decision under ``promotion_reason`` — so the next
+    pass can skip a terminal ``promoted`` row instead of re-attempting it.
+    """
+    status = _PROMOTED_STATUS if outcome.promoted else "rejected"
+    return json.dumps({**candidate, "status": status, "promotion_reason": outcome.reason})
 
 
 def loaded_scenario_names(scenario_path: Path) -> Sequence[str]:
@@ -435,6 +548,7 @@ __all__ = [
     "FIXTURES_DIR",
     "GuardResult",
     "PromotionOutcome",
+    "ScrubResult",
     "guard_can_fail",
     "loaded_scenario_names",
     "promote_candidate",
