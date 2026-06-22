@@ -26,8 +26,8 @@ def _as_text(value: object) -> str | None:
     A string compares as itself. A boolean / number (e.g. Bash's
     ``run_in_background: true``) compares as its ``str()`` form so a matcher
     can pin it. A list/dict argument (e.g. ``AskUserQuestion``'s structured
-    ``questions`` list, ``MultiEdit``'s ``edits``) is JSON-serialized so a
-    regex matcher can search its contents — without this a structured-arg tool
+    ``questions`` list, ``TaskCreate``'s structured fields) is JSON-serialized so
+    a regex matcher can search its contents — without this a structured-arg tool
     is unmatchable and the scenario silently vacuous. ``None`` is not matchable.
     """
     if isinstance(value, str):

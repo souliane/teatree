@@ -15,9 +15,19 @@ MINUS the available set — exhaustive even if a CLI build ignored ``--tools``.
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
 
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (27,
-#: from ``strings`` on the binary). Because the set is complete, no built-in
-#: (PushNotification etc.) can leak past the denylist.
+#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (26,
+#: validated against the binary — a name the CLI does NOT register is REJECTED
+#: with ``Permission deny rule "<name>" matches no known tool — check for
+#: typos.`` on EVERY ``--disallowedTools`` invocation. Because the set is
+#: complete, no built-in (PushNotification etc.) can leak past the denylist.
+#:
+#: ``MultiEdit`` was REMOVED from the CLI's tool registry (current bundled CLI
+#: 2.1.x). Leaving it here named a tool the CLI no longer knows, so EVERY
+#: clean-room SDK invocation printed the "matches no known tool" warning —
+#: harmless on its own (the rule is just dropped) but a stale, noisy denylist
+#: that no longer agreed with the binary. The drift-detecting parity test
+#: ``tests/teatree_eval/test_toolset_parity.py`` probes the bundled binary so a
+#: future add/remove fails CI instead of drifting silently.
 #:
 #: The three Agent-Team tools — ``SendMessage``, ``TaskCreate``, ``TaskUpdate`` —
 #: are genuine CLI built-ins the team-mode runtime grants (verified by ``strings``
@@ -48,7 +58,6 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "KillShell",
     "ListMcpResources",
     "Monitor",
-    "MultiEdit",
     "NotebookEdit",
     "PushNotification",
     "Read",

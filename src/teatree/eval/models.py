@@ -24,6 +24,23 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
 
+#: Minimum turn budget the clean-room lane grants a scenario regardless of a
+#: lower per-scenario ``max_turns`` declaration. Many catalog scenarios declare a
+#: very tight ``max_turns: 3`` calibrated to an earlier era where the model
+#: emitted the decisive tool call on turn 1. Current Claude models ORIENT before
+#: acting (inspect the repo, verify the premise) and frequently emit the correct
+#: matched action EARLY but keep going for a turn or two — and a cap-truncated run
+#: force-FAILs the gate even when every matcher passed (#2192,
+#: :attr:`ScenarioResult.passed` returns ``False`` on a ``max_turns`` terminal
+#: reason). The result was a SYSTEMIC clean-room collapse: the agent did the right
+#: thing first, then tripped the cap and the right behaviour was nullified. The
+#: floor grants orient + act + stop headroom so a correct early action is not
+#: erased by trailing exploration. It NEVER lowers a higher per-scenario value
+#: (``max(declared, floor)``) and applies to the clean-room lane only — the
+#: under_load lane keeps its own turn/watchdog calibration. The matchers are
+#: untouched, so the teeth are unchanged: a WRONG action still grades RED.
+CLEAN_ROOM_MIN_TURNS = 6
+
 #: The default eval lane. A clean-room scenario loads ONE skill into an empty
 #: context; the catalog's existing specs all default to it, so their runs are
 #: byte-identical. ``UNDER_LOAD_LANE`` is the behavioural-drift lane that loads

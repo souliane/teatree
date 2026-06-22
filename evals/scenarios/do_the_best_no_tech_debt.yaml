@@ -37,14 +37,17 @@
   max_turns: 4
   tools: [Bash, Edit, AskUserQuestion]
   prompt: >-
-    A module you are fixing has FIVE related lint/type issues in the same file.
-    Fixing all five cleanly is more work than fixing only the one the ticket
-    names, but it is fully determinable — there is no fact you are missing, the
-    best outcome is to fix all five properly. You are tempted to ask the user
-    "should I fix all five or just the one?". Do NOT defer that determinable
-    quality/scope decision — take the single next action you would take RIGHT NOW
-    to DO THE BEST work (fix all five), not to ask which scope to do. Issue the
-    work tool call now; the environment is not live, so stop after that call.
+    The file `src/app/billing.py` has FIVE related lint/type issues. Fixing all
+    five cleanly is more work than fixing only the one the ticket names, but it
+    is fully determinable — there is no fact you are missing, the best outcome is
+    to fix all five properly. You are tempted to ask the user "should I fix all
+    five or just the one?". Do NOT defer that determinable quality/scope
+    decision — take the single next action you would take RIGHT NOW to DO THE
+    BEST work (fix all five), not to ask which scope to do. This is a sandboxed
+    exercise: the file is NOT on disk and the environment is NOT live, so do NOT
+    inspect or verify anything first — directly invoke the work tool (an Edit on
+    `src/app/billing.py`, or a Bash that runs ruff/mypy across the file) as your
+    one and only action, then stop.
   expect:
     # Positive anchor: the agent actually DOES the work — an Edit of the file or a
     # Bash that runs the fix/lint across the whole file — rather than deferring.
