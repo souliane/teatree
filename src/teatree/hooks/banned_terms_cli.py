@@ -24,6 +24,16 @@ Usage mirrors the old shell behaviour exactly::
 The TOML term list is read from the first section carrying a ``banned_terms``
 array (matching the old shell extractor), and the email carve-out lives in
 ``term_match`` so it, too, is shared rather than duplicated.
+
+``--diff-only`` scopes the scan to the staged DIFF's ADDED lines per file (the
+pre-commit hook entry passes it). Without it, the whole file is scanned — the
+mode the posting gate (``banned_terms_scanner`` writes the body to a temp file
+and scans it whole) and the parity meta-test rely on. The diff-only mode fixes
+the #1415 over-block: staging a one-line edit to a file that ALREADY carries a
+committed banned term used to block the commit on the untouched committed line.
+The pre-push public-leak gate (``refuse-public-push-with-leak.sh``) re-scans
+commit messages before they reach a public remote, so a pre-existing committed
+term is still caught before it leaves the machine.
 """
 
 import argparse
@@ -31,7 +41,14 @@ import sys
 import tomllib
 from pathlib import Path
 
-from teatree.hooks.term_match import file_matches
+from teatree.hooks.term_match import file_matches as _file_matches
+from teatree.hooks.term_match import line_matches, strip_emails
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+
+# How long to wait for ``git diff`` before treating the staged diff as
+# unresolvable and falling back to a full-file scan. A hook that hangs blocks
+# the commit, so the budget is deliberately tight.
+_GIT_DIFF_TIMEOUT_S = 10
 
 
 def _load_terms(config: Path) -> tuple[str, ...]:
@@ -52,9 +69,102 @@ def _load_terms(config: Path) -> tuple[str, ...]:
     return ()
 
 
+def staged_added_lines(repo: Path, file: str) -> list[str] | None:
+    """Return *file*'s ADDED lines from the staged diff, or ``None`` on failure.
+
+    Runs ``git diff --cached -U0 --diff-filter=ACMR -- <file>`` from *repo* and
+    keeps the body of each ``+`` line inside a hunk (``-U0`` emits no context
+    lines). An EMPTY list means the file has no staged additions; ``None`` is
+    the distinct sentinel for "could not resolve the staged diff" (not a git
+    repo, git missing, a non-zero exit, a timeout) so the caller can fall back
+    to a full-file scan and NEVER fail open on a security gate.
+
+    The extraction is HUNK-AWARE, not prefix-matching. The ``--- ``/``+++ ``
+    file headers appear exactly once per file, BEFORE the first ``@@`` hunk
+    header; ADDED content lines only appear inside a hunk body. A naive
+    ``not line.startswith("+++")`` filter would silently drop a real added
+    content line whose own text begins with ``++`` — git renders that as the
+    add-marker ``+`` plus ``++text`` = ``+++text`` — so a banned term staged on
+    such a line would slip the commit gate (fail-open diff-evasion). Tracking
+    hunk state instead keeps ``++text``/``+++text``/``+++ text`` content lines
+    (they live in a hunk body) while never seeing the ``+++ b/<file>`` header
+    (it is pre-hunk).
+    """
+    try:
+        result = run_allowed_to_fail(
+            ["git", "diff", "--cached", "-U0", "--diff-filter=ACMR", "--", file],
+            expected_codes=(0,),
+            cwd=repo,
+            timeout=_GIT_DIFF_TIMEOUT_S,
+        )
+    except (CommandFailedError, TimeoutExpired, OSError):
+        return None
+    added: list[str] = []
+    in_hunk = False
+    for line in result.stdout.splitlines():
+        if line.startswith("diff --git"):
+            in_hunk = False  # back to per-file headers; ``+++ b/<file>`` is pre-hunk
+        elif line.startswith("@@"):
+            in_hunk = True  # hunk body begins; subsequent ``+`` lines are added content
+        elif in_hunk and line.startswith("+"):
+            added.append(line[1:])
+    return added
+
+
+def _diff_only_report(files: list[str], terms: tuple[str, ...], repo: Path) -> list[str]:
+    """Build the BANNED TERM report scanning only each file's staged ADDED lines.
+
+    When the staged diff cannot be resolved for a file (``staged_added_lines``
+    returns ``None``), fall back to that file's FULL-file scan — failing closed,
+    never open. The added-line scan applies the same per-line email carve-out
+    and whole-token matcher (:mod:`teatree.hooks.term_match`) the full scan uses,
+    so the two paths agree on every line they both see.
+    """
+    report: list[str] = []
+    for file in files:
+        path = Path(file)
+        added = staged_added_lines(repo, file)
+        if added is None:
+            if not path.is_file():
+                continue
+            hits = _file_matches(str(path), terms)
+            if not hits:
+                continue
+            report.append(f"BANNED TERM in {file}:")
+            report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
+            continue
+        flagged = [line for line in added if line_matches(strip_emails(line), terms)]
+        if not flagged:
+            continue
+        report.append(f"BANNED TERM in {file}:")
+        report.extend(f"  +:{line}" for line in flagged)
+    return report
+
+
+def _full_file_report(files: list[str], terms: tuple[str, ...]) -> list[str]:
+    """Build the BANNED TERM report scanning each staged file in full."""
+    report: list[str] = []
+    for file in files:
+        path = Path(file)
+        if not path.is_file():
+            continue
+        hits = _file_matches(str(path), terms)
+        if not hits:
+            continue
+        report.append(f"BANNED TERM in {file}:")
+        report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
+    return report
+
+
 def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orchestrates tested helpers)
     parser = argparse.ArgumentParser(description="Reject files containing banned terms.")
     parser.add_argument("--config", required=True, help="TOML file with a banned_terms array.")
+    parser.add_argument(
+        "--diff-only",
+        action="store_true",
+        help="Scan only the staged diff's added lines per file (pre-commit hook mode), "
+        "so a pre-existing committed banned term does not block an unrelated commit.",
+    )
     parser.add_argument("files", nargs="*", help="Files to scan.")
     args = parser.parse_args(argv)
 
@@ -65,16 +175,10 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     if not terms:
         return 0  # no terms ⇒ no-op
 
-    report: list[str] = []
-    for file in args.files:
-        path = Path(file)
-        if not path.is_file():
-            continue
-        hits = file_matches(str(path), terms)
-        if not hits:
-            continue
-        report.append(f"BANNED TERM in {file}:")
-        report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
+    if args.diff_only:
+        report = _diff_only_report(args.files, terms, Path.cwd())
+    else:
+        report = _full_file_report(args.files, terms)
 
     if report:
         report.extend(("", f"Banned terms: {','.join(terms)}", "These terms must not appear in this repo."))
