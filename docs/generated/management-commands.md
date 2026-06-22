@@ -70,7 +70,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | Subcommand | Description |
 | --- | --- |
 | `run` | Run E2E tests — the one command that works for every overlay |
-| `external` | Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo) |
+| `external` | Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo) |
 | `project` | Run E2E tests from the project's own test directory |
 | `trigger-ci` | Trigger E2E tests on a remote CI pipeline |
 | `post-test-plan` | Post (or update) the ticket's single test-plan note from a manifest |

@@ -130,7 +130,7 @@
           "name": "run"
         },
         {
-          "help": "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo)",
+          "help": "Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo)",
           "name": "external"
         },
         {
