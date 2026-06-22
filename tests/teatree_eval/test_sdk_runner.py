@@ -272,10 +272,15 @@ class TestSdkInProcessRunnerCapture:
         assert captured["options"].max_turns == 9
 
     def test_spec_max_turns_used_without_override(self, tmp_path: Path) -> None:
-        # A declared value AT/ABOVE the clean-room floor is used verbatim.
-        spec = _spec(tmp_path, max_turns=12)
+        # A declared value AT/ABOVE the clean-room floor is used verbatim. The
+        # declared budget is derived from the floor (floor + 5) so this stays
+        # genuinely above-floor across any future floor recalibration.
+        from teatree.eval.models import CLEAN_ROOM_MIN_TURNS  # noqa: PLC0415
+
+        declared = CLEAN_ROOM_MIN_TURNS + 5
+        spec = _spec(tmp_path, max_turns=declared)
         _run, captured = self._run(spec, [_result()])
-        assert captured["options"].max_turns == 12
+        assert captured["options"].max_turns == declared
 
     def test_prompt_and_model_and_tools_flow_to_options(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path, model="haiku", tools=("Bash", "Read"))

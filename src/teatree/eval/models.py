@@ -29,7 +29,7 @@ DEFAULT_MAX_TURNS = 30
 #: very tight ``max_turns: 3`` calibrated to an earlier era where the model
 #: emitted the decisive tool call on turn 1. Current Claude models ORIENT before
 #: acting (inspect the repo, verify the premise) and frequently emit the correct
-#: matched action EARLY but keep going for a turn or two — and a cap-truncated run
+#: matched action EARLY but keep going for several turns — and a cap-truncated run
 #: force-FAILs the gate even when every matcher passed (#2192,
 #: :attr:`ScenarioResult.passed` returns ``False`` on a ``max_turns`` terminal
 #: reason). The result was a SYSTEMIC clean-room collapse: the agent did the right
@@ -38,8 +38,20 @@ DEFAULT_MAX_TURNS = 30
 #: erased by trailing exploration. It NEVER lowers a higher per-scenario value
 #: (``max(declared, floor)``) and applies to the clean-room lane only — the
 #: under_load lane keeps its own turn/watchdog calibration. The matchers are
-#: untouched, so the teeth are unchanged: a WRONG action still grades RED.
-CLEAN_ROOM_MIN_TURNS = 6
+#: untouched, so the teeth are unchanged: a WRONG action still grades RED — a
+#: higher floor only lets a run whose matchers ALL pass terminate naturally
+#: instead of being truncated mid-trajectory.
+#:
+#: Recalibrated 6 → 15 (#2627 follow-up): a fresh metered single-trial run of the
+#: full suite found 16 clean-room scenarios that did the right thing (every
+#: matcher green) yet still cap-FAILed at the 6-turn floor — the model needed up
+#: to ~12 decisive assistant turns of orient → act → verify → stop before
+#: terminating on its own. The earlier floor of 6 recovered the act-on-turn-1
+#: cluster but not the act-then-verify-then-stop cluster the current models
+#: exhibit. 15 covers the observed worst case (~12 turns) with headroom; because
+#: a model stops on its own once done, the floor only bites a run still going AT
+#: the cap, so the higher value costs nothing on a scenario that finishes early.
+CLEAN_ROOM_MIN_TURNS = 15
 
 #: The default eval lane. A clean-room scenario loads ONE skill into an empty
 #: context; the catalog's existing specs all default to it, so their runs are
