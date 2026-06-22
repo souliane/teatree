@@ -25,7 +25,6 @@ _linked_env_cache = _disc.linked_env_cache
 _compose_frontend_port = _disc.compose_frontend_port
 _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
-_resolve_private_tests_path = _runners.resolve_private_tests_path
 _build_e2e_env = _runners.build_e2e_env
 E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
 
@@ -381,8 +380,9 @@ class Command(TyperCommand):
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
+        overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
         try:
-            private_tests_path = _runners.resolve_external_specs_path(repo, branch)
+            private_tests_path = _runners.resolve_external_specs_path(repo, branch, overlay_repo=overlay_repo)
         except _runners.E2eSpecsResolutionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(exc.exit_code) from exc

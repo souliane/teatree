@@ -3,6 +3,7 @@
 Extracted verbatim from the former monolithic ``test_new_management_commands`` module.
 """
 
+import os
 import shutil
 from unittest.mock import MagicMock, patch
 
@@ -423,6 +424,24 @@ class _UnconfiguredMetadata(FullMetadata):
         return {}
 
 
+class _OverlayRepoMetadata(FullMetadata):
+    """An external runner that ships its OWN repo (url + ref) in ``get_e2e_config``.
+
+    The ``url`` is read from ``T3_TEST_OVERLAY_E2E_URL`` so a test can point it at
+    a real local upstream under ``tmp_path`` (teatree doctrine: real git, no
+    subprocess mocking).
+    """
+
+    def get_e2e_config(self) -> dict[str, str]:
+        return {
+            "runner": "external",
+            "project_path": "org-eng/client-workspace",
+            "url": os.environ.get("T3_TEST_OVERLAY_E2E_URL", ""),
+            "ref": "migration-branch",
+            "e2e_dir": "e2e",
+        }
+
+
 class _ExternalRunnerOverlay(FullOverlay):
     metadata = _ExternalRunnerMetadata()
 
@@ -456,3 +475,10 @@ _INFER_PROJECT_OVERLAY = "tests.teatree_core.management_commands._overlays._Infe
 
 
 _UNCONFIGURED_OVERLAY = "tests.teatree_core.management_commands._overlays._UnconfiguredOverlay"
+
+
+class _OverlayRepoOverlay(FullOverlay):
+    metadata = _OverlayRepoMetadata()
+
+
+_OVERLAY_REPO_OVERLAY = "tests.teatree_core.management_commands._overlays._OverlayRepoOverlay"
