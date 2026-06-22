@@ -42,6 +42,7 @@ def _spec(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an Eva
     tools: tuple[str, ...] = ("Bash",),
     max_budget_usd: float | None = None,
     watchdog_seconds: float | None = None,
+    lane: str = "clean_room",
 ) -> EvalSpec:
     agent = tmp_path / "agent.md"
     agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
@@ -59,6 +60,7 @@ def _spec(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to an Eva
         tools=tools,
         max_budget_usd=max_budget_usd,
         watchdog_seconds=watchdog_seconds,
+        lane=lane,
     )
 
 
@@ -270,9 +272,10 @@ class TestSdkInProcessRunnerCapture:
         assert captured["options"].max_turns == 9
 
     def test_spec_max_turns_used_without_override(self, tmp_path: Path) -> None:
-        spec = _spec(tmp_path, max_turns=3)
+        # A declared value AT/ABOVE the clean-room floor is used verbatim.
+        spec = _spec(tmp_path, max_turns=12)
         _run, captured = self._run(spec, [_result()])
-        assert captured["options"].max_turns == 3
+        assert captured["options"].max_turns == 12
 
     def test_prompt_and_model_and_tools_flow_to_options(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path, model="haiku", tools=("Bash", "Read"))
@@ -673,10 +676,25 @@ class TestCalibratedCaps:
             SdkInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["options"].max_turns == DEFAULT_MAX_TURNS
 
-    def test_a_scenario_may_still_declare_a_lower_turn_budget(self, tmp_path: Path) -> None:
-        # A scenario's own max_turns is honoured — the generous default applies
-        # only when the scenario declares none.
-        spec = _spec(tmp_path, max_turns=3)
+    def test_clean_room_below_floor_turn_budget_is_lifted_to_the_floor(self, tmp_path: Path) -> None:
+        # A clean-room scenario's tight max_turns is RAISED to CLEAN_ROOM_MIN_TURNS:
+        # a correct early action must not be nullified by the #2192 cap-FAIL when the
+        # model orients before/after acting. The floor never lowers a higher value.
+        from teatree.eval.models import CLEAN_ROOM_MIN_TURNS  # noqa: PLC0415
+
+        spec = _spec(tmp_path, max_turns=3, lane="clean_room")
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=tmp_path).run(spec)
+        assert captured["options"].max_turns == CLEAN_ROOM_MIN_TURNS
+
+    def test_under_load_below_floor_turn_budget_is_kept_unchanged(self, tmp_path: Path) -> None:
+        # The floor is clean-room ONLY — the under_load lane keeps its own
+        # turn/watchdog calibration, so a low declared budget is used verbatim there.
+        spec = _spec(tmp_path, max_turns=3, lane="under_load")
         query, captured = _fake_query([_result()])
         with (
             patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
@@ -684,6 +702,18 @@ class TestCalibratedCaps:
         ):
             SdkInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["options"].max_turns == 3
+
+    def test_explicit_override_wins_over_the_clean_room_floor(self, tmp_path: Path) -> None:
+        # An explicit --max-turns / T3_EVAL_MAX_TURNS override is honoured verbatim,
+        # even below the floor — the operator asked for exactly that budget.
+        spec = _spec(tmp_path, max_turns=3, lane="clean_room")
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=tmp_path, max_turns_override=2).run(spec)
+        assert captured["options"].max_turns == 2
 
 
 class TestCapsAreEnvConfigurable:
@@ -1324,11 +1354,12 @@ class TestComputeDisallowedTools:
         # The denylist is exhaustive only if KNOWN_BUILTIN_TOOLS is the COMPLETE
         # bundled-CLI built-in set. An incomplete set is exactly why PushNotification
         # leaked. Assert the escape/spiral tools the metered runs surfaced are all
-        # present (plus the full 27-name set excludes nothing the model can reach).
-        # The three Agent-Team tools (SendMessage, TaskCreate, TaskUpdate) are real
-        # CLI built-ins the team-mode runtime grants — confirmed by `strings` on the
-        # binary, each with its own tool description — so they belong in the complete
-        # set the team scenarios (delegate-vs-spawn) declare.
+        # present (plus the full set excludes nothing the model can reach). The three
+        # Agent-Team tools (SendMessage, TaskCreate, TaskUpdate) are real CLI built-ins
+        # the team-mode runtime grants — confirmed against the binary — so they belong
+        # in the complete set the team scenarios (delegate-vs-spawn) declare. MultiEdit
+        # was REMOVED from the CLI registry (current bundled CLI 2.1.x); it must NOT be
+        # present or every clean-room invocation prints "matches no known tool".
         expected = {
             "Agent",
             "AskUserQuestion",
@@ -1343,7 +1374,6 @@ class TestComputeDisallowedTools:
             "KillShell",
             "ListMcpResources",
             "Monitor",
-            "MultiEdit",
             "NotebookEdit",
             "PushNotification",
             "Read",
@@ -1359,7 +1389,8 @@ class TestComputeDisallowedTools:
             "Write",
         }
         assert set(KNOWN_BUILTIN_TOOLS) == expected
-        assert len(KNOWN_BUILTIN_TOOLS) == 27
+        assert len(KNOWN_BUILTIN_TOOLS) == 26
+        assert "MultiEdit" not in KNOWN_BUILTIN_TOOLS
         for escape_tool in ("PushNotification", "ToolSearch", "AskUserQuestion"):
             assert escape_tool in KNOWN_BUILTIN_TOOLS
         for team_tool in ("SendMessage", "TaskCreate", "TaskUpdate"):

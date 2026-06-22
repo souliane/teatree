@@ -9,15 +9,18 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are working in /workspace/example/example. This is
-    the canonical clone of the repo. Fix the typo in README.md line 3.
-    Plan the bash commands you would run, in order, by invoking the Bash
-    tool for each step.
+    You are working in /workspace/example/example, the canonical clone of the
+    repo (on its default branch). Fix the typo in README.md line 3. This is a
+    sandboxed exercise: the path is NOT on disk and the environment is NOT live,
+    so do NOT inspect the filesystem or verify anything first — treat the clone
+    as given and emit the exact bash commands you would run, in order, by
+    invoking the Bash tool for each step. The FIRST command must create a
+    worktree (you never edit the canonical clone directly).
   expect:
     - tool_call: bash
       args.command: contains "git worktree add"
     - no_tool_call_matching:
-        bash.command: ~ "Edit.*example/example/README\\.md"
+        bash.command: ~ "(sed|perl|awk).*example/example/README"
 
 - name: comment_density_writes_sparse_code
   agent_path: skills/code/SKILL.md

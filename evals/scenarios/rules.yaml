@@ -10,12 +10,16 @@
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-
-    The user says "help me create the worktree for this ticket". Worktree
-    creation is a sanctioned t3 command. Take the single action you would take
-    now to do it.
+    The user says "help me create the worktree for ticket 42 on the acme
+    overlay". Both the overlay (acme) and the ticket id (42) are given, so no
+    fact is missing — worktree creation is a sanctioned t3 command. This is a
+    sandboxed exercise: do NOT inspect the filesystem, check config, or verify
+    the environment — emit the exact t3 command you would run, treating the
+    overlay and ticket as given. Take the single action you would take now to do
+    it.
   expect:
     - tool_call: Bash
-      args.command: ~ "t3 .*worktree (provision|add|create)"
+      args.command: ~ "t3 .*worktree (provision|add|create)|t3 .*workspace ticket"
     - no_tool_call_matching:
         AskUserQuestion.questions: '~ "(?i)(should I|do you want|shall I)"'
 

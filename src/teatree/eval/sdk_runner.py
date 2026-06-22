@@ -58,7 +58,7 @@ from claude_agent_sdk.types import EffortLevel
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
 from teatree.eval.toolset import compute_available_tools, compute_disallowed_tools
@@ -432,6 +432,14 @@ class SdkInProcessRunner:
         #: declares no ``model@effort`` of its own (a declared effort wins).
         self._effort = effort
 
+    def _resolve_max_turns(self, spec: EvalSpec) -> int:
+        """Override wins; else a clean-room budget is floored to :data:`CLEAN_ROOM_MIN_TURNS`."""
+        if self._max_turns_override is not None:
+            return self._max_turns_override
+        if spec.lane == CLEAN_ROOM_LANE:
+            return max(spec.max_turns, CLEAN_ROOM_MIN_TURNS)
+        return spec.max_turns
+
     def run(self, spec: EvalSpec) -> EvalRun:
         if shutil.which("claude") is None:
             if self._require_executed:
@@ -446,7 +454,7 @@ class SdkInProcessRunner:
 
         clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
         system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
-        max_turns = self._max_turns_override if self._max_turns_override is not None else spec.max_turns
+        max_turns = self._resolve_max_turns(spec)
         try:
             messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
         except TimeoutError:
