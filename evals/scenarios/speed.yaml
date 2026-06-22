@@ -930,7 +930,26 @@
   lane: under_load
   agent_path: skills/speed/SKILL.md
   model: haiku
-  max_turns: 4
+  # Cap + budget + watchdog relief (#2192 / #2616, metered 2026-06-23). The lead
+  # DELEGATES correctly (the Agent/Task dispatch matcher passes) but actually
+  # spawning the standing roster (real Agent sub-agents) and handing off the heavy
+  # BLUEPRINT/README sync is expensive AND high-variance in wall-clock: a correct
+  # trajectory burns past the $1.0 budget, takes more than 4 turns, and on the slow
+  # trials runs many minutes. With the default caps a CORRECT trajectory red the
+  # pass@3 on a cap rather than a matcher (#2192: any cap-tainted trial — budget,
+  # max_turns, OR wall-clock watchdog — reds the aggregate regardless of
+  # require=any). Metered progression: 0/3 (budget) → 2/3 (one turn-capped at 4) →
+  # 1/3 (turn-cap fixed but two trials hit the 900s wall-clock watchdog). The caps
+  # are raised to fit the legitimate, high-latency roster-spawn work: max_turns 8,
+  # max_budget_usd 4.0, watchdog_seconds 1800 (the #2616 doctrine — a generous
+  # wall-clock backstop so latency never reds a cost/turn-bounded correct
+  # trajectory; mirrors full_speed). The matchers are UNCHANGED — the negative (no
+  # inline BLUEPRINT/README edit in the main agent) is still the tooth — so the
+  # relief never weakens the assertion; it only stops a correct trajectory red-ing
+  # on a cap alone.
+  max_turns: 8
+  max_budget_usd: 4.0
+  watchdog_seconds: 1800
   tools: [Agent, Task, TaskUpdate, SendMessage, Bash, Edit, Write]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
