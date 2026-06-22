@@ -57,6 +57,14 @@ _ALLOW_TODO_BLOCKER_HELP = (
     "refuses by default."
 )
 
+_FORCE_GENERAL_HELP = (
+    "Escape the multi-finding general-note gate (souliane/teatree#72) for ONE post — "
+    "the documented over-deny escape (#126). A general note referencing 2+ distinct "
+    "file:line locations (or a numbered per-file finding list) is refused by default "
+    "because those are N inline findings that should each be posted inline. Use this "
+    "ONLY for a genuinely MR-wide note (a verdict-only summary with no per-line findings)."
+)
+
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
@@ -73,7 +81,7 @@ def _parse_evidence(raw: str) -> "FindingEvidence | None":
 
 @review_app.command(name="post-draft-note")
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json + the #126 gate escapes). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
+def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json + the #126 gate escapes incl. --force-general). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--force-general` is the #72-round-2 escape for a genuinely MR-wide note that the multi-finding general-note gate would otherwise refuse. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
@@ -100,6 +108,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
+    force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
 ) -> None:
     """Post a draft note on a GitLab MR (inline or general).
 
@@ -111,6 +120,13 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     :func:`teatree.cli.review.drafts.validate_inline_or_general` refuses
     both half-specified-inline and contradictory invocations before any
     GitLab API call is attempted.
+
+    A deliberate ``--general`` note that crams 2+ distinct per-line
+    findings (``foo.py:42``/``bar.ts:9`` cites, or a numbered per-file
+    list) is refused by the #72-round-2 gate
+    (:func:`teatree.cli.review.general_inline_gate.check_general_inline_findings`)
+    — post each one inline instead. Pass ``--force-general`` to override
+    for a genuinely MR-wide (verdict-only) note.
     """
     import sys  # noqa: PLC0415
 
@@ -134,6 +150,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         evidence=evidence,
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
+        force_general=force_general,
     )
     typer.echo(msg)
     if code:
@@ -156,7 +173,7 @@ _BODY_FILE_OPTION_HELP = (
 
 @review_app.command(name="post-comment")
 # ast-grep-ignore: ac-django-no-complexity-suppressions
-def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json + the #32 body-source flags). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing. ``--body``/``--body-file`` are the #32 scannable body-source flags.
+def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json + the #32 body-source flags + the #126 gate escapes incl. --force-general). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--force-general`` is the #72-round-2 escape for a genuinely MR-wide note that the multi-finding general-note gate would otherwise refuse. ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing. ``--body``/``--body-file`` are the #32 scannable body-source flags.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str | None = typer.Argument(
@@ -181,6 +198,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
+    force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
@@ -198,9 +216,13 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     content, mirroring how ``gh``/``glab`` comment commands accept a body
     file.
 
-    ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
-    per-post escapes for the colleague-MR shape and TODO-anchor gates
-    respectively (#126), mirroring the sibling override flags.
+    ``--allow-long-review`` / ``--allow-todo-blocker`` / ``--force-general``
+    are the documented per-post escapes for the colleague-MR shape, the
+    TODO-anchor, and the multi-finding general-note (#72) gates
+    respectively (#126), mirroring the sibling override flags. A general
+    note referencing 2+ distinct ``file:line`` locations (or a numbered
+    per-file finding list) is refused by default — post each one inline
+    instead, or pass ``--force-general`` for a genuinely MR-wide note.
     """
     from teatree.cli.review.body_source import PostBodyError, resolve_post_body  # noqa: PLC0415
 
@@ -221,6 +243,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
         evidence=evidence,
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
+        force_general=force_general,
     )
     typer.echo(msg)
     if code:

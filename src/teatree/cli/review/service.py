@@ -36,6 +36,7 @@ from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
 from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
+from teatree.cli.review.general_inline_gate import check_general_inline_findings
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
@@ -178,6 +179,7 @@ class ReviewService:
         evidence: FindingEvidence | None = None,
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
+        force_general: bool = False,
     ) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code).
 
@@ -193,10 +195,10 @@ class ReviewService:
         to AUTO_DRAFT (publish + DM the user the publish/delete commands);
         under IMMEDIATE it publishes with no DM. The remaining pre-publish
         gates in :meth:`_run_pre_publish_gates` still apply: colleague-MR
-        shape (#1114), TODO-anchor (#1186), and structured-evidence (#1280,
-        requires ``evidence`` on ``missing/wrong/broken`` finding bodies).
-        ``allow_long_review`` / ``allow_todo_blocker`` are the documented
-        per-call escapes for the shape and TODO-anchor gates (#126).
+        shape (#1114), multi-finding general-note (#72), TODO-anchor
+        (#1186), and structured-evidence (#1280). ``allow_long_review`` /
+        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
+        escapes for the shape, TODO-anchor, and general-note gates.
         """
         refusal = self._run_pre_publish_gates(
             repo=repo,
@@ -208,6 +210,7 @@ class ReviewService:
             evidence=evidence,
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
         )
         if refusal:
             return refusal, 1
@@ -228,29 +231,30 @@ class ReviewService:
         evidence: FindingEvidence | None,
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
+        force_general: bool = False,
     ) -> str:
-        """Run on-behalf (#960) → shape (#1114) → TODO-anchor (#1186) → evidence (#1280); first refusal or ``""``.
+        """Run the pre-publish gate chain; return the first refusal or ``""``.
 
-        ``allow_long_review`` / ``allow_todo_blocker`` are the #126 documented
-        escapes: each lets exactly one sibling gate proceed for a
-        legitimately-authorized action. They never relax the on-behalf or
-        evidence gates.
+        Order: on-behalf (#960) → shape (#1114) → general-inline (#72) →
+        TODO-anchor (#1186) → evidence (#1280). ``allow_long_review`` /
+        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
+        escapes for the shape, TODO-anchor, and multi-finding general-note
+        gates respectively; none relaxes the on-behalf or evidence gates.
         """
         blocked = check_on_behalf(repo, mr, action)
         if blocked:
             return blocked
         encoded = repo.replace("/", "%2F")
         api = self._get_api()
+        inline = bool(file and line)
         shape_error = check_review_shape(
-            api=api,
-            encoded_repo=encoded,
-            mr=mr,
-            body=note,
-            inline=bool(file and line),
-            allow_long_review=allow_long_review,
+            api=api, encoded_repo=encoded, mr=mr, body=note, inline=inline, allow_long_review=allow_long_review
         )
         if shape_error:
             return shape_error
+        general_inline_error = check_general_inline_findings(body=note, inline=inline, force_general=force_general)
+        if general_inline_error:
+            return general_inline_error
         todo_error = check_todo_anchor(
             api=api,
             encoded_repo=encoded,
@@ -282,6 +286,7 @@ class ReviewService:
         evidence: FindingEvidence | None = None,
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
+        force_general: bool = False,
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
@@ -297,9 +302,9 @@ class ReviewService:
         ``evidence`` kwarg must carry a verified
         :class:`~teatree.cli.review.evidence_gate.FindingEvidence` record.
 
-        ``allow_long_review`` / ``allow_todo_blocker`` are the #126
-        documented per-call escapes for the colleague-MR shape and the
-        TODO-anchor gates respectively.
+        ``allow_long_review`` / ``allow_todo_blocker`` / ``force_general``
+        are the #126 per-call escapes for the colleague-MR shape, the
+        TODO-anchor, and the multi-finding general-note (#72) gates.
         """
         from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
         from teatree.cli.review.default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
@@ -314,6 +319,7 @@ class ReviewService:
                 evidence=evidence,
                 allow_long_review=allow_long_review,
                 allow_todo_blocker=allow_todo_blocker,
+                force_general=force_general,
             )
             if code == 0:
                 notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
@@ -335,6 +341,7 @@ class ReviewService:
             evidence=evidence,
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
         )
         if refusal:
             return refusal, 1

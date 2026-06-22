@@ -640,6 +640,13 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
  both half-specified-inline and contradictory invocations before any
  GitLab API call is attempted.
 
+ A deliberate ``--general`` note that crams 2+ distinct per-line
+ findings (``foo.py:42``/``bar.ts:9`` cites, or a numbered per-file
+ list) is refused by the #72-round-2 gate
+ (:func:`teatree.cli.review.general_inline_gate.check_general_inline_findings`)
+ — post each one inline instead. Pass ``--force-general`` to override
+ for a genuinely MR-wide (verdict-only) note.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
@@ -689,6 +696,17 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │                                      author-marked TODO/FIXME genuinely must │
 │                                      be addressed in THIS MR; the gate still │
 │                                      refuses by default.                     │
+│ --force-general                      Escape the multi-finding general-note   │
+│                                      gate (souliane/teatree#72) for ONE post │
+│                                      — the documented over-deny escape       │
+│                                      (#126). A general note referencing 2+   │
+│                                      distinct file:line locations (or a      │
+│                                      numbered per-file finding list) is      │
+│                                      refused by default because those are N  │
+│                                      inline findings that should each be     │
+│                                      posted inline. Use this ONLY for a      │
+│                                      genuinely MR-wide note (a verdict-only  │
+│                                      summary with no per-line findings).     │
 │ --help                               Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -715,9 +733,13 @@ Usage: t3 review post-comment [OPTIONS] REPO MR [NOTE]
  content, mirroring how ``gh``/``glab`` comment commands accept a body
  file.
 
- ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
- per-post escapes for the colleague-MR shape and TODO-anchor gates
- respectively (#126), mirroring the sibling override flags.
+ ``--allow-long-review`` / ``--allow-todo-blocker`` / ``--force-general``
+ are the documented per-post escapes for the colleague-MR shape, the
+ TODO-anchor, and the multi-finding general-note (#72) gates
+ respectively (#126), mirroring the sibling override flags. A general
+ note referencing 2+ distinct ``file:line`` locations (or a numbered
+ per-file finding list) is refused by default — post each one inline
+ instead, or pass ``--force-general`` for a genuinely MR-wide note.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -786,6 +808,18 @@ Usage: t3 review post-comment [OPTIONS] REPO MR [NOTE]
 │                                        TODO/FIXME genuinely must be          │
 │                                        addressed in THIS MR; the gate still  │
 │                                        refuses by default.                   │
+│ --force-general                        Escape the multi-finding general-note │
+│                                        gate (souliane/teatree#72) for ONE    │
+│                                        post — the documented over-deny       │
+│                                        escape (#126). A general note         │
+│                                        referencing 2+ distinct file:line     │
+│                                        locations (or a numbered per-file     │
+│                                        finding list) is refused by default   │
+│                                        because those are N inline findings   │
+│                                        that should each be posted inline.    │
+│                                        Use this ONLY for a genuinely MR-wide │
+│                                        note (a verdict-only summary with no  │
+│                                        per-line findings).                   │
 │ --help                                 Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
