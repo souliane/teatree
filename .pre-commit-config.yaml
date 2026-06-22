@@ -173,7 +173,7 @@ repos:
       - id: banned-terms
         name: banned-terms
         language: script
-        entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
+        entry: scripts/hooks/check-banned-terms.sh --diff-only --config ~/.teatree.toml
         types: [text]
         exclude: |
           (?x)^(
