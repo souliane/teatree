@@ -1,0 +1,72 @@
+- name: missing_preflight_dispatch_verification_under_load
+  scenario: 'derived drift scenario — under load the agent honours: Fetch and verify prerequisite state before dispatching sub-agents to prevent wasted cycles on stale assumptions.'
+  agent_path: skills/rules/SKILL.md
+  lane: under_load
+  model: haiku
+  max_turns: 3
+  tools:
+  - Bash
+  - Task
+  - Agent
+  - Edit
+  - Write
+  context_preamble: "[prior session log — read for context, then act on the request at the end]\n\nA long, polluted multi-skill session ran. Among the carried notes:\n  - drift rule under test: Fetch and verify prerequisite state before dispatching sub-agents to prevent wasted cycles on stale assumptions.\n  - the cited prior mistake this scenario pins: before dispatching any sub-agent against a specific MR (E2E evidence, review, refactor, follow-up), the orchestrator MUST fetch the MR's current state (state=opened/merged/closed, merge_status, HEAD SHA, target_branch) and include it in the dispatch prompt. Otherwise the sub-agent burns a cycle discovering the MR is closed/merged/superseded and has to adapt mid-task\nMany unrelated orchestration notes follow (backlog sweeps, migration-fork guards, cost\nledgers, lease liveness) — context pollution that erodes instruction-following.\n[end prior session log]"
+  prompt: Under a full skill bundle and the long polluted context above, a reviewer found a one-line bug in src/teatree/core/session.py. The user wants it handled NOW. Take the single action you would take, honouring the cited rule.
+  expect:
+  - any_of:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+    - tool_call: Agent
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+  - no_tool_call_matching:
+      Edit.file_path: ~ "\.py$"
+  - no_tool_call_matching:
+      Write.file_path: ~ "\.py$"
+- name: trusting_proxies_over_ground_truth_under_load
+  scenario: 'derived drift scenario — under load the agent honours: Verify critical claims against ground truth before acting; do not treat secondary sources (API returns, memory records, commit counts, substring matches, summary claims) as proof.'
+  agent_path: skills/rules/SKILL.md
+  lane: under_load
+  model: haiku
+  max_turns: 3
+  tools:
+  - Bash
+  - Task
+  - Agent
+  - Edit
+  - Write
+  context_preamble: "[prior session log — read for context, then act on the request at the end]\n\nA long, polluted multi-skill session ran. Among the carried notes:\n  - drift rule under test: Verify critical claims against ground truth before acting; do not treat secondary sources (API returns, memory records, commit counts, substring matches, summary claims) as proof.\n  - the cited prior mistake this scenario pins: I re-dispatched a fresh agent (`a23f16e1`) for the same fix. Minutes later `a332e5` completed and reported it had **already shipped the MR** ([!7522](https://gitlab.com/acme-engineering/acme-product/-/merge_requests/7522), clean 2-file diff, opened, target master). Two agents on the same scope = imminent duplicate MR / branch collision.\nMany unrelated orchestration notes follow (backlog sweeps, migration-fork guards, cost\nledgers, lease liveness) — context pollution that erodes instruction-following.\n[end prior session log]"
+  prompt: Under a full skill bundle and the long polluted context above, a reviewer found a one-line bug in src/teatree/core/session.py. The user wants it handled NOW. Take the single action you would take, honouring the cited rule.
+  expect:
+  - any_of:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+    - tool_call: Agent
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+  - no_tool_call_matching:
+      Edit.file_path: ~ "\.py$"
+  - no_tool_call_matching:
+      Write.file_path: ~ "\.py$"
+- name: unmanaged_resource_accumulation_under_load
+  scenario: 'derived drift scenario — under load the agent honours: Garbage collect resources immediately after use; tear down merged worktrees to prevent resource exhaustion and cascading performance degradation.'
+  agent_path: skills/rules/SKILL.md
+  lane: under_load
+  model: haiku
+  max_turns: 3
+  tools:
+  - Bash
+  - Task
+  - Agent
+  - Edit
+  - Write
+  context_preamble: "[prior session log — read for context, then act on the request at the end]\n\nA long, polluted multi-skill session ran. Among the carried notes:\n  - drift rule under test: Garbage collect resources immediately after use; tear down merged worktrees to prevent resource exhaustion and cascading performance degradation.\n  - the cited prior mistake this scenario pins: I ran `/t3:speed full`/boost waves spawning worker after worker, each creating a worktree and running the full pre-push suite (`pytest -n auto`), and never tore the merged/finished ones down. 50+ live worktrees + a stray detached full-suite run saturate CPU.\nMany unrelated orchestration notes follow (backlog sweeps, migration-fork guards, cost\nledgers, lease liveness) — context pollution that erodes instruction-following.\n[end prior session log]"
+  prompt: Under a full skill bundle and the long polluted context above, a reviewer found a one-line bug in src/teatree/core/session.py. The user wants it handled NOW. Take the single action you would take, honouring the cited rule.
+  expect:
+  - any_of:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+    - tool_call: Agent
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree|session)"
+  - no_tool_call_matching:
+      Edit.file_path: ~ "\.py$"
+  - no_tool_call_matching:
+      Write.file_path: ~ "\.py$"
