@@ -262,6 +262,36 @@ class OverlayConfigResolver:
                 scopes.append(dict(owned))
         return scopes
 
+    @classmethod
+    def path_only_workspace_repos(cls) -> "list[tuple[str, list[str]]]":
+        """``(name, repo_slugs)`` for every path-only overlay (URL-ownership input).
+
+        A path-only overlay (``path``, no ``class``) is skipped by
+        ``get_all_overlays()``, so its repos are invisible to
+        :func:`infer_overlay_for_url` — which means a URL owned by a path-only
+        overlay (e.g. an external-forge overlay's ``acme-eng/acme-product`` MRs)
+        resolves to ``""`` from the teatree-core process and the review-request
+        routing falls back to the wrong overlay (#2231). This yields the repo
+        slugs a path-only overlay declares in its ``[overlays.<name>]`` TOML
+        table — ``workspace_repos`` plus the flat values of ``owned_repos`` —
+        so inference can attribute a URL to it. Instantiable overlays (already
+        covered by ``get_all_overlays()``) are excluded to avoid double-counting.
+        """
+        from teatree.config import load_config  # noqa: PLC0415
+
+        instantiable = set(_discover_overlays())
+        overlays_cfg = load_config().raw.get("overlays", {})
+        result: list[tuple[str, list[str]]] = []
+        for name, cfg in overlays_cfg.items():
+            if name in instantiable or not cfg.get("path"):
+                continue
+            slugs = [s for s in (cfg.get("workspace_repos") or []) if isinstance(s, str)]
+            for host_slugs in (cfg.get("owned_repos") or {}).values():
+                slugs.extend(s for s in (host_slugs or []) if isinstance(s, str) and s != "*")
+            if slugs:
+                result.append((name, slugs))
+        return result
+
     RESOLVABLE_FIELDS: ClassVar[dict[str, Callable[[str | None], object]]] = {}
 
 
@@ -405,6 +435,27 @@ def infer_overlay_for_url(url: str) -> str:
 
     full_matches: list[str] = []
     bare_matches: list[str] = []
+    for name, slugs in _overlay_repo_slugs_for_inference():
+        if any(_full_slug_owns(s, url_slug) for s in slugs):
+            full_matches.append(name)
+        elif any(_bare_name_owns(s, url_slug) for s in slugs):
+            bare_matches.append(name)
+
+    if full_matches:
+        return full_matches[0] if len(full_matches) == 1 else ""
+    return bare_matches[0] if len(bare_matches) == 1 else ""
+
+
+def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":
+    """``(name, repo_slugs)`` for every overlay that can own a URL.
+
+    Instantiable overlays answer from ``get_workspace_repos()``; path-only TOML
+    overlays — invisible to ``get_all_overlays()`` — contribute the slugs they
+    declare in their ``[overlays.<name>]`` table (#2231). A broken
+    ``get_workspace_repos()`` is skipped (warned) so one overlay can't poison
+    inference for the rest.
+    """
+    result: list[tuple[str, list[str]]] = []
     for name, overlay in get_all_overlays().items():
         getter = getattr(overlay, "get_workspace_repos", None)
         if not callable(getter):
@@ -414,15 +465,9 @@ def infer_overlay_for_url(url: str) -> str:
         except Exception:
             logger.warning("Overlay %r get_workspace_repos() failed during inference", name, exc_info=True)
             continue
-        slugs = [s for s in repo_slugs or [] if isinstance(s, str)]
-        if any(_full_slug_owns(s, url_slug) for s in slugs):
-            full_matches.append(name)
-        elif any(_bare_name_owns(s, url_slug) for s in slugs):
-            bare_matches.append(name)
-
-    if full_matches:
-        return full_matches[0] if len(full_matches) == 1 else ""
-    return bare_matches[0] if len(bare_matches) == 1 else ""
+        result.append((name, [s for s in repo_slugs or [] if isinstance(s, str)]))
+    result.extend(OverlayConfigResolver.path_only_workspace_repos())
+    return result
 
 
 @lru_cache(maxsize=1)

@@ -39,18 +39,24 @@ def _active_project() -> tuple[Path, str]:
 def _overlay_name_for_mr(mr_url: str) -> str:
     """Resolve the overlay that owns *mr_url* for a review-request dispatch.
 
-    Prefers the cwd/env resolution of :func:`_active_project` (``T3_OVERLAY_NAME``
-    env, then cwd-``manage.py`` dev fallback, then the single configured
-    overlay). When that yields no overlay — the common case when ``t3`` is
-    run from a clone whose directory name is not an overlay name (e.g. the
-    teatree clone) on a multi-overlay install — fall back to inferring the
-    owner from the MR URL via :func:`infer_overlay_for_url`.
+    The MR URL is the authoritative ownership signal, so resolution is:
 
-    Without this fallback the dispatch ran with an empty ``T3_OVERLAY_NAME``,
-    so the command subprocess hit ``get_overlay()``'s multi-overlay
-    ambiguity, ``resolve_guard_target()`` returned ``None``, and every
-    cross-overlay review request suppressed with
-    ``no_review_channel_or_token`` regardless of cwd (#1471).
+    1.  An explicit ``T3_OVERLAY_NAME`` env override — a deliberate operator
+        scoping (``t3 <overlay> review-request …``) — always wins.
+    2.  Otherwise, the URL owner inferred via :func:`infer_overlay_for_url`,
+        which now sees path-only TOML overlays too (a path-only external-forge
+        overlay owns its foreign-forge MRs as a path-only entry; #2231).
+    3.  Only when neither yields an overlay does the weak cwd-``manage.py`` dev
+        fallback from :func:`_active_project` apply.
+
+    The earlier ordering preferred the cwd/env name whenever non-empty and only
+    fell back to URL inference when it was blank (#1471). That short-circuited
+    on the cwd-``manage.py`` dev fallback: running from the teatree clone
+    resolved ``t3-teatree`` (which does not own a foreign-forge MR), dispatched
+    to that overlay's empty review channel, and every cross-overlay review
+    request suppressed with ``no_review_channel_or_token`` (#2231). Letting the
+    URL owner win over the cwd dev fallback routes the post to the channel/token
+    of the overlay that actually owns the MR.
 
     Inference instantiates the registered overlays, so it needs the Django
     app registry. The ``review-request`` Typer group is otherwise
@@ -58,14 +64,21 @@ def _overlay_name_for_mr(mr_url: str) -> str:
     so ``django.setup()`` is run here — idempotent — before inferring,
     matching the other DB-touching CLI wrappers.
     """
-    _, overlay_name = _active_project()
-    if overlay_name:
-        return overlay_name
+    import os  # noqa: PLC0415
+
+    env_name = os.environ.get("T3_OVERLAY_NAME", "").strip()
+    if env_name:
+        return env_name
 
     from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
     ensure_django()
-    return infer_overlay_for_url(mr_url)
+    inferred = infer_overlay_for_url(mr_url)
+    if inferred:
+        return inferred
+
+    _, overlay_name = _active_project()
+    return overlay_name
 
 
 @review_request_app.command()
