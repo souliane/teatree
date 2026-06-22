@@ -25,7 +25,6 @@ _linked_env_cache = _disc.linked_env_cache
 _compose_frontend_port = _disc.compose_frontend_port
 _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
-_resolve_private_tests_path = _runners.resolve_private_tests_path
 _build_e2e_env = _runners.build_e2e_env
 E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
 
@@ -346,17 +345,16 @@ class Command(TyperCommand):
         linked_to: int = 0,
         branch: str = _runners.BRANCH_OPTION,
     ) -> str:
-        """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
+        """Run Playwright tests from an external repo (overlay repo, T3_PRIVATE_TESTS, or --repo).
 
-        Two sources for the Playwright working directory:
+        Three sources for the Playwright working directory (first match wins):
 
-        - ``--repo <name>``: clone/update the named repo from ``[e2e_repos.<name>]`` in
-            ``~/.teatree.toml`` and use its ``e2e_dir`` subdirectory.
-        - Default: resolve from ``T3_PRIVATE_TESTS`` env var or ``[teatree].private_tests``
-            config key.
+        - ``--repo <name>``: clone ``[e2e_repos.<name>]`` (``~/.teatree.toml``) and use its ``e2e_dir``.
+        - else the overlay's ``get_e2e_config`` repo (its ``url`` cloned at ``ref``), when declared.
+        - else the ``T3_PRIVATE_TESTS`` env var / ``[teatree].private_tests`` directory.
 
-        ``--branch``/``--ref`` overrides the ``--repo`` clone's specs ref (the
-        ``[e2e_repos.<name>].branch`` default) to run from an open MR's branch.
+        ``--branch``/``--ref`` overrides a clone's specs ref (the ``--repo`` default or the
+        overlay ``ref``) to run from an open MR's branch.
 
         ``--target dev|qa|local`` is deterministic: remote targets keep the
         pre-set ``BASE_URL`` and never scan local ports; ``local`` always
@@ -381,8 +379,9 @@ class Command(TyperCommand):
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
+        overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
         try:
-            private_tests_path = _runners.resolve_external_specs_path(repo, branch)
+            private_tests_path = _runners.resolve_external_specs_path(repo, branch, overlay_repo=overlay_repo)
         except _runners.E2eSpecsResolutionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(exc.exit_code) from exc

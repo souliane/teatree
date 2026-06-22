@@ -25,6 +25,7 @@ from tests.teatree_core.management_commands._overlays import (
     _EXTERNAL_RUNNER_OVERLAY,
     _INFER_EXTERNAL_OVERLAY,
     _INFER_PROJECT_OVERLAY,
+    _OVERLAY_REPO_OVERLAY,
     _PROJECT_RUNNER_OVERLAY,
     _UNCONFIGURED_OVERLAY,
     FULL_OVERLAY,
@@ -1240,6 +1241,151 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             mock_run.assert_not_called()
 
 
+# ── overlay_e2e_repo (the get_e2e_config -> E2ERepo builder) ───────────
+
+
+class TestOverlayE2eRepo(TestCase):
+    """``overlay_e2e_repo`` lifts an overlay's ``get_e2e_config`` into an ``E2ERepo``."""
+
+    def test_url_and_ref_build_an_e2e_repo(self) -> None:
+        """A config with both ``url`` and ``ref`` yields an ``E2ERepo`` carrying them."""
+        repo = e2e_runners_mod.overlay_e2e_repo(
+            {
+                "project_path": "org-eng/client-workspace",
+                "url": "git@example.com:org-eng/client-workspace.git",
+                "ref": "migration-branch",
+                "e2e_dir": "e2e",
+            },
+        )
+        assert repo is not None
+        assert repo.name == "client-workspace"
+        assert repo.url == "git@example.com:org-eng/client-workspace.git"
+        assert repo.branch == "migration-branch"
+        assert repo.e2e_dir == "e2e"
+
+    def test_name_falls_back_to_overlay_e2e_without_project_path(self) -> None:
+        """No ``project_path`` still builds a repo, named ``overlay-e2e``."""
+        repo = e2e_runners_mod.overlay_e2e_repo(
+            {"url": "git@example.com:org/svc.git", "ref": "main"},
+        )
+        assert repo is not None
+        assert repo.name == "overlay-e2e"
+        assert repo.e2e_dir == "e2e"
+
+    def test_missing_url_returns_none(self) -> None:
+        """No ``url`` (e.g. the trigger-ci-only shape) keeps the legacy path: ``None``."""
+        assert e2e_runners_mod.overlay_e2e_repo({"project_path": "org/svc", "ref": "main"}) is None
+
+    def test_missing_ref_returns_none(self) -> None:
+        """A ``url`` with no ``ref`` cannot pin a checkout — ``None``."""
+        assert e2e_runners_mod.overlay_e2e_repo({"url": "git@example.com:org/svc.git"}) is None
+
+    def test_empty_config_returns_none(self) -> None:
+        """An overlay with no e2e config (``{}``) yields ``None`` (legacy behaviour)."""
+        assert e2e_runners_mod.overlay_e2e_repo({}) is None
+
+
+# ── resolve_external_specs_path (overlay_repo branch) ─────────────────
+
+
+class TestResolveExternalSpecsPathOverlayRepo(TestCase):
+    """``resolve_external_specs_path`` clones the overlay's own repo when supplied."""
+
+    def test_overlay_repo_clones_at_ref_when_no_named_repo(self) -> None:
+        """With ``overlay_repo`` and no ``--repo``, the overlay repo clones at its ``ref``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("migration-branch",))
+            overlay_repo = config_mod.E2ERepo(
+                name="client-workspace",
+                url=str(upstream),
+                branch="migration-branch",
+                e2e_dir="e2e",
+            )
+
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies") as mock_install,
+            ):
+                root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=overlay_repo)
+
+            assert root == tmp_path / "e2e-repos" / "client-workspace" / "e2e"
+            mock_install.assert_called_once_with(root)
+            head = subprocess.run(
+                [_GIT, "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert head == "migration-branch"
+
+    def test_branch_override_wins_over_overlay_ref(self) -> None:
+        """A ``--branch``/``--ref`` override checks out that branch, not the overlay's ``ref``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("migration-branch", "open-mr-branch"))
+            overlay_repo = config_mod.E2ERepo(
+                name="client-workspace",
+                url=str(upstream),
+                branch="migration-branch",
+                e2e_dir="e2e",
+            )
+
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+            ):
+                root = e2e_runners_mod.resolve_external_specs_path("", "open-mr-branch", overlay_repo=overlay_repo)
+
+            head = subprocess.run(
+                [_GIT, "-C", str(root.parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            assert head == "open-mr-branch"
+
+    def test_named_repo_takes_precedence_over_overlay_repo(self) -> None:
+        """An explicit ``--repo`` still wins — the overlay repo is only the default."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            named_base = tmp_path / "named-base"
+            named_base.mkdir()
+            overlay_base = tmp_path / "overlay-base"
+            overlay_base.mkdir()
+            named = _make_upstream_with_branches(named_base, ("named-branch",))
+            overlay_up = _make_upstream_with_branches(overlay_base, ("migration-branch",))
+            named_repo = config_mod.E2ERepo(name="named-svc", url=str(named), branch="named-branch")
+            overlay_repo = config_mod.E2ERepo(name="client-workspace", url=str(overlay_up), branch="migration-branch")
+
+            with (
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "load_e2e_repos", return_value=[named_repo]),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+            ):
+                root = e2e_runners_mod.resolve_external_specs_path("named-svc", "", overlay_repo=overlay_repo)
+
+            assert root.parent.name == "named-svc"
+
+    def test_no_overlay_repo_keeps_private_tests_fallback(self) -> None:
+        """``overlay_repo=None`` is the legacy path: the ``T3_PRIVATE_TESTS`` fallback is unchanged.
+
+        Regression guard — overlays that supply no ``url`` must behave exactly as before.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+            with patch.object(e2e_runners_mod, "resolve_private_tests_path", return_value=private_dir):
+                root = e2e_runners_mod.resolve_external_specs_path("", "", overlay_repo=None)
+            assert root == private_dir
+
+    def test_no_overlay_repo_branch_without_repo_still_rejected(self) -> None:
+        """``--branch`` with no ``--repo`` and no overlay_repo is still a misuse (exit 2)."""
+        with pytest.raises(e2e_runners_mod.E2eSpecsResolutionError) as exc_info:
+            e2e_runners_mod.resolve_external_specs_path("", "some-branch", overlay_repo=None)
+        assert exc_info.value.exit_code == 2
+
+
 # ── e2e external --repo ───────────────────────────────────────────────
 
 
@@ -1413,6 +1559,54 @@ class TestE2eExternalRepo(TestCase):
             pytest.raises(subprocess.CalledProcessError),
         ):
             call_command("e2e", "external", repo="demo-svc")
+
+    @_patch_overlays(_OVERLAY_REPO_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_external_uses_overlay_repo_at_ref_without_named_repo(self) -> None:
+        """The overlay's own ``get_e2e_config`` repo clones at its ``ref`` with no ``--repo``.
+
+        End-to-end through ``e2e external`` → ``get_e2e_config`` → ``overlay_e2e_repo``
+        → ``resolve_external_specs_path``: the runner sources the suite from the
+        overlay-declared repo+ref, never from ``T3_PRIVATE_TESTS``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            upstream = _make_upstream_with_branches(tmp_path, ("migration-branch",))
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/overlay-repo-e2e")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"T3_ORIG_CWD": str(wt_dir), "T3_TEST_OVERLAY_E2E_URL": str(upstream)},
+                ),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "ensure_external_e2e_dependencies"),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+            ):
+                result = cast("str", call_command("e2e", "external"))
+
+                assert "passed" in result
+                run_cwd = Path(mock_run.call_args[1]["cwd"])
+                assert run_cwd == tmp_path / "e2e-repos" / "client-workspace" / "e2e"
+                head = subprocess.run(
+                    [_GIT, "-C", str(run_cwd.parent), "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                assert head == "migration-branch"
 
 
 class TestE2EResolveTarget(TestCase):

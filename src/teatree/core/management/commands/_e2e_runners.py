@@ -8,6 +8,7 @@ directory, and building the Playwright environment dict.
 """
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -134,13 +135,40 @@ def resolve_private_tests_path() -> Path | None:
     return path if path.is_dir() else None
 
 
-def resolve_external_specs_path(repo: str, branch: str) -> Path:
+def overlay_e2e_repo(e2e_config: Mapping[str, str]) -> E2ERepo | None:
+    """Lift an overlay's ``get_e2e_config`` into an :class:`E2ERepo`, when it can.
+
+    Returns an ``E2ERepo`` IFF the config carries BOTH a non-empty ``url`` and
+    ``ref`` — the overlay declares its own E2E repo and the ref to source the
+    suite from, so the ``external`` runner clones it by default (no ``--repo``,
+    no ``T3_PRIVATE_TESTS``). The repo ``name`` is the last segment of
+    ``project_path`` (falling back to ``"overlay-e2e"``); ``e2e_dir`` is the
+    config's ``e2e_dir`` (default ``"e2e"``).
+
+    Returns ``None`` otherwise (e.g. a trigger-ci-only config with a
+    ``project_path`` + ``ref`` but no ``url``), so an overlay that supplies no
+    ``url`` keeps the exact legacy ``T3_PRIVATE_TESTS`` behaviour.
+    """
+    url = e2e_config.get("url", "")
+    ref = e2e_config.get("ref", "")
+    if not url or not ref:
+        return None
+    name = e2e_config.get("project_path", "overlay-e2e").split("/")[-1] or "overlay-e2e"
+    return E2ERepo(name=name, url=url, branch=ref, e2e_dir=e2e_config.get("e2e_dir", "e2e"))
+
+
+def resolve_external_specs_path(repo: str, branch: str, *, overlay_repo: E2ERepo | None = None) -> Path:
     """Resolve the Playwright working directory for the ``external`` runner.
 
-    ``--repo <name>`` clones the configured ``[e2e_repos.<name>]`` at *branch*
-    (or its default); otherwise the ``T3_PRIVATE_TESTS`` directory is used.
-    *branch* is only meaningful for the clone path — a ``T3_PRIVATE_TESTS``
-    directory is checked out by the user, so a branch there is a misuse.
+    Resolution order (first match wins):
+    an explicit ``--repo <name>`` clones the configured ``[e2e_repos.<name>]`` at
+    *branch* (or its default) and always wins;
+    else, when *overlay_repo* is supplied (the overlay's
+    :func:`overlay_e2e_repo`), it is cloned at its ``ref`` (a ``--branch``/``--ref``
+    override wins so an open MR's branch can be run);
+    else the ``T3_PRIVATE_TESTS`` directory is used. *branch* is only meaningful
+    for a clone path — a ``T3_PRIVATE_TESTS`` directory is checked out by the user,
+    so a branch there is a misuse.
 
     Raises :class:`E2eSpecsResolutionError` (carrying the CLI exit code) on any
     misconfiguration so the caller maps one exception to one ``SystemExit``.
@@ -151,6 +179,13 @@ def resolve_external_specs_path(repo: str, branch: str) -> Path:
             raise E2eSpecsResolutionError.repo_not_in_config(repo)
         try:
             playwright_root = clone_or_update_e2e_repo(repos_by_name[repo], branch)
+        except E2eBranchNotFoundError as exc:
+            raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
+        ensure_external_e2e_dependencies(playwright_root)
+        return playwright_root
+    if overlay_repo is not None:
+        try:
+            playwright_root = clone_or_update_e2e_repo(overlay_repo, branch)
         except E2eBranchNotFoundError as exc:
             raise E2eSpecsResolutionError(str(exc), exit_code=1) from exc
         ensure_external_e2e_dependencies(playwright_root)
