@@ -311,14 +311,18 @@ The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
 the loop, run `/loop unregister t3-loop` in the Claude Code session.
 
 **Wire up the Claude Code statusline hook** so the rendered file actually shows
-in the bottom bar. Either enable the `t3` plugin (the plugin's `settings.json`
-registers the hook automatically), or add it to `~/.claude/settings.json`:
+in the bottom bar. This is a top-level `statusLine` key in
+`~/.claude/settings.json` — enabling the `t3` plugin does **not** wire it for
+you: a plugin's `settings.json` only honours the `agent` and
+`subagentStatusLine` keys, so a `statusLine` declared there is silently ignored.
+Point the command at an absolute path to the script (the user-level settings
+file does not expand `${CLAUDE_PLUGIN_ROOT}`):
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "~/workspace/souliane/teatree/hooks/scripts/statusline.sh"
+    "command": "bash /absolute/path/to/teatree/hooks/scripts/statusline.sh"
   }
 }
 ```
