@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli import mutation as mutation_cli
-from teatree.quality.mutation_run import MutationOutcome
+from teatree.quality.mutation_run import MutationOutcome, MutationToolCrashError
 
 runner = CliRunner()
 
@@ -85,6 +85,42 @@ class TestRunVerdict:
         result = runner.invoke(app, ["mutation", "run"])
         assert result.exit_code == 0
         assert "below the baseline" in result.output
+
+
+class TestWarnFirstOnToolCrash:
+    """A mutmut tool crash warns and exits 0; a real regression still fails.
+
+    A tool crash (timeout / process failure) is an environment artifact, not a
+    test gap — it prints a WARNING and exits 0 so the advisory full-scope job can
+    never block a merge. A real survivors-over-baseline regression stays a failure.
+    """
+
+    def _crash(self, monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+        def _raise(**_kwargs: object) -> MutationOutcome:
+            raise error
+
+        monkeypatch.setattr(mutation_cli, "run_scoped", _raise)
+
+    def test_mutmut_timeout_warns_and_exits_zero(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _point_at(monkeypatch, _pyproject(tmp_path, baseline=[("src/teatree/a.py", 0)]))
+        self._crash(monkeypatch, MutationToolCrashError("mutmut run timed out after 540s"))
+        result = runner.invoke(app, ["mutation", "run", "--all"])
+        assert result.exit_code == 0
+        assert "WARNING" in result.output
+
+    def test_regression_still_fails_even_with_warn_first(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # The warn-first crash path must NOT swallow a real mutation-score
+        # regression: survivors over baseline still exits 1.
+        _point_at(monkeypatch, _pyproject(tmp_path, baseline=[("src/teatree/a.py", 1)]))
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/a.py",),
+            survived=("teatree.a.f__mutmut_1", "teatree.a.g__mutmut_2"),
+            killed=(),
+            inconclusive=(),
+        )
+        _stub_run(monkeypatch, outcome)
+        result = runner.invoke(app, ["mutation", "run", "--all"])
+        assert result.exit_code == 1
 
 
 class TestUpdateBaseline:

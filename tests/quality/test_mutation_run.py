@@ -17,12 +17,14 @@ from teatree.quality.mutation_run import (
     MutationOutcome,
     MutationResult,
     MutationSettings,
+    MutationToolCrashError,
     build_mutmut_config,
     load_baseline_per_module,
     load_settings,
     parse_results,
     run_scoped,
 )
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 
 class TestBuildMutmutConfig:
@@ -336,6 +338,43 @@ class TestZeroMutantsFailsLoud:
         )
         outcome = run_scoped(changed_files=("README.md",), settings=self._SETTINGS, registry=self._REGISTRY)
         assert outcome.is_no_op
+
+
+class TestMutmutToolCrashIsWarnFirst:
+    """A mutmut tool crash surfaces as :class:`MutationToolCrashError`.
+
+    A wall-clock timeout / process failure is an environment artifact, not a test
+    gap — distinct from a genuine survivors-over-baseline regression and from the
+    fake-green :class:`ZeroMutantsError` guard, both of which stay failures. The
+    warn-first CLI catches this type and exits 0.
+    """
+
+    def _cfg(self, monkeypatch: pytest.MonkeyPatch, raises: Exception) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> object:
+            raise raises
+
+        monkeypatch.setattr(mutation_run, "run_allowed_to_fail", _raise)
+
+    def test_subprocess_timeout_raises_tool_crash(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._cfg(monkeypatch, TimeoutExpired(cmd=["mutmut", "run"], timeout=540))
+        with pytest.raises(MutationToolCrashError, match="timed out"):
+            mutation_run._run_mutmut(("src/teatree/a.py",), tests_dir=("tests/",), repo=str(tmp_path), timeout=540)
+
+    def test_subprocess_command_failure_raises_tool_crash(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._cfg(monkeypatch, CommandFailedError(["mutmut", "results"], 2, "", "boom"))
+        with pytest.raises(MutationToolCrashError):
+            mutation_run._run_mutmut(("src/teatree/a.py",), tests_dir=("tests/",), repo=str(tmp_path), timeout=540)
+
+    def test_tool_crash_cleans_up_the_scoped_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._cfg(monkeypatch, TimeoutExpired(cmd=["mutmut", "run"], timeout=540))
+        with pytest.raises(MutationToolCrashError):
+            mutation_run._run_mutmut(("src/teatree/a.py",), tests_dir=("tests/",), repo=str(tmp_path), timeout=540)
+        # The generated setup.cfg / pytest.ini must not survive a crash — a stale
+        # config would make the next run refuse with FileExistsError.
+        assert not (tmp_path / "setup.cfg").exists()
+        assert not (tmp_path / "pytest.ini").exists()
 
 
 class TestLoadSettings:

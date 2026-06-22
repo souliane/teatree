@@ -33,7 +33,7 @@ from teatree.quality.mutation import (
     scope_modules,
 )
 from teatree.utils import git
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 _MODES = frozenset({"warn", "block"})
 # mutmut result statuses that mean the suite did NOT catch the mutant.
@@ -72,6 +72,19 @@ class ZeroMutantsError(RuntimeError):
     a crash, an empty results DB, or a mutmut invocation that silently failed.
     Treating that as a pass is fake-green: the gate exits 0 having tested
     nothing. This is raised so the gate fails LOUD instead.
+    """
+
+
+class MutationToolCrashError(RuntimeError):
+    """The mutmut tool itself crashed — a wall-clock timeout or a process failure.
+
+    Distinct from :class:`ZeroMutantsError` (mutmut ran but classified nothing)
+    and from a survivors-over-baseline regression (mutmut ran and the suite has a
+    real test gap). A tool crash is an environment artifact — the same class of
+    signal as a per-mutant ``timeout``/``segfault`` the runner already treats as
+    *inconclusive*, just at the whole-run level. The warn-first ``t3 mutation
+    run`` CLI catches this and exits 0 with a printed WARNING so the advisory
+    full-scope job can never block a merge; a genuine regression still exits 1.
     """
 
 
@@ -366,6 +379,11 @@ def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, 
     pytest_ini.write_text(_MUTANTS_PYTEST_INI, encoding="utf-8")
     env = _mutmut_env()
     try:
+        # ``expected_codes=None`` accepts any mutmut RETURN code (mutmut exits
+        # non-zero when mutants survive — a normal outcome we classify). A
+        # wall-clock TimeoutExpired or a results-query CommandFailedError is a
+        # tool CRASH, not a return code: translate it to MutationToolCrashError
+        # so the warn-first CLI treats it as inconclusive, not a test gap.
         run_allowed_to_fail([*_MUTMUT_CMD, "run"], expected_codes=None, cwd=repo, env=env, timeout=timeout)
         # ``results --all=1`` lists killed mutants too — without it mutmut hides
         # them, so the kill-proof could not observe a kill. ``--all`` is a
@@ -377,6 +395,16 @@ def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, 
             env=env,
             timeout=60,
         )
+    except TimeoutExpired as exc:
+        detail = (
+            f"mutmut timed out after {exc.timeout:g}s — the mutation run did not finish (tool crash, not a test gap)."
+        )
+        raise MutationToolCrashError(detail) from exc
+    except CommandFailedError as exc:
+        detail = (
+            f"mutmut crashed (rc={exc.returncode}) — the mutation run did not complete (tool crash, not a test gap)."
+        )
+        raise MutationToolCrashError(detail) from exc
     finally:
         config_path.unlink(missing_ok=True)
         pytest_ini.unlink(missing_ok=True)
