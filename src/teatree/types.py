@@ -298,6 +298,25 @@ type PREntryDict = dict[str, object]
 type SqlRow = dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class ConflictedMR:
+    """One open authored MR/PR the followup sweep found in merge conflict.
+
+    Overlay-agnostic: the GitLab/GitHub backends translate their own raw
+    payloads into this shape so :func:`teatree.core.sync.sync_followup` can
+    surface conflicted open authored MRs identically across forges. Detection
+    is report-only — the sweep never auto-resolves or auto-pushes (#78).
+    """
+
+    iid: int
+    repo: str
+    web_url: str
+    title: str
+
+    def to_dict(self) -> dict[str, int | str]:
+        return asdict(self)
+
+
 @dataclass(slots=True)
 class SyncResult:
     prs_found: int = 0
@@ -310,6 +329,7 @@ class SyncResult:
     reviews_synced: int = 0
     worktrees_cleaned: int = 0
     errors: list[str] = field(default_factory=list)
+    conflicted_mrs: list[ConflictedMR] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

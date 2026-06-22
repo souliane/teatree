@@ -198,14 +198,20 @@ class TestSyncFollowup(TestCase):
         assert isinstance(ticket.extra["prs"], dict)
 
     def test_first_run_passes_no_updated_after(self) -> None:
-        """First sync (no cached timestamp) should call list_open_mrs without updated_after."""
+        """First sync (no cached timestamp) should call list_open_mrs without updated_after.
+
+        Two fetches happen per sync: the incremental ticket-upsert fetch and
+        the non-incremental conflict-check fetch (which is always
+        ``updated_after=None`` so a re-conflict that did not bump the MR's
+        timestamp is still seen). On a first run both pass ``None``.
+        """
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
-        mock_client.list_all_open_mrs.assert_called_once_with("testuser", updated_after=None)
+        mock_client.list_all_open_mrs.assert_any_call("testuser", updated_after=None)
 
     def test_stores_timestamp_and_uses_it_on_next_run(self) -> None:
         """After a successful sync, the timestamp is cached and passed on the next call."""
@@ -218,12 +224,14 @@ class TestSyncFollowup(TestCase):
         stored = cache.get(LAST_SYNC_CACHE_KEY)
         assert stored is not None
 
-        # Second run: should pass the stored timestamp as updated_after
+        # Second run: the incremental ticket-upsert fetch passes the stored
+        # timestamp; the conflict-check fetch always passes None.
         mock_client.reset_mock()
         mock_client.list_all_open_mrs.return_value = []
         sync_followup()
 
-        mock_client.list_all_open_mrs.assert_called_once_with("testuser", updated_after=stored)
+        mock_client.list_all_open_mrs.assert_any_call("testuser", updated_after=stored)
+        mock_client.list_all_open_mrs.assert_any_call("testuser", updated_after=None)
 
     def test_stores_timestamp_even_when_no_mrs_returned(self) -> None:
         """Timestamp is stored after a successful sync even if zero MRs are returned."""
