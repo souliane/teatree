@@ -29,9 +29,19 @@ gate, the never-lockout posture, and the substrate recorded-approver
 keystone all stay in force under every tier. It only decides *whether to
 ask the user*, never *whether the work is correct*.
 
-This writes through the ``ConfigSetting`` ORM (autonomy's authoritative tier),
-so it ensures Django is configured first; ``show`` is a pure resolver read.
+The ``autonomy`` value is DB-home, so ``set`` writes a ``ConfigSetting`` row.
+But the typer overlay app is assembled in the ``t3`` console-script process,
+which has NOT run ``django.setup()`` — so touching the ``ConfigSetting`` ORM
+in-process crashes with ``ImproperlyConfigured`` the moment the model layer
+imports (souliane/teatree#2622). ``set`` therefore delegates the write to the
+``config_setting`` management command via :func:`teatree.cli.overlay.managepy_core`
+— the same ``python -m teatree`` subprocess seam every other DB-touching overlay
+command (``followup``, ``safe_kill``, …) uses, where ``django.setup()`` runs
+once per process. ``show`` is a pure resolver read whose DB tier fails safe to
+the default, so it needs no bootstrap.
 """
+
+import json
 
 import typer
 
@@ -48,13 +58,23 @@ def _active_overlay_name() -> str | None:
 
 
 def _write_setting_row(value: str, *, scope: str = "") -> None:
-    # Django/ORM imports are inline so building the overlay app (which loads this
-    # module) never eagerly imports the model layer before settings are configured.
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
-    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+    """Persist the ``autonomy`` row via the ``config_setting`` management command.
 
-    ensure_django()
-    ConfigSetting.objects.set_value(AUTONOMY_KEY, value, scope=scope)
+    Delegates to the ``python -m teatree config_setting set`` subprocess seam
+    (:func:`teatree.cli.overlay.managepy_core`) so the ORM write runs in a process
+    where ``django.setup()`` has been called — never in the unbootstrapped
+    console-script process that assembled the typer app (#2622). The management
+    command parses its ``value`` as JSON and validates it through the same
+    registry parser the resolver uses on read, so the value is JSON-encoded here.
+    An empty ``scope`` addresses the GLOBAL store; a name scopes the row to that
+    overlay.
+    """
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+
+    args = ["config_setting", "set", AUTONOMY_KEY, json.dumps(value)]
+    if scope:
+        args += ["--overlay", scope]
+    managepy_core(*args, overlay_name=scope)
 
 
 def _set_global_autonomy(level: Autonomy) -> str:
@@ -81,7 +101,16 @@ def register_autonomy_commands(overlay_app: typer.Typer) -> None:
     def show() -> None:
         """Show the effective autonomy tier (env > per-overlay > global > default)."""
         from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
 
+        # ``get_effective_settings`` reads the ``ConfigSetting`` DB tier via the
+        # app registry, which fails SAFE to ``{}`` when Django is not configured.
+        # In the ``t3`` console-script process ``django.setup()`` has NOT run, so
+        # without this bootstrap the DB tier is silently skipped and ``show``
+        # reports the dataclass DEFAULT instead of the persisted tier (#2622). It
+        # is idempotent, so a test/loop process that already configured Django is
+        # unaffected.
+        ensure_django()
         typer.echo(get_effective_settings().autonomy.value)
 
     @autonomy_group.command(name="set")

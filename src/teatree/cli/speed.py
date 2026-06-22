@@ -10,9 +10,19 @@ persisted in one place rather than hand-edited.
 ``ConfigSetting`` store, so ``set`` writes a GLOBAL-scope DB row (a value in
 ``[teatree]`` TOML is ignored on read). ``show`` reports the effective value
 (env / overlay-row / global-row / default resolved via
-:func:`teatree.config.get_effective_settings`). ``set`` writes through the ORM,
-so it ensures Django is configured first.
+:func:`teatree.config.get_effective_settings`).
+
+The typer overlay app is assembled in the ``t3`` console-script process, which
+has NOT run ``django.setup()`` (souliane/teatree#2622). So ``set`` delegates the
+ORM write to the ``config_setting`` management command via the same
+``python -m teatree`` subprocess seam every other DB-touching overlay command
+uses (:func:`teatree.cli.overlay.managepy_core`), and ``show`` bootstraps Django
+before the resolver read — otherwise its ``ConfigSetting`` DB tier fails SAFE to
+``{}`` and ``show`` silently reports the dataclass default instead of the
+persisted dial.
 """
+
+import json
 
 import typer
 
@@ -22,13 +32,16 @@ SPEED_KEY = "speed"
 
 
 def _set_speed(level: Speed) -> None:
-    # Django/ORM imports are inline so building the overlay app (which loads this
-    # module) never eagerly imports the model layer before settings are configured.
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415
-    from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
+    """Persist the GLOBAL-scope ``speed`` row via the ``config_setting`` management command.
 
-    ensure_django()
-    ConfigSetting.objects.set_value(SPEED_KEY, level.value)
+    Delegates to ``python -m teatree config_setting set`` (:func:`teatree.cli.overlay.managepy_core`)
+    so the ORM write runs in a process where ``django.setup()`` has been called,
+    never in the unbootstrapped console-script process (#2622). The management
+    command parses ``value`` as JSON, so the canonical value is JSON-encoded here.
+    """
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+
+    managepy_core("config_setting", "set", SPEED_KEY, json.dumps(level.value))
 
 
 def register_speed_commands(overlay_app: typer.Typer) -> None:
@@ -39,7 +52,13 @@ def register_speed_commands(overlay_app: typer.Typer) -> None:
     def show() -> None:
         """Show the effective speed (env > per-overlay > global > default)."""
         from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
 
+        # ``get_effective_settings`` reads the ``ConfigSetting`` DB tier via the
+        # app registry, which fails SAFE to ``{}`` when Django is not configured —
+        # so without this bootstrap the console-script ``show`` reports the
+        # dataclass DEFAULT instead of the persisted dial (#2622). Idempotent.
+        ensure_django()
         typer.echo(get_effective_settings().speed.value)
 
     @speed_group.command(name="set")
