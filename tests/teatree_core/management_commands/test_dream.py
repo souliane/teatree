@@ -202,7 +202,7 @@ class DreamNightlyTickRequestsProposalsTestCase(TestCase):
             call_command("dream", "tick", stdout=stdout)
         out = stdout.getvalue()
         assert "promoted 1 live eval(s)" in out
-        assert "rejected 1 vacuous candidate(s)" in out
+        assert "withheld 1 unvalidated candidate(s)" in out
 
 
 class DreamDeriveEvalsWiringTestCase(TestCase):
@@ -254,6 +254,93 @@ class DreamDeriveEvalsWiringTestCase(TestCase):
         out = stdout.getvalue()
         assert "WARN eval derivation raised: RuntimeError" in out
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+
+class DreamLiveValidationGateWiringTestCase(TestCase):
+    """``--validate-live`` (folded into ``--full``) supplies the metered live validator.
+
+    Promotion now lands a scenario ONLY when it passes a live pass@k. The nightly
+    ``tick`` must NOT run the metered validator (so it never auto-lands — correct
+    now), while ``t3 dream run --full`` opts in. The wiring is verified by
+    capturing the ``live_validator`` kwarg the command threads into
+    ``promote_proposals_file`` — no real metered model runs.
+    """
+
+    @staticmethod
+    def _captured_validator(seen: dict[str, object]):
+        def _promote(proposals_path: object, **kwargs: object) -> list:
+            gate = kwargs.get("live_gate")
+            seen["validator"] = getattr(gate, "validator", "MISSING")
+            return []
+
+        return _promote
+
+    def test_tick_does_not_run_the_metered_validator(self) -> None:
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=self._captured_validator(seen)),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            __import__("os").environ.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "tick", stdout=StringIO())
+        # The nightly tick withholds: no metered validator, so nothing auto-lands.
+        assert seen["validator"] is None
+
+    def test_run_full_supplies_the_metered_validator(self) -> None:
+        seen: dict[str, object] = {}
+        sentinel = object()
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=self._captured_validator(seen)),
+            patch("teatree.loops.dream.promote.build_live_validator", return_value=sentinel),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        assert seen["validator"] is sentinel
+
+    def test_run_full_lands_a_passing_candidate_and_withholds_a_failing_one(self) -> None:
+        # End-to-end through the command into the REAL promote pipeline, with a FAKE
+        # validator passing the first candidate and failing the second — no real
+        # model call. The passing one lands; the failing one is withheld. The output
+        # dirs are redirected at the promote module so nothing touches the repo's evals/.
+        import json  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        from teatree.loops.dream import promote  # noqa: PLC0415
+
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        scenarios = tmp / "scenarios"
+        fixtures = tmp / "fixtures"
+        queue = tmp / "proposals.jsonl"
+        passing = {
+            "scenario_name": "passing_under_load",
+            "drift_rule": "the main agent dispatches the fix to a sub-agent instead of editing in the foreground",
+            "seed_citation": "edited session.py in the main agent",
+            "lane": "under_load",
+            "status": "candidate",
+        }
+        failing = {**passing, "scenario_name": "failing_under_load"}
+        queue.write_text(json.dumps(passing) + "\n" + json.dumps(failing) + "\n", encoding="utf-8")
+
+        def _fake_validator(spec: object, *, trials: int, require: str) -> bool:
+            return getattr(spec, "name", "") == "passing_under_load"
+
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.build_live_validator", return_value=_fake_validator),
+            patch("teatree.loops.dream.promote.SCENARIOS_DIR", scenarios),
+            patch("teatree.loops.dream.promote.FIXTURES_DIR", fixtures),
+            patch("teatree.loops.dream.eval_proposer._default_proposals_path", return_value=queue),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+
+        names = list(promote.loaded_scenario_names(scenarios / "promoted_drift.yaml"))
+        assert names == ["passing_under_load"]
+        # The failing candidate was withheld — recorded terminal-rejected (a live-FAIL verdict).
+        rows = {json.loads(line)["scenario_name"]: json.loads(line) for line in queue.read_text().splitlines()}
+        assert rows["passing_under_load"]["status"] == "promoted"
+        assert rows["failing_under_load"]["status"] == "rejected"
 
 
 class DreamMemoryPhasesPipelineTestCase(TestCase):

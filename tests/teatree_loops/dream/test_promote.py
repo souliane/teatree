@@ -24,7 +24,9 @@ from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec, load_eval_yaml
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import evaluate
-from teatree.loops.dream import promote
+from teatree.loops.dream import live_gate, promote
+from teatree.loops.dream.live_gate import LiveValidator, build_live_validator
+from teatree.loops.dream.transcript_synthesis import fail_transcript, pass_transcript, run_from_transcript
 
 _GROUNDED_CANDIDATE: dict[str, object] = {
     "scenario_name": "derived_delegate_under_load",
@@ -35,6 +37,20 @@ _GROUNDED_CANDIDATE: dict[str, object] = {
     "lane": "under_load",
     "status": "candidate",
 }
+
+
+def _always_pass(spec: EvalSpec, *, trials: int, require: str) -> bool:
+    """A FAKE live validator that always passes — never runs a real metered model."""
+    return True
+
+
+def _always_fail(spec: EvalSpec, *, trials: int, require: str) -> bool:
+    """A FAKE live validator that always fails pass@k — never runs a real metered model."""
+    return False
+
+
+_PASS_GATE = promote.LiveGate(validator=_always_pass)
+_FAIL_GATE = promote.LiveGate(validator=_always_fail)
 
 
 def _vacuous_spec_builder(candidate: dict[str, object]) -> EvalSpec:
@@ -116,7 +132,9 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
         self.fixtures = self.tmp / "fixtures"
 
     def _promote(self, candidate: dict[str, object]) -> promote.PromotionOutcome:
-        return promote.promote_candidate(candidate, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        return promote.promote_candidate(
+            candidate, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+        )
 
     def test_promotion_writes_a_loadable_scenario_and_two_fixtures(self) -> None:
         outcome = self._promote(_GROUNDED_CANDIDATE)
@@ -142,16 +160,12 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
         assert evaluate(spec, pass_run).verdict == "pass"
 
     def test_reject_writes_nothing(self) -> None:
-        outcome = promote.promote_candidate(
-            _GROUNDED_CANDIDATE,
-            scenarios_dir=self.scenarios,
-            fixtures_dir=self.fixtures,
-        )
+        outcome = self._promote(_GROUNDED_CANDIDATE)
         # Sanity: this candidate IS promotable; to test the reject-writes-nothing
         # path use a candidate with no scenario_name (a guaranteed reject).
         assert outcome.promoted is True  # baseline
         empty = promote.promote_candidate(
-            {"drift_rule": "x"}, scenarios_dir=self.tmp / "x", fixtures_dir=self.tmp / "y"
+            {"drift_rule": "x"}, scenarios_dir=self.tmp / "x", fixtures_dir=self.tmp / "y", live_gate=_PASS_GATE
         )
         assert empty.promoted is False
         assert not (self.tmp / "x").exists()
@@ -163,6 +177,7 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
             scenarios_dir=self.scenarios,
             fixtures_dir=self.fixtures,
             dry_run=True,
+            live_gate=_PASS_GATE,
         )
         assert outcome.promoted is True
         assert not self.scenarios.exists()
@@ -187,6 +202,123 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
 
     def test_loaded_scenario_names_missing_file_is_empty(self) -> None:
         assert promote.loaded_scenario_names(self.tmp / "absent.yaml") == []
+
+
+class PromotionGatedOnLiveModelPassTestCase(TestCase):
+    """A scenario lands ONLY when it PASSES a live-model pass@k — never on the guard alone.
+
+    The anti-vacuity guard proves the grader has teeth against SYNTHETIC fixtures;
+    it never checks the scenario actually passes against a real model. Two of the
+    three previously auto-promoted scenarios failed a live pass@3 because the
+    one-size templated grader did not fit the rule. So promotion is now gated on a
+    live pass@k: without a live check NOTHING auto-lands (the safety property), a
+    live-FAIL withholds, and only a live-PASS writes the scenario + fixtures. The
+    validator is injected and FAKE here — no test ever runs a real metered model.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.scenarios = self.tmp / "scenarios"
+        self.fixtures = self.tmp / "fixtures"
+
+    def test_live_pass_writes_scenario_and_fixtures(self) -> None:
+        outcome = promote.promote_candidate(
+            _GROUNDED_CANDIDATE,
+            scenarios_dir=self.scenarios,
+            fixtures_dir=self.fixtures,
+            live_gate=_PASS_GATE,
+        )
+        assert outcome.promoted is True
+        assert outcome.scenario_path is not None
+        assert outcome.scenario_path.is_file()
+        assert outcome.fail_fixture is not None
+        assert outcome.fail_fixture.is_file()
+        assert outcome.pass_fixture is not None
+        assert outcome.pass_fixture.is_file()
+
+    def test_live_fail_withholds_and_writes_nothing(self) -> None:
+        outcome = promote.promote_candidate(
+            _GROUNDED_CANDIDATE,
+            scenarios_dir=self.scenarios,
+            fixtures_dir=self.fixtures,
+            live_gate=_FAIL_GATE,
+        )
+        assert outcome.promoted is False
+        assert "withheld" in outcome.reason.lower()
+        assert "live-model" in outcome.reason.lower()
+        assert not self.scenarios.exists()
+        assert not self.fixtures.exists()
+
+    def test_no_validator_withholds_the_safety_property(self) -> None:
+        # The KEY safety property: a deterministic-only promote (no metered check —
+        # nightly tick, or no claude/auth) NEVER auto-lands a scenario in the gating
+        # suite. The candidate clears scrub + anti-vacuity but is still withheld.
+        outcome = promote.promote_candidate(
+            _GROUNDED_CANDIDATE,
+            scenarios_dir=self.scenarios,
+            fixtures_dir=self.fixtures,
+            live_gate=None,
+        )
+        assert outcome.promoted is False
+        assert "withheld" in outcome.reason.lower()
+        assert "not run" in outcome.reason.lower()
+        assert not self.scenarios.exists()
+        assert not self.fixtures.exists()
+
+    def test_default_validator_is_none_so_promotion_is_withheld(self) -> None:
+        # Defaulting the param to None means existing callers that pass no validator
+        # withhold by default — nothing lands without an explicit metered check.
+        outcome = promote.promote_candidate(
+            _GROUNDED_CANDIDATE, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures
+        )
+        assert outcome.promoted is False
+        assert "not run" in outcome.reason.lower()
+
+    def test_validator_receives_the_candidate_spec_and_pass_at_k_params(self) -> None:
+        # The validator is handed the would-be scenario's OWN spec and the pass@k
+        # knobs, so it meters exactly the scenario that would land.
+        seen: dict[str, object] = {}
+
+        def _capture(spec: EvalSpec, *, trials: int, require: str) -> bool:
+            seen["name"] = spec.name
+            seen["trials"] = trials
+            seen["require"] = require
+            return True
+
+        promote.promote_candidate(
+            _GROUNDED_CANDIDATE,
+            scenarios_dir=self.scenarios,
+            fixtures_dir=self.fixtures,
+            live_gate=promote.LiveGate(validator=_capture, trials=5, require="all"),
+        )
+        assert seen["name"] == "derived_delegate_under_load"
+        assert seen["trials"] == 5
+        assert seen["require"] == "all"
+
+    def test_live_fail_is_terminal_rejected_in_the_queue(self) -> None:
+        # A live-FAIL is a verdict the candidate's grader does not fit the model —
+        # terminal-rejected, not retried indefinitely.
+        queue = self.tmp / "proposals.jsonl"
+        queue.write_text(json.dumps(_GROUNDED_CANDIDATE) + "\n", encoding="utf-8")
+        promote.promote_proposals_file(
+            queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_FAIL_GATE
+        )
+        row = json.loads(queue.read_text(encoding="utf-8").splitlines()[0])
+        assert row["status"] == "rejected"
+
+    def test_no_validation_is_retryable_in_the_queue(self) -> None:
+        # A withheld-for-no-validation candidate stays RETRYABLE: not terminal, so a
+        # later validated run can still land it. Its queue status is NOT 'promoted'.
+        queue = self.tmp / "proposals.jsonl"
+        queue.write_text(json.dumps(_GROUNDED_CANDIDATE) + "\n", encoding="utf-8")
+        promote.promote_proposals_file(queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=None)
+        row = json.loads(queue.read_text(encoding="utf-8").splitlines()[0])
+        assert row["status"] != promote._PROMOTED_STATUS
+        # A second pass WITH a passing validator now lands it (it was retryable).
+        second = promote.promote_proposals_file(
+            queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+        )
+        assert [o.promoted for o in second] == [True]
 
 
 class PromotedScenarioIsPublishSafeTestCase(TestCase):
@@ -221,7 +353,9 @@ class PromotedScenarioIsPublishSafeTestCase(TestCase):
             "drift_rule": "the agent edited code in the foreground, see !4521 instead of dispatching",
             "seed_citation": "edited src/teatree/core/session.py in the main agent, cited #9912",
         }
-        outcome = promote.promote_candidate(leaky, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        outcome = promote.promote_candidate(
+            leaky, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+        )
         assert outcome.promoted is True
 
         written = self._written_text(outcome)
@@ -247,7 +381,9 @@ class PromotedScenarioIsPublishSafeTestCase(TestCase):
             "teatree.loops.dream.promote.banned_terms_scanner.scan_text",
             return_value="customer-name",
         ):
-            outcome = promote.promote_candidate(named, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+            outcome = promote.promote_candidate(
+                named, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+            )
 
         assert outcome.promoted is False
         assert "withheld" in outcome.reason.lower()
@@ -274,7 +410,9 @@ class PromoteProposalsFileTestCase(TestCase):
             json.dumps(["not", "an", "object"]),  # JSON array row -> reject
         ]
         self.queue.write_text("\n".join(rows) + "\n", encoding="utf-8")
-        outcomes = promote.promote_proposals_file(self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        outcomes = promote.promote_proposals_file(
+            self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+        )
         promoted = [o for o in outcomes if o.promoted]
         assert len(promoted) == 1
         assert promoted[0].scenario_name == "derived_delegate_under_load"
@@ -319,7 +457,9 @@ class PromoteProposalsFileTestCase(TestCase):
 
     def test_second_call_skips_already_promoted_rows(self) -> None:
         self.queue.write_text(json.dumps(_GROUNDED_CANDIDATE) + "\n", encoding="utf-8")
-        first = promote.promote_proposals_file(self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures)
+        first = promote.promote_proposals_file(
+            self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
+        )
         assert [o.promoted for o in first] == [True]
         scenario_file = self.scenarios / "promoted_drift.yaml"
         names_after_first = list(promote.loaded_scenario_names(scenario_file))
@@ -344,3 +484,34 @@ class PromoteProposalsFileTestCase(TestCase):
             self.queue, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, dry_run=True
         )
         assert self.queue.read_bytes() == before
+
+
+class ExtractedModulesTestCase(TestCase):
+    """The live-gate / outcome / transcript concerns are split out yet re-exported from promote."""
+
+    def test_promote_reexports_the_extracted_symbols_by_identity(self) -> None:
+        assert promote.LiveGate is live_gate.LiveGate
+        assert promote.LiveValidator is LiveValidator
+        assert promote.build_live_validator is build_live_validator
+        assert promote._fail_transcript is fail_transcript
+        assert promote._pass_transcript is pass_transcript
+        assert promote._run_from_transcript is run_from_transcript
+
+    def test_build_live_validator_returns_a_validator_and_runs_no_model_here(self) -> None:
+        # The real validator is METERED, so we only assert it builds a callable with
+        # the LiveValidator shape — never invoke it (no model call in the suite).
+        validator: LiveValidator = build_live_validator()
+        assert callable(validator)
+
+    def test_synthetic_transcripts_round_trip_through_run_from_transcript(self) -> None:
+        fail_run = run_from_transcript("probe", fail_transcript("probe", "the cited rule"))
+        pass_run = run_from_transcript("probe", pass_transcript("probe", "the cited rule"))
+        assert any(call.name == "Edit" for call in fail_run.tool_calls)
+        assert any(call.name == "Task" for call in pass_run.tool_calls)
+
+    def test_live_gate_default_validator_none_withholds_retryable(self) -> None:
+        spec = promote._candidate_spec(dict(_GROUNDED_CANDIDATE))
+        verdict = live_gate.LiveGate().verdict(spec)
+        assert verdict is not None
+        assert verdict.retryable is True
+        assert not verdict.promoted

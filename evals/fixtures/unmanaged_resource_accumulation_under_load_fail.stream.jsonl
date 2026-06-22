@@ -1,4 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "promote-unmanaged_resource_accumulation_under_load-fail"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ignoring the rule (Garbage collect resources immediately after use; tear down merged worktrees to prevent resource exhaustion and cascading performance degradation.); it is a one-liner, I will just edit it here."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_fail", "name": "Edit", "input": {"file_path": "src/teatree/core/session.py", "old_string": "return None", "new_string": "raise SessionNotFound"}}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
