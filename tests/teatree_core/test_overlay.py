@@ -134,6 +134,9 @@ class TestOverlayBase(TestCase):
                 "feat(ship): add the gate (#1540)",
                 "feat(ship): add the gate (#1540)\n\n## What\nx\n\n## Why\ny",
             ) == {"errors": [], "warnings": []}
+            # #312: no overlay-required sections by default — core enforces only What/Why.
+            assert overlay.metadata.get_required_description_sections() == []
+            assert overlay.metadata.get_description_section_defaults() == {}
             assert overlay.metadata.get_skill_metadata() == {}
 
     def test_abstract_fallthroughs_raise_not_implemented(self) -> None:
@@ -150,6 +153,36 @@ class TestOverlayBase(TestCase):
 
         with pytest.raises(NotImplementedError):
             overlay.get_provision_steps(worktree)
+
+
+class TestValidatePrRequiredSections(TestCase):
+    """``validate_pr`` flags a missing overlay-declared required section (#312)."""
+
+    def test_missing_declared_section_is_flagged(self) -> None:
+        from teatree.core.overlay import OverlayMetadata  # noqa: PLC0415
+
+        class _ConfigMetadata(OverlayMetadata):
+            def get_required_description_sections(self) -> list[str]:
+                return ["Configuration"]
+
+        title = "feat(ship): add the gate (#312)"
+        # A conforming title + What/Why body, but NO ## Configuration section.
+        result = _ConfigMetadata().validate_pr(title, f"{title}\n\n## What\nx\n\n## Why\ny")
+        assert any("Configuration" in err for err in result["errors"])
+
+    def test_present_declared_section_passes(self) -> None:
+        from teatree.core.overlay import OverlayMetadata  # noqa: PLC0415
+
+        class _ConfigMetadata(OverlayMetadata):
+            def get_required_description_sections(self) -> list[str]:
+                return ["Configuration"]
+
+        title = "feat(ship): add the gate (#312)"
+        body = (
+            f"{title}\n\n## What\nx\n\n## Why\ny\n\n"
+            "## Configuration\nThis MR does not need configuration and will be applied automatically once merged."
+        )
+        assert _ConfigMetadata().validate_pr(title, body) == {"errors": [], "warnings": []}
 
 
 class TestGetAllOverlayNames(TestCase):

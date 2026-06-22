@@ -59,6 +59,17 @@ class _CustomerGrammarOverlay(CommandOverlay):
     metadata = _IssueUrlFirstLineMetadata()
 
 
+class _RequiredSectionMetadata(OverlayMetadata):
+    """An overlay declaring ``Configuration`` as a mandatory description section."""
+
+    def get_required_description_sections(self) -> list[str]:
+        return ["Configuration"]
+
+
+class _RequiredSectionOverlay(CommandOverlay):
+    metadata = _RequiredSectionMetadata()
+
+
 class TestShipPreviewTitleDescriptionInvariant(TestCase):
     """The description's first line must always equal the title.
 
@@ -324,3 +335,61 @@ class TestValidatePrMetadataHonorsTitleOverride(TestCase):
         ):
             error = validate_pr_metadata(ticket, ticket.worktrees.first())
         assert error is None
+
+
+class TestShipPreviewEmitsRequiredSections(TestCase):
+    """The generated description carries the overlay's required sections (#312).
+
+    An overlay declaring ``Configuration`` mandatory via
+    ``get_required_description_sections`` gets a ``## Configuration`` header
+    emitted by default — even when the commit body omits it — so a reviewer
+    can always tell "no config needed" from "the author forgot".
+    """
+
+    def _ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="reqsec",
+            state=Ticket.State.REVIEWED,
+            issue_url="https://github.com/souliane/teatree/issues/312",
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="reqsec",
+            repo_path="/tmp/backend",
+            branch="312-feat-config-section",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        return ticket
+
+    def test_required_section_emitted_when_body_omits_it(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"reqsec": _RequiredSectionOverlay()},
+            ),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("feat: add X [FLAG] (proj#312)", "## What\nDid X.\n\n## Why\nNeeded X."),
+            ),
+        ):
+            _, _, description = ship_preview(ticket, ticket.worktrees.first())
+        assert "## Configuration" in description
+
+    def test_no_required_sections_leaves_description_unchanged(self) -> None:
+        ticket = self._ticket_with_worktree()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(
+                _pr_preview.git,
+                "last_commit_message",
+                return_value=("feat: add X (proj#312)", "## What\nDid X.\n\n## Why\nNeeded X."),
+            ),
+        ):
+            ticket.overlay = "test"
+            ticket.save(update_fields=["overlay"])
+            ticket.worktrees.update(overlay="test")
+            _, _, description = ship_preview(ticket, ticket.worktrees.first())
+        # Standard What/Why already present; no overlay required section to add.
+        assert "## Configuration" not in description

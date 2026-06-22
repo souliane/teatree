@@ -15,6 +15,7 @@ is exactly what blocks the release-notes pipeline.
 from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import (
     PrTitleInputs,
@@ -76,6 +77,11 @@ def ship_preview(ticket: Ticket, worktree: Worktree, *, title: str = "") -> tupl
     sanitized_title = sanitize_close_keywords(resolved, close_ticket=close_ticket)
     raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
     description = f"{sanitized_title}\n\n{raw_body}" if raw_body else sanitized_title
+    description = ensure_standard_body(
+        description,
+        required_sections=overlay.metadata.get_required_description_sections(),
+        section_defaults=overlay.metadata.get_description_section_defaults(),
+    )
     return repo_path, sanitized_title, description
 
 

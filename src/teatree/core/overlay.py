@@ -12,6 +12,7 @@ import httpx
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
+from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -350,63 +351,6 @@ class OverlayConfig:
         if lifecycle == "review":
             return self.get_review_companion_skills()
         return [s for s in self.companion_skills if s]
-
-
-# ── Overlay metadata ─────────────────────────────────────────────────
-
-
-class OverlayMetadata:
-    def validate_pr(self, title: str, description: str) -> ValidationResult:
-        """Reject a non-conforming MR title/description (#1540).
-
-        The title must match the effective ``mr_title_regex`` (Conventional
-        Commits by default, per-overlay overridable) and the description must
-        carry a What/Why header. Resolved via ``get_effective_settings()`` so
-        the active overlay's ``[overlays.<name>].mr_title_regex`` wins. An
-        overlay assembling a canonical title in ``build_pr_title`` can still
-        override this hook, but the default is now a real gate rather than a
-        no-op so the convention is enforced for every overlay.
-        """
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.core.mr_metadata import validate_mr_metadata  # noqa: PLC0415
-
-        errors = validate_mr_metadata(title, description, get_effective_settings().mr_title_regex)
-        return {"errors": errors, "warnings": []}
-
-    def build_pr_title(self, *, branch: str, subject: str, body: str, issue_url: str) -> str:
-        """Produce the PR title from structured data instead of copying the subject.
-
-        The default returns ``subject`` unchanged — historic behaviour, so an
-        overlay that does not override it is unaffected. An overlay enforcing a
-        title grammar (e.g. ``type(scope): … [flag] (ticket_url)``) overrides
-        this to ASSEMBLE a canonical title from ``branch`` / ``subject`` /
-        ``issue_url``. This closes the gap where a coder agent's non-canonical
-        commit subject (e.g. ``test(insurance): …``) flowed straight onto the
-        MR: the factory now produces a compliant title rather than letting the
-        validator merely reject the copied one after the fact.
-        """
-        return subject
-
-    def get_followup_repos(self) -> list[str]:
-        return []
-
-    def get_skill_metadata(self) -> SkillMetadata:
-        return {}
-
-    def get_ci_project_path(self) -> str:
-        return ""
-
-    def get_e2e_config(self) -> dict[str, str]:
-        return {}
-
-    def detect_variant(self) -> str:
-        return ""
-
-    def get_tool_commands(self) -> list[ToolCommand]:
-        return []
-
-    def get_issue_title(self, url: str) -> str:
-        return ""
 
 
 # ── Overlay base class ───────────────────────────────────────────────

@@ -169,8 +169,10 @@ class TestShipExecutor(TestCase):
 
         (spec,) = host.create_pr.call_args.args
         assert spec.description.startswith("feat(core): add thing (https://example.com/issues/77)")
+        # #312: the generator emits the standard What/Why body by default when
+        # the commit body omits it, so a thin commit still ships a scaffold.
         assert spec.description == (
-            "feat(core): add thing (https://example.com/issues/77)\n\nLonger body.\nMore detail."
+            "feat(core): add thing (https://example.com/issues/77)\n\nLonger body.\nMore detail.\n\n## What\n\n## Why"
         )
 
     def test_description_is_just_subject_when_body_empty(self) -> None:
@@ -188,7 +190,8 @@ class TestShipExecutor(TestCase):
             ShipExecutor(ticket).run()
 
         (spec,) = host.create_pr.call_args.args
-        assert spec.description == "feat: x"
+        # #312: an empty commit body still gets the standard What/Why scaffold.
+        assert spec.description == "feat: x\n\n## What\n\n## Why"
 
     def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
         ticket = self._ticket_with_worktree()

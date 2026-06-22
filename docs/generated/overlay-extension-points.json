@@ -96,6 +96,18 @@
       "signature": "(*, branch: str, subject: str, body: str, issue_url: str) -> str"
     },
     {
+      "description": "Declare MR-description sections (beyond What/Why) the gate requires and the generator emits.",
+      "name": "metadata.get_required_description_sections",
+      "required": false,
+      "signature": "() -> list[str]"
+    },
+    {
+      "description": "Map a required section to the default body the generator writes when the commit omits it.",
+      "name": "metadata.get_description_section_defaults",
+      "required": false,
+      "signature": "() -> dict[str, str]"
+    },
+    {
       "description": "Return the active overlay skill path and remote match patterns.",
       "name": "metadata.get_skill_metadata",
       "required": false,
