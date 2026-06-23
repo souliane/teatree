@@ -141,9 +141,20 @@ class TestEnforceLoopOnPromptGating:
     def test_marked_session_with_stale_tick_emits_register_cron(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # #2650: the owner now registers ONE `/loop` per enabled DB Loop (the seam
+        # is patched here to two specs so this stays a DB-free gating test).
+        from hooks.scripts import loop_registrations  # noqa: PLC0415
+
+        class _Spec:
+            def __init__(self, slot_id: str) -> None:
+                self.slot_id = slot_id
+                self.cron = "*/5 * * * *"
+                self.prompt = f"Run `t3 loops tick --loop {slot_id}` in Bash, then briefly report the tick summary."
+
         _mark_active("teatree-session")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", lambda: [_Spec("inbox"), _Spec("ship")])
         handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
         out = capsys.readouterr().out
         assert out != ""
@@ -514,9 +525,17 @@ class TestLoopAutoLoadOptInGate:
     def test_prompt_nag_fires_with_opt_in(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from hooks.scripts import loop_registrations  # noqa: PLC0415
+
+        class _Spec:
+            slot_id = "t3-loop-inbox"
+            cron = "*/1 * * * *"
+            prompt = "Run `t3 loops tick --loop inbox` in Bash, then briefly report the tick summary."
+
         self._opt_in(monkeypatch)
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", lambda: [_Spec()])
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
         assert "register_cron" in capsys.readouterr().out
 

@@ -42,6 +42,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
 from django_bootstrap import bootstrap_teatree_django
+from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
@@ -952,15 +953,19 @@ def handle_user_prompt_submit(data: dict) -> None:
 def _is_bare_loop_prompt(prompt: str) -> bool:
     """True when *prompt* is a PURE autonomous loop tick (no user content).
 
-    A cron-fired tick reaches ``UserPromptSubmit`` as ``_LOOP_PROMPT`` plus,
+    A cron-fired tick reaches ``UserPromptSubmit`` as the loop prompt plus,
     optionally, the harness-injected ``<system-reminder>`` ambient blocks — both
-    strip down to exactly the bare loop prompt. A genuine fresh user prompt that
-    the harness delivers PREFIXED by the loop continuation text leaves residual
-    user content after the strip, so it is NOT bare. The ambient strip reuses
-    :func:`_strip_ambient_context` (the same normalisation the skill-load gate
-    applies), keeping one definition of "what the harness appends".
+    strip down to exactly the bare loop prompt. Two bare shapes count: the legacy
+    fat-tick ``_LOOP_PROMPT`` and a per-loop tick ``t3 loops tick --loop <name>``
+    (#2650, recognised via the seam-synced :func:`is_bare_loop_tick_prompt`). A
+    genuine fresh user prompt that the harness delivers PREFIXED by the loop
+    continuation text leaves residual user content after the strip, so it is NOT
+    bare. The ambient strip reuses :func:`_strip_ambient_context` (the same
+    normalisation the skill-load gate applies), keeping one definition of "what
+    the harness appends".
     """
-    return _strip_ambient_context(prompt) == _LOOP_PROMPT.strip()
+    stripped = _strip_ambient_context(prompt)
+    return stripped == _LOOP_PROMPT.strip() or is_bare_loop_tick_prompt(stripped)
 
 
 def handle_record_presence(data: dict) -> None:
@@ -1157,12 +1162,18 @@ def _claim_loop_ownership(session_id: str) -> None:
 
 
 def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, check if the fat loop needs registration.
+    """On first prompt, the loop OWNER registers one native Claude ``/loop`` per enabled DB Loop (#2650).
 
-    #1295 capability F: emit a structured ``hookSpecificOutput`` directive
-    so a harness that natively supports the ``register_cron`` action can
-    auto-register without a manual CronCreate. Falls back to the prose
-    nag for harnesses that do not consume the structured directive.
+    The single fat-tick cron is GONE: the live set of native Claude ``/loop``s
+    MIRRORS the set of ENABLED ``Loop`` rows — one ``/loop`` per enabled row
+    (per-loop, not per-group), each on that loop's own cadence. Only the
+    loop-owner session (``_loop_auto_load_active`` + ``_claim_loop_ownership``)
+    registers; a non-owner registers nothing. The per-loop directive building
+    lives in the bare sibling :mod:`loop_registrations` (hooks/CLAUDE.md keeps NEW
+    logic out of this shrink-only router); this stays a thin owner-gated
+    delegator. Crash-proof / fail-open: zero enabled loops (or an unavailable
+    seam) emits nothing and writes no pending marker, so the PreToolUse nudge
+    never fires when there is nothing to register.
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -1178,29 +1189,8 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
         return
     if not _tick_meta_stale():
         return
-    cadence = _loop_cadence_seconds()
-    minutes = max(1, cadence // 60)
-    pending.write_text("1", encoding="utf-8")
-    # The directive carries the same payload the agent would pass to
-    # ``CronCreate`` — a harness consumer reads ``hookSpecificOutput``
-    # and skips the prose nag entirely. The prose remains as a fallback
-    # for harness builds that do not yet read the directive.
-    directive = {
-        "hookSpecificOutput": {
-            "action": "register_cron",
-            "cron": f"*/{minutes} * * * *",
-            "prompt": _LOOP_PROMPT,
-            "recurring": True,
-            "slots": ["tick", "review", "self-improve", "slack-answer"],
-        },
-    }
-    json.dump(directive, sys.stdout)
-    print()  # noqa: T201
-    print(  # noqa: T201
-        f"Session setup: the teatree background loop is not registered yet. "
-        f"Please call CronCreate with "
-        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
-    )
+    if emit_loop_registrations(sys.stdout):
+        pending.write_text("1", encoding="utf-8")
 
 
 def _loop_registration_gate_enabled() -> bool:
@@ -1282,13 +1272,12 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     if _session_has_loop(session_id):
         pending.unlink(missing_ok=True)
         return False
-    cadence = _loop_cadence_seconds()
-    minutes = max(1, cadence // 60)
     reason = (
-        f"LOOP REGISTRATION: the teatree background loop is not registered yet. "
-        f"Register it with CronCreate "
-        f'(cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true). '
-        f"To run without the loop, set [teatree] loop_registration_gate_enabled = false."
+        "LOOP REGISTRATION: the teatree background loops are not registered yet. "
+        "Register one native Claude `/loop` per enabled loop — see the session-start "
+        "registration directive, or run `t3 loops list`, then `t3 loop claude-spec <name>` "
+        "and CronCreate each. To run without the loops, set "
+        "[teatree] loop_registration_gate_enabled = false."
     )
     return _fail_open_or_deny(data, reason)
 
@@ -6489,9 +6478,12 @@ def _derive_loop_name(prompt: str) -> str:
     """
     prompt = prompt.strip()
 
-    # 1. Canonical teatree loop prompt → stable name (it runs `t3 loop tick`).
-    if prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
-        return "tick"
+    # 1. A teatree loop-tick prompt → a stable readable name: a per-loop tick
+    # (#2650) shows that loop's OWN name (the native `/loop` it drives), the
+    # legacy fat-tick prompt shows "tick".
+    per_loop = loop_name_from_prompt(prompt)
+    if per_loop is not None or prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
+        return (per_loop or "tick")[:_LOOP_NAME_MAX]
 
     if prompt.startswith("!"):
         prompt = prompt[1:].strip()

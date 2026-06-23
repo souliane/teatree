@@ -156,6 +156,10 @@ Group root — forces sub-commands to be addressed by name.
 | `record-e2e-run` | Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967) |
 | `record-anti-vacuity` | Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829) |
 
+## `loop_claude_spec`
+
+Print one DB Loop's native Claude /loop spec: slot_id, cron, prompt (#2650).
+
 ## `loop_dispatch`
 
 | Subcommand | Description |

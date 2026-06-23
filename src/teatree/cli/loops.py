@@ -50,12 +50,22 @@ def list_command(
 def tick_command(
     *,
     overlay: str = typer.Option("", "--overlay", help="Restrict scanning to the named overlay (default: all)."),
+    loop: str = typer.Option(
+        "",
+        "--loop",
+        help=(
+            "Run ONE enabled, due DB Loop by name (#2650) — what each native Claude `/loop` fires, "
+            "claiming the per-loop `loop:<name>` lease. Default (empty) is the full master fan-out."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
 ) -> None:
     """Run the master ONCE: run every enabled, due loop (each on its own cadence), then render.
 
     The master claims the ``t3-master`` lease and dispatches only the loops whose
-    DB row is enabled and due. Delegates to the ``loops_tick`` management command.
+    DB row is enabled and due. With ``--loop <name>`` it scopes to that single
+    enabled, due row instead — the per-loop primitive each native Claude ``/loop``
+    fires (#2650). Delegates to the ``loops_tick`` management command.
     """
     ensure_django()
 
@@ -64,6 +74,8 @@ def tick_command(
     kwargs: dict[str, str | bool] = {}
     if overlay:
         kwargs["overlay"] = overlay
+    if loop:
+        kwargs["loop"] = loop
     if json_output:
         kwargs["json_output"] = True
     call_command("loops_tick", **kwargs)
