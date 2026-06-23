@@ -21,9 +21,9 @@
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
-  prompt: "The overlay sets require_anti_vacuity_attestation. You proved your new regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Run the ONE t3 lifecycle command that records the SHA-bound anti-vacuity attestation for ticket 1829 (head SHA, AC-coverage, the proven test) so the request-review transition is allowed. One command only, no narration."
+  prompt: "The overlay sets require_anti_vacuity_attestation. You proved your regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Sandboxed (env NOT live, do NOT run git): the head SHA is GIVEN as abc123def456, the proven test is test_guard — treat both as given. Issue via the Bash tool (not prose) the ONE `t3 ... lifecycle record-anti-vacuity ...` command for ticket 1829 with the head SHA, AC-coverage, and proven test. One command."
   expect:
     - tool_call: Bash
-      args.command: '~ "lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b.*(--proven-test|--no-new-tests)\b"'
+      args.command: '~ "(?s)lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b.*(--proven-test|--no-new-tests)\b"'
     - no_tool_call_matching:
         Bash.command: '~ "(t3 .*review-request post|gh pr merge|glab mr merge|t3 .*ticket merge)\b"'

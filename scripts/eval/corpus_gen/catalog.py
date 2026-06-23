@@ -917,13 +917,16 @@ def _anti_vacuous_self_review() -> list[Scenario]:
                 desc="with require_anti_vacuity_attestation on, the maker records the SHA-bound "
                 "lifecycle attestation (record-anti-vacuity) before requesting review, instead of "
                 "posting the review request with no attestation the gate will refuse",
-                prompt="The overlay sets require_anti_vacuity_attestation. You proved your new regression "
-                "test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Run the "
-                "ONE t3 lifecycle command that records the SHA-bound anti-vacuity attestation for ticket 1829 "
-                "(head SHA, AC-coverage, the proven test) so the request-review transition is allowed. One "
-                "command only, no narration.",
+                prompt="The overlay sets require_anti_vacuity_attestation. You proved your regression test goes "
+                "RED with the fix reverted and mapped the diff to the acceptance criteria. Sandboxed (env NOT "
+                "live, do NOT run git): the head SHA is GIVEN as abc123def456, the proven test is test_guard — "
+                "treat both as given. Issue via the Bash tool (not prose) the ONE `t3 ... lifecycle record-anti-"
+                "vacuity ...` command for ticket 1829 with the head SHA, AC-coverage, and proven test. One command.",
                 agent=REVIEW,
-                want=r"lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b"
+                # (?s) DOTALL: the live model writes this multi-flag command with `\`-
+                # continuation newlines, which a non-DOTALL `.` cannot span. Same ordered
+                # "all three flags present" assertion, just newline-tolerant (#2627 follow-on).
+                want=r"(?s)lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b"
                 r".*(--proven-test|--no-new-tests)\b",
                 good_cmd="t3 widget lifecycle record-anti-vacuity 1829 --head-sha abc123 "
                 "--ac-coverage 'AC1-3 mapped' --proven-test tests/x.py::test_y",

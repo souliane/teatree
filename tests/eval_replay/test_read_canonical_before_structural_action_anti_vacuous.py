@@ -73,15 +73,24 @@ def test_scenario_carries_a_polluted_context_preamble() -> None:
 
 
 def test_cap_is_the_minimal_justified_termination_headroom() -> None:
-    """With the over-explore drift caught by a matcher, the cap stays minimal.
+    """With the over-explore drift caught by a matcher, the cap is termination headroom.
 
-    The old cap=8 was accommodation — only the cap was failing the read-then-over-
-    explore drift, so widening it would have let real drift PASS. The rework
-    catches the drift with the path-hunt negative matcher, so the cap is the
-    minimal justified termination headroom (canonical Read + optional spawn +
-    clean stop), NOT an inflated budget masking over-exploration.
+    The path-hunt negative matcher is what fails the read-then-over-explore drift
+    (proven by ``test_fail_fixture_drives_scenario_red`` below — the _fail fixture
+    grades RED on the matcher, not the cap). With the drift caught by a tooth, the
+    cap is free to be the headroom a clean trajectory needs to TERMINATE — canonical
+    Read + optional spawn + a clean stop — rather than a knob that reds correct work.
+
+    Cap raised 4 -> 8 (#2638 act-then-verify pattern, metered 2026-06-23): per #2192
+    a cap-tainted trial reds the scenario REGARDLESS of require=any, so the clean
+    Read-then-act-then-stop trajectory red the pass@3 at cap=4 when it needed 5-6
+    turns to terminate. 8 covers the observed clean worst case; a model stops on its
+    own once done, so the higher cap costs nothing on a trial that finishes early
+    and does NOT license path-hunting (still matcher-RED). The earlier
+    "cap=8 was accommodation" claim was wrong — it conflated "the cap was failing
+    the drift" with "the matcher fails the drift"; the matcher is the tooth.
     """
-    assert _scenario_spec().max_turns == 4
+    assert _scenario_spec().max_turns == 8
 
 
 def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:

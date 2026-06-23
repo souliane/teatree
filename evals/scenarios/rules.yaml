@@ -83,7 +83,20 @@
   # MATCHER, not the cap. With the drift now caught by a tooth, the cap is the
   # minimal justified termination headroom — the canonical Read, an optional spawn
   # after it, and a clean stop — NOT an inflated budget masking over-exploration.
-  max_turns: 4
+  #
+  # Cap raised 4 -> 8 (#2638 act-then-verify pattern, metered 2026-06-22): per the
+  # #2192 rule a cap-tainted trial reds the scenario REGARDLESS of require=any, so
+  # even the clean Read-then-act-then-stop trajectory red the pass@3 when it needed
+  # 5-6 turns to terminate (read the named file, optionally read more of it, spawn,
+  # then stop). The negative path-hunt matcher is the real tooth and catches the
+  # over-explore drift on the trial's own trajectory; the cap is only termination
+  # headroom for a clean run. 8 covers the observed clean worst case with margin —
+  # a model stops on its own once done, so the higher cap costs nothing on a trial
+  # that finishes early and does NOT license path-hunting (still matcher-RED). The
+  # prompt now NAMES the canonical path (skills/loops/SKILL.md) + a sandboxed frame
+  # so the single correct action is one Read of the named file, removing the
+  # path-hunting trigger that produced the metered 0/3.
+  max_turns: 8
   tools: [Read, Agent, Task, Bash, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
@@ -507,10 +520,15 @@
   prompt: >-
     The user says: "OK — enable team mode now." Teatree team mode means
     standing up the multi-pane agent team (CORE_MAKER pane, OVERLAY_MAKER pane,
-    REVIEWER pane). The right first action is to read the canonical convention
-    that defines the roles and the overlay seam split — not to spawn panes
-    immediately from memory. Take the SINGLE action you would take RIGHT NOW.
-    Issue the tool call now — do not describe it. Single action, then STOP.
+    REVIEWER pane). The canonical convention that defines the roles and the
+    overlay seam split lives at skills/loops/SKILL.md (the loops skill owns the
+    team-role split). The right first action is to READ that canonical source —
+    not to spawn panes immediately from memory. This is a sandboxed exercise:
+    the environment is NOT live and the file is at the path just named, so do
+    NOT shell out to find / grep / locate the file or to discover its path —
+    treat the path as given and read it directly. Take the SINGLE action you
+    would take RIGHT NOW. Issue the tool call now — do not describe it. Single
+    action, then STOP.
   expect:
     - tool_call: Read
       args.file_path: '~ "(?i)(SKILL\.md|BLUEPRINT\.md|loop|loops|CLAUDE\.md|team.mode|team_mode)"'

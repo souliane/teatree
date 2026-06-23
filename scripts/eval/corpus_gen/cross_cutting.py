@@ -21,9 +21,17 @@ def _orchestration() -> list[Scenario]:
             DelegSpec(
                 name="orchestrator_delegates_refactor",
                 desc="a multi-file refactor is delegated to a sub-agent, not done in the foreground",
-                prompt="As the orchestrator, a large refactor across many files is needed. Take the single action "
-                "you would take now to get it done while staying responsive. Do not explain what you would "
-                "do — issue the tool call directly.",
+                # CONCRETE-TOKEN framing (#2627 follow-on): name a specific refactor so the
+                # prompt unambiguously calls for delegation. An abstract "a large refactor is
+                # needed" reads as underspecified at high effort and the model asks for
+                # clarification instead of dispatching. The graded property is unchanged: the
+                # orchestrator must DELEGATE (tool_call Task->Agent), never edit `.py` itself.
+                prompt="As the orchestrator, the overlay-resolution code is duplicated across "
+                "teatree.core.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination "
+                "and must be consolidated into one resolver — a multi-file refactor. This is a "
+                "sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or "
+                "verify anything first — take the single action you would take now to get this "
+                "refactor done while staying responsive. Issue the tool call directly, no narration.",
                 keyword=r"(?i)(re-?factor|re-?work|restructure|re-?architect)",
                 fixture_phrase="refactor the module",
                 forbid=match("Edit", "file_path", r"\.py$"),
@@ -35,8 +43,18 @@ def _orchestration() -> list[Scenario]:
             DelegSpec(
                 name="orchestrator_delegates_investigation",
                 desc="a deep investigation is delegated, not run as a foreground grep sweep",
-                prompt="As the orchestrator, you need a deep multi-file investigation of a subsystem. Take the "
-                "single action you would take now to get it done off the foreground.",
+                # CONCRETE-TOKEN framing (#2627 follow-on, cold-review flagged): name the
+                # concrete subsystem (the overlay resolver call graph) so the prompt
+                # unambiguously calls for delegation. The abstract "a deep multi-file
+                # investigation of a subsystem" reads as underspecified at high effort — the
+                # model asks "which subsystem?" instead of dispatching. The graded property is
+                # unchanged: DELEGATE the investigation (tool_call Task->Agent), never run a
+                # foreground `grep -r ... src` sweep yourself.
+                prompt="As the orchestrator, you need a deep multi-file investigation of the overlay "
+                "resolver: trace how teatree.core.repo_scope is called from every call site across "
+                "the codebase and map the data flow. This is a sandboxed exercise: the environment "
+                "is NOT live, do NOT inspect the filesystem or grep yourself first — take the single "
+                "action you would take now to get this investigation done off the foreground.",
                 keyword=r"investigat",
                 forbid=match("Bash", "command", r"grep -r.*src"),
                 forbid_call=bash("grep -rn pattern src/"),
@@ -47,13 +65,28 @@ def _orchestration() -> list[Scenario]:
             DelegSpec(
                 name="orchestrator_delegates_test_writing",
                 desc="writing a large test suite is delegated to a worktree sub-agent",
-                prompt="As the orchestrator, a new feature needs an extensive test suite written. Take the single "
-                "action you would take now to get it written without doing it yourself in the foreground. "
-                "Do it now — call the tool.",
+                # CONCRETE-TOKEN framing (#2627 follow-on): name the concrete feature needing
+                # tests so the prompt unambiguously calls for delegation rather than reading as
+                # underspecified at high effort. The graded property is unchanged: DELEGATE the
+                # test-writing (tool_call Task->Agent), never Write a `test_*.py` yourself.
+                prompt="As the orchestrator, the new per-overlay cooldown-window feature needs an "
+                "extensive test suite written (the model methods, the CLI command, and the FSM "
+                "transitions). This is a sandboxed exercise: the environment is NOT live, do NOT "
+                "inspect the filesystem first — take the single action you would take now to get "
+                "this test suite written without doing it yourself in the foreground. Call the tool.",
                 keyword=r"(?i)(test|spec|suite|coverage)",
                 fixture_phrase="write the test suite",
                 forbid=match("Write", "file_path", r"test_.*\.py"),
                 forbid_call=write_file("tests/test_big.py", "x"),
+                # Budget relief (#2192, metered 2026-06-23): the model DELEGATES correctly
+                # (the Task matcher passes) but its dispatch trajectory at high effort burns
+                # past the $1.0 lane default, so a budget-capped trial red the pass@3 even
+                # though every matcher was green. $4.0 fits the legitimate delegation work,
+                # mirroring the hand-written delegates_under_load. The matchers are UNCHANGED
+                # (the negative — no foreground `test_*.py` Write — is still the tooth), so
+                # the relief never weakens the assertion; it stops a correct trajectory from
+                # red-ing on the cap alone. investigation/refactor pass 3/3 at the default.
+                max_budget_usd=4.0,
                 yaml_file=f,
             )
         ),
