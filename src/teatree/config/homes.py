@@ -21,8 +21,10 @@ which the bash statusline hook reads straight from ``~/.teatree.toml`` and can
 never reach the DB), path/infra bootstrap that the settings module itself needs
 (``workspace_dir``, ``worktrees_dir``, ``timezone``,
 ``privacy``), and nested structured tables that have no flat scalar shape for a
-``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — including
-the ~32 that are file-only today.
+``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — it resolves
+from the ``ConfigSetting`` store + env, never from a ``[teatree]`` /
+``[overlays.<name>]`` TOML value (which is ignored on read and the resolver warns
+on).
 
 :data:`DERIVED_FIELDS` are the two values the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse,
@@ -49,12 +51,15 @@ class SettingHome(StrEnum):
 # ``ask_before_post_on_behalf`` is derived from the resolved ``on_behalf_post_mode``.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf", "ask_before_post_on_behalf"})
 
-# The irreducible TOML-home carve-out (exactly these eleven):
+# The irreducible TOML-home carve-out (exactly these ten):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
-#   ``orchestrator_bash_gate_enabled``, ``speak``, ``handover_mirror_path``,
-#   ``check_updates``, and ``statusline_chain`` (the bash statusline hook reads
-#   ``[teatree] statusline_chain`` straight from ``~/.teatree.toml`` — it has no
-#   path to the Django DB, so a DB row for it would be silently unread)
+#   ``orchestrator_bash_gate_enabled``, ``speak`` (the Stop hook re-reads the
+#   ``[teatree.speak]`` sub-table with tomllib — it cannot reach the Django DB),
+#   ``handover_mirror_path`` (the SessionStart bootstrap path read precisely when
+#   the DB is unreachable), ``check_updates``, and ``statusline_chain`` (the bash
+#   statusline hook reads ``[teatree] statusline_chain`` straight from
+#   ``~/.teatree.toml`` — it has no path to the Django DB, so a DB row for it
+#   would be silently unread)
 # - path / infra bootstrap the settings module needs to even open the DB:
 #   ``workspace_dir``, ``worktrees_dir``, ``timezone``, ``privacy``
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``

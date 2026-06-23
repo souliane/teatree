@@ -4388,8 +4388,8 @@ Usage: t3 teatree autonomy [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ show  Show the effective autonomy tier (env > per-overlay > global >         │
-│       default).                                                              │
+│ show  Show the effective autonomy tier (DB overlay-scope > DB global-scope > │
+│       default; no env layer).                                                │
 │ set   Persist the autonomy knob. A typo is rejected; the safety floor is     │
 │       never relaxed.                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4400,7 +4400,8 @@ Usage: t3 teatree autonomy [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree autonomy show [OPTIONS]
 
- Show the effective autonomy tier (env > per-overlay > global > default).
+ Show the effective autonomy tier (DB overlay-scope > DB global-scope >
+ default; no env layer).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

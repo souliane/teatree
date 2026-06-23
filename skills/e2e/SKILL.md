@@ -487,14 +487,11 @@ Never post a caveated note as a substitute for reaching the threshold: a note th
 
 ### Configuration
 
-The pass bar is the **`[teatree] e2e_confidence_threshold`** setting in `~/.teatree.toml` — an integer 0–100, **default 90**, **per-overlay overridable** via `[overlays.<name>].e2e_confidence_threshold` (a stricter client overlay can raise it; a fast dogfood overlay can lower it). It is the single knob both the rubric (`/t3:e2e-review`) and this loop read, so "the threshold" means one value, resolved through the usual env → DB → per-overlay → global → default chain.
+The pass bar is the DB-home **`e2e_confidence_threshold`** setting — an integer 0–100, **default 90**, **per-overlay overridable**. Set it in the `ConfigSetting` store (a value left in `~/.teatree.toml` is ignored on read); a stricter client overlay can raise it, a fast dogfood overlay can lower it. It is the single knob both the rubric (`/t3:e2e-review`) and this loop read, so "the threshold" means one value, resolved through the DB-home chain: overlay-scope DB row → global DB row → the dataclass default (no env layer for this setting).
 
-```toml
-[teatree]
-e2e_confidence_threshold = 90   # rubric score a spec must reach to be VERIFIED (0-100)
-
-[overlays.client-x]
-e2e_confidence_threshold = 95   # stricter bar for a client overlay
+```bash
+t3 <overlay> config_setting set e2e_confidence_threshold 90   # rubric score a spec must reach to be VERIFIED (0-100)
+t3 <overlay> config_setting set e2e_confidence_threshold 95 --overlay client-x   # stricter bar for a client overlay
 ```
 
 ## Re-Read Before Debugging

@@ -100,7 +100,8 @@ For an **existing** app, the command updates its manifest in place. When `[overl
 
 **Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses the shared `teatree.utils.singleton` flock primitive (kernel-enforced, crash-safe) — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
-**Operating mode (`teatree.mode`, env: `T3_MODE`)** — controls whether the agent
+**Operating mode (DB-home `mode`, set via `t3 <overlay> config_setting set mode …`;
+env: `T3_MODE`)** — controls whether the agent
 pauses for confirmation on publishing actions (push, PR create, PR merge, messaging-backend
 posts, remote branch deletion):
 
@@ -109,7 +110,7 @@ posts, remote branch deletion):
 | `interactive` | ✅ | Canonical default. Confirm before push, PR create, messaging-backend posts, any remote write. Always-gated destructive ops (force-push to default branches, history rewrites on shared defaults, destructive DB ops on non-ticket schemas, unauthorized external writes) stay gated regardless of mode. |
 | `auto` |  | Opt-in per overlay. End-to-end autonomy: push, PR create, clean-all's branch pruning, retro writes, overlay-approved messaging-backend posts run without prompts. Merge is gated by `require_human_approval_to_merge` (default `true`). Always-gated destructive ops still apply. Recommended for personal dogfooding overlays where the user accepts the trust boundary; use `interactive` for client / shared-team overlays. |
 
-The env var `T3_MODE` overrides the toml setting. Unknown values raise
+The env var `T3_MODE` overrides the stored DB-home value. Unknown values raise
 `ValueError` — typos never silently downgrade to a less-safe mode.
 
 ### 10.1.1 Per-Overlay Setting Overrides
@@ -121,9 +122,11 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the eleven fields a non-Django
-or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak`,
-`handover_mirror_path`, `check_updates`, and `statusline_chain` — the latter read
+`[overlays.<name>]` + env only. The TOML carve-out is the ten fields a non-Django
+or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak` — the Stop
+hook re-reads the `[teatree.speak]` sub-table with tomllib and cannot reach the
+DB — `handover_mirror_path` — the SessionStart bootstrap path read precisely when
+the DB is unreachable — `check_updates`, and `statusline_chain` — read
 straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
 to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
 `timezone`, `privacy`), and the nested structured `mr_reminder`
@@ -367,19 +370,25 @@ is a one-line registry change picked up via `dataclasses.replace`; `speak` is
 the one non-generic override (its overlay sub-table merges onto the base
 rather than flat-replacing).
 
+`mode`, `branch_prefix`, and `autonomy` are DB-home (#1775) — they live in the
+`ConfigSetting` store, NOT in `~/.teatree.toml`. A value for one of them left in
+`[teatree]` / `[overlays.<name>]` is IGNORED on read (the resolver warns and drops
+it). Set them in the store, globally or scoped to one overlay with `--overlay`:
+
+```bash
+t3 <overlay> config_setting set mode interactive                      # global default
+t3 <overlay> config_setting set branch_prefix ac
+t3 <overlay> config_setting set autonomy full --overlay t3-teatree    # single-author dogfooding: one switch collapses the gates + pins mode = auto
+t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collaborative: autonomous + DM per on-behalf action, keeps CLEAR merge gate
+t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)
+```
+
+The TOML file carries only the TOML-home carve-out and overlay
+discovery/messaging keys — for `client-project`, the genuinely TOML-home
+`privacy`:
+
 ```toml
-[teatree]
-mode = "interactive"         # global default
-branch_prefix = "ac"
-
-[overlays.t3-teatree]
-autonomy = "full"            # single-author dogfooding: one switch collapses the gates + pins mode = auto
-
-[overlays.t3-client]
-autonomy = "notify"          # collaborative: autonomous + DM per on-behalf action, keeps CLEAR merge gate
-
 [overlays.client-project]
-mode = "interactive"         # stay gated on client code (autonomy defaults to babysit)
 privacy = "strict"
 ```
 

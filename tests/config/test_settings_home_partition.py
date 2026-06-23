@@ -36,7 +36,7 @@ def _all_field_names() -> set[str]:
 
 
 def test_every_user_settings_field_has_exactly_one_classification() -> None:
-    # Coverage over all 104 fields: each is in SETTING_HOMES xor DERIVED_FIELDS.
+    # Coverage over every field: each is in SETTING_HOMES xor DERIVED_FIELDS.
     fields = _all_field_names()
     classified = set(SETTING_HOMES) | DERIVED_FIELDS
     missing = sorted(fields - classified)
@@ -59,9 +59,9 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_eleven_fields() -> None:
+def test_toml_carve_out_is_exactly_the_ten_fields() -> None:
     # The irreducible carve-out — non-Django / pre-Django readers, infra
-    # bootstrap, nested structured tables — is exactly these eleven and no more.
+    # bootstrap, nested structured tables — is exactly these ten and no more.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
 

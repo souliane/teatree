@@ -373,7 +373,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
-    # #1775 newly-DB-home (file-only today): these now resolve from the DB store.
+    # #1775 newly-DB-home (formerly file-only): these now resolve from the DB store.
     "agent_signature": _parse_strict_bool,
     "claude_chrome": _parse_strict_bool,
     "repo_mode": _parse_strict_str,

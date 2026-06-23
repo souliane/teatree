@@ -99,7 +99,7 @@ def register_autonomy_commands(overlay_app: typer.Typer) -> None:
 
     @autonomy_group.command(name="show")
     def show() -> None:
-        """Show the effective autonomy tier (env > per-overlay > global > default)."""
+        """Show the effective autonomy tier (DB overlay-scope > DB global-scope > default; no env layer)."""
         from teatree.config import get_effective_settings  # noqa: PLC0415
         from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415
 

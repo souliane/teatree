@@ -868,7 +868,7 @@ Commit approval ≠ push approval. **Squash approval ≠ push approval. "All don
 - Every publishing action (push, PR create/update, PR merge, PR approve/unapprove, remote branch delete, Slack post) requires a separate explicit confirmation. "Recheck" / "re-review" / "look again" are verify-only instructions — they do **not** authorize re-approval.
 - **Force-push (`--force-with-lease`)**: get separate explicit confirmation even if the user already approved the rebase. A rebase and a force-push are two decisions.
 
-### Auto mode (`t3.mode = "auto"` or `T3_MODE=auto`)
+### Auto mode (DB-home `mode = auto` via `config_setting set mode auto`, or `T3_MODE=auto`)
 
 The user has opted into end-to-end autonomy. The agent ships complete features without pausing for confirm prompts on the publishing actions listed above. In particular:
 
