@@ -707,6 +707,18 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │                                      posted inline. Use this ONLY for a      │
 │                                      genuinely MR-wide note (a verdict-only  │
 │                                      summary with no per-line findings).     │
+│ --allow-bloat                        Escape the comment-bloat gate           │
+│                                      (souliane/teatree#2663) for ONE post —  │
+│                                      the documented over-deny escape (#126). │
+│                                      A note longer than a small sentence     │
+│                                      cap, or one that references project     │
+│                                      chatter (a ticket/PR id like            │
+│                                      #1234/!567, an @handle, or a Slack      │
+│                                      timestamp) is refused by default — a    │
+│                                      review comment is about the diff, not   │
+│                                      the tracker. Use ONLY for a genuinely   │
+│                                      justified long nit or a load-bearing    │
+│                                      reference.                              │
 │ --help                               Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -820,6 +832,18 @@ Usage: t3 review post-comment [OPTIONS] REPO MR [NOTE]
 │                                        Use this ONLY for a genuinely MR-wide │
 │                                        note (a verdict-only summary with no  │
 │                                        per-line findings).                   │
+│ --allow-bloat                          Escape the comment-bloat gate         │
+│                                        (souliane/teatree#2663) for ONE post  │
+│                                        — the documented over-deny escape     │
+│                                        (#126). A note longer than a small    │
+│                                        sentence cap, or one that references  │
+│                                        project chatter (a ticket/PR id like  │
+│                                        #1234/!567, an @handle, or a Slack    │
+│                                        timestamp) is refused by default — a  │
+│                                        review comment is about the diff, not │
+│                                        the tracker. Use ONLY for a genuinely │
+│                                        justified long nit or a load-bearing  │
+│                                        reference.                            │
 │ --help                                 Show this message and exit.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
