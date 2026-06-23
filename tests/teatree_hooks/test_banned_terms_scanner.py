@@ -176,6 +176,76 @@ class TestWholeTokenMatching:
         assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
 
 
+class TestCompanyIdentifierAllowlistGate:
+    """#1415 over-block: a short org slug must not fire inside a company identifier.
+
+    A short org-slug term must not fire inside the company's OWN compound
+    identifiers / internal URLs, via the ``banned_terms_allowlist`` carve-out.
+
+    The recurring false positive: a single-token org slug (``acme`` here, the
+    synthetic stand-in for the real org slug) is also a sub-token of every
+    company-owned identifier (``acme-engineering`` / ``acme-product``) and of an
+    internal-URL path, so it fired on EVERY one of the company's own MR/post
+    bodies. The ``banned_terms_allowlist`` carve-out blanks the allow-listed
+    identifier's token-run BEFORE matching, so the short term no longer surfaces
+    inside it — while a genuine customer codename NOT on the allow-list is STILL
+    blocked, proving the carve-out does not gut the gate. All values are
+    SYNTHETIC neutral fakes.
+
+    These run the FULL gate (``scan_text`` → ``check-banned-terms.sh`` →
+    ``term_match`` with the TOML allow-list), so they pin the end-to-end seam.
+    """
+
+    @pytest.fixture
+    def config(self, tmp_path: Path) -> Path:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(
+            "[teatree]\n"
+            'banned_terms = ["acme", "customercodename", "acme-engineering", "acme-product"]\n'
+            'banned_terms_allowlist = ["acme-engineering", "acme-product", "acme-client-workspace"]\n',
+            encoding="utf-8",
+        )
+        return cfg
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "See https://gitlab.example/acme-engineering/acme-product/-/merge_requests/123",
+            "relates to the acme-product change",
+            "the acme-engineering team owns this",
+            "moved to acme-client-workspace",
+            "see acmeEngineering and acmeProduct",  # camelCase company identifiers
+        ],
+    )
+    def test_company_identifier_body_passes_the_gate(self, config: Path, body: str) -> None:
+        # RED before the fix (``acme`` blocked); GREEN after (carve-out blanks
+        # the allow-listed identifier so ``acme`` never surfaces inside it).
+        assert banned_terms_scanner.scan_text(body, config_path=config) is None
+
+    def test_real_customer_codename_still_blocked(self, config: Path) -> None:
+        # CONTROL: a genuine customer codename NOT on the allow-list is STILL
+        # blocked — the fix did not gut the gate.
+        assert banned_terms_scanner.scan_text("affects the customercodename tenant", config_path=config) == (
+            "customercodename"
+        )
+
+    def test_customer_codename_blocks_beside_company_identifier(self, config: Path) -> None:
+        body = "acme-product change for the customercodename tenant"
+        assert banned_terms_scanner.scan_text(body, config_path=config) == "customercodename"
+
+    def test_bare_org_slug_token_still_blocked(self, config: Path) -> None:
+        # A standalone org-slug token NOT part of a company identifier still
+        # fires — the carve-out exempts the compound identifiers, not the slug.
+        assert banned_terms_scanner.scan_text("the acme value here", config_path=config) == "acme"
+
+    def test_no_allowlist_preserves_over_block(self, tmp_path: Path) -> None:
+        # Without the allow-list key the prior behaviour is unchanged: the short
+        # term DOES surface inside the company identifier (the bug, opt-in fix).
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-product"]\n', encoding="utf-8")
+        assert banned_terms_scanner.scan_text("the acme-product repo", config_path=cfg) == "acme"
+
+
 class TestMatchedTermAttribution:
     """``_matched_term`` attributes by whole-token match, never substring.
 
