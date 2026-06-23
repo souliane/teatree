@@ -20,7 +20,7 @@ heal).
 
 import io
 from contextlib import redirect_stdout
-from typing import ClassVar, cast
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -38,87 +38,68 @@ from teatree.core.gates.schema_guard import (
 )
 from teatree.core.models import MergeClear
 
-_MERGE_MIGRATIONS = ("0011_mergeclear_mergeaudit", "0012_mergeclear_human_authorizer")
-_PRE_MERGE_MIGRATION = "0010_remove_looplease_heartbeat_at"
+# Since the #2652 squash, ``core`` has a single ``0001_initial`` migration that
+# creates the ``teatree_merge_clear`` table; the only "behind" state a real
+# migrate can reach is the pre-initial one (``zero``).
+_INITIAL_MIGRATION = "0001_initial"
 
 
-def _unmigrate_core_to_pre_merge() -> None:
+def _unmigrate_core_to_zero() -> None:
     """Drive the self-DB genuinely behind via a real backward `migrate` (#2006).
 
-    Migrating ``core`` back to ``0010`` un-applies the whole 0011+ tail the
-    way the editable install would *advance past* it: the tables are really
-    dropped and the ``django_migrations`` ledger is really updated. So a
-    forward heal re-applies them cleanly — exactly the state a keystone
-    merge of a migration-adding PR leaves behind. (The cheap
+    The squashed graph has a single ``0001_initial``, so the only "behind"
+    state a real ``migrate`` can produce is the pre-initial one: migrating
+    ``core`` back to ``zero`` really drops every core table and clears the
+    ``django_migrations`` ledger — the way the editable install *advances
+    past* an unapplied migration. A forward heal re-applies ``0001_initial``
+    cleanly (re-creating the schema and re-running its seed) — exactly the
+    state a keystone merge of a migration-adding PR leaves behind. (The cheap
     delete-one-table reproduction below fakes only the symptom and a real
     ``migrate`` cannot heal it, so it is reserved for the read-only/doctor
     surfaces that never migrate.)
     """
-    call_command("migrate", "core", _PRE_MERGE_MIGRATION, "--no-input", verbosity=0)
+    call_command("migrate", "core", "zero", "--no-input", verbosity=0)
 
 
 def _migrate_core_forward() -> None:
     call_command("migrate", "core", "--no-input", verbosity=0)
 
 
-class _UnapplyState:
-    """Carries the un-recorded migration tail between setup and cleanup."""
+def _unapply_initial_migration() -> None:
+    """Reproduce the #869 self-DB symptom against the squashed graph.
 
-    tail: ClassVar[list[str]] = []
-
-
-def _core_migrations_after_merge() -> list[str]:
-    """Ledger names for every applied core migration newer than 0012.
-
-    Django's ``MigrationExecutor`` treats a dependency as satisfied when a
-    *descendant* is recorded as applied. So un-recording only 0011/0012
-    while a later migration (0013+) stays in the ledger masks the gap —
-    the plan to the leaf is empty and the guard sees nothing pending.
-    Reproducing the #869 state faithfully therefore means un-recording
-    the whole contiguous tail from 0011 onward, not just the two merge
-    migrations. Discovered from the ledger so a future migration cannot
-    silently re-mask the gap again.
+    Drop the ``teatree_merge_clear`` table and un-record ``0001_initial`` from
+    the ledger so the table is absent *and* the ``django_migrations`` ledger
+    has no record of the migration that creates it — precisely what
+    ``MigrationExecutor`` inspects to report a pending migration. The other
+    core tables are left in place: this is the cheap symptom for the read-only
+    / doctor surfaces that never call ``migrate`` (a real ``migrate`` cannot
+    heal a half-dropped schema — :class:`BehindSelfDbSelfHealsTest` covers the
+    real backward-migrate heal).
     """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT name FROM django_migrations WHERE app = 'core' AND name > %s ORDER BY name",
-            [_MERGE_MIGRATIONS[-1]],
-        )
-        return [row[0] for row in cursor.fetchall()]
-
-
-def _unapply_merge_migrations() -> None:
-    """Reproduce the real #869 self-DB state exactly.
-
-    The dogfood DB ran #863/#864's code but never applied migrations
-    0011/0012, so the ``teatree_merge_clear`` table is absent *and* the
-    ``django_migrations`` ledger has no record of them — precisely what
-    ``MigrationExecutor`` inspects.
-    """
-    _UnapplyState.tail = _core_migrations_after_merge()
     with connection.schema_editor() as editor:
         editor.delete_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.executemany(
+        cursor.execute(
             "DELETE FROM django_migrations WHERE app = 'core' AND name = %s",
-            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
+            [_INITIAL_MIGRATION],
         )
 
 
-def _reapply_merge_migrations() -> None:
+def _reapply_initial_migration() -> None:
     """Restore the table + ledger so ``TransactionTestCase`` teardown flushes.
 
     Idempotent: a #2006 self-heal may already have re-created the table and
-    re-recorded the ledger tail before this cleanup runs, so it tolerates an
+    re-recorded the ledger row before this cleanup runs, so it tolerates an
     already-current schema rather than colliding on a duplicate table/row.
     """
     if not _table_exists(MergeClear._meta.db_table):
         with connection.schema_editor() as editor:
             editor.create_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.executemany(
+        cursor.execute(
             "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
-            [(name,) for name in (*_MERGE_MIGRATIONS, *_UnapplyState.tail)],
+            [_INITIAL_MIGRATION],
         )
 
 
@@ -135,18 +116,18 @@ class PendingMigrationsTest(TransactionTestCase):
 
 
 class BehindSelfDbReportingTest(TransactionTestCase):
-    """The cheap symptom reproduction: `MergeClear` table + ledger tail absent.
+    """The cheap symptom reproduction: `MergeClear` table + ledger row absent.
 
-    This drops one table and un-records the tail to make the gap visible
-    to the read-only surfaces (the raw-ORM anchor, the doctor checks) that
-    never call `migrate` — so they need only the symptom, not a state a
+    This drops one table and un-records ``0001_initial`` to make the gap
+    visible to the read-only surfaces (the raw-ORM anchor, the doctor checks)
+    that never call `migrate` — so they need only the symptom, not a state a
     real `migrate` can heal. The self-heal behaviour is covered by
     :class:`BehindSelfDbSelfHealsTest` with a real backward migration.
     """
 
     def setUp(self) -> None:
-        _unapply_merge_migrations()
-        self.addCleanup(_reapply_merge_migrations)
+        _unapply_initial_migration()
+        self.addCleanup(_reapply_initial_migration)
 
     def test_raw_orm_call_would_fail_with_operationalerror(self) -> None:
         # Anchor: before any heal the ORM raises the raw, opaque error this
@@ -161,7 +142,7 @@ class BehindSelfDbReportingTest(TransactionTestCase):
         assert result is False
         out = buffer.getvalue()
         assert "unapplied migration" in out
-        assert "0011_mergeclear_mergeaudit" in out
+        assert "0001_initial" in out
 
     def test_doctor_check_command_aggregates_pending_migrations(self) -> None:
         # The `t3 doctor check` aggregation wires the schema-guard surface
@@ -193,15 +174,17 @@ class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """A keystone merge advanced the install over a migration; the gate self-heals (#2006).
 
     `setUp` drives the self-DB genuinely behind with a real backward
-    `migrate core 0010` (tables dropped, ledger updated), reproducing the
-    exact state the live editable install lands in after a keystone merge
-    of a migration-adding PR. The sanctioned operations must now apply the
-    pending self-DB migrations in place and proceed, instead of crashing
-    every tick with `no such table` until a manual `t3 teatree db migrate`.
+    `migrate core zero` (every core table dropped, ledger cleared),
+    reproducing the state the live editable install lands in after a keystone
+    merge of a migration-adding PR (the only "behind" state the squashed
+    single-`0001_initial` graph admits). The sanctioned operations must now
+    apply the pending self-DB migrations in place and proceed, instead of
+    crashing every tick with `no such table` until a manual
+    `t3 teatree db migrate`.
     """
 
     def setUp(self) -> None:
-        _unmigrate_core_to_pre_merge()
+        _unmigrate_core_to_zero()
         self.addCleanup(_migrate_core_forward)
 
     def test_require_current_schema_auto_applies_then_proceeds(self) -> None:

@@ -19,6 +19,12 @@ from django.test import SimpleTestCase
 _CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
 _MAX_MIGRATION_TXT = _CORE_MIGRATIONS_DIR / "max_migration.txt"
 _SIBLING_LEAF = _CORE_MIGRATIONS_DIR / "0001_sibling_leaf_fork.py"
+# A transient linear child of the real leaf — used to manufacture an
+# existing-but-stale ``max_migration.txt`` (dlm.E004). Since the #2652 squash
+# ``core`` has a single ``0001_initial`` and no other on-disk migration to name
+# as stale, so this test fixture adds one child whose presence makes
+# ``0001_initial`` a non-leaf.
+_LINEAR_CHILD = _CORE_MIGRATIONS_DIR / "0002_linear_child.py"
 
 
 def _real_latest_migration() -> str:
@@ -26,10 +32,26 @@ def _real_latest_migration() -> str:
     return names[-1]
 
 
-def _core_leaf_parent() -> str:
+def _core_leaf_dependencies() -> list[tuple[str, str]]:
+    """The ``(app, name)`` dependencies of the live ``core`` leaf migration.
+
+    A sibling sharing these dependencies forks the graph (two leaves off the
+    same parent). For the squashed single-``0001_initial`` graph the leaf is a
+    *root* with no parent, so this returns ``[]`` and the sibling is a second
+    root — still two leaf nodes, which is exactly the dlm.E005 fork condition.
+    """
     loader = MigrationLoader(None, ignore_no_migrations=True)
     leaf = max(node for node in loader.graph.leaf_nodes() if node[0] == "core")
-    return next(parent.key[1] for parent in loader.graph.node_map[leaf].parents)
+    return [parent.key for parent in loader.graph.node_map[leaf].parents]
+
+
+def _migration_source(dependencies: list[tuple[str, str]]) -> str:
+    return (
+        "from django.db import migrations\n\n\n"
+        "class Migration(migrations.Migration):\n"
+        f"    dependencies = {dependencies!r}\n"
+        "    operations: list = []\n"
+    )
 
 
 class LinearMigrationsCheckTest(SimpleTestCase):
@@ -42,6 +64,7 @@ class LinearMigrationsCheckTest(SimpleTestCase):
 
     def tearDown(self) -> None:
         _SIBLING_LEAF.unlink(missing_ok=True)
+        _LINEAR_CHILD.unlink(missing_ok=True)
         if self._original_content is None:
             _MAX_MIGRATION_TXT.unlink(missing_ok=True)
         else:
@@ -62,28 +85,28 @@ class LinearMigrationsCheckTest(SimpleTestCase):
 
     def test_forked_max_migration_txt_detected(self) -> None:
         latest = _real_latest_migration()
-        _MAX_MIGRATION_TXT.write_text(f"{latest}\n0001_initial\n")
+        _MAX_MIGRATION_TXT.write_text(f"{latest}\n0002_other_leaf\n")
         errors = self._dlm_errors()
         assert "dlm.E002" in errors, (
             f"two-line max_migration.txt (merge-conflict residue) must yield dlm.E002; got {errors}"
         )
 
     def test_stale_max_migration_txt_raises_e004(self) -> None:
+        # A single squashed ``0001_initial`` has no other on-disk migration to
+        # name as stale, so add a transient linear child: the leaf becomes
+        # ``0002_linear_child`` and ``0001_initial`` is now an existing — but
+        # stale — name in ``max_migration.txt`` (dlm.E004, not E003).
+        _LINEAR_CHILD.write_text(_migration_source([("core", "0001_initial")]))
         _MAX_MIGRATION_TXT.write_text("0001_initial\n")
         errors = self._dlm_errors()
         assert "dlm.E004" in errors, f"stale max_migration.txt must yield dlm.E004; got {errors}"
 
     def test_multiple_leaf_nodes_raises_e005(self) -> None:
-        parent = _core_leaf_parent()
-        _SIBLING_LEAF.write_text(
-            "from django.db import migrations\n\n\n"
-            "class Migration(migrations.Migration):\n"
-            f'    dependencies = [("core", "{parent}")]\n'
-            "    operations: list = []\n"
-        )
+        deps = _core_leaf_dependencies()
+        _SIBLING_LEAF.write_text(_migration_source(deps))
         errors = self._dlm_errors()
         assert "dlm.E005" in errors, (
-            f"a forked migration graph (two leaf nodes off {parent!r}) must yield dlm.E005; got {errors}"
+            f"a forked migration graph (a sibling leaf off deps {deps!r}) must yield dlm.E005; got {errors}"
         )
 
     def test_dlm_installed_in_apps(self) -> None:

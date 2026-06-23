@@ -10,32 +10,20 @@ process, against the exact connection** ``pending_migrations()`` reads — so
 "migrate then re-check" is guaranteed to converge on the same DB. It is
 non-destructive (rows survive), idempotent (a no-op on a current DB), and
 fail-closed (a real migrate error raises).
+
+Since the #2652 squash ``core`` is a single ``0001_initial``, so the only
+genuinely-stale state a real reverse migrate can reach is the pre-initial one
+(``zero``), from which ``migrate_self_db`` re-applies the initial and seeds.
 """
 
 from unittest.mock import patch
 
 import pytest
-from django.db import OperationalError, connection, connections
-from django.db.migrations.executor import MigrationExecutor
-from django.db.migrations.recorder import MigrationRecorder
+from django.core.management import call_command
+from django.db import OperationalError
 from django.test import TransactionTestCase
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
-
-# A short contiguous tail to roll back so the DB is genuinely stale: the
-# executor only reports a gap when no *descendant* is recorded, so we
-# un-record from a fixed point through the leaf.
-_ROLLBACK_FROM = "0040_miniloopmarker"
-
-
-def _core_tail_from(name: str) -> list[str]:
-    """Applied core migration ledger names ``>= name``, ascending."""
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT name FROM django_migrations WHERE app = 'core' AND name >= %s ORDER BY name",
-            [name],
-        )
-        return [row[0] for row in cursor.fetchall()]
 
 
 class MigrateSelfDbInProcessTest(TransactionTestCase):
@@ -46,24 +34,18 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
     """
 
     def _make_stale(self) -> list[str]:
-        """Roll the live DB back to before ``_ROLLBACK_FROM`` and return the gap.
+        """Reverse the live DB to ``zero`` so it is genuinely behind.
 
-        Reverses the migrations rather than just deleting ledger rows so the
-        schema is genuinely behind (tables/columns absent), matching the real
-        stale-runtime-DB state ``schema_guard`` guards against.
+        The squashed graph's only reverse target is ``zero``: un-applying
+        ``0001_initial`` really drops the core tables (schema genuinely
+        behind), the exact stale-runtime-DB state ``schema_guard`` guards
+        against. ``migrate_self_db`` then re-applies the initial forward.
         """
-        tail = _core_tail_from(_ROLLBACK_FROM)
-        executor = MigrationExecutor(connection)
-        # Migrate core back to the state just before the rollback point.
-        target = ("core", _previous_core_migration(_ROLLBACK_FROM))
-        executor.migrate([target])
-        return tail
+        call_command("migrate", "core", "zero", "--no-input", verbosity=0)
+        return pending_migrations()
 
     def _restore_head(self) -> None:
-        executor = MigrationExecutor(connection)
-        executor.loader.build_graph()
-        core_leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
-        executor.migrate(core_leaves)
+        call_command("migrate", "core", "--no-input", verbosity=0)
 
     def test_stale_db_is_brought_current(self) -> None:
         self.addCleanup(self._restore_head)
@@ -74,7 +56,7 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
 
         assert pending_migrations() == [], "migrate_self_db must converge the live connection"
         assert applied, "must report the migration labels it applied"
-        assert any(_ROLLBACK_FROM in label for label in applied)
+        assert any("0001_initial" in label for label in applied)
 
     def test_idempotent_noop_on_current_db(self) -> None:
         # A current DB yields nothing pending; migrate returns an empty list
@@ -83,14 +65,18 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
         assert migrate_self_db() == []
         assert pending_migrations() == []
 
-    def test_rows_survive_migrate(self) -> None:
+    def test_migrate_is_non_destructive_to_existing_rows(self) -> None:
+        # ``migrate_self_db`` runs a forward ``migrate`` that never drops live
+        # rows. On the squashed single-migration graph the only reverse target
+        # is ``zero`` (which recreates the schema from scratch), so the
+        # non-destructive guarantee is pinned on the always-available
+        # invocation: a no-op migrate against a current DB leaves existing rows
+        # exactly as they were.
         from teatree.core.models import Ticket  # noqa: PLC0415
 
-        self.addCleanup(self._restore_head)
         ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://example.com/issues/126")
-        self._make_stale()
 
-        migrate_self_db()
+        assert migrate_self_db() == [], "current DB: migrate is a no-op"
 
         ticket.refresh_from_db()
         assert ticket.issue_url == "https://example.com/issues/126", "non-destructive: existing rows survive"
@@ -109,10 +95,3 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
         ):
             migrate_self_db()
         assert "disk I/O error" in str(exc.value)
-
-
-def _previous_core_migration(name: str) -> str:
-    """The applied core migration immediately preceding *name* in the ledger."""
-    recorder = MigrationRecorder(connections["default"])
-    applied = sorted(m_name for (app, m_name) in recorder.applied_migrations() if app == "core" and m_name < name)
-    return applied[-1]

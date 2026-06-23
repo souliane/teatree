@@ -35,7 +35,7 @@ class TestSchemaPreflightResult(TestCase):
         assert result.check is SCHEMA_PREFLIGHT
 
     def test_pending_labels_applied_still_green(self) -> None:
-        applied = ["core.0062_worktree_last_used_at"]
+        applied = ["core.0001_initial"]
         with patch.object(regression_corpus_schema, "migrate_self_db", return_value=applied):
             result = schema_preflight_result()
         assert result.ok is True
