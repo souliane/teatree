@@ -181,16 +181,17 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     lost post-hook becomes recoverable rather than a permanent brick.
 
     The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
-    ``human_authorized`` OR the CLEAR's overlay standing at ``autonomy = full``.
-    ``human_authorized`` unlocks the merge **only** when the CLEAR is
+    ``human_authorized`` OR the CLEAR's overlay carrying a STANDING merge-approval
+    grant. ``human_authorized`` unlocks the merge **only** when the CLEAR is
     substrate-class AND its recorded ``human_authorizer`` matches; it can never
-    unlock a non-substrate CLEAR. The ``autonomy = full`` carve-out is the
-    owner's standing, recorded grant that the overlay merges end-to-end without
-    a per-PR sign-off (invariant 4) — every other tier keeps the per-CLEAR
-    authoriser mandatory. Either path runs the identical sanctioned ``t3``
-    transition (invariant 8: even an owner-approved merge goes through this
-    transition, never raw ``gh`` and never a human-performed merge action). The
-    carve-out removes ONLY the per-PR sign-off — the quality/safety floor
+    unlock a non-substrate CLEAR. The standing grant is EITHER equivalent owner
+    statement (#2666): ``autonomy = full``, OR an explicit
+    ``require_human_approval_to_merge = false`` on a non-collaborative tier (the
+    collaborative ``notify`` tier is excluded — it merges only after a colleague
+    approval; below-full tiers with the gate ON keep the per-CLEAR authoriser
+    mandatory). Either path runs the identical sanctioned ``t3`` transition
+    (invariant 8: even an owner-approved merge goes through it, never raw ``gh``).
+    The carve-out removes ONLY the per-PR sign-off — the quality/safety floor
     (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
     never-lockout, privacy scan) is untouched.
     """
