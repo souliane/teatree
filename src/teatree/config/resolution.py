@@ -16,6 +16,7 @@ unconfigured Django yields no overrides) so an empty table resolves every DB-hom
 field to its dataclass default.
 """
 
+import logging
 import os
 from dataclasses import is_dataclass, replace
 from typing import Any
@@ -33,6 +34,8 @@ from teatree.config.settings import (
 )
 from teatree.config_speak import speak_from_subtable
 from teatree.types import SpeakConfig
+
+_logger = logging.getLogger("teatree.config")
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
@@ -99,8 +102,10 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
         overrides = dict(active.overrides) if active is not None else {}
     # The hard partition (#1775): the per-overlay TOML layer applies ONLY to
     # TOML-home keys. A ``[overlays.<name>]`` value for a DB-home key is ignored
-    # on read — that field's authoritative tier is the DB store below.
-    overrides = {k: v for k, v in overrides.items() if _toml_home(k)}
+    # on read — that field's authoritative tier is the DB store below. The drop is
+    # made LOUD (never silent) so an operator who set a DB-home key in their
+    # ``[overlays.<name>]`` table is told the value had no effect.
+    overrides = _drop_db_home_overlay_keys(overrides, _resolved_overlay_name(overlay_name))
     # ``hard_pinned`` (a per-overlay/env opinion that beats the autonomy collapse,
     # including for ``mode``) is the per-overlay TOML layer so far. DB-home fields
     # get their SOLE value from ``ConfigSetting``: the GLOBAL scope is a workspace
@@ -175,7 +180,7 @@ def _active_overlay_overrides() -> dict[str, Any]:
     """
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
-    overrides = {k: v for k, v in overrides.items() if _toml_home(k)}
+    overrides = _drop_db_home_overlay_keys(overrides, _resolved_overlay_name(None))
     overrides.update(_db_setting_overrides(_resolved_overlay_name(None)))
     overrides.update(_env_setting_overrides())
     return overrides
@@ -351,6 +356,41 @@ def _toml_home(key: str) -> bool:
     store, never the ``[overlays.<name>]`` table.
     """
     return SETTING_HOMES.get(key) is SettingHome.TOML
+
+
+def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> dict[str, Any]:
+    """Keep only TOML-home override keys, WARNING loud on each dropped DB-home key.
+
+    The footgun the warning closes (the silent-drop the maintainer flagged): a
+    ``[overlays.<name>]`` table carries a DB-home key (e.g. ``mode = "auto"``)
+    that the operator expects to take effect, but a DB-home field's sole home is
+    the ``ConfigSetting`` store — so the resolver drops the TOML value. With NO
+    DB row beneath it the dropped value also has no effect, and nothing told the
+    operator their TOML was ignored. Surfacing the drop loud (one aggregated WARN
+    naming every dropped key and the migration path) makes the no-op visible.
+
+    Unknown keys (not in the home registry at all) are NOT warned — a stray key is
+    a different concern; only a genuine DB-home ``UserSettings`` field flagged here.
+    """
+    kept: dict[str, Any] = {}
+    dropped: list[str] = []
+    for key, value in overrides.items():
+        if _toml_home(key):
+            kept[key] = value
+        elif SETTING_HOMES.get(key) is SettingHome.DB:
+            dropped.append(key)
+    if dropped:
+        scope = overlay_name or "(active overlay)"
+        _logger.warning(
+            "Config keys in [overlays.%s] are DB-home settings (#1775), so their TOML value is "
+            "IGNORED on read and had NO effect: %s. Their authoritative home is the ConfigSetting "
+            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s` or "
+            "migrate the file once with `t3 <overlay> config_setting import`.",
+            scope,
+            ", ".join(sorted(dropped)),
+            scope,
+        )
+    return kept
 
 
 def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:

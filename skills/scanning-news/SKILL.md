@@ -144,17 +144,16 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 The teatree main loop owns periodic dispatch. The `ScanningNewsScanner` (in `teatree.loop.scanners.scanning_news`) fires once every 24 hours by default and queues a `scanning_news` Task; the dispatcher then routes it to this skill via the `_SUBAGENT_BY_PHASE` table in `loop_dispatch.py`.
 
-Tune the cadence or disable the scanner via `[teatree]` in `~/.teatree.toml`:
+These knobs are DB-home — set them in the `ConfigSetting` store (a value left in `~/.teatree.toml` is ignored on read; add `--overlay <name>` for a per-overlay value):
 
-```toml
-[teatree]
-scanning_news_disabled = false
-scanning_news_skill = "scanning-news"
-scanning_news_cadence_hours = 24
+```bash
+t3 <overlay> config_setting set scanning_news_disabled false
+t3 <overlay> config_setting set scanning_news_skill '"scanning-news"'
+t3 <overlay> config_setting set scanning_news_cadence_hours 24
 # Ask-gate (#1391): when true (default), the skill records candidates as
 # PendingArticleSuggestion rows and files issues only on user approval —
 # it never auto-creates. Set false to opt back into direct filing.
-ask_before_creating_news_tickets = true
+t3 <overlay> config_setting set ask_before_creating_news_tickets true
 ```
 
 If the loop scanner is not yet wired on an older install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).

@@ -204,7 +204,7 @@ Teatree ships **no** classifier `autoMode`/`permissions` allow-list — classifi
 
 Run `t3 doctor authorizations` (also surfaced by `t3 doctor check` and at the end of `t3 setup`). For each missing rule it prints the exact sentence to paste into your `autoMode.allow` array. The full set, the rationale, and what is deliberately left to the user (VPS hosts, dev-DB creds, exact paths) are documented in [`references/recommended-automode-authorizations.md`](references/recommended-automode-authorizations.md).
 
-For the broader picture — operating mode (`[teatree] mode`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
+For the broader picture — operating mode (DB-home `mode`, set via `t3 <overlay> config_setting set mode …`), the `auto`-mode training wheels, how overlays declare their MCP/messaging integration, and the post-setup permission state — see [`references/agent-mode-and-mcp-config.md`](references/agent-mode-and-mcp-config.md). It maps each config surface to the module that owns it so the docs cannot drift from the code.
 
 ## Step 5: Generate an Overlay Package
 

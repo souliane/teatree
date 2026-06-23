@@ -11,6 +11,7 @@ Integration-first: real TOML fixtures under ``tmp_path`` with
 ``teatree.config.CONFIG_PATH`` monkeypatched, against the real DB.
 """
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,55 @@ class TestOverlayScopeLayering(TestCase):
         ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert get_effective_settings().orchestrator_bash_gate_enabled is True
+
+
+class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
+    """The resolver WARNs (never silently drops) a DB-home key in a TOML overlay layer.
+
+    The footgun the warning closes: a user writes ``[overlays.foo] mode = "auto"``
+    in ``~/.teatree.toml`` expecting auto mode, but ``mode`` is DB-home — the
+    ``_toml_home`` filter in the resolver drops the key. With NO DB row beneath it
+    the dropped value also has no effect, so the setting silently resolves to its
+    default and nothing tells the operator their TOML was ignored. The resolver
+    must surface the drop loud so the operator can migrate the key with
+    ``config_setting set`` / ``config_setting import``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_MODE", raising=False)
+        self.monkeypatch = monkeypatch
+
+    def test_db_home_key_in_overlay_toml_warns_even_without_db_row(self) -> None:
+        # No DB row beneath the dropped key — the value silently has no effect
+        # today. The resolver must WARN naming the key and the overlay scope.
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nmode = "auto"\n',
+        )
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        with self.assertLogs("teatree.config", level=logging.WARNING) as captured:
+            settings = get_effective_settings()
+        # The key was dropped (its home is the DB) — mode is still the default.
+        assert settings.mode is Mode.INTERACTIVE
+        joined = "\n".join(captured.output)
+        assert "mode" in joined
+        assert "my-overlay" in joined
+        assert "DB-home" in joined
+
+    def test_no_warning_when_overlay_toml_has_only_toml_home_keys(self) -> None:
+        # A clean overlay table (only TOML-home keys) emits no DB-home drop warning.
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
+        )
+        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
+        logger = logging.getLogger("teatree.config")
+        with self.assertNoLogs(logger, level=logging.WARNING):
+            get_effective_settings()
 
 
 class TestEnvWinsForBothHomes(TestCase):

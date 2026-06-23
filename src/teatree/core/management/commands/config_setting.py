@@ -1,4 +1,4 @@
-"""``t3 <overlay> config-setting`` — set/clear/list the DB config override tier.
+"""``t3 <overlay> config_setting`` — set/clear/list the DB config override tier.
 
 The ORM-touching admin path for the ``ConfigSetting`` store (#1775, the first
 slice of "move config to the database"). Mirrors the per-worktree env command

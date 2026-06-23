@@ -79,16 +79,14 @@ Key variables used by this skill (see `/t3:setup` for the full config reference)
 A locally-running worktree (state `services_up` or `ready`) holds a
 docker stack, language servers, browsers, and CI processes. On a memory-
 constrained host, running two stacks in parallel can OOM the machine and
-abort both. The setting `max_concurrent_local_stacks` in `~/.teatree.toml`
-caps how many distinct tickets can be in those states at once for a
-given overlay:
+abort both. The DB-home setting `max_concurrent_local_stacks` caps how
+many distinct tickets can be in those states at once for a given overlay
+— set it in the `ConfigSetting` store (a value left in `~/.teatree.toml`
+is ignored on read):
 
-```toml
-[teatree]
-max_concurrent_local_stacks = 1   # 0 = unbounded (default, no behaviour change)
-
-[overlays.heavy-overlay]
-max_concurrent_local_stacks = 1   # per-overlay override is supported
+```bash
+t3 <overlay> config_setting set max_concurrent_local_stacks 1   # 0 = unbounded (default, no behaviour change)
+t3 <overlay> config_setting set max_concurrent_local_stacks 1 --overlay heavy-overlay   # per-overlay override is supported
 ```
 
 When the cap is set and the limit would be exceeded, `t3 <overlay>
