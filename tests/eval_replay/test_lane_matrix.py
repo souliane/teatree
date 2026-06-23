@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.discovery import discover_specs
-from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD, filter_specs_by_shard, shard_count_for
+from teatree.eval.lane_shard import filter_specs_by_shard, max_scenarios_per_shard, shard_count_for
 from teatree.eval.models import CLEAN_ROOM_LANE, PERMITTED_LANES, UNDER_LOAD_LANE
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -63,10 +63,16 @@ class TestMatrixFor:
 
     def test_under_load_shards_match_the_live_catalog(self) -> None:
         count = sum(1 for spec in discover_specs() if spec.lane == UNDER_LOAD_LANE)
-        total = shard_count_for(count)
+        total = shard_count_for(count, UNDER_LOAD_LANE)
         expected = [{"lane": UNDER_LOAD_LANE, "shard": f"{index}/{total}"} for index in range(1, total + 1)]
         under = [e for e in _matrix_for("") if e["lane"] == UNDER_LOAD_LANE]
         assert under == expected
+
+    def test_under_load_is_split_into_multiple_shards(self) -> None:
+        # #2683: under_load's roster-spawning scenarios are 10-45 min each, so the
+        # lane must split into multiple shards, never run as one 1/1 leg.
+        under = [e for e in _matrix_for("") if e["lane"] == UNDER_LOAD_LANE]
+        assert len(under) > 1, "under_load must be sharded (roster-spawning scenarios), not one 1/1 leg."
 
     def test_clean_room_is_split_into_multiple_shards(self) -> None:
         clean = [e for e in _matrix_for("") if e["lane"] == CLEAN_ROOM_LANE]
@@ -81,7 +87,7 @@ class TestMatrixFor:
         for entry in _matrix_for(""):
             lane_specs = [s for s in specs if s.lane == entry["lane"]]
             shard_specs = filter_specs_by_shard(lane_specs, entry["shard"])
-            assert len(shard_specs) <= MAX_SCENARIOS_PER_SHARD
+            assert len(shard_specs) <= max_scenarios_per_shard(entry["lane"])
 
 
 class TestMain:

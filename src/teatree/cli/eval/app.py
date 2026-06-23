@@ -104,8 +104,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help=(
             "Run only the index/total shard of the (lane-filtered) catalog, e.g. '2/6'. A "
             "deterministic partition by scenario name — every scenario in exactly one shard, none "
-            "dropped or duplicated. The weekly metered lane shards a large lane (clean_room ~167) "
-            "into budget-safe legs; omit (default) to run the whole lane unchanged."
+            "dropped or duplicated. The weekly metered lane shards each lane into budget-safe legs "
+            "on a lane-aware ceiling (clean_room ~182 into ~13, under_load 14 into 4 — its "
+            "roster-spawning scenarios are far slower); omit (default) to run the whole lane unchanged."
         ),
     ),
     output_format: str = typer.Option(

@@ -1,18 +1,22 @@
-r"""Emit the eval-lane SHARD matrix JSON for the metered workflow (#2492).
+r"""Emit the eval-lane SHARD matrix JSON for the metered workflow (#2492, #2683).
 
 Each metered job runs its scenarios at 3 real ``claude`` SDK trials under a
 ``2 x 80min`` budget. The catalog is NOT evenly split across lanes: ``under_load``
-is ~14 scenarios (proven to fit) but ``clean_room`` is ~167 — "the whole suite
-minus under_load", ~92% of the catalog. A single ``clean_room`` leg would very
-plausibly hit the same 80min wall the undifferentiated full suite hit, so fanning
-out one leg per *lane* is not enough.
+is 14 scenarios but ``clean_room`` is ~182 — "the whole suite minus under_load",
+~92% of the catalog. A single ``clean_room`` leg would very plausibly hit the same
+80min wall the undifferentiated full suite hit, so fanning out one leg per *lane*
+is not enough.
 
 This script therefore emits a ``{lane, shard}`` matrix: each lane is split into
-``ceil(count / MAX_SCENARIOS_PER_SHARD)`` contiguous shards (a deterministic
+``ceil(count / max_scenarios_per_shard(lane))`` contiguous shards (a deterministic
 partition by scenario name — every scenario in exactly one shard, none dropped or
-duplicated), so EVERY emitted job meters a budget-safe subset. ``under_load``
-(~14) stays one shard; ``clean_room`` (~167) becomes several. Counts are read
-from the LIVE catalog, so the split is never stale.
+duplicated), so EVERY emitted job meters a budget-safe subset. The per-shard
+ceiling is LANE-AWARE (#2683): ``clean_room`` (fast, one skill into an empty
+context) uses 14, so ~182 becomes ~13 shards; ``under_load`` (slow — full skill
+bundle + polluted preamble + a spawned multi-agent roster, 10-45 min/scenario)
+uses 4, so 14 becomes 4 shards. A single under_load ``1/1`` leg hit the 80min cap
+in run 27995563148. Counts are read from the LIVE catalog, so the split is never
+stale.
 
 An empty ``--lane`` (the scheduled weekly run, and the default manual run) maps
 to every permitted lane, sharded. An explicit ``--lane <name>`` shards only that
