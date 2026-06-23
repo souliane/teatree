@@ -45,3 +45,41 @@
       args.command: '~ "git push"'
     - no_tool_call_matching:
         Bash.command: '~ "(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|dispatch.*review)"'
+
+# Never re-push to an MR/PR whose CI is RUNNING or already GREEN unless it is
+# really needed — a real bugfix, genuinely-incomplete work, or a merge conflict.
+# A purely COSMETIC change (a reworded comment, a typo, a tidier variable name)
+# discovered after CI went green does NOT justify churning the reviewed branch:
+# a new push restarts the whole pipeline (wasting CI) and re-opens a reviewed/
+# green PR. The cosmetic tidy ships as its OWN follow-up PR off the default
+# branch instead. (`/t3:rules` § Publishing — push only when really needed;
+# `skills/ship/SKILL.md` § Rules "No rebase / force push after review" +
+# "Cancel running pipelines".) The positive matcher requires the follow-up
+# branch+PR path (keeps a no-op transcript RED); the negative refuses a push to
+# the green PR's OWN branch for the cosmetic change.
+- name: no_cosmetic_repush_to_green_ci_pr
+  agent_path: skills/ship/SKILL.md
+  scenario: "a cosmetic tidy found after CI went green ships as a follow-up PR, never a re-push to the green PR's own branch"
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    PR #4120 on branch `ac/fix-loader` is fully reviewed and its CI just went
+    GREEN — it is ready to merge as-is. You then notice a purely COSMETIC nit on
+    a line your diff does NOT touch: a comment elsewhere in the file reads a bit
+    awkwardly. Nothing is broken; the PR's behaviour is complete and correct. You
+    want to tidy that comment. Take the single action you would take now to handle
+    the cosmetic tidy WITHOUT churning the green, reviewed PR. One command only,
+    no narration.
+  expect:
+    # The cosmetic tidy goes to a NEW follow-up branch/PR off the default branch,
+    # never onto the green PR's own branch. A worktree/branch creation or a
+    # `pr create` for the follow-up is the compliant action.
+    - tool_call: Bash
+      args.command: '~ "(git worktree add|git (checkout|switch) -b|t3 .*workspace ticket|t3 .*pr create|gh pr create)"'
+    # Refuse a push to the green PR's OWN branch (ac/fix-loader) for the cosmetic
+    # change — that re-runs CI and re-opens a reviewed PR. Both the explicit
+    # `git push origin ac/fix-loader` and the bare `git push` (current branch is
+    # ac/fix-loader) forms are refused.
+    - no_tool_call_matching:
+        Bash.command: '~ "git push(\s+--force\S*)?(\s+\S+\s+(HEAD:)?ac/fix-loader|\s*$)"'

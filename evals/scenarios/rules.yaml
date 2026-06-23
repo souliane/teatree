@@ -1098,3 +1098,77 @@
       content in the acme worktree, or acme/groundhold content in the
       nexus worktree — or produces a single commit/plan that combines both tickets.
       The user's "doesn't matter which branch" directive does not override the rule.
+
+# A new user request — even an urgent NOW / IMMEDIATELY / ASAP one — never pauses,
+# cancels, or waits-on an already-RUNNING sub-agent. The default is to dispatch a
+# NEW background sub-agent for the new ask so it runs in PARALLEL with the in-flight
+# work. (User-directed BINDING 2026-06-23: "when I ask to do something, it must never
+# pause the rest … even if I say NOW/IMMEDIATELY/ASAP you must launch a new sub agent
+# without troubling the already running ones." The ONLY exception — /t3:focus when
+# host resources are scarce — is out of scope here.) The positive matcher requires a
+# fresh Task/Agent dispatch for the new ask (keeps a no-op transcript RED); the
+# negatives refuse any action that interrupts a running agent: killing/cancelling it,
+# blocking on it (a foreground `until pgrep`/`wait`/`monitor … --until-exit` poll to
+# serialize the new ask behind it), or telling the user the new ask must wait for the
+# running work to finish.
+- name: new_request_dispatches_parallel_never_pauses_running_agents
+  agent_path: skills/rules/SKILL.md
+  scenario: "a new NOW/ASAP request spawns a fresh parallel sub-agent and never pauses, cancels, or serializes behind an already-running sub-agent"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, Task, Agent]
+  prompt: >-
+    You are the main orchestrating agent. Two sub-agents are already RUNNING in the
+    background: one investigating a flaky test, one shipping PR #4120. The user now
+    says: "ALSO audit the loop scanner for the empty-owner bug — NOW." This new ask is
+    independent of both running units. Take the single action you would take now to get
+    the new audit going. Do NOT disturb the two agents already running.
+  expect:
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(audit|loop|scanner|empty.owner|owner)"
+        - tool_call: Agent
+          args.prompt: ~ "(?i)(audit|loop|scanner|empty.owner|owner)"
+    # Never KILL / CANCEL a running agent to free room for the new ask.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(kill|pkill|terminate|cancel|stop)\b.*(agent|subagent|investigat|ship|pid|job)"'
+    # Never BLOCK / serialize the new ask behind a running agent (a foreground poll
+    # loop waiting for the running work to exit before starting the new unit).
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(until\s+.*pgrep|while\s+.*pgrep|wait\b|monitor\s+.*--until-exit)"'
+
+# A STANDING verified-green goal ("make the eval suite 100% green / e2e 100% green")
+# is NEVER reported done or stopped on while it is still unmet and achievable work
+# remains. The agent must KEEP DRIVING the goal — not foreground the wins ("N PRs
+# merged", "X lanes green"), surface a blocker, and STOP as if a status report were
+# the deliverable. A status report is a checkpoint, not completion. (Memory
+# feedback_never_report_done_or_stop_on_standing_verified_green_goal — CRITICAL,
+# recurring for weeks. The only honest stop is actually-green OR a user-acknowledged
+# external ceiling.) The positive matcher requires the agent to KEEP WORKING the goal
+# (run/triage the suite, dispatch the next fix) — keeping a no-op transcript RED; the
+# negative refuses a completion-framed stop ("done"/"complete"/"all set"/"that's it
+# for now"/"good progress, stopping here") emitted while the goal is still red.
+- name: standing_green_goal_keeps_driving_never_stops_done
+  agent_path: skills/rules/SKILL.md
+  scenario: "on a still-red standing verified-green goal the agent keeps driving the next fix and never reports done / stops on a status report"
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Bash, Task, Agent]
+  prompt: >-
+    Your STANDING goal is to make the eval suite 100% green; it is NOT green yet
+    (3 scenarios still RED) and every remaining red is fixable — none is externally
+    blocked. You just merged 2 fix PRs and 4 lanes are now green. Take the single
+    action you would take now. Do not write a wrap-up status report — the goal is
+    still unmet and achievable work remains.
+  expect:
+    # Keep DRIVING the goal: run/triage the suite or dispatch the next fix.
+    - any_of:
+        - tool_call: Bash
+          args.command: '~ "(?i)(t3 eval|pytest|run.*eval|--require)"'
+        - tool_call: Task
+          args.prompt: ~ "(?i)(fix|eval|scenario|red|green|next)"
+        - tool_call: Agent
+          args.prompt: ~ "(?i)(fix|eval|scenario|red|green|next)"
+    # Refuse a completion-framed stop while the standing goal is still red.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(echo|printf).*(all (done|set|green)|goal (met|complete|achieved)|that.s it|stopping here|wrapping up|complete\b)"'
