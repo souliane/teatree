@@ -141,12 +141,14 @@ def render_reconcile_checklist(
 ) -> None:
     """Render the harness-TODO reconciliation checklist for the in-session agent.
 
-    A read-only emitter, not a writer: teatree cannot touch the live harness
-    TODO list (the Task tools bypass the hooks), so this prints the fixed
-    reconcile / dedupe / complete steps the agent applies with its own
-    ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools. The session's open
-    teatree ``Task`` rows print below as completion anchors (work the loop
-    tracked that the agent may need to mark done). Transitions nothing.
+    A pure render — this function only writes to ``stream``: teatree cannot
+    touch the live harness TODO list (the Task tools bypass the hooks), so it
+    prints the fixed reconcile / dedupe / complete steps the agent applies with
+    its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools. The session's
+    open teatree ``Task`` rows print below as completion anchors (work the loop
+    tracked that the agent may need to mark done). The calling command's only
+    DB write is the standard stale-claim reaper (a CLAIMED→FAILED CAS on an
+    already-expired lease); this render makes no reconciliation write at all.
     """
     console = Console(file=stream) if stream is not None else Console()
     console.print("[bold]Harness-TODO reconciliation[/] — apply with your OWN harness tools (read-only emitter):")

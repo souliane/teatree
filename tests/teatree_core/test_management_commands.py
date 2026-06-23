@@ -647,16 +647,58 @@ class TestReconcileChecklist(TestCase):
         assert "someone else" not in printed
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_is_read_only_and_transitions_nothing(self) -> None:
+    def test_makes_no_reconciliation_write_on_healthy_tasks(self) -> None:
+        # The emitter makes no reconciliation write: it never creates,
+        # completes, or transitions a HEALTHY task on the agent's behalf. A
+        # pending task and a freshly-claimed (live-lease) task both survive
+        # untouched, and the row count is unchanged.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
         with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             ticket = Ticket.objects.create(overlay="test")
             mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
-            task = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            pending = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            live = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="live-worker",
+                lease_expires_at=timezone.now() + timedelta(minutes=5),
+            )
             call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
-            task.refresh_from_db()
-        # The emitter is a render — the task stays pending, the count is unchanged.
-        assert task.status == Task.Status.PENDING
-        assert Task.objects.count() == 1
+            pending.refresh_from_db()
+            live.refresh_from_db()
+        assert pending.status == Task.Status.PENDING
+        assert live.status == Task.Status.CLAIMED, "a live-lease claim must NOT be reaped"
+        assert Task.objects.count() == 2
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_shares_the_standard_stale_claim_reaper(self) -> None:
+        # The ONE write the command makes — shared with every `tasks` read — is
+        # the standard stale-claim reaper: a task whose lease is ALREADY expired
+        # is failed (CLAIMED→FAILED CAS). This pins that the softened docstring
+        # is accurate ("aside from the standard stale-claim reaper").
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            stale = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="dead-worker",
+                lease_expires_at=timezone.now() - timedelta(minutes=5),
+            )
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
 
     @override_settings(**COMMAND_SETTINGS)
     def test_no_session_still_emits_the_discipline(self) -> None:

@@ -364,8 +364,14 @@ class Command(TyperCommand):
 
         It also surfaces this session's open teatree ``Task`` rows as
         completion anchors (work the loop tracked that the agent may need to
-        mark done). It writes nothing and transitions nothing — running it
-        twice prints the same thing.
+        mark done). It makes no *reconciliation* writes — it never creates,
+        completes, or transitions a task on the agent's behalf (the live
+        harness list is unreachable from a subprocess). The one write it shares
+        with every ``tasks`` read is the standard stale-claim reaper
+        (``reap_stale_claims`` — a CLAIMED→FAILED compare-and-swap that only
+        touches a task whose lease is *already* expired); a healthy
+        PENDING/CLAIMED task is untouched, so running it twice prints the same
+        thing.
         """
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415
 

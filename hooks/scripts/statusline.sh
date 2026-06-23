@@ -16,10 +16,11 @@
 #     summary of this session's harness TODO list, the live Agent-Teams roster
 #     (the ACTIVE mates of the team this session leads, read from the harness
 #     team config), and a
-#     per-session loop-owner badge — the skills and TODO summaries are
-#     populated by hook_router.py into ${state_dir}/<session_id>.skills and
-#     ${state_dir}/<session_id>.todos (the TODO file is materialised from the
-#     live harness task store), the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
+#     per-session loop-owner badge — the skills summary is populated by
+#     hook_router.py into ${state_dir}/<session_id>.skills, the TODO summary is
+#     counted directly from the harness's OWN task store
+#     (${CLAUDE_TASKS_DIR:-~/.claude/tasks}/<session_id>/*.json — teatree keeps
+#     no mirror of it), the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
 #     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
 #     different session owns it, or "unclaimed" (dim) when the registry has
 #     no live owner. Unlike the shared loop line, this badge is resolved
@@ -105,22 +106,30 @@ if [ -n "$session_id" ]; then
     if [ -r "$skills_file" ]; then
         skills=$(paste -sd ' ' "$skills_file")
     fi
-    # This session's harness TODO list, materialised by hook_router.py from
-    # the live harness task store as one ``- [status] content`` line per
-    # todo. Rendered as a fixed-width ``TODO done/total ✓ · Nwip`` summary —
-    # never item content, so width is bounded no matter how many todos exist.
-    # Distinct from the loop work queue (rendered Python-side); this is the
-    # current session's checklist.
-    todos_file="$state_dir/${session_id}.todos"
-    if [ -r "$todos_file" ]; then
-        _total=$(grep -c '^- \[' "$todos_file" 2>/dev/null || true)
+    # This session's harness TODO list, counted directly from the harness's
+    # OWN on-disk task store — one ``<n>.json`` per todo with a ``status``
+    # field, under ``$CLAUDE_TASKS_DIR/<session>/`` (default ~/.claude/tasks).
+    # Teatree does NOT mirror that store (the old ``<session>.todos``
+    # materialiser was removed); this reads the harness store the same way the
+    # PreCompact snapshot's ``read_harness_todos`` does. Rendered as a
+    # fixed-width ``TODO done/total ✓ · Nwip`` summary — never item content, so
+    # width is bounded no matter how many todos exist. Distinct from the loop
+    # work queue (rendered Python-side); this is the current session's checklist.
+    # Fails open (empty chip) without jq or when the store dir is absent.
+    tasks_dir="${CLAUDE_TASKS_DIR:-$HOME/.claude/tasks}/${session_id}"
+    if [ -d "$tasks_dir" ] && command -v jq >/dev/null 2>&1; then
+        _counts=$(jq -rs '
+            map(select(type == "object") | .status // "pending") as $s
+            | "\($s | length) \($s | map(select(. == "completed")) | length) \($s | map(select(. == "in_progress")) | length)"
+        ' "$tasks_dir"/*.json 2>/dev/null || true)
+        _total=$(printf '%s' "$_counts" | cut -d' ' -f1)
         _total=${_total:-0}
         if [ "$_total" -gt 0 ] 2>/dev/null; then
-            _done=$(grep -c '^- \[completed\]' "$todos_file" 2>/dev/null || true)
-            _wip=$(grep -c '^- \[in_progress\]' "$todos_file" 2>/dev/null || true)
             todos_total="$_total"
-            todos_done="${_done:-0}"
-            todos_wip="${_wip:-0}"
+            todos_done=$(printf '%s' "$_counts" | cut -d' ' -f2)
+            todos_wip=$(printf '%s' "$_counts" | cut -d' ' -f3)
+            todos_done="${todos_done:-0}"
+            todos_wip="${todos_wip:-0}"
         fi
     fi
 fi
