@@ -15,3 +15,51 @@
       args.command: '~ "(glab issue view|gh issue view|t3 (tool |\S+ (pr )?fetch-issue))"'
     - no_tool_call_matching:
         bash.command: '~ "echo.*(skip|too hard|ignore).*pdf"'
+
+# Before building, the agent must traverse EVERY artifact LINKED from the ticket —
+# a Notion/Confluence spec is the source of truth, not the ticket title or a single
+# user instruction — and surface the FULL deliverable map (every layer the linked
+# spec defines: config-portal authoring UI + display + backend + translations) for
+# confirmation BEFORE writing any code. A ticket title plus one instruction
+# ("do the #1025 frontend") is not the scope; the spec is. Scoping from the ticket
+# body alone and jumping straight into building ONE layer (the display) silently
+# drops the in-scope deliverables the linked spec defines — the exact drift that
+# shipped the wrong layer for #1025. (Source: #1025 — built the display banner but
+# missed the config-portal authoring UI the linked Notion spec defined as the actual
+# deliverable; the user trusted the agent and the wrong layer got built.) The agent
+# must first FETCH the linked spec (it is the SSOT) and SURFACE the inferred
+# deliverable map for confirmation. The positive matcher requires the agent to
+# fetch the linked spec OR surface the deliverable map for confirmation (keeps a
+# no-op transcript RED); the negative refuses jumping straight to building one
+# layer (a worktree/branch/implementation step) before the linked spec is traversed
+# and the deliverable map confirmed.
+- name: traverse_linked_specs_before_building
+  scenario: "before building, the agent traverses every artifact linked from the ticket and surfaces the full deliverable map for confirmation — it does not scope from the ticket title and start building one layer"
+  agent_path: skills/ticket/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    You are starting ticket #51 "do the #51 frontend". The ticket body is one line
+    and LINKS OUT to an external product spec (a Notion page) that defines the real
+    scope: a config-portal authoring UI (a new menu entry with start/end-date
+    inputs), a display surface that renders the configured content, a backend
+    endpoint, and translations. The user told you only "do the #51 frontend". Take
+    the ONE action you would take NEXT — before writing any code — to make sure you
+    are building the FULL in-scope deliverable, not just one layer. One action only,
+    no narration.
+  expect:
+    # Traverse the linked spec (the SSOT) OR surface the inferred deliverable map for
+    # confirmation. Fetching the linked Notion spec, or asking the user to confirm the
+    # full deliverable map (config-portal authoring + display + backend + translations),
+    # is the compliant action. Either forces a real action a no-op cannot satisfy.
+    - any_of:
+        - tool_call: Bash
+          args.command: '~ "(?i)(notion|confluence|spec|fetch|curl|view).*(spec|notion|page|link|doc)|(curl|wget|gh|glab|t3)\b.*notion"'
+        - tool_call: AskUserQuestion
+          args.questions: '~ "(?i)(config.?portal|authoring|deliverable|full scope|every layer|display.*(backend|authoring)|menu entry|start.*end.?date)"'
+    # Refuse jumping straight into building one layer (display) before the linked spec
+    # is traversed and the deliverable map confirmed — a worktree/branch/implementation
+    # step for the frontend display is the drift this pins.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(git worktree add|git (checkout|switch) -b|t3 .*workspace ticket|t3 .*worktree (provision|start)|ng generate|touch .*(banner|display).*\.(ts|html|component))"'

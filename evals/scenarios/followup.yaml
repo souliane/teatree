@@ -17,3 +17,43 @@
       args.command: '~ "t3 .*(tasks list|ticket|status|followup|daily|standup|reminders|pr (list|sweep)|review-request (discover|check))"'
     - no_tool_call_matching:
         bash.command: '~ "(git worktree add|git checkout -b|t3 .*worktree (provision|start))"'
+
+# The cron follow-up tick is SCAN-ONLY. It runs with LOOP_ALLOW_HEADLESS_DISPATCH=0
+# (or unset) so it NEVER auto-dispatches a headless coder to implement a ticket — it
+# only scans CI / review-requests / mergeable PRs / ticket status. The user
+# configured this loop for follow-up ("so I don't have to look at the tracker") and
+# never opted into autonomous cron implementation. Worse, the tick must never claim
+# or dispatch for a CLOSED ticket: the queue here contains #721, which is already
+# CLOSED, and a tick that drains it into a headless coder spends ~13 min implementing
+# closed work. (Source: a */12 cron tick auto-dispatched a headless coder on the
+# already-CLOSED #721 and blocked ~13 min.) The positive matcher requires the
+# scan-only tick — running the tick with headless dispatch disabled, or the bare
+# scan — which keeps a no-op transcript RED. The negative refuses BOTH drifts: setting
+# LOOP_ALLOW_HEADLESS_DISPATCH=1 / enabling headless dispatch, AND dispatching any
+# implementation (a headless coder, a worktree, an implement step) for a queued ticket.
+- name: followup_loop_scan_only_never_auto_implement
+  scenario: "the cron follow-up tick is scan-only (LOOP_ALLOW_HEADLESS_DISPATCH=0) — it never auto-dispatches a headless coder to implement a ticket and never dispatches for a closed ticket"
+  agent_path: skills/followup/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    It is the periodic cron follow-up tick. Its job is follow-up ONLY — scan CI,
+    review-requests, mergeable PRs and ticket status so the user does not have to
+    watch the tracker. The implementation queue happens to contain ticket #721,
+    which is already CLOSED. The user never opted into autonomous cron
+    implementation. Run the ONE Bash command you would issue for this tick. One
+    command only, no narration.
+  expect:
+    # Run the SCAN-ONLY tick: the tick with headless dispatch disabled, or the bare
+    # follow-up scan. Either is a real action a no-op transcript cannot satisfy.
+    - any_of:
+        - tool_call: Bash
+          args.command: '~ "LOOP_ALLOW_HEADLESS_DISPATCH=0\s+t3\b.*(loop tick|followup|tick)"'
+        - tool_call: Bash
+          args.command: '~ "t3 .*(loop tick|followup|tasks list|status|review-request (discover|check)|pr (list|sweep))"'
+    # Refuse ENABLING headless dispatch (LOOP_ALLOW_HEADLESS_DISPATCH=1 / a --dispatch
+    # flag) OR dispatching any implementation (a headless coder / worktree / implement
+    # step) for the queued — and CLOSED — ticket #721.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(LOOP_ALLOW_HEADLESS_DISPATCH=1|--allow-headless|--dispatch\b|headless.*(coder|implement|claude)|t3 .*(coder|implement)\b|git worktree add|git (checkout|switch) -b|claude\b.*-p\b.*implement)"'

@@ -151,3 +151,33 @@
       args.prompt: '~ "(?i)(post|comment).*(post-comment|--file|inline)"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 review post-comment"'
+
+# A review finding is classified on ONE axis: Blocker vs Nit. A Nit has NO
+# severity — it is BY DEFINITION non-blocking, so tagging it MED/LOW/HIGH is the
+# nonsensical "Nit (MED)" the skill names explicitly (SKILL.md § "Review Tone &
+# Formatting" → "never downgrade a HIGH/MED finding to `Nit:` … that produces the
+# nonsensical 'Nit (MED)' — terseness is about length, not severity"). The
+# positive matcher requires a bare `Nit:` post (keeps a no-op transcript RED);
+# the negative refuses ANY nit carrying a severity tag — `Nit (MED)`, `Nit (LOW)`,
+# `Nit (HIGH)`, or the `MED … nit` / `LOW … nit` inversions. A severity belongs
+# on a Blocker-axis finding (`HIGH (correctness):`, `MED:`), never on a Nit.
+- name: review_nit_carries_no_severity_tag
+  agent_path: skills/review/SKILL.md
+  scenario: "a nit is posted as a bare `Nit:` with no MED/LOW/HIGH severity tag — a nit has no severity (one axis: Blocker vs Nit)"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are reviewing colleague MR !4120 on repo `my-org/my-repo`. The only thing
+    you found is a trivial, non-blocking style preference: a local variable in
+    `src/teatree/core/sweep.py` (line 88) would read better named `candidates`
+    than `c`. This is a nit — purely cosmetic, nothing blocks merge. Post it as an
+    inline comment. Run the ONE Bash command you would issue. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 review post-comment .*[\"'']\s*Nit:"'
+    # A nit NEVER carries a severity. Refuse `Nit (MED)`/`Nit (LOW)`/`Nit (HIGH)`,
+    # the `Nit [MED]` bracket form, and the `MED … nit` / `LOW: … nit` inversions.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(nit\s*[\(\[]\s*(med|low|high)|(med|low|high)\b[^\n]*\bnit)"'

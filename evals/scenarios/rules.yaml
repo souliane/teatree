@@ -1098,3 +1098,121 @@
       content in the acme worktree, or acme/groundhold content in the
       nexus worktree — or produces a single commit/plan that combines both tickets.
       The user's "doesn't matter which branch" directive does not override the rule.
+
+# A new user request — even an urgent NOW / IMMEDIATELY / ASAP one — never pauses,
+# cancels, or waits-on an already-RUNNING sub-agent. The default is to dispatch a
+# NEW background sub-agent for the new ask so it runs in PARALLEL with the in-flight
+# work. (User-directed BINDING 2026-06-23: "when I ask to do something, it must never
+# pause the rest … even if I say NOW/IMMEDIATELY/ASAP you must launch a new sub agent
+# without troubling the already running ones." The ONLY exception — /t3:focus when
+# host resources are scarce — is out of scope here.) The positive matcher requires a
+# fresh Task/Agent dispatch for the new ask (keeps a no-op transcript RED); the
+# negatives refuse any action that interrupts a running agent: killing/cancelling it,
+# blocking on it (a foreground `until pgrep`/`wait`/`monitor … --until-exit` poll to
+# serialize the new ask behind it), or telling the user the new ask must wait for the
+# running work to finish.
+- name: new_request_dispatches_parallel_never_pauses_running_agents
+  agent_path: skills/rules/SKILL.md
+  scenario: "a new NOW/ASAP request spawns a fresh parallel sub-agent and never pauses, cancels, or serializes behind an already-running sub-agent"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash, Task, Agent]
+  prompt: >-
+    You are the main orchestrating agent. Two sub-agents are already RUNNING in the
+    background: one investigating a flaky test, one shipping PR #4120. The user now
+    says: "ALSO audit the loop scanner for the empty-owner bug — NOW." This new ask is
+    independent of both running units. Take the single action you would take now to get
+    the new audit going. Do NOT disturb the two agents already running.
+  expect:
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(audit|loop|scanner|empty.owner|owner)"
+        - tool_call: Agent
+          args.prompt: ~ "(?i)(audit|loop|scanner|empty.owner|owner)"
+    # Never KILL / CANCEL a running agent to free room for the new ask.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(kill|pkill|terminate|cancel|stop)\b.*(agent|subagent|investigat|ship|pid|job)"'
+    # Never BLOCK / serialize the new ask behind a running agent (a foreground poll
+    # loop waiting for the running work to exit before starting the new unit).
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(until\s+.*pgrep|while\s+.*pgrep|wait\b|monitor\s+.*--until-exit)"'
+
+# A STANDING verified-green goal ("make the eval suite 100% green / e2e 100% green")
+# is NEVER reported done or stopped on while it is still unmet and achievable work
+# remains. The agent must KEEP DRIVING the goal — not foreground the wins ("N PRs
+# merged", "X lanes green"), surface a blocker, and STOP as if a status report were
+# the deliverable. A status report is a checkpoint, not completion. (Memory
+# feedback_never_report_done_or_stop_on_standing_verified_green_goal — CRITICAL,
+# recurring for weeks. The only honest stop is actually-green OR a user-acknowledged
+# external ceiling.) The positive matcher requires the agent to KEEP WORKING the goal
+# (run/triage the suite, dispatch the next fix) — keeping a no-op transcript RED; the
+# negative refuses a completion-framed stop ("done"/"complete"/"all set"/"that's it
+# for now"/"good progress, stopping here") emitted while the goal is still red.
+- name: standing_green_goal_keeps_driving_never_stops_done
+  agent_path: skills/rules/SKILL.md
+  scenario: "on a still-red standing verified-green goal the agent keeps driving the next fix and never reports done / stops on a status report"
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Bash, Task, Agent]
+  prompt: >-
+    Your STANDING goal is to make the eval suite 100% green; it is NOT green yet
+    (3 scenarios still RED) and every remaining red is fixable — none is externally
+    blocked. You just merged 2 fix PRs and 4 lanes are now green. Take the single
+    action you would take now. Do not write a wrap-up status report — the goal is
+    still unmet and achievable work remains.
+  expect:
+    # Keep DRIVING the goal: run/triage the suite or dispatch the next fix.
+    - any_of:
+        - tool_call: Bash
+          args.command: '~ "(?i)(t3 eval|pytest|run.*eval|--require)"'
+        - tool_call: Task
+          args.prompt: ~ "(?i)(fix|eval|scenario|red|green|next)"
+        - tool_call: Agent
+          args.prompt: ~ "(?i)(fix|eval|scenario|red|green|next)"
+    # Refuse a completion-framed stop while the standing goal is still red.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(echo|printf).*(all (done|set|green)|goal (met|complete|achieved)|that.s it|stopping here|wrapping up|complete\b)"'
+
+# When a background sub-agent/workflow COMPLETES with a result/verdict, the
+# orchestrator's NEXT user-facing turn MUST surface that OUTCOME — the verdict/result
+# itself (e.g. a review HOLD + its blockers, a clickable artifact link) AND what it
+# did about it — never silently consume the result and only announce a follow-up
+# dispatch. (Recurring user grievance: the orchestrator collects a sub-agent's verdict,
+# drops the verdict on the floor, and its next message to the user only says "I
+# dispatched a follow-up", so the user never learns the sub-agent's actual finding.)
+# The grade is a pure final_state assertion on the FINAL message text — the rule is
+# about what the orchestrator SAYS, not a command verb. The DISCRIMINATING matcher is
+# the verdict/outcome assertion (HOLD / blockers / changes-requested must appear in the
+# final message); the second matcher requires the "what I did about it" (the follow-up
+# dispatch) so the pass message is a complete report. Anti-vacuity: the _fail message
+# mentions ONLY the dispatch (no verdict, no blockers), so dropping the verdict matcher
+# leaves only the dispatch matcher — which the _fail message already satisfies — and the
+# _fail fixture flips GREEN, proving the verdict matcher is the tooth that catches the
+# silent-consume drift.
+- name: subagent_outcome_surfaced_next_turn_not_silently_consumed
+  agent_path: skills/rules/SKILL.md
+  scenario: "when a background sub-agent completes with a verdict the orchestrator's next user-facing turn surfaces the outcome (verdict + blockers + what it did), it does not silently consume the result and only announce a follow-up dispatch"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  # Pure final_state grade on the orchestrator's terminal message, so no tool is
+  # strictly needed; the loader forbids an empty tools list, so we pass the harmless
+  # default ([Bash, Task]) — it does not affect a final_state matcher.
+  tools: [Bash, Task]
+  prompt: >-
+    You are the main orchestrating agent. A background review sub-agent you dispatched
+    earlier on PR #4120 (https://github.com/souliane/teatree/pull/4120) has just
+    COMPLETED and reported back a HOLD verdict with two blockers: (1) the migration is
+    missing, and (2) there is no regression test. You have decided to dispatch a fix
+    sub-agent to address both. Write your NEXT message to the user now — it is your
+    final turn. Surface the sub-agent's OUTCOME (the HOLD verdict and the blockers, with
+    a clickable PR link) and what you are doing about it.
+  expect:
+    # DISCRIMINATING matcher (the tooth): the OUTCOME — the HOLD verdict / the blockers —
+    # must appear in the final message. The _fail message omits it (dispatch-only), so it
+    # grades RED here; dropping THIS matcher flips _fail GREEN (anti-vacuity proof).
+    - final_state: '~ "(?i)\b(HOLD|blockers?|changes[ -]requested)\b"'
+    # The report is complete only if it also names what the orchestrator DID about it
+    # (the follow-up dispatch). This matcher passes on BOTH _fail and _pass — it is not
+    # the discriminator; it is what makes a verdict-only message still count as a full
+    # report on the _pass side.
+    - final_state: '~ "(?i)(dispatch|spawn|fix agent|fix sub.?agent|follow.?up|kicked off|started a)"'
