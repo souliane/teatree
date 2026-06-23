@@ -207,6 +207,18 @@ In a multi-agent / multi-loop environment, another agent may have advanced a sha
 
 When reporting back on assigned work, the reader's first need is an unambiguous answer to **"is the assigned work done, and where is it?"** — deliverable status, branch/PR/HEAD, gate results. Out-of-scope observations, systemic findings, or follow-up recommendations surfaced along the way must be **clearly separated and subordinate**: a labelled trailing section, never positioned so they displace, precede, or read as a substitute for the deliverable status. A correct systemic analysis that buries the "done?" answer reads as "did the analysis instead of the work" — the coordinator concludes nothing shipped and spends a round-trip re-asking for what was already finished. Separate the two concerns physically; lead with the in-scope status every time.
 
+**On a STANDING verified-green goal, LEAD with the blunt binary — a status report is a checkpoint, not the deliverable (do X, never Y).** When the work is a standing "make X verified-green" goal (the eval suite, the e2e suite) and X is NOT yet green with achievable work remaining, a status report must OPEN with the binary truth on each suite — **"evals green? NO. e2e green? NO."** — BEFORE any wins, and must keep the goal **explicitly open**. The recurring, critical drift this forbids: the agent does a chunk of work, foregrounds the wins (merged-PR counts, per-lane greens, "good progress"), surfaces a blocker, and ends the turn on a positive-framed status that READS as-if-done — so the goal stays unmet and the user has to re-prod for weeks. Surfacing a blocker is a checkpoint, not completion. The honest report is one of exactly two shapes, both leading with the binary: **keep driving** the next achievable fix, or **surface-and-hold** (name the specific blocker AND state the goal stays open). It is never a win-led wrap-up.
+
+```text
+# do X — LEAD with the binary on each suite, then wins, and keep the goal open:
+#   "Eval suite green? NO — 3 scenarios still red. E2E green? NO — 2 specs still red.
+#    Goal unmet, stays open. Wins: 3 PRs merged, 5 lanes green. Next: triage the first red."
+# never Y — a win-led report that ends the turn as-if-done while the goal is unmet:
+#   "Merged 3 PRs, 5 lanes green — good progress. Solid checkpoint, picking the rest up next time."
+```
+
+This must not be gameable by an `AskUserQuestion`-to-defer or a positive-framed partial report that ends the turn: while the goal is unmet and work remains, the only honest stop is actually-green OR a user-acknowledged external ceiling. Pinned by `standing_green_goal_keeps_driving_never_stops_done` (the keep-driving ACTION) and `verified_green_status_report_leads_binary_never_stops_as_done` (the report-LEAD text) in `evals/scenarios/rules.yaml`.
+
 ## Keep Turn Output Terse and TTS-Ready
 
 Every turn response must be short enough to speak aloud without losing the listener. The whole turn output — not just a summary — should fit TTS comfortably.
