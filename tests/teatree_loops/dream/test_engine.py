@@ -367,6 +367,83 @@ class BuildExtractTestCase(TestCase):
         extract = build_extract([member])
         assert extract.truncated is False
 
+    def test_keeps_user_correction_prose_with_no_signal_keyword(self) -> None:
+        chatter = "\n".join(f'{{"type":"assistant","text":"chatter {i}"}}' for i in range(50))
+        correction = '{"type":"user","text":"I told you again — do not build a new banner, stop"}'
+        member = self._member("session.jsonl", chatter + "\n" + correction, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "told you again" in joined
+        assert "chatter 25" not in joined
+
+    def test_keeps_repeated_near_identical_user_turn(self) -> None:
+        repeated = "the config portal authoring UI is still missing from the deliverable"
+        lines = [f'{{"type":"user","text":"{repeated}"}}' for _ in range(3)]
+        lines.append('{"type":"assistant","text":"some neutral response with no cue"}')
+        member = self._member("session.jsonl", "\n".join(lines), kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert repeated in joined
+
+    def test_neutral_transcript_chatter_is_still_excluded(self) -> None:
+        neutral = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(40))
+        member = self._member("session.jsonl", neutral, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "computed result row" not in joined
+
+    def test_transcript_floor_survives_high_weight_memory_flood(self) -> None:
+        flood = [self._member(f"feedback_{i}.md", "BINDING: " + ("x" * 50_000)) for i in range(20)]
+        correction = '{"type":"user","text":"why did you do this again? do not, stop, I told you"}'
+        transcript = self._member("session.jsonl", correction, kind="main")
+        extract = build_extract([*flood, transcript])
+        transcript_paths = {str(s.path) for s in extract.snippets if s.kind != "memory"}
+        assert str(transcript.path) in transcript_paths
+
+    def test_floor_keeps_multiple_transcripts_under_memory_flood(self) -> None:
+        flood = [self._member(f"feedback_{i}.md", "BINDING: " + ("x" * 40_000)) for i in range(20)]
+        transcripts = [
+            self._member(
+                f"session_{i}.jsonl",
+                '{"type":"user","text":"stop — do not do that again, I told you not to"}',
+                kind="main",
+            )
+            for i in range(5)
+        ]
+        extract = build_extract([*flood, *transcripts])
+        kept_transcripts = {str(s.path) for s in extract.snippets if s.kind != "memory"}
+        assert len(kept_transcripts) == 5
+
+
+class CorrectionProseProducesGroundedClusterTestCase(TestCase):
+    """A transcript carrying only correction prose still reaches the distiller and grounds (#1933)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_correction_only_transcript_yields_a_grounded_cluster(self) -> None:
+        body = '{"type":"user","text":"I told you again — do not build a new banner, stop"}'
+        member = TranscriptMember(path=self.tmp / "session.jsonl", kind="main")
+        member.path.write_text(body)
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="correction",
+                    rule="Do not rebuild what the user told you not to.",
+                    source_files=[str(snippet.path)],
+                    is_binding=True,
+                    verified_citation="do not build a new banner",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="correction").count() == 1
+
 
 class WeightedSnippetTestCase(TestCase):
     def test_is_frozen(self) -> None:

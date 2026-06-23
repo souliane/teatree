@@ -76,6 +76,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
+from teatree.loops.dream.transcript_extract import high_signal_lines, looks_like_user_correction
+
 if TYPE_CHECKING:
     from teatree.loops.dream.eval_proposer import EvalProposalRequest
 
@@ -92,19 +94,6 @@ _WEIGHT_RETRO = 70
 _WEIGHT_COLD_REVIEW = 50
 _WEIGHT_DENY_STREAK = 40
 _WEIGHT_OTHER = 10
-
-#: Transcript lines worth keeping — the rest is chatter that must never reach
-#: the LLM prompt (the extract is a distillation input, not a raw replay).
-_TRANSCRIPT_SIGNALS = (
-    "TEATREE GATE",
-    "BLOCK",
-    "DENIED",
-    "feedback_",
-    "BINDING",
-    "retro",
-    "user-correction",
-    "cold review",
-)
 
 #: Per-member text cap; combines with the extract ceiling to bound the prompt.
 _PER_SNIPPET_CHARS = 4000
@@ -129,6 +118,11 @@ class ConsolidationExtract:
     """The bounded, ranked input one dream pass feeds the distiller."""
 
     CHAR_CEILING: ClassVar[int] = 60_000
+
+    #: A guaranteed slice of the ceiling reserved for recent transcript members,
+    #: filled FIRST so high-weight curated-memory re-reads can never starve fresh
+    #: drift out of the prompt. The remainder is filled highest-weight-first.
+    TRANSCRIPT_FLOOR: ClassVar[int] = 24_000
 
     snippets: tuple[WeightedSnippet, ...]
     truncated: bool
@@ -253,12 +247,11 @@ def _read_member_text(member: TranscriptMember) -> str:
         return ""
     if member.kind == "memory" or member.path.suffix == ".md":
         return raw[:_PER_SNIPPET_CHARS]
-    return _high_signal_lines(raw)[:_PER_SNIPPET_CHARS]
+    return high_signal_lines(raw)[:_PER_SNIPPET_CHARS]
 
 
-def _high_signal_lines(raw: str) -> str:
-    kept = [line for line in raw.splitlines() if any(signal in line for signal in _TRANSCRIPT_SIGNALS)]
-    return "\n".join(kept)
+def _is_transcript(snippet: WeightedSnippet) -> bool:
+    return snippet.kind != "memory"
 
 
 def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
@@ -266,9 +259,12 @@ def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
 
     Each member is read once; transcript members keep only high-signal lines
     (gate BLOCKs, user-corrections, retro markers) so raw chatter never reaches
-    the LLM. Snippets are ranked highest-weight first and accumulated until the
-    overall char ceiling is reached — at which point ``truncated`` flips and the
-    remaining lower-weight members are dropped.
+    the LLM. A guaranteed ``TRANSCRIPT_FLOOR`` slice of the ceiling is filled
+    FIRST from recent transcript members (highest-weight first among them) so a
+    flood of high-weight curated-memory re-reads can never starve fresh drift out
+    of the prompt; the remaining budget is then filled highest-weight-first over
+    everything not already kept. ``truncated`` flips when a member is clipped or
+    dropped for lack of budget.
     """
     weighted: list[WeightedSnippet] = []
     for member in members:
@@ -281,20 +277,41 @@ def build_extract(members: Sequence[TranscriptMember]) -> ConsolidationExtract:
     weighted.sort(key=lambda s: (s.weight, str(s.path)), reverse=True)
 
     kept: list[WeightedSnippet] = []
+    seen: set[int] = set()
     used = 0
     truncated = False
-    for snippet in weighted:
-        if used + len(snippet.text) > ConsolidationExtract.CHAR_CEILING:
-            remaining = ConsolidationExtract.CHAR_CEILING - used
+
+    transcripts = [s for s in weighted if _is_transcript(s)]
+    used, truncated = _fill(transcripts, kept, seen, used, ceiling=ConsolidationExtract.TRANSCRIPT_FLOOR)
+    used, rest_truncated = _fill(weighted, kept, seen, used, ceiling=ConsolidationExtract.CHAR_CEILING)
+
+    return ConsolidationExtract(snippets=tuple(kept), truncated=truncated or rest_truncated)
+
+
+def _fill(
+    candidates: Sequence[WeightedSnippet],
+    kept: list[WeightedSnippet],
+    seen: set[int],
+    used: int,
+    *,
+    ceiling: int,
+) -> tuple[int, bool]:
+    truncated = False
+    for snippet in candidates:
+        if id(snippet) in seen:
+            continue
+        if used + len(snippet.text) > ceiling:
+            remaining = ceiling - used
             if remaining > 0:
                 kept.append(_clip(snippet, remaining))
+                seen.add(id(snippet))
                 used += remaining
             truncated = True
             break
         kept.append(snippet)
+        seen.add(id(snippet))
         used += len(snippet.text)
-
-    return ConsolidationExtract(snippets=tuple(kept), truncated=truncated)
+    return used, truncated
 
 
 def _clip(snippet: WeightedSnippet, length: int) -> WeightedSnippet:
@@ -579,6 +596,7 @@ __all__ = [
     "cluster_is_grounded",
     "default_projects_dir",
     "enumerate_members",
+    "looks_like_user_correction",
     "normalize_ws",
     "run_consolidation",
     "write_clusters",
