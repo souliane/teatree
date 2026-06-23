@@ -7,7 +7,9 @@ the swap is invisible to the grader. The SDK is mocked here — no metered calls
 """
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -26,6 +28,7 @@ from teatree.eval.models import (
     canonicalize_tool,
 )
 from teatree.eval.sdk_runner import (
+    CLAUDE_RESOLVE_MAX_ATTEMPTS,
     DEFAULT_WATCHDOG_SECONDS,
     MAX_BUDGET_USD,
     WATCHDOG_SECONDS,
@@ -36,6 +39,7 @@ from teatree.eval.sdk_runner import (
     build_sdk_options,
     classify_terminal_error,
     is_success_result_error,
+    resolve_claude_path,
 )
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
 from teatree.eval.toolset import (
@@ -1854,3 +1858,186 @@ class TestDelegationAgentsProvisioning:
             matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
         )
         assert self._run(spec)["options"].agents is None
+
+
+class TestSpawningScenarioRunsAgainstEphemeralCheckout:
+    """A sub-agent-spawning scenario runs against a THROWAWAY isolated checkout.
+
+    The spawned SDK sub-agent does real, destructive git work; without isolation
+    it locates the developer's REAL clone (via the editable install + shared
+    ``.git`` — a neutral cwd does NOT block that) and corrupts it. The fix points
+    the SDK ``cwd`` + ``add_dirs`` + the resolution env at a per-run ephemeral
+    ``git worktree --detach``. These tests stub the ephemeral provisioner — no real
+    sub-agent runs — and assert the SDK options reach the throwaway, NOT the real
+    clone, and that a NON-spawning scenario is unchanged.
+    """
+
+    def _run(self, spec: EvalSpec, **kwargs: Any):
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+        return captured
+
+    def _spawning_spec(self, spec_dir: Path) -> EvalSpec:
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        return _spec_with(
+            spec_dir,
+            tools=("Bash", "Agent"),
+            matchers=(Matcher(kind="positive", tool="Agent", arg_path="prompt", operator="~", value="x"),),
+        )
+
+    def _non_spawning_spec(self, spec_dir: Path) -> EvalSpec:
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        return _spec_with(
+            spec_dir,
+            tools=("Bash",),
+            matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="x"),),
+        )
+
+    def test_spawning_scenario_points_cwd_and_add_dirs_at_the_throwaway(self, tmp_path: Path) -> None:
+        ephemeral = tmp_path / "throwaway" / "teatree"
+        ephemeral.mkdir(parents=True)
+        real_workspace = tmp_path / "spec-dir"
+
+        @contextmanager
+        def _fake_provision():
+            yield ephemeral
+
+        spec = self._spawning_spec(real_workspace)
+        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _fake_provision):
+            captured = self._run(spec)
+
+        options = captured["options"]
+        assert options.cwd == str(ephemeral)
+        assert options.add_dirs == [str(ephemeral)]
+        # The SDK is NEVER pointed at the real spec/workspace dir for a spawning scenario.
+        assert str(real_workspace) not in options.add_dirs
+        assert options.cwd != str(real_workspace)
+
+    def test_spawning_scenario_overlays_env_to_resolve_into_the_throwaway(self, tmp_path: Path) -> None:
+        ephemeral = tmp_path / "throwaway" / "teatree"
+        ephemeral.mkdir(parents=True)
+
+        @contextmanager
+        def _fake_provision():
+            yield ephemeral
+
+        spec = self._spawning_spec(tmp_path / "spec-dir")
+        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _fake_provision):
+            captured = self._run(spec)
+
+        env = captured["options"].env
+        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(ephemeral / "src")
+
+    def test_non_spawning_scenario_never_provisions_an_ephemeral_checkout(self, tmp_path: Path) -> None:
+        real_workspace = tmp_path / "spec-dir"
+        spec = self._non_spawning_spec(real_workspace)
+        called = {"n": 0}
+
+        @contextmanager
+        def _tracking_provision():
+            called["n"] += 1
+            yield tmp_path / "should-not-be-used"
+
+        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _tracking_provision):
+            captured = self._run(spec)
+
+        assert called["n"] == 0, "a non-spawning scenario must NOT provision an ephemeral checkout"
+        # The non-spawning path keeps the configured workspace as add_dirs.
+        assert captured["options"].add_dirs == [str(real_workspace)]
+
+    def test_ephemeral_checkout_is_cleaned_up_after_the_run(self, tmp_path: Path) -> None:
+        # The provisioner's context-manager teardown runs after _drive returns.
+        entered: dict[str, bool] = {"open": False}
+        ephemeral = tmp_path / "throwaway" / "teatree"
+        ephemeral.mkdir(parents=True)
+
+        @contextmanager
+        def _tracking_provision():
+            entered["open"] = True
+            try:
+                yield ephemeral
+            finally:
+                entered["open"] = False
+
+        spec = self._spawning_spec(tmp_path / "spec-dir")
+        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _tracking_provision):
+            self._run(spec)
+
+        assert entered["open"] is False, "the ephemeral checkout context must be exited (cleaned up)"
+
+
+class TestResolveClaudePath:
+    """Re-resolve ``claude`` across a transient mid-run auto-update, bounded.
+
+    ``shutil.which("claude")`` returns ``None`` for a moment while the bundled CLI
+    auto-updates (the nvm symlink is swapped). A single miss must not red the rest
+    of the batch, so the resolver re-probes with a bounded backoff — but a
+    genuinely-absent binary still returns ``None`` after the bounded attempts,
+    never an infinite loop.
+    """
+
+    def test_returns_path_on_first_success_without_sleeping(self) -> None:
+        sleeps: list[float] = []
+        with patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"):
+            path = resolve_claude_path(sleep=sleeps.append)
+        assert path == "/usr/local/bin/claude"
+        assert sleeps == [], "a first-attempt hit must not sleep"
+
+    def test_re_resolves_after_a_transient_miss(self) -> None:
+        # None (mid-update) then a valid path: the resolver rides out the swap.
+        sleeps: list[float] = []
+        results = iter([None, None, "/usr/local/bin/claude"])
+        with patch("teatree.eval.sdk_runner.shutil.which", side_effect=lambda _name: next(results)):
+            path = resolve_claude_path(sleep=sleeps.append)
+        assert path == "/usr/local/bin/claude"
+        assert len(sleeps) == 2, "two transient misses should back off twice, then succeed"
+
+    def test_returns_none_after_bounded_attempts_when_genuinely_absent(self) -> None:
+        sleeps: list[float] = []
+        with patch("teatree.eval.sdk_runner.shutil.which", return_value=None):
+            path = resolve_claude_path(max_attempts=3, sleep=sleeps.append)
+        assert path is None
+        # Bounded: max_attempts probes, max_attempts-1 backoffs — never an infinite loop.
+        assert len(sleeps) == 2
+
+    def test_default_attempts_are_bounded(self) -> None:
+        calls = {"n": 0}
+
+        def _always_missing(_name: str) -> None:
+            calls["n"] += 1
+
+        with patch("teatree.eval.sdk_runner.shutil.which", side_effect=_always_missing):
+            assert resolve_claude_path(sleep=lambda _s: None) is None
+        assert calls["n"] == CLAUDE_RESOLVE_MAX_ATTEMPTS
+
+
+class TestRunnerRetriesTransientMissingClaude:
+    """The runner re-resolves ``claude`` rather than skipping on a transient miss."""
+
+    def test_run_proceeds_after_a_transient_miss(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        query, _ = _fake_query([_result(total_cost_usd=0.01)])
+        results = iter([None, "/usr/local/bin/claude", "/usr/local/bin/claude"])
+        with (
+            patch(
+                "teatree.eval.sdk_runner.shutil.which", side_effect=lambda _name: next(results, "/usr/local/bin/claude")
+            ),
+            patch("teatree.eval.sdk_runner.time.sleep", lambda _s: None),
+            patch("teatree.eval.sdk_runner.query", query),
+        ):
+            run = SdkInProcessRunner().run(spec)
+        assert run.terminal_reason == "success", "a transient claude miss must not skip the scenario"
+        assert run.is_error is False
+
+    def test_require_executed_still_hard_errors_when_persistently_absent(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        with (
+            patch("teatree.eval.sdk_runner.shutil.which", return_value=None),
+            patch("teatree.eval.sdk_runner.time.sleep", lambda _s: None),
+            pytest.raises(ClaudeCliMissingError),
+        ):
+            SdkInProcessRunner(require_executed=True).run(spec)
