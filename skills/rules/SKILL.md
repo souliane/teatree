@@ -133,6 +133,16 @@ _Adapted from [superpowers/verification-before-completion](https://github.com/ob
 
 **Banned language without evidence:** "should pass", "probably works", "seems correct", "looks good", "I'm confident". These words without a command output are lies, not claims.
 
+**Multi-deliverable tickets: measure done from the SPEC, not the artifacts you produced (Non-Negotiable).** On a ticket with more than one deliverable, a completeness assertion — "done", "no blockers anywhere", "everything is here", "ready to merge/review" — is measured from **every deliverable the authoritative spec defines (incl. the spec's comments) verified on the actual merge target**, never from the artifacts you happen to have in hand. The recurring, highest-severity failure: claiming "no blockers anywhere" while the crucial deliverable was registered on the wrong surface and its fix was stranded off the merge target — invisible to a check that only inspects what exists. A false completion claim that propagates downstream is not an internal slip. Before any completion claim on a multi-deliverable ticket:
+
+1. **Read the authoritative spec and its comments first.** A claim emitted before the spec source was read leans on proxies (the work item, repo docs, the baseline). If you have not read the spec, you cannot claim done.
+2. **Enumerate EVERY spec deliverable** — not just the MRs/PRs created.
+3. **Attach on-target evidence to EACH** — merged to the merge target / verified on the correct surface / passing E2E. "An MR exists" is NOT evidence.
+4. **Verify the crucial/authoring deliverable explicitly on its correct surface** — the one that silently degrades to the wrong surface.
+5. **Any deliverable lacking on-target evidence → say "NOT done: <X> missing / on the wrong surface / stranded off target"**, never "done".
+
+This is enforced, not just prose: the BLOCKING Stop gate `handle_completion_claim_gate` (#2665) refuses turn-end on a multi-deliverable completion claim with no complete on-target deliverable→evidence map. It fires only on loop-driven turns; a legitimate single-deliverable "done" or a complete on-target map is never blocked. Never-lockout escapes: the `[skip-completion-gate: <reason>]` token in the turn text and the `[teatree] completion_claim_gate_enabled = false` kill-switch (`t3 <overlay> gate completion-claim disable`). This is the hard-blocking sibling of the WARN-only closure-reverify advisory (#1448).
+
 ## Grep Before Claiming Cross-Reference Coverage (Non-Negotiable)
 
 When the user asks how their codebase or harness compares to an external reference — an article, a framework's docs, a competitor's product, a popular library — the reflex is to pattern-match: a name in the reference resembles a skill or file or function the agent has seen, so the agent claims it's covered (or claims the inverse). This pattern-match is unreliable across naming differences and partial-implementation gaps, and it always defaults toward overclaiming coverage when the agent has the user's project context loaded.

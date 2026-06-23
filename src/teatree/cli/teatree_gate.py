@@ -37,6 +37,7 @@ GATE_KEY = "orchestrator_bash_gate_enabled"
 SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
+COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -91,6 +92,11 @@ def plan_edit_gate_is_enabled() -> bool:
 def config_overwrite_gate_is_enabled() -> bool:
     """Resolve the read-before-overwrite config gate (``CONFIG_OVERWRITE_GATE_KEY``, default True)."""
     return _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY)
+
+
+def completion_claim_gate_is_enabled() -> bool:
+    """Resolve the completion-claim Stop gate (``COMPLETION_CLAIM_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY)
 
 
 def danger_gate_fail_open_is_enabled() -> bool:
@@ -204,6 +210,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="config-overwrite",
         key=CONFIG_OVERWRITE_GATE_KEY,
         label="Read-before-overwrite config/dotfile gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="completion-claim",
+        key=COMPLETION_CLAIM_GATE_KEY,
+        label="Completion-claim gate (on-target evidence before done)",
     )
 
     overlay_app.add_typer(gate_group, name="gate")
