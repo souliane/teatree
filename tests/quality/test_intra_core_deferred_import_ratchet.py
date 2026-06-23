@@ -41,8 +41,10 @@ _TACH = _REPO_ROOT / "tach.toml"
 # as tach sub-nodes — the core cycle is now structurally forbidden, not merely
 # severed. The drop from PR-2a's 206 is exactly those 17 converted imports.
 # SHRINK-ONLY: lower this as PR-3 converts remaining deferred edges into
-# declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_CORE_DEFERRED = 187
+# declared tach sub-node edges; never raise it. Dropped 187→186 when both
+# `tasks.py` deferred `current_session_id` imports were hoisted to a single
+# module-scope import (session_identity is a stdlib-only leaf; tach stays green).
+_FROZEN_INTRA_CORE_DEFERRED = 186
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

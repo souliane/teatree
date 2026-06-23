@@ -532,11 +532,12 @@ class TestSessionTodoRendering(TestCase):
 
 
 class TestReadHarnessTodos(TestCase):
-    """``read_harness_todos`` is the best-effort disk reader for HOOK consumers.
+    """``read_harness_todos`` reads the harness's OWN store for the PreCompact snapshot.
 
-    It backs the PreCompact recovery snapshot and the statusline materialiser
-    (which cannot call the live ``TaskList`` tool); it is NOT used by the
-    interactive ``/t3:todos`` CLI view, which would lag the live session.
+    It backs the PreCompact recovery snapshot only (which cannot call the live
+    ``TaskList`` tool); it is NOT used by the interactive ``/t3:todos`` CLI view,
+    which would lag the live session. There is no teatree-written ``<session>.todos``
+    mirror to fall back to — that materialiser was removed as a stale mistake-source.
     """
 
     def test_reads_from_harness_task_store(self) -> None:
@@ -568,31 +569,146 @@ class TestReadHarnessTodos(TestCase):
                 todos = session_view.read_harness_todos("claude-abc")
         assert [text for _status, text in todos] == ["task 1", "task 2", "task 10"]
 
-    def test_falls_back_to_legacy_todowrite_state(self) -> None:
+    def test_no_legacy_todowrite_mirror_fallback(self) -> None:
+        # The teatree-written ``<session>.todos`` mirror was removed: a present
+        # mirror file with an EMPTY harness store no longer produces todos (the
+        # reader consults the harness's own store only).
         with (
             tempfile.TemporaryDirectory() as tasks_dir,
             tempfile.TemporaryDirectory() as state_dir,
             override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
         ):
             (Path(state_dir) / "claude-abc.todos").write_text(
-                "- [pending] draft the helper\n- [in_progress] wire the CLI\n",
+                "- [pending] stale mirror line\n",
                 encoding="utf-8",
             )
             with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
                 todos = session_view.read_harness_todos("claude-abc")
-        assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
+        assert todos == []
 
-    def test_missing_everywhere_is_empty(self) -> None:
+    def test_missing_store_is_empty(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tasks_dir,
-            tempfile.TemporaryDirectory() as state_dir,
-            override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
             patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}),
         ):
             assert session_view.read_harness_todos("claude-abc") == []
 
     def test_empty_session_id_is_empty(self) -> None:
         assert session_view.read_harness_todos("") == []
+
+
+class TestReconcileChecklist(TestCase):
+    """``tasks reconcile-checklist`` emits the in-session harness-TODO reconcile discipline.
+
+    The harness TODO list lives only in the agent's live, in-memory ``TaskList``
+    state — a CLI subprocess cannot read or write it (the Task tools bypass
+    ``PreToolUse``/``PostToolUse`` hooks). So the deterministic helper a
+    background loop CANNOT be is, instead, a checklist EMITTER: it prints the
+    fixed reconcile/dedupe/complete steps the in-session agent then applies with
+    its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools, plus the open
+    teatree tasks for this session as candidate completion anchors. It writes
+    nothing and transitions nothing.
+    """
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_emits_the_reconcile_discipline_steps(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = out.getvalue()
+        # The agent must drive the live list with its OWN tools — the checklist
+        # names them explicitly so the discipline is self-contained.
+        assert "TaskList" in printed
+        assert "TaskUpdate" in printed
+        assert "TaskCreate" in printed
+        # The three reconcile actions the maintainer asked for.
+        assert "reconcile" in printed.lower()
+        assert "dedup" in printed.lower() or "duplicate" in printed.lower()
+        assert "completed" in printed.lower()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_lists_open_teatree_tasks_for_this_session_as_completion_anchors(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test", short_description="fix the widget")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            open_task = Task.objects.create(
+                ticket=ticket, session=mine, phase="coding", execution_reason="land the gate"
+            )
+            other_ticket = Ticket.objects.create(overlay="test")
+            other = Session.objects.create(ticket=other_ticket, overlay="test", agent_id="claude-other")
+            Task.objects.create(ticket=other_ticket, session=other, phase="coding", execution_reason="someone else")
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = out.getvalue()
+        # This session's open teatree task surfaces as a completion candidate…
+        assert f"TODO-{open_task.pk}" in printed
+        assert "land the gate" in printed
+        # …and another session's task does not leak in.
+        assert "someone else" not in printed
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_makes_no_reconciliation_write_on_healthy_tasks(self) -> None:
+        # The emitter makes no reconciliation write: it never creates,
+        # completes, or transitions a HEALTHY task on the agent's behalf. A
+        # pending task and a freshly-claimed (live-lease) task both survive
+        # untouched, and the row count is unchanged.
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            pending = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            live = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="live-worker",
+                lease_expires_at=timezone.now() + timedelta(minutes=5),
+            )
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            pending.refresh_from_db()
+            live.refresh_from_db()
+        assert pending.status == Task.Status.PENDING
+        assert live.status == Task.Status.CLAIMED, "a live-lease claim must NOT be reaped"
+        assert Task.objects.count() == 2
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_shares_the_standard_stale_claim_reaper(self) -> None:
+        # The ONE write the command makes — shared with every `tasks` read — is
+        # the standard stale-claim reaper: a task whose lease is ALREADY expired
+        # is failed (CLAIMED→FAILED CAS). This pins that the softened docstring
+        # is accurate ("aside from the standard stale-claim reaper").
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            stale = Task.objects.create(
+                ticket=ticket,
+                session=mine,
+                phase="coding",
+                status=Task.Status.CLAIMED,
+                claimed_by="dead-worker",
+                lease_expires_at=timezone.now() - timedelta(minutes=5),
+            )
+            call_command("tasks", "reconcile-checklist", stdout=io.StringIO())
+            stale.refresh_from_db()
+        assert stale.status == Task.Status.FAILED
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_no_session_still_emits_the_discipline(self) -> None:
+        out = io.StringIO()
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}):
+            call_command("tasks", "reconcile-checklist", stdout=out)
+        printed = out.getvalue()
+        # An anonymous caller has no session-scoped teatree tasks, but the
+        # reconcile discipline (the load-bearing half) still prints.
+        assert "TaskList" in printed
 
 
 class DbOverlay(CommandOverlay):

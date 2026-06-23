@@ -692,6 +692,10 @@
           "name": "list"
         },
         {
+          "help": "Emit the in-session harness-TODO reconciliation checklist (read-only)",
+          "name": "reconcile-checklist"
+        },
+        {
           "help": "",
           "name": "work-next-sdk"
         }

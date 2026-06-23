@@ -361,6 +361,7 @@ Read ``text`` aloud synchronously through the local speakers per [teatree.speak]
 | `start` | Claim an interactive task and exec ``claude`` in the current terminal |
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
 | `list` | List the teatree tasks queue (not your harness TODO list) |
+| `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
 | `work-next-sdk` |  |
 
 ## `ticket`

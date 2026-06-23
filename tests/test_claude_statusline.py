@@ -25,6 +25,17 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def _harness_tasks_dir(state_dir: Path) -> Path:
+    """The harness task-store root the statusline chip is counted from.
+
+    Always isolated under ``state_dir`` so the developer's real
+    ``~/.claude/tasks`` never bleeds into a test; a test seeds the chip by
+    writing ``<session>/<n>.json`` under this dir (see
+    ``TestHarnessTodoSummary._seed_store``).
+    """
+    return state_dir / "_harness_tasks"
+
+
 def _run(
     payload: dict,
     *,
@@ -51,6 +62,11 @@ def _run(
         env["TEATREE_STATUSLINE_FILE"] = str(statusline_file)
     if registry_dir is not None:
         env["T3_LOOP_REGISTRY_DIR"] = str(registry_dir)
+    # The harness TODO chip is counted from the harness's OWN task store; point
+    # it at the test's isolated dir so the developer's real ~/.claude/tasks
+    # never bleeds in. A test that does not seed a store leaves this dir empty,
+    # so the chip is reliably absent.
+    env["CLAUDE_TASKS_DIR"] = str(_harness_tasks_dir(state_dir))
     # Isolate the Agent-Teams config dir so the developer's real ~/.claude/teams
     # roster never bleeds into these tests: the mates zone resolves its teams dir
     # from CLAUDE_CONFIG_DIR (already pinned to state_dir above), so a team config
@@ -475,23 +491,71 @@ class TestSkillsNamespaceGrouping:
 
 
 class TestHarnessTodoSummary:
-    """The session's harness TODO list renders as a compact ``TODO done/total`` line."""
+    """The session's harness TODO chip is counted from the harness's OWN task store.
 
-    def _write_todos(self, state_dir: Path, session_id: str, lines: list[str]) -> None:
-        body = "".join(f"{line}\n" for line in lines)
-        (state_dir / f"{session_id}.todos").write_text(body, encoding="utf-8")
+    The chip is sourced directly from ``$CLAUDE_TASKS_DIR/<session>/*.json`` —
+    one ``<n>.json`` per todo with a ``status`` field, the harness's own
+    storage. Teatree keeps NO mirror of it (the old ``<session>.todos``
+    materialiser was removed); the chip and the PreCompact snapshot's
+    ``read_harness_todos`` read the same store. ``test_chip_sourced_from_*``
+    PINS that wiring so removing the source can never silently kill the chip
+    again (the regression this class now guards).
+    """
+
+    def _seed_store(self, state_dir: Path, session_id: str, todos: list[tuple[str, str]]) -> None:
+        """Write one ``<n>.json`` per harness todo as ``(status, subject)``.
+
+        Under the isolated harness task-store root (``_harness_tasks_dir``) the
+        statusline chip counts from — the same dir ``_run`` points
+        ``CLAUDE_TASKS_DIR`` at.
+        """
+        session_dir = _harness_tasks_dir(state_dir) / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        for index, (status, subject) in enumerate(todos, start=1):
+            (session_dir / f"{index}.json").write_text(
+                json.dumps({"id": str(index), "subject": subject, "status": status}),
+                encoding="utf-8",
+            )
+
+    def test_chip_sourced_from_harness_store_not_teatree_mirror(self, tmp_path: Path) -> None:
+        # The wiring pin: a present harness store renders the chip, and a stale
+        # teatree-mirror file (the REMOVED mechanism) is NOT read. If the chip
+        # ever silently goes dead because its source was removed, this RED.
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._seed_store(
+            state_dir,
+            "s-src",
+            [("completed", "Wire the parser"), ("in_progress", "Render the summary")],
+        )
+        # A leftover teatree mirror with DIFFERENT counts must NOT be the source.
+        (state_dir / "s-src.todos").write_text(
+            "- [pending] STALE mirror a\n- [pending] STALE mirror b\n- [pending] STALE mirror c\n",
+            encoding="utf-8",
+        )
+
+        result = _run(
+            {"session_id": "s-src", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # The harness store's counts win (1/2), never the stale mirror's (0/3).
+        assert "TODO 1/2 ✓" in plain, plain
+        assert "0/3" not in plain, plain
 
     def test_renders_compact_done_over_total(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        self._write_todos(
+        self._seed_store(
             state_dir,
             "s-todo",
             [
-                "- [completed] Wire the parser",
-                "- [completed] Add the validator",
-                "- [in_progress] Render the summary",
-                "- [pending] Write the tests",
+                ("completed", "Wire the parser"),
+                ("completed", "Add the validator"),
+                ("in_progress", "Render the summary"),
+                ("pending", "Write the tests"),
             ],
         )
 
@@ -511,10 +575,10 @@ class TestHarnessTodoSummary:
     def test_omits_in_progress_marker_when_none_active(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        self._write_todos(
+        self._seed_store(
             state_dir,
             "s-no-wip",
-            ["- [completed] Done one", "- [pending] Not started", "- [pending] Also pending"],
+            [("completed", "Done one"), ("pending", "Not started"), ("pending", "Also pending")],
         )
 
         result = _run(
@@ -530,10 +594,10 @@ class TestHarnessTodoSummary:
     def test_all_complete_renders_full_count(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        self._write_todos(
+        self._seed_store(
             state_dir,
             "s-all-done",
-            ["- [completed] First", "- [completed] Second"],
+            [("completed", "First"), ("completed", "Second")],
         )
 
         result = _run(
@@ -546,7 +610,7 @@ class TestHarnessTodoSummary:
         assert "TODO 2/2 ✓" in plain, plain
         assert "▸" not in plain, plain
 
-    def test_no_todo_segment_when_file_absent(self, tmp_path: Path) -> None:
+    def test_no_todo_segment_when_store_absent(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
 
@@ -558,10 +622,10 @@ class TestHarnessTodoSummary:
         assert result.returncode == 0, result.stderr
         assert "TODO" not in _strip_ansi(result.stdout)
 
-    def test_no_todo_segment_when_file_empty(self, tmp_path: Path) -> None:
+    def test_no_todo_segment_when_store_empty(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        (state_dir / "s-empty.todos").write_text("", encoding="utf-8")
+        (_harness_tasks_dir(state_dir) / "s-empty").mkdir(parents=True)
 
         result = _run(
             {"session_id": "s-empty", "model": {"display_name": "Claude Opus"}},
@@ -574,10 +638,10 @@ class TestHarnessTodoSummary:
     def test_many_items_stay_a_single_short_segment(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        lines = [f"- [completed] item {i}" for i in range(40)]
-        lines += [f"- [in_progress] item {i}" for i in range(40, 45)]
-        lines += [f"- [pending] item {i}" for i in range(45, 60)]
-        self._write_todos(state_dir, "s-many", lines)
+        todos = [("completed", f"item {i}") for i in range(40)]
+        todos += [("in_progress", f"item {i}") for i in range(40, 45)]
+        todos += [("pending", f"item {i}") for i in range(45, 60)]
+        self._seed_store(state_dir, "s-many", todos)
 
         result = _run(
             {"session_id": "s-many", "model": {"display_name": "Claude Opus"}},
@@ -596,7 +660,8 @@ class TestHarnessTodoSummary:
     def test_no_todo_segment_without_session_id(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
-        (state_dir / ".todos").write_text("- [pending] rogue\n", encoding="utf-8")
+        # A store under the empty session id must never be picked up.
+        self._seed_store(state_dir, "", [("pending", "rogue")])
 
         result = _run(
             {"model": {"display_name": "Claude Opus"}},

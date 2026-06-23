@@ -18,6 +18,11 @@ def task_list(status: str = "") -> Call:
     return Call(tool="TaskList", args={"status": status})
 
 
+def task_create(subject: str) -> Call:
+    """A harness ``TaskCreate`` call — the only way to add to the LIVE list."""
+    return Call(tool="TaskCreate", args={"subject": subject})
+
+
 def todos_scenarios() -> list[Scenario]:
     f = "todos.yaml"
     return [
@@ -43,6 +48,32 @@ def todos_scenarios() -> list[Scenario]:
                 ),
             ),
             tools=("TaskList", "Bash"),
+            yaml_file=f,
+        ),
+        Scenario(
+            name="harness_todo_reconciled_with_own_tools_not_a_background_job",
+            scenario="asked to keep the harness TODO list current, the agent reconciles the LIVE list "
+            "with its OWN harness Task tools (TaskCreate for a forgotten ask) — it does NOT shell out to a "
+            "t3 CLI / background job to maintain the list, because the Task tools bypass the hooks and only "
+            "the in-session agent holding them can write the live list",
+            agent_path=TODOS,
+            prompt="Earlier I asked you to also update the changelog, and you have not added it to the task "
+            "list. Keep my harness TODO list current: add that forgotten item now. The Task tools bypass the "
+            "hooks, so a t3 CLI subprocess / background job cannot write the live list — only you can, with "
+            "your own harness tools. Issue the ONE harness tool call that ADDS the forgotten item to the live "
+            "list. One call only, no narration.",
+            expects=(
+                positive(
+                    match("TaskCreate", "subject", r".*"),
+                    pass_call=task_create("update the changelog"),
+                    fail_call=bash("t3 widget tasks reconcile-checklist"),
+                ),
+                negative(
+                    match("Bash", "command", r"t3 .*tasks (reconcile-checklist|list)"),
+                    fail_call=bash("t3 widget tasks reconcile-checklist"),
+                ),
+            ),
+            tools=("TaskCreate", "TaskList", "Bash"),
             yaml_file=f,
         ),
     ]

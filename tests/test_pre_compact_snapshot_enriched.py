@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _T3_TEMP_PREFIX, handle_pre_compact, handle_track_agents, handle_track_todos
+from hooks.scripts.hook_router import _T3_TEMP_PREFIX, handle_pre_compact, handle_track_agents
 
 
 @pytest.fixture(autouse=True)
@@ -203,49 +203,15 @@ def _seed_harness_store(tmp_path: Path, session_id: str, todos: list[tuple[str, 
         (session_dir / f"{index}.json").write_text(json.dumps({"subject": subject, "status": status}), encoding="utf-8")
 
 
-class TestTodoCaptureFromHarnessStore:
-    """The ``.todos`` statusline state file is a materialised view of the live store (#1736).
-
-    ``TodoWrite`` PostToolUse no longer fires (the harness migrated to the
-    ``TaskCreate`` / ``TaskUpdate`` store, #1734), so the only live source
-    is the harness task store. ``handle_track_todos`` refreshes
-    ``<session>.todos`` from ``read_harness_todos`` on each PostToolUse so
-    the fast statusline keeps reading a fresh file rather than a dead one.
-    """
-
-    def test_refreshes_todos_file_from_harness_store(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        session_id = "sess-todo-store"
-        _seed_harness_store(
-            tmp_path,
-            session_id,
-            [("in_progress", "fix snapshot"), ("pending", "push and open PR")],
-        )
-        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tmp_path / "harness-tasks"))
-
-        handle_track_todos({"session_id": session_id, "tool_name": "Read", "tool_input": {"file_path": "x"}})
-
-        todos_file = router.STATE_DIR / f"{session_id}.todos"
-        assert todos_file.is_file()
-        text = todos_file.read_text(encoding="utf-8")
-        assert "- [in_progress] fix snapshot" in text
-        assert "- [pending] push and open PR" in text
-
-    def test_empty_store_writes_empty_todos_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        session_id = "sess-todo-empty"
-        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tmp_path / "harness-tasks"))
-
-        handle_track_todos({"session_id": session_id, "tool_name": "Read", "tool_input": {"file_path": "x"}})
-
-        todos_file = router.STATE_DIR / f"{session_id}.todos"
-        assert todos_file.read_text(encoding="utf-8") == ""
-
-    def test_missing_session_id_is_a_noop(self, tmp_path: Path) -> None:
-        handle_track_todos({"tool_name": "Read", "tool_input": {"file_path": "x"}})
-        assert not any(router.STATE_DIR.glob("*.todos"))
-
-
 class TestSnapshotTodosFromHarnessStore:
-    """The PreCompact snapshot quotes the live harness store, not the dead file (#1736)."""
+    """The PreCompact snapshot quotes the harness's OWN on-disk store (#1736).
+
+    The harness writes ``~/.claude/tasks/<session>/*.json`` itself; teatree
+    only reads it best-effort here for the recovery snapshot. There is no
+    teatree-written ``<session>.todos`` mirror — that materialiser was a stale
+    mistake-source and was removed; the in-session reconciliation discipline
+    (``/t3:todos`` § "Harness-TODO maintenance") keeps the LIVE list faithful.
+    """
 
     def test_snapshot_renders_harness_store_todos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         session_id = "sess-todo-render"
