@@ -1203,3 +1203,90 @@ class TestTeamRoster:
         assert "mates:" not in plain, plain
         # The rest of the header still renders — the bad config did not blank it.
         assert "model=Claude Opus" in plain, plain
+
+
+class TestStaleStatuslineBanner:
+    """The render-age freshness gate (the months-long stale-info bug).
+
+    The shell hook mirrors the cutoff arithmetic in
+    ``teatree.loop.statusline_staleness`` inline. These tests pin the shell
+    side to the same boundary; the Python side is pinned in
+    ``tests/teatree_loop/test_statusline_staleness.py``.
+    """
+
+    def _statusline(self, tmp_path: Path, *, rendered_at: float | None, cadence: int = 720) -> Path:
+        sl = tmp_path / "statusline.txt"
+        sl.write_text("t3-teatree 3m · next tick 4m\n", encoding="utf-8")
+        meta: dict = {"cadence": cadence, "next_epoch": int(time.time())}
+        if rendered_at is not None:
+            meta["rendered_at"] = int(rendered_at)
+        (tmp_path / "statusline-meta.json").write_text(json.dumps(meta) + "\n", encoding="utf-8")
+        return sl
+
+    def test_frozen_render_emits_banner_first(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        sl = self._statusline(tmp_path, rendered_at=time.time() - 6 * 3600)
+
+        result = _run(
+            {"session_id": "stale-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=sl,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "statusline STALE" in plain, plain
+        # The banner leads — it appears before the frozen loop line it qualifies.
+        assert plain.index("statusline STALE") < plain.index("next tick 4m"), plain
+
+    def test_fresh_render_no_banner(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        sl = self._statusline(tmp_path, rendered_at=time.time() - 30)
+
+        result = _run(
+            {"session_id": "fresh-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=sl,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "statusline STALE" not in plain, plain
+        assert "next tick 4m" in plain, plain
+
+    def test_missing_rendered_at_fails_open(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        # Old-schema sidecar: cadence present, no rendered_at -> no banner.
+        sl = self._statusline(tmp_path, rendered_at=None)
+
+        result = _run(
+            {"session_id": "noat-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=sl,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "statusline STALE" not in plain, plain
+        assert "next tick 4m" in plain, plain
+
+    def test_short_cadence_uses_300s_floor(self, tmp_path: Path) -> None:
+        """A 60s test loop must not flag stale on one skipped tick (floor wins)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        # cadence 60 -> 2*60=120 < 300 floor. Age 200s is past 2*cadence but
+        # within the 300s floor, so it must NOT be flagged stale.
+        sl = self._statusline(tmp_path, rendered_at=time.time() - 200, cadence=60)
+
+        result = _run(
+            {"session_id": "floor-sess", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=sl,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "statusline STALE" not in plain, plain

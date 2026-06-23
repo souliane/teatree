@@ -76,3 +76,12 @@ class TestCostChipInTickMeta:
 
     def test_meta_chip_empty_when_no_headless_cost(self, tmp_path: Path) -> None:
         assert self._meta(tmp_path)["cost_chip"] == ""
+
+    def test_meta_carries_rendered_at_for_staleness_gate(self, tmp_path: Path) -> None:
+        # The statusline freshness gate reads rendered_at to surface a STALE
+        # banner on a frozen render — it must equal the tick's start epoch.
+        started = dt.datetime(2026, 6, 10, tzinfo=dt.UTC)
+        statusline = tmp_path / "statusline.txt"
+        _write_tick_meta(started, target=statusline)
+        meta = json.loads((tmp_path / "tick-meta.json").read_text(encoding="utf-8"))
+        assert meta["rendered_at"] == int(started.timestamp())
