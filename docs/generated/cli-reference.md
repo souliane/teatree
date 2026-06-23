@@ -2989,6 +2989,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                     state (alias of resume).                                 │
 │ loop-state          Show a mini-loop's durable state (ENABLED when it has    │
 │                     never been touched).                                     │
+│ claude-spec         Print the native Claude `/loop` spec (slot_id, cron,     │
+│                     prompt) for one DB Loop.                                 │
 │ self-improve        Self-improving monitor — scheduled smell detection with  │
 │                     a tiered action ladder. Runs in the same loop-owner      │
 │                     session as `t3 loop tick` on a separate LoopLease so a   │
@@ -3398,6 +3400,22 @@ Usage: t3 loop loop-state [OPTIONS] NAME
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 loop claude-spec`
+
+```
+Usage: t3 loop claude-spec [OPTIONS] NAME
+
+ Print the native Claude `/loop` spec (slot_id, cron, prompt) for one DB Loop.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  DB Loop name (e.g. review, ship, dream). [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the spec as JSON.                                       │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 loop self-improve`
 
 ```
@@ -3574,11 +3592,17 @@ Usage: t3 loops tick [OPTIONS]
  then render.
 
  The master claims the ``t3-master`` lease and dispatches only the loops whose
- DB row is enabled and due. Delegates to the ``loops_tick`` management command.
+ DB row is enabled and due. With ``--loop <name>`` it scopes to that single
+ enabled, due row instead — the per-loop primitive each native Claude ``/loop``
+ fires (#2650). Delegates to the ``loops_tick`` management command.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │
 │                        all).                                                 │
+│ --loop           TEXT  Run ONE enabled, due DB Loop by name (#2650) — what   │
+│                        each native Claude `/loop` fires, claiming the        │
+│                        per-loop `loop:<name>` lease. Default (empty) is the  │
+│                        full master fan-out.                                  │
 │ --json                 Emit the tick report as JSON.                         │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯

@@ -35,13 +35,17 @@ def _teatree_engaged(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestCadenceResolvesFromDb(TestCase):
-    """The hook cadence readers resolve ``loop_cadence_seconds`` from the DB (#1775).
+    """The hook cadence readers resolve their cadence from the DB (#1775, #2650).
 
-    ``loop_cadence_seconds`` is DB-home: its authoritative value is a GLOBAL-scope
-    ``ConfigSetting`` row, so each hook_router reader must read it through the
-    shared ``teatree.config.cadence_seconds`` resolver — never the hardcoded 720.
-    Grouped into a TestCase class per souliane/teatree#98 (the standalone
-    ``@pytest.mark.django_db`` function pattern is disallowed).
+    ``_loop_cadence_seconds`` / ``_tick_meta_stale`` resolve the GLOBAL-scope
+    ``loop_cadence_seconds`` ``ConfigSetting`` row through the shared
+    ``teatree.config.cadence_seconds`` resolver — never the hardcoded 720. Since
+    #2650 the loop-registration directive no longer reads that global value for
+    its cron: it emits one ``register_cron`` per enabled ``Loop`` row whose cron
+    derives from THAT loop's own cadence (``delay_seconds`` / ``daily_at``), and
+    the PreToolUse nudge reason points at the per-loop registration instead of a
+    single fat-tick cron. Grouped into a TestCase class per souliane/teatree#98
+    (the standalone ``@pytest.mark.django_db`` function pattern is disallowed).
     """
 
     @pytest.fixture(autouse=True)
@@ -82,13 +86,15 @@ class TestCadenceResolvesFromDb(TestCase):
 
         assert _tick_meta_stale() is True
 
-    def test_enforce_loop_on_prompt_emits_db_cron_minutes(self) -> None:
-        # #1036 + #1775: the loop-registration cron minutes must match the DB-home
-        # cadence (1800s -> */30). Pre-fix env-only -> 720 -> */12.
+    def test_enforce_loop_on_prompt_emits_per_loop_cron_from_loop_cadence(self) -> None:
+        # #2650: the registration directive emits one register_cron PER enabled loop,
+        # whose cron derives from THAT loop's OWN cadence — an enabled loop with
+        # delay 1800 -> */30 (no longer the global loop_cadence_seconds).
         self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+        from teatree.core.models import Loop, Prompt  # noqa: PLC0415
 
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 1800)
+        prompt = Prompt.objects.create(name="cadence-loop-prompt", body="x")
+        Loop.objects.create(name="cadence-loop", delay_seconds=1800, prompt=prompt, enabled=True)
 
         data_home = self.tmp_path / "xdg"
         (data_home / "teatree").mkdir(parents=True)
@@ -99,15 +105,14 @@ class TestCadenceResolvesFromDb(TestCase):
 
         handle_enforce_loop_on_prompt({"session_id": "s-1036"})
         out = self.capsys.readouterr().out
-        assert "*/30 * * * *" in out
+        assert "*/30 * * * *" in out  # derived from the enabled loop's 1800s cadence
+        assert "t3 loops tick --loop cadence-loop" in out  # the per-loop run command
 
-    def test_enforce_loop_registration_uses_db_cron_minutes(self) -> None:
-        # #1036 + #1775: the PreToolUse deny reason's cron minutes must also match the
-        # DB-home cadence (1800s -> */30). Covers the third hook_router reader.
+    def test_enforce_loop_registration_reason_directs_per_loop_registration(self) -> None:
+        # #2650: the PreToolUse deny reason no longer names a single fat-tick cron —
+        # it directs the agent to register one /loop per enabled loop (claude-spec +
+        # CronCreate). The fat-tick `*/N` is gone from the reason.
         self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415
-
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 1800)
 
         state = self.tmp_path / "state"
         state.mkdir()
@@ -116,7 +121,11 @@ class TestCadenceResolvesFromDb(TestCase):
 
         blocked = handle_enforce_loop_registration({"session_id": "s-1036", "tool_name": "Bash"})
         assert blocked is True
-        assert "*/30 * * * *" in self.capsys.readouterr().out
+        out = self.capsys.readouterr().out
+        assert "LOOP REGISTRATION" in out
+        assert "claude-spec" in out
+        assert "CronCreate" in out
+        assert "*/30" not in out  # the single fat-tick cron is gone (non-vacuous)
 
     def test_loop_cadence_seconds_inserts_src_on_path_when_absent(self) -> None:
         # #1036: covers the sys.path-insert + finally-cleanup branch taken
