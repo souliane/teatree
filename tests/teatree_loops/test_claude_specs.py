@@ -40,6 +40,18 @@ class TestRunPrompt:
         # The loop name is the per-loop discriminator a CronList match keys on.
         assert "dream" in prompt
 
+    def test_command_token_is_backtick_terminated_so_a_name_prefix_does_not_collide(self) -> None:
+        # A disable matches the BACKTICK-TERMINATED `--loop <name>` token, so a
+        # name that is a strict PREFIX of another never deletes the wrong cron
+        # (`ship` vs `ship-fast`). Non-vacuous: the bare substring DOES over-match,
+        # which is exactly why the closing backtick is load-bearing.
+        ship = loop_run_prompt("ship")
+        ship_fast = loop_run_prompt("ship-fast")
+        exact_token = "`t3 loops tick --loop ship`"
+        assert exact_token in ship
+        assert exact_token not in ship_fast  # the trailing backtick stops the prefix collision
+        assert "t3 loops tick --loop ship" in ship_fast  # the bare substring WOULD over-match (the trap)
+
 
 class TestCronForLoop:
     def test_minute_interval_under_an_hour(self) -> None:

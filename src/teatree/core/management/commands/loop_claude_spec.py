@@ -5,12 +5,14 @@ not a plain typer command) per the project's "anything touching the ORM is a
 management command" rule.
 
 The DB ``Loop`` table is the single source of truth; this prints the EXACT spec —
-the stable ``slot_id`` (the ``CronDelete`` key), the ``cron`` derived from the
-row's cadence, and the recurring ``prompt`` that runs only that loop — so the
+the stable ``slot_id`` (a per-loop LABEL), the ``cron`` derived from the row's
+cadence, and the recurring ``prompt`` that runs only that loop — so the
 ``/t3:loops`` enable/disable skill can mirror the row into Claude Code:
-``CronCreate`` it on enable, ``CronList``→``CronDelete`` it on disable. The spec is
-computed from the row regardless of ``enabled`` (a disable flips the row first,
-then reads the spec to delete the cron).
+``CronCreate`` it on enable, ``CronList``→``CronDelete`` it on disable. On disable
+the skill matches the registered job by this ``prompt`` (the backtick-terminated
+``--loop <name>`` token disambiguates one loop from another) and deletes it by the
+harness job id. The spec is computed from the row regardless of ``enabled`` (a
+disable flips the row first, then reads the spec to find the cron).
 """
 
 import json

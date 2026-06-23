@@ -6,20 +6,25 @@ of native Claude ``/loop``s MIRRORS the set of ENABLED rows — ONE ``/loop`` pe
 enabled row (PER-LOOP, not per-group). There is no single fat tick: each enabled
 loop is its own native ``/loop`` firing on that loop's own cadence.
 
-Each :class:`ClaudeLoopSpec` carries the three values a harness ``CronCreate``
-needs to register one loop and a ``CronDelete`` needs to remove it:
+Each :class:`ClaudeLoopSpec` carries the values a harness ``CronCreate`` needs to
+register one loop (``CronCreate`` takes no id and returns its OWN harness job id —
+there is nothing to pass in):
 
-- ``slot_id`` — a STABLE identifier per loop name (``t3-loop-<name>``) so a
-    disable can target the exact cron to delete without ambiguity;
+- ``slot_id`` — a STABLE LABEL per loop name (``t3-loop-<name>``): a display id to
+    recognise a loop's cron. It is NOT the delete key — the harness assigns the
+    job id at ``CronCreate`` time;
 - ``cron`` — derived from the row's own cadence (``daily_at`` wall-clock,
     ``delay_seconds`` interval, or every-minute when the row is cadence-less);
 - ``prompt`` — the recurring prompt the ``/loop`` submits each fire: run THAT one
     loop via ``t3 loops tick --loop <name>`` (the DB-master scoped to a single
     row, claiming the per-loop ``loop:<name>`` lease), then report the summary.
 
-The ``--loop <name>`` token in the prompt is the per-loop discriminator a
-``CronList`` match keys on, so the skill can find and ``CronDelete`` exactly the
-cron for the loop being disabled.
+The delete-time disambiguator is the BACKTICK-TERMINATED ```` `t3 loops tick
+--loop <name>` ```` token in the ``prompt`` (the closing backtick is load-bearing:
+a bare ``--loop ship`` substring would also match ``--loop ship-fast``). To
+disable a loop the skill ``CronList``s, matches the job whose prompt equals this
+spec's ``prompt`` — equivalently, contains that exact backtick-terminated token —
+and ``CronDelete``s it by the harness job id.
 """
 
 from dataclasses import dataclass
@@ -49,7 +54,7 @@ class ClaudeLoopSpec:
 
 
 def loop_slot_id(name: str) -> str:
-    """The stable per-loop cron identifier ``t3-loop-<name>`` (the CronDelete key)."""
+    """The STABLE per-loop LABEL ``t3-loop-<name>`` (a display id, NOT the harness delete key)."""
     return f"{_SLOT_ID_PREFIX}{name}"
 
 

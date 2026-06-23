@@ -80,8 +80,8 @@ Flipping the DB row is only half the job: the live set of native Claude `/loop`s
 **To disable a loop `X` and stop its `/loop`:**
 
 1. `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`.
-2. `t3 loop claude-spec X --json` — read the `prompt` (its `t3 loops tick --loop X` line is the per-loop discriminator).
-3. `CronList`, find the job whose prompt contains `t3 loops tick --loop X`, then `CronDelete(id=<that job id>)` — remove the native `/loop`.
+2. `t3 loop claude-spec X --json` — read the full `prompt`.
+3. `CronList`, find the job whose prompt **equals that full `prompt` string** (equivalently, contains the exact backtick-terminated token `` `t3 loops tick --loop X` `` — the **closing backtick is required**: a bare `--loop X` substring also matches a longer name like `X-fast`, so without it disabling `ship` could delete `ship-fast`'s cron). Then `CronDelete(id=<that job id>)` — remove the native `/loop`.
 
 (`t3 loop claude-spec` computes the spec from the row regardless of `enabled`, so reading it after a `disable` still works.)
 
