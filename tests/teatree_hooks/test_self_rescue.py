@@ -49,6 +49,7 @@ class TestIsSelfRescue:
             "t3 review gate fail-open enable",
             "t3 acme gate disable",
             "t3 acme gate skill-loading disable",
+            "t3 acme gate config-overwrite disable",
             "t3 t3-teatree gate fail-open enable",
             "t3 acme db migrate",
             "python manage.py migrate",

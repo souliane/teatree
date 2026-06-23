@@ -27,6 +27,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **User intent, interruptions, and asking**
 
 5. [User Instructions Are Priority 1](#user-instructions-are-priority-1)
+5a. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
 6. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
 7. [Always Create Tasks](#always-create-tasks)
 8. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
@@ -73,6 +74,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 
 26. [Sub-Agent Limitations](#sub-agent-limitations)
 27. [Symlink Safety](#symlink-safety)
+27a. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
 28. [Skill File Writes Require a Git Repo](#skill-file-writes-require-a-git-repo)
 29. [Worktree-First Work](#worktree-first-work-non-negotiable)
 30. [Concurrent Agent Safety](#concurrent-agent-safety-non-negotiable)
@@ -96,6 +98,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
+43a. [Never Pass `fable` as a Workflow/Agent Model Override](#never-pass-fable-as-a-workflowagent-model-override)
 44. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
 
 ## Invoke Skills Before ANY Response
@@ -152,6 +155,16 @@ When the user asks how their codebase or harness compares to an external referen
 ## User Instructions Are Priority 1
 
 When the user gives a direct, explicit instruction (skip tests, push now, use this approach), execute it IMMEDIATELY. Do not try a "better" approach first, do not retry the same failing approach hoping it works, and do not silently substitute your own plan. Execute the instruction first (it's fast and safe), then suggest an alternative if you have one.
+
+## On an Ambiguous Directive, Take the Non-Destructive Reading (Non-Negotiable)
+
+When a directive admits two readings — one destructive (overwrites/deletes/restores/force-pushes/drops) and one non-destructive (reads, inspects, leaves state intact) — **take the non-destructive reading and proceed; surface the ambiguity only if the safe path doesn't resolve the request.** A vague "reset the config" / "clean that up" / "fix the file" is NOT authorization to clobber state: do the reversible, inspectable thing first.
+
+- "reset/restore X" → first **read** X's current state and report it; do not `git checkout`/`git reset --hard` it until you have read it and confirmed the destructive action is what the user meant.
+- "clean up / remove the stale Y" → inspect what Y contains before deleting; an unread artifact may hold unpushed work or uncommitted edits.
+- The cost of the safe reading is one extra read; the cost of the destructive reading is irreversible data loss. When the readings diverge on reversibility, reversibility wins.
+
+This composes with § "User Instructions Are Priority 1" (an EXPLICIT destructive instruction — "yes, `git checkout` the file" — is executed immediately) and § "Always Use AskUserQuestion for Questions" (a genuinely undecidable destructive choice is one structured question, not a silent guess). The rule here governs the _default reading_ of an ambiguous directive: lean safe.
 
 ## Classifier Denial Protocol (Non-Negotiable)
 
@@ -520,6 +533,18 @@ When integrating with tools (issue trackers, CI, chat), prefer their API or CLI 
 
 Never replace a symlink with a real file. `ls -la` first if unsure. If a path is a symlink, edit the target — never delete the link and write a new file.
 
+## Read Before Overwriting a Tracked Config/Dotfile (Non-Negotiable)
+
+A user config file or dotfile (`~/.teatree.toml`, a `dotfiles`-repo file, an XDG `.config` file, `.zshrc`, …) is **authoritative as it exists on disk right now** — even when that on-disk content diverges from the committed version. The user may have made uncommitted edits directly on disk. So before you clobber it you must **read its current content this session**:
+
+- A full **`Write`** that overwrites an existing config/dotfile, OR a **`git checkout` / `git restore`** that restores a tracked config from a committed version, discards the live on-disk content. Do **not** do either blind — `Read` the file first, confirm what you intend to change, then re-issue the write.
+- **Uncommitted-on-disk beats committed.** Never "restore the config from git to a clean state" without first reading the working-tree copy — the committed version is NOT the source of truth for a user config; the file on disk is.
+- This is the file-write sibling of § "Read the Canonical Source Before a Structural Action" and § "Read the Canonical Source Before Fixing a Conformance Bug": the live artifact is the spec; read it before you act on it.
+
+**Deterministically enforced.** The PreToolUse gate `handle_block_config_overwrite` (`hooks/scripts/config_overwrite_guard.py` + `teatree.core.gates.config_overwrite_guard`) refuses a blind `Write` over an existing config/dotfile and a blind `git checkout`/`git restore` of one when the path was not read this session (it consumes the existing `<session>.reads` capture). Reading the file first clears it. Never-lockout escapes: a per-call `[config-overwrite-ok: <reason>]` token, the `[teatree] config_overwrite_gate_enabled = false` kill-switch (`t3 <overlay> gate config-overwrite disable`), and the shared `_fail_open_or_deny` chain.
+
+**Failure mode this prevents.** An agent overwrote `~/.teatree.toml` (a symlink into the user's dotfiles repo) with a blind `Write`, and on another occasion nearly restored a config from git without reading the live copy — both would have silently destroyed the user's uncommitted edits.
+
 ## Shell Alias Safety
 
 Use `command rm`, `command cp`, `command mv` in Bash tool calls to avoid zsh interactive aliases that hang. Also `gs` is aliased to `git status` — use `command gs` for GhostScript.
@@ -560,6 +585,8 @@ t3 <overlay> workspace ticket <id>           # or: t3 <overlay> worktree provisi
 ```
 
 The same applies to any runnable ask — running tests, opening a PR, fetching a ticket: pick the canonical `t3` command and run it. Asking "should I?" on in-scope work reads as stalling. Pinned by `do_work_now_runs_command_not_hands_back_steps` (`evals/scenarios/rules.yaml`).
+
+**Never punt resolvable work back to the user as a "decision/data you must provide."** When a step the user delegated is something you can resolve yourself — derive the value, look it up in a file/config/git, compute it, pick the determinable-best option — **resolve it and proceed**; do not bounce it back as "I need you to tell me X" or "please decide Y." The test is the same sharp one from § "Always Use AskUserQuestion for Questions": _can I reach the best outcome by doing the work?_ If yes → do it, never punt. The only things that legitimately go back to the user are a **fact you genuinely cannot obtain** (a secret, a private URL, a value living only in the user's head) or an **authorization for an irreversible/outward-facing action** — never a decision or datum you could have determined yourself. Punting resolvable work is the inverse failure of deferring it to a ticket: both make the user do the agent's job. This is the named pattern the user calls "successfully failing" — completing the _motion_ of asking while leaving the actual work undone.
 
 **Banned patterns when the work is actionable in this turn:**
 
@@ -640,6 +667,8 @@ When the directive is genuinely ambiguous about _where_ it belongs (skill prose 
 ## Ask About Auth Before External Service Integrations
 
 When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
+
+**Zero user effort when the user says "I do nothing."** When the user signals they want a hands-off path — "I do nothing", "set it all up for me", "I shouldn't have to touch anything" — that is a directive to make the **agent** perform every step it possibly can, leaving the user with zero manual operations. Do not hand back a checklist of steps for the user to run; run them. The only residue allowed to fall to the user is the genuinely un-automatable: a secret only they hold, an OAuth consent screen only they can click, an authorization the harness blocks the agent from self-granting. Everything mechanically doable by the agent (writing config, running `t3` commands, editing files it can edit, retrying) the agent does. This is the same posture as the Classifier Denial Protocol's "the agent **attempts** the edit to `~/.claude/settings.json` itself, falling back to a paste-ready snippet only after the harness blocks the write" — the manual fallback is the last resort, never the default.
 
 ## Never Change PR Base Branch or Dependencies (Non-Negotiable)
 
@@ -1013,6 +1042,18 @@ t3 <overlay> honesty escalate --reason <user_asked|self_assessed_dishonest|accus
 ```
 
 The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → kill-switch → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.
+
+**When Fable is disabled, the honesty-escalation target falls back to Opus.** "the most-honest model (today Fable)" above is the default; when the operator has set `[teatree] fable_enabled = false` (the #2237 kill switch — Fable is expensive and access-gated, and is currently unavailable), the routing downgrades every Fable pin to **Opus**. So an honesty escalation under a disabled-Fable config routes the verification to Opus, not to an unavailable model. This is automatic for teatree's own `model_tiering` — see the next rule for the surface it does NOT cover.
+
+## Never Pass `fable` as a Workflow/Agent Model Override
+
+A teatree Workflow's `model:` / `effort:` per-stage override is resolved DIRECTLY by the Workflow runtime — it does **not** route through teatree's `model_tiering`, so it **bypasses** the `[teatree] fable_enabled = false` kill switch. Picking the right model per stage is encouraged (`model:`/`effort:` overrides help) — but **never pass `fable`**:
+
+- Fable is (a) disabled by operator decision (`fable_enabled = false`), (b) very expensive, and (c) currently unavailable (access-gated). An explicit `model: 'fable'` in a Workflow/Agent call will fail ("Fable is currently unavailable") and/or burn money against the operator's explicit decision.
+- For an honesty-critical / final-verification stage that would normally escalate to the most-honest model, fall back to **Opus** (the kill-switch fallback) — never `fable` — until the operator re-enables Fable AND it is available again.
+- Underlying teatree gap (the kill switch should also clamp Workflow/Agent `model:` overrides, not just phase/skill routing) is tracked as a backlog item; until it lands, this rule is the behavioural guard.
+
+**Failure mode this prevents.** A Workflow's `final-review` stage was written with `model: 'fable'` and failed with "Fable is currently unavailable" — after the operator had already disabled Fable everywhere via `model_tiering`. The override bypassed the kill switch.
 
 ## Re-Validate a Reused Guard in a New Destructive Context
 
