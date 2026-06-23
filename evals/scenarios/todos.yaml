@@ -14,3 +14,16 @@
       args.status: '~ ".*"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 .*tasks list .*--session"'
+
+- name: harness_todo_reconciled_with_own_tools_not_a_background_job
+  scenario: "asked to keep the harness TODO list current, the agent reconciles the LIVE list with its OWN harness Task tools (TaskCreate for a forgotten ask) — it does NOT shell out to a t3 CLI / background job to maintain the list, because the Task tools bypass the hooks and only the in-session agent holding them can write the live list"
+  agent_path: skills/todos/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [TaskCreate, TaskList, Bash]
+  prompt: "Earlier I asked you to also update the changelog, and you have not added it to the task list. Keep my harness TODO list current: add that forgotten item now. The Task tools bypass the hooks, so a t3 CLI subprocess / background job cannot write the live list — only you can, with your own harness tools. Issue the ONE harness tool call that ADDS the forgotten item to the live list. One call only, no narration."
+  expect:
+    - tool_call: TaskCreate
+      args.subject: '~ ".*"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 .*tasks (reconcile-checklist|list)"'

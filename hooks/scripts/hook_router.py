@@ -4248,40 +4248,6 @@ def handle_read_dedup(data: dict) -> None:
     )
 
 
-# ── PostToolUse: refresh the harness TODO statusline view ──────────
-#
-# Issue #970 captured the active TODO list for the recovery snapshot via
-# the ``TodoWrite`` PostToolUse. Issue #1734 retired that path: the
-# harness migrated to the ``TaskCreate`` / ``TaskUpdate`` store, which
-# bypasses PostToolUse entirely, so the ``TodoWrite`` capture stopped
-# firing and ``<session>.todos`` went stale. The canonical live source is
-# now the harness task store, read by ``read_harness_todos``. This handler
-# materialises that store into ``<session>.todos`` on every PostToolUse so
-# the fast statusline keeps reading a fresh file rather than a dead one.
-
-
-def handle_track_todos(data: dict) -> None:
-    """Refresh ``<session>.todos`` from the live harness task store.
-
-    Reads the current harness TODO list via ``read_harness_todos`` (#1734)
-    and overwrites ``<session>.todos`` with one ``- [status] content`` line
-    per item, so the statusline summary and the PreCompact snapshot read
-    the live store rather than the retired ``TodoWrite`` capture file.
-    No-op without a session id; never raises — capture must not block.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-
-    from teatree.core.management.commands.tasks_session_view import read_harness_todos  # noqa: PLC0415
-
-    todos = read_harness_todos(session_id)
-    _ensure_state_dir()
-    todos_file = _state_file(session_id, "todos")
-    lines = [f"- [{status}] {content}" for status, content in todos]
-    todos_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-
-
 # ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
 #
 # Issue #778 (reopened): the PreCompact snapshot pinned the loop
@@ -8400,7 +8366,6 @@ _HANDLERS: dict[str, list] = {
         handle_track_skill_usage,
         handle_track_cron_jobs,
         handle_read_dedup,
-        handle_track_todos,
         handle_track_agents,
     ],
     "TaskCreated": [

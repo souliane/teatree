@@ -50,6 +50,38 @@ So, to show the harness TODO list, **call the live `TaskList` harness tool yours
 
 If you genuinely cannot sync a file, the list must be built dynamically — and you can: `TaskList` gives you the live list directly. There is no excuse to render the stale store.
 
+## Harness-TODO maintenance — reconcile the live list against the conversation EACH TURN (Non-Negotiable)
+
+`/t3:todos` (above) *shows* the harness TODO list. This section is the other half: *keeping it clean and current*. The harness TODO list is a faithful, live view of everything still on your plate — or it is noise. It only stays faithful if **you, the in-session agent, maintain it**, because nothing else can.
+
+**Why it has to be you, not a background job.** The Task tools (`TaskCreate` / `TaskUpdate` / `TaskList`) bypass `PreToolUse` / `PostToolUse` hooks (the same harness regression — `docs/claude-code-internals.md` § 9), so teatree has no hook that can write the live list and a background loop has no way to reach it. Only the in-session agent — you, holding those tools — can read and write it. There is no teatree-written mirror file to lean on (the old `<session>.todos` materialiser was removed as a stale mistake-source). The maintenance is an in-session discipline, full stop.
+
+**The discipline — run it EVERY turn that touched the list's truth** (the user added or dropped an ask, you finished a step, you started a new one, or you are about to wrap up):
+
+1. **Reconcile against the conversation.** Call `TaskList`, then read back over the conversation since you last reconciled. Every still-open ask the user made — and every concrete step you committed to — must have a TODO. Add the forgotten ones with `TaskCreate`. The list is a view of the *conversation's* open work, not just the work you happened to enqueue.
+2. **Consolidate / dedupe.** Collapse duplicate or overlapping items into one with `TaskUpdate`. Three half-stated items for one piece of work is worse than one faithful item — it hides the real state. Merge them.
+3. **Mark completed items done.** Every finished item moves to `completed` (`TaskUpdate`); the one you are actively on moves to `in_progress`. Never leave a done item sitting `pending`, and never leave a stale `in_progress` lingering after you moved on. A list where status lies is noise.
+
+**Do X, never Y:**
+
+```text
+# do X — reconcile with your OWN tools each turn (the only path that reaches the live list):
+TaskList()                                  # read the live list
+TaskCreate(subject="<forgotten ask>")       # add what the conversation shows is still open
+TaskUpdate(id=<n>, status="completed")      # mark finished work done
+# never Y — do NOT expect a background job / CLI / hook to maintain it; none can reach the live list.
+```
+
+**Deterministic helper — the reconcile-checklist emitter.** Because teatree cannot write the live list, the strongest deterministic aid it can give is to *emit the checklist for you to apply*. Run it when you want the reconcile steps spelled out alongside this session's open teatree tasks (the loop-tracked work that may correspond to TODOs you should mark done):
+
+```bash
+t3 <overlay> tasks reconcile-checklist       # prints the reconcile/dedupe/complete steps + this session's open teatree tasks
+```
+
+It is a read-only emitter — it transitions nothing and writes nothing. You then apply each step with your own `TaskList` / `TaskUpdate` / `TaskCreate` tools. It cannot do the writes for you (the live list is unreachable from a subprocess); it makes sure you do not forget a step and surfaces the teatree tasks worth cross-checking.
+
+**Wall / harness-support note.** Full automation — a background process that keeps the live harness TODO list reconciled without the in-session agent — is **not feasible today**: the Task tools bypass `PreToolUse`/`PostToolUse`, so neither a hook nor a `t3` subprocess can read or write the live, in-memory list. Only the in-session agent holding the tools can. The harness support that would unblock real automation is a hook event that fires on `TaskCreate`/`TaskUpdate`/`TaskList` (or a documented writable store the harness keeps in sync), comparable to the `TaskCreated` event teatree already rides for the fan-out skill-loading gate (#1488). Until that exists, this in-session discipline plus the `reconcile-checklist` emitter is the best feasible mechanism.
+
 ## The teatree-tasks half (a separate, DB-backed concern)
 
 The teatree `Task` rows (the loop's claimable lifecycle work units) are a **separate** store — DB-backed, not your harness list — read with the CLI:

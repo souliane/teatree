@@ -15,14 +15,20 @@ the harness half **dynamically from the live ``TaskList`` harness tool** — not
 from this CLI. Keeping the CLI's session view scoped to the teatree ``Task``
 rows means it can never masquerade as the live session todo list.
 
-``read_harness_todos`` (and its store readers) remain here for the **hook**
-consumers that genuinely cannot call the live ``TaskList`` tool — the
-PreCompact recovery snapshot and the statusline materialiser
-(``hook_router.handle_track_todos`` / ``_write_recovery_snapshot``). Those are
-best-effort, point-in-time captures inside a hook subprocess; a lagging disk
-read is the only option there and an acceptable one (a snapshot is a moment in
-time anyway). The fix is to keep that best-effort disk read OUT of the
-interactive ``/t3:todos`` path, where the agent can and must read the live list.
+``read_harness_todos`` remains here for the one **hook** consumer that
+genuinely cannot call the live ``TaskList`` tool — the PreCompact recovery
+snapshot (``hook_router._durable_session_snapshot``). It reads the harness's
+OWN on-disk store (``~/.claude/tasks/<session>/*.json``); that is a best-effort,
+point-in-time capture inside a hook subprocess, and a lagging disk read is the
+only option there and an acceptable one (a snapshot is a moment in time anyway).
+There is NO teatree-written mirror of the harness list (the old
+``<session>.todos`` materialiser was removed — it was a stale mistake-source
+that nothing load-bearing read). The reconciliation discipline that keeps the
+LIVE harness TODO list faithful belongs to the in-session agent, which applies
+``/t3:todos`` § "Harness-TODO maintenance" (and the ``tasks reconcile-checklist``
+emitter) with its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools. The
+fix is to keep the best-effort disk read OUT of the interactive ``/t3:todos``
+path, where the agent can and must read the live list.
 """
 
 import os
@@ -103,13 +109,77 @@ def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> N
             console.print(f"    task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
 
 
-# ── Harness TODO store readers — for HOOK consumers only ─────────────────────
+# The fixed reconcile-discipline steps. The harness TODO list is live, in-memory
+# state the in-session agent owns through its ``TaskList`` / ``TaskUpdate`` /
+# ``TaskCreate`` tools; teatree cannot read or write it (the Task tools bypass
+# ``PreToolUse`` / ``PostToolUse`` hooks). So this is what a deterministic helper
+# CAN be — the checklist the agent applies with its own tools, not a writer.
+_RECONCILE_STEPS: tuple[str, ...] = (
+    "Call [bold]TaskList[/] now and read the live, in-memory harness TODO list.",
+    (
+        "[bold]Reconcile[/] it against this conversation: every still-open ask the user "
+        "made — and every step you committed to — has a TODO. Add the forgotten ones with "
+        "[bold]TaskCreate[/]."
+    ),
+    (
+        "[bold]Consolidate / dedupe[/]: collapse duplicate or overlapping items into one "
+        "with [bold]TaskUpdate[/]; a single faithful item beats three half-stated ones."
+    ),
+    (
+        "Mark every finished item [bold]completed[/] with [bold]TaskUpdate[/], and the one "
+        "you are on [bold]in_progress[/] — never leave a done item pending or a stale "
+        "in_progress lingering."
+    ),
+)
+
+
+def render_reconcile_checklist(
+    rows: list[TaskRow],
+    *,
+    session_id: str,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the harness-TODO reconciliation checklist for the in-session agent.
+
+    A read-only emitter, not a writer: teatree cannot touch the live harness
+    TODO list (the Task tools bypass the hooks), so this prints the fixed
+    reconcile / dedupe / complete steps the agent applies with its own
+    ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools. The session's open
+    teatree ``Task`` rows print below as completion anchors (work the loop
+    tracked that the agent may need to mark done). Transitions nothing.
+    """
+    console = Console(file=stream) if stream is not None else Console()
+    console.print("[bold]Harness-TODO reconciliation[/] — apply with your OWN harness tools (read-only emitter):")
+    for index, step in enumerate(_RECONCILE_STEPS, start=1):
+        console.print(f"  {index}. {step}")
+
+    open_rows = [row for row in rows if row["status"] in {"pending", "claimed"}]
+    if not session_id:
+        console.print(
+            "[dim]No active harness session — no session-scoped teatree tasks to cross-check; "
+            "still apply the steps above.[/dim]",
+        )
+        return
+    if not open_rows:
+        console.print("[dim]No open teatree tasks for this session to cross-check against.[/dim]")
+        return
+    console.print(f"[bold]Open teatree tasks this session[/] ({len(open_rows)}) — completion anchors:")
+    for row in open_rows:
+        phase = f" {row['phase']}" if row["phase"] else ""
+        reason = row["execution_reason"] or "-"
+        ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
+        console.print(f"  task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
+
+
+# ── Harness TODO store reader — for the PreCompact snapshot only ─────────────
 #
-# These read a best-effort, point-in-time disk snapshot of the harness TODO
-# list. They exist for the PreCompact recovery snapshot and the statusline
-# materialiser, which run inside a hook subprocess and genuinely cannot call the
-# live ``TaskList`` harness tool. They are deliberately NOT used by the
-# interactive ``/t3:todos`` path — see this module's docstring.
+# Reads a best-effort, point-in-time disk snapshot of the harness's OWN TODO
+# store (``~/.claude/tasks/<session>/*.json`` — the harness writes it, teatree
+# does not). It exists for the PreCompact recovery snapshot, which runs inside a
+# hook subprocess and genuinely cannot call the live ``TaskList`` harness tool;
+# a lagging disk read is the only option there and an acceptable one (a snapshot
+# is a moment in time anyway). It is deliberately NOT used by the interactive
+# ``/t3:todos`` path — see this module's docstring.
 
 
 def _harness_tasks_dir() -> pathlib.Path:
@@ -155,42 +225,16 @@ def _read_harness_todos_from_store(session_id: str) -> list[tuple[str, str]]:
     return todos
 
 
-def _read_legacy_todowrite_state(session_id: str) -> list[tuple[str, str]]:
-    """Read the legacy ``TodoWrite`` state file as ``(status, text)``.
-
-    The deprecated PostToolUse hook persisted one ``- [status] content`` line
-    per todo to ``<state_dir>/<session>.todos``. Retained as a fallback;
-    :func:`_read_harness_todos_from_store` is the primary source.
-    """
-    import re  # noqa: PLC0415
-
-    from teatree.agents.handover import get_claude_statusline_state_dir  # noqa: PLC0415
-
-    path = get_claude_statusline_state_dir() / f"{session_id}.todos"
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    line_re = re.compile(r"^- \[(?P<status>[^\]]*)\]\s*(?P<text>.+)$")
-    todos: list[tuple[str, str]] = []
-    for line in raw.splitlines():
-        match = line_re.match(line.strip())
-        if match:
-            todos.append((match.group("status").strip() or "pending", match.group("text").strip()))
-    return todos
-
-
 def read_harness_todos(session_id: str) -> list[tuple[str, str]]:
-    """Read the session's harness TODO list as ``(status, text)`` — HOOK consumers only.
+    """Read the session's harness TODO list as ``(status, text)`` — PreCompact only.
 
-    A best-effort, point-in-time disk snapshot for the PreCompact recovery
-    snapshot and the statusline materialiser. Prefers the harness task store;
-    falls back to the legacy ``TodoWrite`` state file. Empty session id (no
-    resolvable harness session) yields an empty list.
+    A best-effort, point-in-time read of the harness's OWN on-disk TODO store
+    (``~/.claude/tasks/<session>/*.json``) for the PreCompact recovery snapshot.
+    Empty session id (no resolvable harness session) yields an empty list.
 
     Do NOT use this for the interactive ``/t3:todos`` list — it lags the live
     session. The agent builds that list from the live ``TaskList`` harness tool.
     """
     if not session_id:
         return []
-    return _read_harness_todos_from_store(session_id) or _read_legacy_todowrite_state(session_id)
+    return _read_harness_todos_from_store(session_id)

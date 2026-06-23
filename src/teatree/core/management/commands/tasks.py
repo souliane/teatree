@@ -13,7 +13,12 @@ from rich.table import Table
 from teatree.agents.headless import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.core.management.commands.tasks_session_view import STATUS_STYLES, TaskRow, render_session_view
+from teatree.core.management.commands.tasks_session_view import (
+    STATUS_STYLES,
+    TaskRow,
+    render_reconcile_checklist,
+    render_session_view,
+)
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.ref_render import short_title
@@ -342,6 +347,41 @@ class Command(TyperCommand):
             stream=cast("IO[str]", self.stdout),
         )
         return rows
+
+    @command(name="reconcile-checklist")
+    def reconcile_checklist(self) -> None:
+        """Emit the in-session harness-TODO reconciliation checklist (read-only).
+
+        The harness TODO list lives only in the agent's live, in-memory
+        ``TaskList`` state — the Task tools bypass ``PreToolUse`` /
+        ``PostToolUse`` hooks, so a CLI subprocess (and any background loop)
+        can neither read nor write it. Only the in-session agent holding those
+        tools can. This command is therefore NOT the maintainer (it cannot
+        touch the live list); it is the deterministic *checklist emitter* the
+        agent applies with its OWN ``TaskList`` / ``TaskUpdate`` /
+        ``TaskCreate`` tools each turn: reconcile the live list against the
+        conversation, consolidate/dedupe, and mark completed items done.
+
+        It also surfaces this session's open teatree ``Task`` rows as
+        completion anchors (work the loop tracked that the agent may need to
+        mark done). It writes nothing and transitions nothing — running it
+        twice prints the same thing.
+        """
+        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+
+        Task.objects.reap_stale_claims()
+        session_id = current_session_id()
+        qs = (
+            Task.objects.for_claude_session(session_id)
+            .filter(status__in=(Task.Status.PENDING, Task.Status.CLAIMED))
+            .select_related("ticket")
+        )
+        rows = [_task_row(task) for task in qs]
+        render_reconcile_checklist(
+            rows,
+            session_id=session_id,
+            stream=cast("IO[str]", self.stdout),
+        )
 
     @command()
     def claim(self, execution_target: str = "headless", claimed_by: str = "worker") -> int | None:

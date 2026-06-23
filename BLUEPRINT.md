@@ -369,7 +369,7 @@ Local text-to-speech (#2060): `teatree.core.speak.deliver_user_dm()` is the one 
 
 ## 11. Skills & Plugin Architecture
 
-Skills live in `skills/*/` — one `SKILL.md` + optional `references/` per skill. When installed as a plugin, skills are namespaced under `t3:` (e.g. `/t3:code`). The lifecycle skill set is `code`, `debug`, `test`, `review`, `review-request`, `ship`, `ticket`, `workspace`, `followup`, `handover`, `next`, `retro`, `contribute`, `setup`, `platforms`, `rules`. Read-only auxiliary skills sit alongside it: `checking` (what-did-I-miss) and `todos` (the session's task list, via `tasks list --session`).
+Skills live in `skills/*/` — one `SKILL.md` + optional `references/` per skill. When installed as a plugin, skills are namespaced under `t3:` (e.g. `/t3:code`). The lifecycle skill set is `code`, `debug`, `test`, `review`, `review-request`, `ship`, `ticket`, `workspace`, `followup`, `handover`, `next`, `retro`, `contribute`, `setup`, `platforms`, `rules`. Read-only auxiliary skills sit alongside it: `checking` (what-did-I-miss) and `todos` (the session's task list, via `tasks list --session`, plus the in-session harness-TODO maintenance discipline — the agent reconciles its live `TaskList`/`TaskUpdate`/`TaskCreate` list against the conversation each turn, aided by the read-only `tasks reconcile-checklist` emitter; teatree cannot write the live harness list from a hook/subprocess, so this maintenance is an in-session discipline, not a background job).
 
 Skills declare dependencies via YAML frontmatter `requires:` (transitive, topo-sorted) and optional `companions:` (best-effort, warn on miss). Third-party skill frameworks (e.g. superpowers) are absorbed into the `rules` skill rather than delegated, to avoid context duplication.
 
