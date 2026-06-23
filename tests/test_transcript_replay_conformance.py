@@ -255,3 +255,58 @@ def test_conformance_flags_every_plausible_merge_invocation(command: str) -> Non
 def test_conformance_allows_documentation_of_merge(command: str) -> None:
     result = tc._check_no_raw_out_of_band_merge(_bash_events(command))
     assert result.ok, f"conformance invariant over-flagged non-invocation text: {command!r}"
+
+
+# ── no-edit-in-main-clone: t3 ticket-worktree layout recognition (#2648) ──────
+
+
+def _edit_events(file_path: str, tool_name: str = "Edit") -> list[tc.SessionEvent]:
+    return [
+        tc.SessionEvent(
+            line_no=1,
+            type="assistant",
+            is_sidechain=False,
+            timestamp=None,
+            tool_name=tool_name,
+            tool_input={"file_path": file_path},
+            skill=None,
+            hook_event=None,
+            hook_exit_code=None,
+            tool_use_id="t1",
+            raw={},
+        ),
+    ]
+
+
+# Legitimate edits the invariant must NOT flag: the canonical t3 ticket-worktree
+# layout is ``<workspace>/<ticket>-<slug>/<repo>/...`` — a numeric-ticket-prefixed
+# container dir immediately enclosing the repo checkout — plus the legacy
+# ``-wt-`` / ``/worktrees/`` / ``/wt-`` markers that already passed.
+_NO_EDIT_CLEAN = [
+    "/Users/u/workspace/2614-loop-blocked-by-a-staged-duplicate-edit-/teatree/tests/test_x.py",
+    "/Users/u/workspace/2648-eval-transcript-replay-no-edit/teatree/src/teatree/eval/mod.py",
+    "/home/u/workspace/42-fix-foo/teatree/src/mod.py",
+    "/private/home/widget-user/worktrees/teatree/wt-acme/src/mod.py",
+    "/private/tmp/teatree-wt-foo/src/mod.py",
+]
+
+# Genuine main-clone edits the invariant must STILL flag: the repo checkout sits
+# directly under the workspace (no ticket-prefixed container, no worktree marker).
+_NO_EDIT_FLAGGED = [
+    "/Users/u/workspace/souliane/teatree/src/mod.py",
+    "/home/u/workspace/teatree/src/teatree/eval/transcript_conformance.py",
+    "/private/home/widget-user/teatree/src/mod.py",
+]
+
+
+@pytest.mark.parametrize("file_path", _NO_EDIT_CLEAN)
+def test_no_edit_in_main_clone_allows_t3_ticket_worktree(file_path: str) -> None:
+    result = tc._check_no_edit_in_main_clone(_edit_events(file_path))
+    assert result.ok, f"flagged a legitimate t3 ticket-worktree edit as a main-clone edit: {file_path!r}"
+
+
+@pytest.mark.parametrize("file_path", _NO_EDIT_FLAGGED)
+def test_no_edit_in_main_clone_still_flags_true_main_clone(file_path: str) -> None:
+    result = tc._check_no_edit_in_main_clone(_edit_events(file_path))
+    assert not result.ok, f"failed to flag a genuine main-clone edit: {file_path!r}"
+    assert result.offending_index == 0

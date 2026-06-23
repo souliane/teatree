@@ -124,14 +124,35 @@ def _file_path(event: SessionEvent) -> str:
     return value if isinstance(value, str) else ""
 
 
+# Legacy worktree markers (a per-repo checkout under one of these segments is a
+# worktree, not a main clone). The canonical t3 layout
+# (``<ticket>-<slug>/teatree/``) is recognised separately by
+# :func:`_is_t3_ticket_worktree_edit`.
+_LEGACY_WORKTREE_MARKER_RE = re.compile(r"(?:/worktrees/|-wt-|/wt-)")
+
+# The canonical t3 ticket-worktree layout: ``<workspace>/<ticket>-<slug>/teatree/``
+# (`_workspace_ticket_intake.build_branch_name` → ``<number>-<slug>``, the dir
+# immediately enclosing the repo checkout). The container is a numeric-ticket-
+# prefixed dir; ``teatree`` is the repo-leaf checkout that follows it.
+_T3_TICKET_WORKTREE_RE = re.compile(r"/\d+-[^/]+/teatree/")
+
+
+def _is_t3_ticket_worktree_edit(path: str) -> bool:
+    """Whether *path* sits inside a canonical t3 ``<ticket>-<slug>/teatree/`` worktree."""
+    return bool(_T3_TICKET_WORKTREE_RE.search(path))
+
+
 def _check_no_edit_in_main_clone(events: list[SessionEvent]) -> InvariantResult:
     """No ``Edit``/``Write`` targets a teatree-managed main clone (worktree-first).
 
     The replay marks a path as a main-clone target by the ``/teatree/`` repo
-    segment WITHOUT an intervening worktree marker (a ``-wt-`` / ``/worktrees/``
-    / ``/wt-`` segment). When no such signal is present the invariant cannot
-    classify and PASSES (skip-not-fail) — it never guesses a violation from
-    absent config.
+    segment WITHOUT an intervening worktree signal. A worktree is signalled
+    either by a legacy marker (a ``-wt-`` / ``/worktrees/`` / ``/wt-`` segment)
+    or by the canonical t3 ticket-worktree layout — a numeric-ticket-prefixed
+    container dir immediately enclosing the repo checkout
+    (``<workspace>/<ticket>-<slug>/teatree/...``). When no such signal is present
+    the invariant cannot classify and PASSES (skip-not-fail) — it never guesses
+    a violation from absent config.
     """
     for index, event in enumerate(events):
         if event.tool_name not in {"Edit", "Write"}:
@@ -139,7 +160,7 @@ def _check_no_edit_in_main_clone(events: list[SessionEvent]) -> InvariantResult:
         path = _file_path(event)
         if "/teatree/" not in path:
             continue
-        if re.search(r"(?:/worktrees/|-wt-|/wt-)", path):
+        if _LEGACY_WORKTREE_MARKER_RE.search(path) or _is_t3_ticket_worktree_edit(path):
             continue
         return _violation(index, "Edit/Write in a teatree-managed main clone (worktree-first violated)")
     return _ok("no edits in a main clone")
