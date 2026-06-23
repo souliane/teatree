@@ -82,6 +82,48 @@ class TestRefuseMainCloneCommit:
         assert "worktree" in combined.lower()
         assert "t3" in combined
 
+    def test_refuses_staged_tracked_edit_on_default_branch_in_main_clone(self, tmp_path: Path) -> None:
+        """The #2614 gap: a tracked edit staged on the *default* branch slips the branch-only gate.
+
+        The original incident — an agent ``git add``-staged a hand-edit directly
+        in the managed main clone while it was still on ``main``. The branch-only
+        gate exits 0 because the branch matches the default, so the staged edit
+        commits into the shared clone. The worktree-first invariant must cover the
+        staged state, not just the commit-on-a-feature-branch transition.
+        """
+        repo = _make_main_clone(tmp_path)
+        (repo / "f.txt").write_text("staged-edit", encoding="utf-8")
+        _git(repo, "add", "f.txt")
+
+        result = _run_hook(repo)
+
+        assert result.returncode == 1
+        combined = result.stdout + result.stderr
+        assert "worktree" in combined.lower()
+
+    def test_allows_default_branch_in_main_clone_with_no_staged_changes(self, tmp_path: Path) -> None:
+        """Clean default-branch state stays allowed — only a *staged tracked* change refuses.
+
+        A fast-forward ``git pull`` of the managed main clone (the merge-keeping
+        flow) stages nothing, so the gate must not fire on a clean default-branch
+        tree. Guards against the staged-edit gate over-blocking the legit path.
+        """
+        repo = _make_main_clone(tmp_path)
+        result = _run_hook(repo)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_allows_staged_tracked_edit_in_a_worktree(self, tmp_path: Path) -> None:
+        """A staged tracked edit in a *worktree* is fine — the gate is main-clone-only."""
+        repo = _make_main_clone(tmp_path)
+        wt = tmp_path / "wt"
+        _git(repo, "worktree", "add", "-b", "ac/staged-feature", str(wt))
+        (wt / "f.txt").write_text("worktree-staged-edit", encoding="utf-8")
+        _git(wt, "add", "f.txt")
+
+        result = _run_hook(wt)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
     def test_refuses_from_a_subdirectory_of_the_main_clone(self, tmp_path: Path) -> None:
         """Refuse from a subdirectory of the main clone.
 

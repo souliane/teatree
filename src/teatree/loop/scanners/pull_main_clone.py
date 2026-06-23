@@ -19,11 +19,19 @@ the remote — fast-forwards it. An already-current clone is a no-op
 current clone never spams.
 
 The scanner is a strict superset of nothing destructive: it only ever
-``pull --ff-only``. A non-default-branch checkout, a tracked-dirty
-working tree, or a non-fast-forward remote is a *skip with a reason*,
-never a reset / force / stash. This is the same safe primitive as
-:class:`teatree.loop.scanners.self_update.SelfUpdateScanner`; the two
-scanners walk disjoint clone sets (editable installs vs. work-repo
+``pull --ff-only``. A non-default-branch checkout or a non-fast-forward
+remote is a *skip with a reason*, never a reset / force / stash. A
+tracked-dirty working tree is normally a skip too, with ONE content-safe
+exception (#2614): when EVERY dirty path's blob is provably byte-identical
+to ``origin/<default>`` (the change already landed upstream via a proper
+PR — an empty ``git diff origin/<default> -- <path>`` for both the
+worktree and the index), the stale duplicate is auto-discarded and the FF
+pull proceeds. This is data-loss-free by that precondition; any path whose
+blob DIFFERS from origin keeps the whole skip-with-warning — genuine local
+work is never reset, forced, or stashed. This mirrors the prove-then-act
+discipline of :mod:`teatree.cli._update_reconcile` (#2607). It is the same
+safe primitive as :class:`teatree.loop.scanners.self_update.SelfUpdateScanner`;
+the two scanners walk disjoint clone sets (editable installs vs. work-repo
 clones) on independent cadence ledgers.
 
 Decision ladder per clone (per tick):
@@ -32,10 +40,12 @@ Decision ladder per clone (per tick):
 2. repo path missing on disk? → ``failed`` (logged + signal emitted)
 3. ``git fetch origin`` fails? → ``failed``
 4. on a non-default branch? → ``skipped`` (``branch=<name>``)
-5. tracked-dirty working tree? → ``skipped`` (``dirty_tracked``)
-6. up to date already? → ``up_to_date``
-7. ``git pull --ff-only`` advances HEAD? → ``updated``
-8. ``git pull --ff-only`` refuses (non-ff divergence)? → ``failed``
+5. tracked-dirty working tree, every dirty blob == ``origin/<default>``?
+    → auto-discard the stale duplicate(s), then fall through (#2614 self-heal)
+6. tracked-dirty working tree, any dirty blob differs? → ``skipped`` (``dirty_tracked``)
+7. up to date already? → ``up_to_date``
+8. ``git pull --ff-only`` advances HEAD? → ``updated``
+9. ``git pull --ff-only`` refuses (non-ff divergence)? → ``failed``
 
 The post-pass :class:`PullMainCloneMarker` row records the outcome + the
 new HEAD SHA so the cadence gate can short-circuit cheaply on the next
@@ -211,6 +221,9 @@ def _pre_pull_gate(*, repo: Path, pre_sha: str) -> _PullOutcome | None:
         )
     dirty = _tracked_dirty_paths(repo)
     if dirty:
+        if _all_dirty_blobs_match_origin(repo=repo, default_branch=default_branch, dirty=dirty):
+            _discard_paths(repo=repo, paths=dirty)
+            return None
         return _PullOutcome(
             outcome="skipped",
             reason=f"dirty_tracked:{','.join(dirty)[:80]}",
@@ -243,6 +256,67 @@ def _tracked_dirty_paths(repo: Path) -> list[str]:
     """Return paths with uncommitted *tracked* changes — untracked are not blockers."""
     result = _git(repo, "status", "--porcelain")
     return [line[3:] for line in result.stdout.splitlines() if line and not line.startswith("??")]
+
+
+def _all_dirty_blobs_match_origin(*, repo: Path, default_branch: str, dirty: list[str]) -> bool:
+    """True iff discarding EVERY dirty path is provably data-loss-free vs ``origin/<default>`` (#2614).
+
+    The content-safe self-heal precondition. Discarding a path resets both its
+    working-tree blob and its index blob to HEAD, after which the FF pull advances
+    HEAD to ``origin/<default>``. So discarding is data-loss-free for a path iff
+    every blob it would drop is already either upstream or HEAD-about-to-become-
+    upstream. Concretely, a path qualifies only when BOTH conditions hold.
+
+    Working-tree condition: its working-tree blob is byte-identical to
+    ``origin/<default>`` — the visible content the operator sees is already
+    upstream (an EMPTY ``git diff origin/<default> -- <path>``). This is the
+    issue's named check.
+
+    Index condition: its index blob is byte-identical to ``origin/<default>`` (a
+    staged duplicate — the exact incident shape) OR to HEAD (nothing staged
+    beyond HEAD, i.e. an unstaged-only modification) — so the staged blob, if
+    any, also carries no content that is not already upstream.
+
+    Either condition being indeterminate means the path is NOT provably safe, so
+    the WHOLE set fails and the caller keeps the safe skip — never a partial reset.
+    A ``git diff --quiet`` exit >1 (a git error) is treated as not-clean
+    (fail-closed): an inconclusive content check never authorizes a discard.
+    """
+    target = f"origin/{default_branch}"
+    for path in dirty:
+        worktree_vs_origin = _diff_is_empty(repo, target, path)
+        if not worktree_vs_origin:
+            return False
+        index_vs_origin = _diff_is_empty(repo, target, path, cached=True)
+        index_vs_head = _diff_is_empty(repo, "HEAD", path, cached=True)
+        if not (index_vs_origin or index_vs_head):
+            return False
+    return True
+
+
+def _diff_is_empty(repo: Path, target: str, path: str, *, cached: bool = False) -> bool:
+    """True iff ``git diff --quiet [<--cached>] <target> -- <path>`` reports no diff.
+
+    ``--quiet`` exits 0 == no diff, 1 == diff present, >1 == error. Only a clean
+    exit 0 is treated as an empty diff; a git error (>1) is treated as a present
+    diff so an inconclusive check never authorizes a discard (fail-closed).
+    """
+    args = ["diff", "--quiet"]
+    if cached:
+        args.append("--cached")
+    args += [target, "--", path]
+    return _git(repo, *args).returncode == 0
+
+
+def _discard_paths(*, repo: Path, paths: list[str]) -> None:
+    """Discard staged + working-tree changes for *paths*, restoring them to HEAD.
+
+    Reached ONLY after :func:`_all_dirty_blobs_match_origin` proved every path's
+    blob is byte-identical to ``origin/<default>`` — so the discarded content is
+    already upstream and the ensuing FF pull re-materialises it. Data-loss-free
+    by that precondition; this helper never runs against a differing blob.
+    """
+    _git(repo, "restore", "--staged", "--worktree", "--", *paths)
 
 
 __all__ = ["PullMainCloneScanner"]
