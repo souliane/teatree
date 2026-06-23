@@ -10,6 +10,11 @@
 # Example TOML:
 #   [teatree]
 #   banned_terms = ["term1", "term2"]
+#   # Optional company-identifier carve-out (#1415 over-block): the org's OWN
+#   # compound identifiers / internal-URL namespaces — never customer PII. Each
+#   # entry's whole-token run is blanked BEFORE matching, so a shorter banned
+#   # term (a bare org slug) never surfaces inside a longer company identifier.
+#   banned_terms_allowlist = ["myorg-engineering", "myorg-product"]
 #
 # If no config or no banned_terms key, exits 0 (no-op).
 #

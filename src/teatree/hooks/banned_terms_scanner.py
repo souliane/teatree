@@ -291,7 +291,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
 
     if result.returncode == 0:
         return None
-    term = _matched_term(result.stdout)
+    term = _matched_term(result.stdout, _load_allowlist(cfg))
     # Exit 1 with NO parseable BANNED TERM report is the import-crash shape: a
     # Python traceback exits 1 (colliding with "banned term found") but prints
     # nothing on stdout. There is no real match — the scanner crashed — so fail
@@ -301,7 +301,33 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     return term
 
 
-def _matched_term(report: str) -> str | None:
+def _load_allowlist(config_path: Path | None) -> tuple[str, ...]:
+    """Return the ``banned_terms_allowlist`` carve-out array from the TOML config.
+
+    Mirrors :func:`banned_terms_cli._load_allowlist` so the report-attribution
+    path here and the shell scanner's matching path read the SAME carve-out. The
+    shell scanner already blanks allow-listed identifier runs when flagging a
+    line, so this is only used to keep the REPORTED term in sync — a line flagged
+    for a genuine customer codename next to a company identifier must attribute
+    the codename, never the carved-out org slug. Empty (default) is a no-op.
+    """
+    if config_path is None or not config_path.is_file():
+        return ()
+    import tomllib  # noqa: PLC0415
+
+    try:
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    for value in [*data.values(), data]:
+        if isinstance(value, dict) and "banned_terms_allowlist" in value:
+            entries = value["banned_terms_allowlist"]
+            if isinstance(entries, list):
+                return tuple(str(e).strip() for e in entries if str(e).strip())
+    return ()
+
+
+def _matched_term(report: str, allowlist: tuple[str, ...] = ()) -> str | None:
     """Pull the banned term out of ``check-banned-terms.sh``'s report.
 
     The script prints ``BANNED TERM in <file>:`` followed by indented
@@ -310,10 +336,12 @@ def _matched_term(report: str) -> str | None:
     configured term's tokens appear as a whole-token run in a flagged line.
 
     Attribution uses the SAME whole-token matcher the shell scanner used to
-    flag the line (``teatree.hooks.term_match``), so the reported term can
-    never be a substring coincidence (the old ``term in haystack`` check
-    would, for a neutral example, name ``acme`` for a line that only said
-    ``acmecorp``).
+    flag the line (``teatree.hooks.term_match``), with the SAME company-identifier
+    *allowlist* carve-out, so the reported term can never be a substring
+    coincidence (the old ``term in haystack`` check would, for a neutral example,
+    name ``acme`` for a line that only said ``acmecorp``) NOR an allow-listed org
+    slug carved out of a company identifier (it would otherwise name the org slug
+    for a line whose real hit is a customer codename beside that identifier).
     """
     lines = report.splitlines()
     configured: list[str] = []
@@ -323,7 +351,7 @@ def _matched_term(report: str) -> str | None:
             configured = [t.strip() for t in line.removeprefix("Banned terms:").split(",") if t.strip()]
         elif line.startswith("  ") and ":" in line:
             flagged.append(line)
-    term = _matched_token_term("\n".join(flagged), tuple(configured))
+    term = _matched_token_term("\n".join(flagged), tuple(configured), allowlist)
     if term is not None:
         return term
     return configured[0] if configured else None
