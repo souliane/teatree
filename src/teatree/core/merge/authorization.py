@@ -128,32 +128,36 @@ def _assert_clear_authorized(
     #    things satisfy the per-PR sign-off, in this order:
     #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
     #         at merge time (the owner approved this exact diff), OR
-    #      b. the overlay's STANDING autonomy grant resolving to ``full`` — the
-    #         owner recorded once, in config, that this overlay merges
+    #      b. the overlay's STANDING owner grant — ``autonomy = full`` OR an
+    #         explicit ``require_human_approval_to_merge = false`` on a non-
+    #         collaborative tier (:func:`_overlay_grants_standing_substrate_signoff`).
+    #         The owner recorded once, in config, that this overlay merges
     #         end-to-end without a per-PR sign-off (invariant 4 carve-out).
     #    Either way the AGENT executes through this same SHA-bound, audited
     #    transition (invariant 8) — never raw ``gh``, never a human-performed
     #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
     #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
-    #    the carve-out; autonomy=full removes ONLY the per-PR human sign-off.
+    #    the carve-out; the standing grant removes ONLY the per-PR human sign-off.
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
-        and not _overlay_grants_full_substrate_autonomy(clear, resolved_slug=slug)
+        and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
     ):
         detail = (
-            "no human authoriser recorded on the CLEAR and the overlay autonomy is not full"
+            "no human authoriser recorded on the CLEAR and the overlay carries no standing merge-autonomy grant"
             if not clear.human_authorizer
             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
             if presented
-            else "no --human-authorized presented at merge time and the overlay autonomy is not full"
+            else "no --human-authorized presented at merge time and the overlay carries no "
+            "standing merge-autonomy grant"
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
             f"changes require a recorded human approval and are draft-locked "
             f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
-            f"{detail.capitalize()}. The sanctioned paths: `t3 <overlay> autonomy "
-            f"set full` (the standing owner grant), or issue `t3 <overlay> ticket "
+            f"{detail.capitalize()}. The sanctioned paths: a standing grant — `t3 "
+            f"<overlay> autonomy set full` OR `t3 <overlay> config_setting set "
+            f"require_human_approval_to_merge false` — or issue `t3 <overlay> ticket "
             f"clear … --blast-class substrate --human-authorize <id>` (a per-PR "
             f"recorded approval), then the agent executes `t3 <overlay> ticket "
             f"merge <clear_id> [--human-authorized <id>]`"
@@ -211,17 +215,32 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
     return str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
 
 
-def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
-    """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
+def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
+    """Whether the CLEAR's overlay carries the owner's STANDING substrate sign-off.
 
-    Resolves the effective autonomy for the CLEAR's overlay
-    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings`.
-    ``full`` is the owner's standing, recorded grant that this overlay merges
-    end-to-end without a per-PR human sign-off; it satisfies the substrate
-    sign-off in place of a per-CLEAR ``human_authorizer``. Any other tier
-    (``notify`` / ``babysit``), or an unresolvable overlay, is fail-closed:
-    the per-CLEAR human authoriser stays mandatory. The carve-out touches ONLY
-    the per-PR sign-off — every other substrate-merge floor guard runs unchanged.
+    The owner-awareness carve-out (invariant 4): the substrate per-PR human
+    sign-off is satisfied — in place of a per-CLEAR ``human_authorizer`` — by
+    EITHER of the owner's two equivalent standing grants on the CLEAR's overlay
+    (:func:`_resolve_clear_overlay_name` → :func:`get_effective_settings`):
+
+    1.  ``autonomy = full`` — the single-switch end-to-end-trust tier.
+    2.  an explicit ``require_human_approval_to_merge = false`` on a non-collaborative
+        tier — the owner turned auto-merge ON via the canonical knobs
+        (``mode = auto`` + ``require_human_approval_to_merge = false``) without also
+        flipping the newer ``autonomy`` switch. That pin IS the standing "no per-PR
+        human merge approval" grant, so the keystone must honour it the same way it
+        honours ``full`` — otherwise it refuses the owner's OWN green, cold-reviewed
+        substrate PR, the over-block this resolves.
+
+    The ``notify`` tier is excluded: it ALSO collapses ``require_human_approval_to_merge``
+    to ``false``, but it is the COLLABORATIVE surface where the user's MR merges only
+    after a colleague approval — so a ``notify`` substrate CLEAR keeps the per-PR
+    authoriser mandatory. Any other resolution (``babysit`` at the default
+    require-true, or an unresolvable overlay) is fail-closed.
+
+    The carve-out touches ONLY the per-PR sign-off — every other substrate-merge
+    floor guard (independent cold-review reviewer≠maker, reviewed-SHA bind,
+    CI-green, not-draft, never-lockout, privacy scan) runs unchanged.
 
     *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
@@ -234,7 +253,12 @@ def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slu
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
-    return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
+    settings = get_effective_settings(overlay_name=overlay_name)
+    if settings.autonomy is Autonomy.FULL:
+        return True
+    if settings.autonomy is Autonomy.NOTIFY:
+        return False
+    return settings.require_human_approval_to_merge is False
 
 
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:

@@ -181,17 +181,18 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     lost post-hook becomes recoverable rather than a permanent brick.
 
     The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
-    ``human_authorized`` OR the CLEAR's overlay standing at ``autonomy = full``.
-    ``human_authorized`` unlocks the merge **only** when the CLEAR is
-    substrate-class AND its recorded ``human_authorizer`` matches; it can never
-    unlock a non-substrate CLEAR. The ``autonomy = full`` carve-out is the
-    owner's standing, recorded grant that the overlay merges end-to-end without
-    a per-PR sign-off (invariant 4) — every other tier keeps the per-CLEAR
-    authoriser mandatory. Either path runs the identical sanctioned ``t3``
-    transition (invariant 8: even an owner-approved merge goes through this
-    transition, never raw ``gh`` and never a human-performed merge action). The
-    carve-out removes ONLY the per-PR sign-off — the quality/safety floor
-    (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
+    ``human_authorized`` OR the CLEAR's overlay carrying the owner's STANDING
+    merge-autonomy grant — ``autonomy = full`` OR an explicit
+    ``require_human_approval_to_merge = false`` on a non-collaborative tier (see
+    :func:`authorization._overlay_grants_standing_substrate_signoff`); the
+    ``notify`` collaborative tier and the default ``babysit`` keep the per-CLEAR
+    authoriser mandatory. ``human_authorized`` unlocks the merge **only** when
+    the CLEAR is substrate-class AND its recorded ``human_authorizer`` matches;
+    it can never unlock a non-substrate CLEAR. Either path runs the identical
+    sanctioned ``t3`` transition (invariant 8: even an owner-approved merge goes
+    through this transition, never raw ``gh`` and never a human-performed merge
+    action). The carve-out removes ONLY the per-PR sign-off — the quality/safety
+    floor (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
     never-lockout, privacy scan) is untouched.
     """
     authorized_clear = _assert_clear_authorized(
