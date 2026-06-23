@@ -255,6 +255,33 @@ def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
     }
 
 
+# block-bash-mutation-before-planned (PreToolUse Bash, #2425): a change-making
+# Bash command (git commit / push / gh pr create) must ALSO be denied on a
+# STARTED-ticket worktree; a read-only command (git status) must ALLOW even on a
+# STARTED ticket (plans are for changes, not for looking). Shares the
+# _ticket_state_for_cwd monkeypatch arrange with the Edit/Write arm.
+
+
+def _block_bash_mutation_before_planned_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"command": "git commit -m 'wip'"},
+    }
+
+
+def _block_bash_mutation_before_planned_allow(ctx: GateContext) -> dict:
+    # Same STARTED ticket — the allow is earned by the command being read-only,
+    # NOT by the ticket being planned. Proves the change-vs-read split is live.
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"command": "git status"},
+    }
+
+
 # protect-default-branch (PreToolUse Edit/Write/Read): an Edit on a file in a
 # teatree-managed repo checked out on main must block; a worktree branch allows.
 
@@ -707,6 +734,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Edit",
         deny_input=_block_edit_before_planned_deny,
         allow_input=_block_edit_before_planned_allow,
+        arrange=_arrange_block_edit_before_planned,
+    ),
+    GateRow(
+        gate_id="block-bash-mutation-before-planned",
+        handler=router.handle_block_edit_before_planned,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_block_bash_mutation_before_planned_deny,
+        allow_input=_block_bash_mutation_before_planned_allow,
         arrange=_arrange_block_edit_before_planned,
     ),
     GateRow(

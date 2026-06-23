@@ -117,3 +117,104 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
                 state = router._ticket_state_for_cwd(toplevel)
         assert state is None
         assert "plan-gate" in buf.getvalue().lower()
+
+
+class TestBlockBashMutationBeforePlanned(TestCase):
+    """The plan-gate must also block change-making Bash on a STARTED ticket (#2425).
+
+    Edit/Write are not the only way to make a change before a plan exists — a
+    raw ``git commit`` / ``git push`` / ``gh pr create`` lands work just as
+    surely. #2425's acceptance widens the gated set to Bash matching the
+    change-making verbs while leaving read-only investigation
+    (``git status`` / ``git log`` / ``git diff``) ungated. Each test drives the
+    REAL ``_ticket_state_for_cwd`` resolver through a real git repo + Worktree
+    row so the gate runs end to end.
+    """
+
+    def _bash_input(self, cwd: str, command: str) -> dict:
+        return {"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": command}}
+
+    def _started_worktree(self, tmp: str) -> str:
+        toplevel = _git_repo(Path(tmp))
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="42-x",
+            extra={"worktree_path": toplevel},
+        )
+        return toplevel
+
+    def test_denies_git_commit_on_started_ticket(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            blocked, payload = _capture_block(self._bash_input(toplevel, "git commit -m 'wip'"))
+        assert blocked is True
+        assert payload is not None
+        # The deny carries the plan_gate marker so the transcript-eval (#2138)
+        # can distinguish it from the other PreToolUse gates.
+        assert "PLAN GATE" in payload["permissionDecisionReason"]
+
+    def test_denies_git_push_on_started_ticket(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            blocked, _ = _capture_block(self._bash_input(toplevel, "git push origin 42-x"))
+        assert blocked is True
+
+    def test_denies_gh_pr_create_on_started_ticket(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            blocked, _ = _capture_block(self._bash_input(toplevel, "gh pr create --fill"))
+        assert blocked is True
+
+    def test_allows_read_only_git_status_on_started_ticket(self) -> None:
+        """Investigation is never gated — plans are for changes, not for looking."""
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            blocked, _ = _capture_block(self._bash_input(toplevel, "git status"))
+        assert blocked is False
+
+    def test_allows_read_only_git_log_on_started_ticket(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            blocked, _ = _capture_block(self._bash_input(toplevel, "git log --oneline -5"))
+        assert blocked is False
+
+    def test_allows_git_commit_on_planned_ticket(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _git_repo(Path(tmp))
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLANNED)
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="42-x",
+                extra={"worktree_path": toplevel},
+            )
+            blocked, _ = _capture_block(self._bash_input(toplevel, "git commit -m 'wip'"))
+        assert blocked is False
+
+    def test_skip_token_in_command_allows_git_commit_on_started_ticket(self) -> None:
+        """The per-call ``[skip-plan-gate: <reason>]`` escape works on the Bash arm too."""
+        import tempfile  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = self._started_worktree(tmp)
+            command = "git commit -m 'typo fix [skip-plan-gate: trivial mechanical edit]'"
+            buf = StringIO()
+            with patch("sys.stderr", buf):
+                blocked, _ = _capture_block(self._bash_input(toplevel, command))
+        assert blocked is False

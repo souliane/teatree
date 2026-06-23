@@ -97,9 +97,13 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
         "converts loop-driven AskUserQuestion to DeferredQuestion (present-mode deny arm, #1174); "
         "denies only AskUserQuestion, never arbitrary Bash"
     ),
-    # Narrow targeted-command gate — denies only Edit/Write when ticket is in STARTED (pre-plan) state.
+    # Narrow targeted gate — denies Edit/Write + change-making Bash (git commit/push,
+    # pr create/merge) only when the ticket FSM is in STARTED (pre-plan); routes
+    # through _fail_open_or_deny, so this entry is documentation, not the exemption
+    # that satisfies the contract (the fail-open route does).
     "handle_block_edit_before_planned": (
-        "denies Edit/Write only when the ticket FSM is in STARTED (no PlanArtifact yet); fail-open on any error"
+        "denies Edit/Write + change-making Bash only when the ticket FSM is in STARTED "
+        "(no PlanArtifact yet); read-only Bash never gated; fail-open on any error"
     ),
     # NB: handle_enforce_orchestrator_boundary is NO LONGER exempt — both its
     # heavy-Bash arm and its default-ON foreground-Agent arm (#1692) now route

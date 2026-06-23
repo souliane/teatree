@@ -45,6 +45,7 @@ from django_bootstrap import bootstrap_teatree_django
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
+from plan_edit_gate import plan_gate_applies_to_tool, skip_plan_gate_token
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -1552,12 +1553,6 @@ def normalize_skill_name(name: str) -> str:
 # closed).
 _SKILL_LOAD_OK_RE = re.compile(r"\[skill-load-ok:\s*(\S[^\]]*?)\s*\]")
 
-# Per-call escape for the plan-edit gate: ``[skip-plan-gate: <non-empty-reason>]``
-# in the current Edit/Write tool call's new_string/content/file_path unblocks that
-# single call. Mirrors ``_SKILL_LOAD_OK_RE`` / ``_SKIP_SKILL_GATE_RE`` in shape
-# and 512-char truncation scope — buried tokens do not silently escape.
-_SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
-
 
 def _skill_load_ok_token(data: dict) -> str | None:
     """Return the reason from a ``[skill-load-ok: <reason>]`` token, else None.
@@ -1577,30 +1572,6 @@ def _skill_load_ok_token(data: dict) -> str | None:
         if not isinstance(value, str) or not value:
             continue
         match = _SKILL_LOAD_OK_RE.search(value[:512])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
-
-
-def _skip_plan_gate_token(data: dict) -> str | None:
-    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
-
-    Scans the current Edit/Write tool call's ``new_string``, ``content``,
-    and ``file_path`` within the first 512 characters of each field —
-    mirroring :func:`_skill_load_ok_token` — so a buried token in a long
-    body does not silently authorise the call. An empty reason returns None.
-    """
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in ("new_string", "content", "file_path"):
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = _SKIP_PLAN_GATE_RE.search(value[:512])
         if not match:
             continue
         reason = match.group(1).strip()
@@ -1934,18 +1905,29 @@ def _plan_edit_gate_enabled() -> bool:
 
 
 def handle_block_edit_before_planned(data: dict) -> bool:
-    """Deny Edit/Write when the worktree's ticket is still in STARTED state.
+    """Deny a change-making call when the worktree's ticket is STILL in STARTED.
 
-    The FSM already prevents ``code()`` from STARTED (TransitionNotAllowed),
-    so this gate provides an earlier, clearer DX signal: edit attempts while
-    the ticket has not yet been planned are denied with an actionable message.
-    Fail-open on every resolution failure so the gate never wedges an agent
-    when the DB is unavailable or the cwd is not a managed worktree.
+    The FSM already prevents ``code()`` from STARTED (TransitionNotAllowed), so
+    this gate provides an earlier, clearer DX signal: a change attempt while the
+    ticket has not yet been planned is denied with an actionable message. The
+    gated set mirrors #2425: ``Edit``/``Write`` (any file change) AND ``Bash``
+    matching a change-making verb (``git commit``/``push``/``merge``/…,
+    ``gh pr create|merge``, ``glab mr create|merge``). Read-only Bash
+    (``git status``/``log``/``diff``, API reads) is allow-by-default and NEVER
+    gated — plans are for changes, not for looking. Fail-open on every
+    resolution failure so the gate never wedges an agent when the DB is
+    unavailable or the cwd is not a managed worktree.
+
+    The deny reason leads with the ``PLAN GATE:`` marker so the shared
+    :func:`_deny_gate_id` derives a stable ``plan-gate`` gate id — distinguishing
+    this gate from the other PreToolUse gates for the transcript-conformance eval
+    (#2138) and the circuit breaker, with no new schema field.
 
     **Never-lockout escapes (mirror the skill-loading gate):**
 
     1. Per-call token ``[skip-plan-gate: <non-empty-reason>]`` in ``new_string``
-        / ``content`` / ``file_path`` (first 512 chars) — the trivial escape.
+        / ``content`` / ``file_path`` (Edit/Write) or ``command`` (Bash), first
+        512 chars — the trivial escape.
     2. Config kill-switch ``[teatree] plan_edit_gate_enabled = false`` in
         ``~/.teatree.toml`` (flipped by ``t3 <overlay> gate plan disable``).
 
@@ -1953,8 +1935,7 @@ def handle_block_edit_before_planned(data: dict) -> bool:
     master ``danger_gate_fail_open``) is unchanged — the escapes above are
     ADDITIONS to it, not replacements.
     """
-    tool_name = data.get("tool_name", "")
-    if tool_name not in {"Edit", "Write"}:
+    if not plan_gate_applies_to_tool(data):
         return False
     if not _plan_edit_gate_enabled():
         return False
@@ -1965,13 +1946,16 @@ def handle_block_edit_before_planned(data: dict) -> bool:
         return False
     if state != "started":
         return False
-    if reason_token := _skip_plan_gate_token(data):
+    if reason_token := skip_plan_gate_token(data):
         sys.stderr.write(f"NOTE: plan-gate edit-block skipped via [skip-plan-gate: {reason_token}].\n")
         return False
+    tool_name = data.get("tool_name", "")
+    action = "change" if tool_name == "Bash" else tool_name
     reason = (
-        f"{tool_name} denied: the worktree's ticket is still in STARTED state — "
-        "a plan must be recorded before coding can begin. "
-        "Run the planning phase first so the ticket advances to PLANNED. "
+        f"PLAN GATE: {tool_name} denied — the worktree's ticket is still in STARTED state, "
+        f"so this {action} would land before a plan exists. "
+        "A plan must be recorded before coding can begin: run the planning phase "
+        '(or `t3 <overlay> ticket plan <id> "<text>"`) so the ticket advances to PLANNED. '
         "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
     )
     return _fail_open_or_deny(data, reason)
