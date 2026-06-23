@@ -8,12 +8,15 @@ teatree model / FSM / DB write is real.
 """
 
 import json
+import shutil
+import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.db import OperationalError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.core.merge import (
@@ -29,7 +32,20 @@ from teatree.core.merge import (
     merge_ticket_pr,
     record_merge_and_advance,
 )
-from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket
+from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket, Worktree
+from tests.teatree_core.conftest import CommandOverlay
+
+_GIT = shutil.which("git") or "git"
+
+_IMMEDIATE_BACKEND = {
+    "TASKS": {
+        "default": {
+            "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+        },
+    },
+}
+
+_MOCK_OVERLAY = {"t3-teatree": CommandOverlay()}
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -1111,3 +1127,127 @@ class TestTransientMergeRetry(TestCase):
             execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
 
         assert attempts["merge"] >= 3, "an empty/truncated merge response was not retried"
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    subprocess.run([_GIT, "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+class TestMergeKeystoneTearsDownWorktree(TestCase):
+    """A successful ``ticket merge`` automatically tears down the ticket's worktree(s).
+
+    Post-merge teardown must never be a manual step: when the §17.4 keystone
+    advances the Ticket FSM to MERGED, the ``post_transition`` receiver enqueues
+    ``execute_teardown`` which removes the git worktree, deletes the branch,
+    drops the per-worktree DB, and reaps the Worktree row.
+
+    The shape modelled here is the real post-squash-merge state: the source
+    branch carries commits on NO remote (a squash-merge lands a new SHA on main
+    and the forge deletes the source ref), so the #706 data-loss guard would
+    refuse a plain teardown. Because the work is provably merged at this point,
+    the keystone tears down with the force-equivalent bypass so the
+    squash-merged/deleted-remote branch never blocks cleanup. Best-effort: a
+    teardown that errors must never fail or roll back the already-successful
+    merge.
+
+    Only the ``gh`` merge subprocess is stubbed; the git worktree, the FSM, the
+    signal wiring, and the teardown worker are all real.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        # Bare repo acts as the shared remote (origin).
+        self.remote = tmp_path / "remote.git"
+        self.remote.mkdir()
+        _run_git("init", "-q", "--bare", "-b", "main", cwd=self.remote)
+
+        # Mirror the real layout: the source clone lives at
+        # ``$T3_WORKSPACE_DIR/souliane/teatree`` (matching the ``repo_path``).
+        self.repo_main = self.workspace / "souliane" / "teatree"
+        self.repo_main.mkdir(parents=True)
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.branch = "ac-teatree-859-merge"
+        self.wt_path = self.workspace / self.branch / "teatree"
+        _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
+        # The post-squash-merge shape: a commit on the branch that exists on NO
+        # remote (the source ref was deleted by the forge after the squash-merge).
+        (self.wt_path / "file.txt").write_text("merged work", encoding="utf-8")
+        _run_git("add", "file.txt", cwd=self.wt_path)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "merged work", cwd=self.wt_path)
+
+    def _merged_ticket_with_worktree(self) -> Ticket:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/859",
+            state=Ticket.State.IN_REVIEW,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch=self.branch,
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        return ticket
+
+    def _merge(self, clear: MergeClear) -> MergeOutcome:
+        # ``execute_teardown`` is enqueued via ``transaction.on_commit`` in the
+        # post_transition receiver, so under ``TestCase``'s outer transaction the
+        # callback only fires inside ``captureOnCommitCallbacks(execute=True)``.
+        with (
+            override_settings(**_IMMEDIATE_BACKEND),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.cleanup.load_config") as cleanup_config,
+            patch("teatree.core.cleanup.get_overlay_for_worktree") as cleanup_overlay,
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            cleanup_config.return_value.user.workspace_dir = self.workspace
+            cleanup_overlay.return_value.get_cleanup_steps.return_value = []
+            cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
+            return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+    def test_successful_merge_tears_down_the_worktree(self) -> None:
+        ticket = self._merged_ticket_with_worktree()
+        clear = _clear(ticket, slug="souliane/teatree")
+
+        outcome = self._merge(clear)
+
+        ticket.refresh_from_db()
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        # The git worktree is gone from disk and the Worktree row is reaped.
+        assert not self.wt_path.exists(), "the merged ticket's git worktree was not torn down"
+        assert not Worktree.objects.filter(branch=self.branch).exists()
+
+    def test_teardown_error_does_not_fail_the_merge(self) -> None:
+        # Best-effort: a teardown step that errors (a DB drop timeout, an overlay
+        # cleanup hook failure) must NEVER fail or roll back the already-successful
+        # merge — the ticket stays MERGED and the merge outcome stands.
+        ticket = self._merged_ticket_with_worktree()
+        clear = _clear(ticket, slug="souliane/teatree")
+
+        with patch(
+            "teatree.core.cleanup._drop_worktree_db",
+            side_effect=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("dropdb timed out")),
+        ):
+            outcome = self._merge(clear)
+
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        # The merge succeeded and stands despite the teardown step error.
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert MergeAudit.objects.filter(clear=clear).exists()

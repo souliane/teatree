@@ -201,7 +201,7 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
 
 @task()
-def execute_teardown(ticket_id: int) -> TransitionResult:
+def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult:
     """Tear down worktrees for a MERGED ticket.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -212,6 +212,18 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
     detail but do not advance the ticket. The ticket stays in MERGED until
     the operator either fixes the underlying issue and re-enqueues, or moves
     on with ``retrospect()`` once the residual state is acceptable.
+
+    ``force`` controls the #706 unsynced-commit data-loss guard. The default
+    ``False`` keeps the guard on for the ``mark_merged`` path — the FSM can read
+    MERGED there without a confirmed forge merge (a manual advance, or async ship
+    that never drained #707/#708), so a branch with commits on no remote must not
+    be destroyed. The merge keystone fires this with ``force=True`` (from
+    ``reconcile_merged``): the PR merge is provably confirmed on the forge before
+    the FSM reaches MERGED, so a squash-merge that landed a new SHA on main and
+    deleted the source ref — leaving the local branch reading as "on no remote" —
+    must not block cleanup. The #835/#1506 recovery-capture backstop still runs
+    under force, so even the bypass captures a restorable bundle before the
+    destructive remove.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -223,7 +235,7 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeTeardown(ticket).run()
+        result = WorktreeTeardown(ticket, force=force).run()
         if not result.ok:
             logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
