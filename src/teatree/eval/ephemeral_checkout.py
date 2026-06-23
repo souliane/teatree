@@ -72,9 +72,12 @@ def provision_ephemeral_checkout() -> Iterator[Path]:
 
     The yielded directory is a detached worktree: its own working tree and
     detached ``HEAD`` absorb every file write, branch switch, and commit the SDK
-    sub-agent makes, so none reach the developer's real clone or live worktrees.
-    The worktree is removed (``git worktree remove --force``) and its temp parent
-    deleted on context exit, success or failure.
+    sub-agent makes, so the real clone's and live worktrees' working trees and
+    branch refs stay untouched. A detached worktree shares the real clone's
+    object store, so a sub-agent commit can leave loose (garbage-collectable)
+    objects there — that is harmless garbage, not corruption of the developer's
+    work. The worktree is removed (``git worktree remove --force``) and its temp
+    parent deleted on context exit, success or failure.
 
     Raises :class:`EphemeralCheckoutError` when the real teatree root cannot be
     located or the worktree cannot be created — the spawning scenario then refuses

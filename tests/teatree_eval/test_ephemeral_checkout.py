@@ -21,6 +21,7 @@ from teatree.eval.ephemeral_checkout import (
     resolve_teatree_repo_root,
 )
 from teatree.utils.run import run_checked
+from tests._git_repo import make_git_repo, run_git
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -29,19 +30,11 @@ def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 def _init_repo(root: Path) -> None:
     """A minimal real git repo with one commit, mirroring the teatree src layout."""
-    root.mkdir(parents=True, exist_ok=True)
+    make_git_repo(root, initial_commit=False)
     (root / "src" / "teatree").mkdir(parents=True, exist_ok=True)
     (root / "src" / "teatree" / "__init__.py").write_text("VERSION = '0'\n", encoding="utf-8")
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-    }
-    _git(root, "init", "-q")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "init", env=env)
+    run_git(root, "add", "-A")
+    run_git(root, "commit", "-qm", "init")
 
 
 class TestResolveTeatreeRepoRoot:
