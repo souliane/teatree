@@ -22,6 +22,7 @@ from teatree.core.management.commands.tasks_session_view import (
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.ref_render import short_title
+from teatree.core.session_identity import current_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +333,6 @@ class Command(TyperCommand):
         ``/t3:todos`` builds the harness half from the live ``TaskList`` harness
         tool instead, so this view never masquerades as the live session list.
         """
-        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
-
         session_id = current_session_id()
         qs = Task.objects.for_claude_session(session_id).select_related("ticket")
         if status:
@@ -373,8 +372,6 @@ class Command(TyperCommand):
         PENDING/CLAIMED task is untouched, so running it twice prints the same
         thing.
         """
-        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
-
         Task.objects.reap_stale_claims()
         session_id = current_session_id()
         qs = (
