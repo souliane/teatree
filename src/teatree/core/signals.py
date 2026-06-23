@@ -27,6 +27,17 @@ _TICKET_TRANSITION_TASKS: dict[str, str] = {
     "retrospect": "execute_retrospect",
 }
 
+# Transitions whose teardown is provably-merged and may force-bypass the #706
+# unsynced-commit guard. ``reconcile_merged`` is fired ONLY by the merge keystone
+# (``merge.execution.record_merge_and_advance``) AFTER the irreversible forge
+# merge confirmed — a squash-merge lands a new SHA on main and deletes the source
+# ref, leaving the local branch reading as "on no remote", so a non-force
+# teardown would refuse and strand the worktree. ``mark_merged`` is intentionally
+# excluded: it can advance the FSM to MERGED without a confirmed forge merge
+# (manual advance, async ship never drained #707/#708), so its teardown keeps the
+# data-loss guard on.
+_FORCE_TEARDOWN_TRANSITIONS: frozenset[str] = frozenset({"reconcile_merged"})
+
 _WORKTREE_TRANSITION_TASKS: dict[str, str] = {
     "provision": "execute_worktree_provision",
     "start_services": "execute_worktree_start",
@@ -236,7 +247,14 @@ def _enqueue_ticket_transition_task(
 
     executor = getattr(tasks_mod, executor_name)
     ticket_pk = int(instance.pk)
-    transaction.on_commit(lambda: executor.enqueue(ticket_pk))
+    if name in _FORCE_TEARDOWN_TRANSITIONS:
+        # The keystone-confirmed merge path force-bypasses the #706 unsynced
+        # guard so a squash-merged/deleted-remote branch never strands the
+        # worktree. The recovery-capture backstop (#835/#1506) still protects
+        # any genuine work-to-lose under force.
+        transaction.on_commit(lambda: executor.enqueue(ticket_pk, force=True))
+    else:
+        transaction.on_commit(lambda: executor.enqueue(ticket_pk))
 
 
 def _enqueue_worktree_transition_task(

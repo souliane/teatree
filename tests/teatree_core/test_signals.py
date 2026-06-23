@@ -510,3 +510,37 @@ class TestLogTicketTransitionFaultIsolation(TestCase):
             ticket.save()
 
         assert any("audit table gone" in line for line in captured.output)
+
+
+class TestTeardownForceThreadedByTransition(TestCase):
+    """The keystone-merge teardown force-bypasses the #706 guard; ``mark_merged`` does not.
+
+    The post_transition receiver maps both ``mark_merged`` and ``reconcile_merged``
+    to ``execute_teardown``. Only ``reconcile_merged`` — fired exclusively by the
+    merge keystone after the forge confirmed the merge — may force-bypass the
+    unsynced-commit guard so a squash-merged/deleted-remote branch never strands
+    the worktree. ``mark_merged`` can advance the FSM to MERGED without a confirmed
+    forge merge (manual advance, async ship never drained #707/#708), so it keeps
+    the guard on (``force=False``).
+    """
+
+    def _force_kwarg_for(self, transition_name: str) -> object:
+        import teatree.core.tasks as tasks_mod  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        with (
+            patch.object(tasks_mod, "execute_teardown") as teardown,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            getattr(ticket, transition_name)()
+            ticket.save()
+        teardown.enqueue.assert_called_once()
+        return teardown.enqueue.call_args.kwargs.get("force", "absent")
+
+    def test_reconcile_merged_enqueues_teardown_with_force_true(self) -> None:
+        assert self._force_kwarg_for("reconcile_merged") is True
+
+    def test_mark_merged_enqueues_teardown_with_force_false(self) -> None:
+        # ``mark_merged`` enqueues without ``force=True`` — the data-loss guard
+        # stays on for the non-keystone path.
+        assert self._force_kwarg_for("mark_merged") == "absent"
