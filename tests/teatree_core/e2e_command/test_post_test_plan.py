@@ -1353,6 +1353,78 @@ class TestLinkApiTemplate(TestCase):
         assert "| Dev | Local |" not in body
 
 
+class TestLinkApiStepsRendered(TestCase):
+    """A steps-only ``link-api`` manifest (steps, no link/code embeds) must render the steps."""
+
+    def _steps_only_state(self) -> _render.TestPlanState:
+        return {
+            "ticket": "8521",
+            "title": "API check",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "steps": {"Create user": ["POST /users", "Assert 201", "GET /users/1"]},
+            "template": "link-api",
+        }
+
+    def test_renders_how_to_test_steps_when_no_media(self) -> None:
+        body = _render.render_body(self._steps_only_state())
+        visible = body.split("-->")[-1]
+        assert "### Create user" in visible
+        assert "**How to test:**" in visible
+        assert "1. POST /users" in visible
+        assert "2. Assert 201" in visible
+        assert "3. GET /users/1" in visible
+
+    def test_renders_steps_via_production_path(self) -> None:
+        manifest = _render.parse_manifest(
+            json.dumps(
+                {
+                    "ticket": "8521",
+                    "template": "link-api",
+                    "local": {"commits": {"client": "aabb"}},
+                    "workflows": [{"workflow": "Create user", "steps": ["POST /users", "Assert 201"]}],
+                }
+            )
+        )
+        merged = _render.merge_state(
+            _render.empty_state(ticket="8521", title="t"),
+            manifest=manifest,
+            title="API check",
+            embeds={"dev": {}, "local": {}},
+        )
+        body = _render.render_body(merged)
+        visible = body.split("-->")[-1]
+        assert "### Create user" in visible
+        assert "1. POST /users" in visible
+        assert "2. Assert 201" in visible
+
+    def test_renders_steps_alongside_link_and_code(self) -> None:
+        state: _render.TestPlanState = {
+            "ticket": "8521",
+            "title": "API check",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": _local_side(
+                {
+                    "Create user": {
+                        "video_md": "",
+                        "image_md": [],
+                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/8521)",
+                        "code_md": '```json\n{"id": 1}\n```',
+                    }
+                }
+            ),
+            "steps": {"Create user": ["POST /users", "Assert 201"]},
+            "template": "link-api",
+        }
+        body = _render.render_body(state)
+        visible = body.split("-->")[-1]
+        assert "1. POST /users" in visible
+        assert "[POST /users]" in visible
+        assert "```json" in visible
+
+
 class TestNeverEmptyRender(TestCase):
     def test_raises_on_empty_state(self) -> None:
         state: _render.TestPlanState = {

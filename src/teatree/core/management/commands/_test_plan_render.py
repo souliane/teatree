@@ -562,10 +562,11 @@ def _render_browser_click_first(state: TestPlanState) -> list[str]:
 
 
 def _render_link_api(state: TestPlanState) -> list[str]:
-    """``link-api`` template: link_md + code_md per workflow, no table, no images."""
+    """``link-api`` template: How-to-test steps then link_md + code_md per workflow, no table, no images."""
     lines: list[str] = []
     for workflow in _workflow_names(state):
         lines.extend((f"### {workflow}", ""))
+        lines.extend(_test_plan_block(state, workflow))
         for side in (state["dev"], state["local"]):
             embed = side.get("workflows", {}).get(workflow, {})
             link_md = embed.get("link_md", "") if embed else ""
