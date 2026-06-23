@@ -125,6 +125,37 @@ if [ -n "$session_id" ]; then
     fi
 fi
 
+# Statusline render-age freshness gate. A frozen statusline (dead/stopped
+# loop) is otherwise displayed verbatim and the reader sees a confident,
+# hours-old loop line ("next tick 4m" that never comes). Mirrors the cutoff
+# arithmetic in src/teatree/loop/statusline_staleness.py inline (this hook
+# stays a fast, dependency-light read and cannot import Python) — the cutoff is
+# max(2*cadence, 300s); the render age is the `rendered_at` epoch in
+# tick-meta.json. tests/test_claude_statusline.py pins both implementations to
+# the same boundary so they cannot drift. Fails open (no banner) on a missing
+# sidecar / absent rendered_at / no jq, so a freshness probe never blanks the
+# line. Computed here, emitted as the first output line below.
+_stale_banner=""
+_sl_meta="${target%.txt}-meta.json"
+[ ! -r "$_sl_meta" ] && _sl_meta="$(dirname "$target")/tick-meta.json"
+if [ -r "$_sl_meta" ] && command -v jq >/dev/null 2>&1; then
+    _rendered_at=$(jq -r '.rendered_at // empty' "$_sl_meta" 2>/dev/null)
+    _sl_cadence=$(jq -r '.cadence // empty' "$_sl_meta" 2>/dev/null)
+    if [[ "$_rendered_at" =~ ^[0-9]+$ ]]; then
+        [[ "$_sl_cadence" =~ ^[0-9]+$ ]] || _sl_cadence=720
+        _sl_cutoff=$(( 2 * _sl_cadence ))
+        [ "$_sl_cutoff" -lt 300 ] && _sl_cutoff=300
+        _sl_age=$(( $(date +%s) - _rendered_at ))
+        if [ "$_sl_age" -gt "$_sl_cutoff" ] 2>/dev/null; then
+            if (( _sl_age < 3600 )); then _sl_age_h="$(( _sl_age / 60 ))m"
+            elif (( _sl_age < 86400 )); then _sl_age_h="$(( _sl_age / 3600 ))h"
+            else _sl_age_h="$(( _sl_age / 86400 ))d"
+            fi
+            _stale_banner=$'\033[1;31m'"⚠ statusline STALE — last rendered ${_sl_age_h} ago; loop may be stopped (run \`t3 loop tick\`)"$'\033[0m'
+        fi
+    fi
+fi
+
 _CYN=$'\033[1;36m'
 _GRN=$'\033[1;32m'
 _YLW=$'\033[1;33m'
@@ -570,6 +601,9 @@ if [ -n "$_skills_segment" ]; then
     fi
 fi
 
+# The staleness banner (when the render is frozen) leads every other line so
+# the reader sees the warning before the out-of-date content it qualifies.
+[ -n "$_stale_banner" ] && printf '%s\n' "$_stale_banner"
 [ -n "$header" ] && printf '%s\n' "$header"
 [ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
 

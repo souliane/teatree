@@ -107,10 +107,18 @@ def tick_command(
 @loop_app.command("status")
 def status_command() -> None:
     """Show the loop's last-rendered statusline."""
+    from teatree.loop.statusline_staleness import staleness_banner_for  # noqa: PLC0415
+
     target = default_path()
     if not target.is_file():
         typer.echo("No statusline rendered yet — run `t3 loop tick` first.")
         raise typer.Exit(code=1)
+    # A frozen statusline (dead/stopped loop) is displayed verbatim — prepend a
+    # RED staleness banner when the render age crosses the cutoff so the reader
+    # is never misled by a confident, hours-old loop line. Fails open to "".
+    banner = staleness_banner_for(target, cadence_seconds=cadence_seconds())
+    if banner:
+        typer.echo(banner)
     typer.echo(target.read_text(encoding="utf-8"))
 
 

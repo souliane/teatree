@@ -146,8 +146,20 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     cadence = cadence_seconds()
     next_epoch = int(started_at.timestamp()) + cadence
     freshness = _collect_repo_freshness()
+    # ``rendered_at`` is the render-age source the statusline freshness gate
+    # (teatree.loop.statusline_staleness + the shell hook) reads to surface a
+    # STALE banner when a dead/stopped loop leaves the file frozen. It is the
+    # tick's own start epoch — the moment this statusline was produced.
     meta_path.write_text(
-        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness, "cost_chip": _cost_chip()})
+        json.dumps(
+            {
+                "next_epoch": next_epoch,
+                "cadence": cadence,
+                "rendered_at": int(started_at.timestamp()),
+                "freshness": freshness,
+                "cost_chip": _cost_chip(),
+            }
+        )
         + "\n",
         encoding="utf-8",
     )

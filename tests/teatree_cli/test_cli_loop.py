@@ -4,6 +4,7 @@ Tick-specific tests live in ``teatree_core/test_loop_tick_command.py`` since
 tick is now a Django management command.
 """
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -106,6 +107,33 @@ class TestStatusCommand:
         assert result.exit_code == 0
         assert "running 0.0.1" in result.stdout
         assert "check 1" in result.stdout
+
+    def _statusline_with_meta(self, tmp_path: Path, *, rendered_at: float) -> Path:
+        statusline_file = tmp_path / "sl.txt"
+        statusline_file.write_text("t3-teatree 3m · next tick 4m\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(
+            f'{{"cadence": 720, "rendered_at": {rendered_at}}}\n', encoding="utf-8"
+        )
+        return statusline_file
+
+    def test_prepends_stale_banner_for_frozen_render(self, tmp_path: Path) -> None:
+        statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 6 * 3600)
+        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+            result = runner.invoke(loop_app, ["status"])
+
+        assert result.exit_code == 0
+        assert "statusline STALE" in result.stdout
+        # The frozen content still follows the banner.
+        assert "next tick 4m" in result.stdout
+
+    def test_no_banner_for_fresh_render(self, tmp_path: Path) -> None:
+        statusline_file = self._statusline_with_meta(tmp_path, rendered_at=time.time() - 30)
+        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
+            result = runner.invoke(loop_app, ["status"])
+
+        assert result.exit_code == 0
+        assert "statusline STALE" not in result.stdout
+        assert "next tick 4m" in result.stdout
 
 
 class TestCadenceParser:
