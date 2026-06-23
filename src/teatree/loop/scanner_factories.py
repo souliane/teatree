@@ -36,9 +36,9 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     SlackBroadcastsScanner,
     SlackMergeNotifier,
+    TaskSweepScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
-    TodoSweepScanner,
 )
 from teatree.loop.tick_resolvers import (
     _allowed_url_prefixes_for_host,
@@ -383,26 +383,26 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
     )
 
 
-def _todo_sweep_scanner_for(backend: OverlayBackends) -> TodoSweepScanner | None:
-    """Build a per-overlay TODO-sweep scanner (#129).
+def _task_sweep_scanner_for(backend: OverlayBackends) -> TaskSweepScanner | None:
+    """Build a per-overlay task-sweep scanner (#129).
 
-    Verifies open Task rows against their artifact's terminal state via the
-    overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has no
-    Python class (the scanner needs the overlay object as its terminal-state
-    oracle) or when ``todo_sweep_disabled = true`` (the escape hatch). The
+    Verifies open teatree Task rows against their artifact's terminal state via
+    the overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has
+    no Python class (the scanner needs the overlay object as its terminal-state
+    oracle) or when ``task_sweep_disabled = true`` (the escape hatch). The
     per-task recheck/idempotency window comes from
-    ``todo_sweep_recheck_interval_hours``.
+    ``task_sweep_recheck_interval_hours``.
     """
     overlay = backend.overlay
     if overlay is None:
         return None
     settings = _effective_settings_for_overlay(backend.name)
-    if settings.todo_sweep_disabled:
+    if settings.task_sweep_disabled:
         return None
-    return TodoSweepScanner(
+    return TaskSweepScanner(
         overlay=overlay,
         overlay_name=backend.name,
-        recheck_interval_hours=settings.todo_sweep_recheck_interval_hours,
+        recheck_interval_hours=settings.task_sweep_recheck_interval_hours,
     )
 
 

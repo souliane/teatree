@@ -163,10 +163,10 @@ def _complete_open_reviewing_tasks(ticket: object) -> int:
     return completed
 
 
-def todo_completion(payload: ActionPayload) -> None:
-    """Complete a swept task whose artifact is terminal — RE-checking first (#129).
+def task_completion(payload: ActionPayload) -> None:
+    """Complete a swept teatree task whose artifact is terminal — RE-checking first (#129).
 
-    The ``todo_sweep`` scanner emits ``todo.completion_detected`` after
+    The ``task_sweep`` scanner emits ``task.completion_detected`` after
     ``is_issue_done`` returned True for the task's issue. Because dispatch runs
     after every scanner and the artifact could (in principle) re-open between
     the scan and this handler, the handler re-verifies the terminal state
@@ -187,7 +187,7 @@ def todo_completion(payload: ActionPayload) -> None:
     if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
         return
     if not _artifact_still_terminal(task):
-        logger.info("todo_completion: task %s artifact no longer terminal — skipping completion", task_id)
+        logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)
         return
     task.complete()
     logger.info("Auto-completed task %s (artifact confirmed terminal: %s)", task_id, payload.get("issue_url", "?"))
@@ -212,14 +212,14 @@ def _artifact_still_terminal(task: "Task") -> bool:
         overlay = get_overlay(task.ticket.overlay or None)
         host = get_code_host_for_url(overlay, issue_url)
     except Exception:
-        logger.exception("todo_completion: could not resolve code host for %s", issue_url)
+        logger.exception("task_completion: could not resolve code host for %s", issue_url)
         return False
     if host is None:
         return False
     try:
         issue_data = host.get_issue(issue_url)
     except Exception:  # noqa: BLE001 — any host error fails CLOSED (no completion), never crashes the tick.
-        logger.warning("todo_completion: re-check fetch failed for %s", issue_url)
+        logger.warning("task_completion: re-check fetch failed for %s", issue_url)
         return False
     if not isinstance(issue_data, dict) or "error" in issue_data:
         return False
@@ -322,7 +322,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "reviewer_task_self_authored": reviewer_task_self_authored,
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
     "free_resources": free_resources,
-    "todo_completion": todo_completion,
+    "task_completion": task_completion,
     "close_dead_issue": close_dead_issue,
     # #2190 idle-stack reaper + acquisition-queue drainer. The scanners only
     # flag candidates; the actual ``stop_services`` / ``start_services`` runs

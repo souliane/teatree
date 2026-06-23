@@ -21,7 +21,7 @@ from teatree.loop.scanner_factories import (
     _pr_sweep_scanner_for,
     _pull_main_clone_scanner_for,
     _slack_broadcasts_scanner_for,
-    _todo_sweep_scanner_for,
+    _task_sweep_scanner_for,
 )
 from teatree.loop.scanner_factory_config import (
     _gitlab_approvals_enabled,
@@ -105,9 +105,9 @@ def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         ),
     )
     jobs.extend(_tickets_per_host_jobs(backend, tag))
-    todo_sweep_scanner = _todo_sweep_scanner_for(backend)
-    if todo_sweep_scanner is not None:
-        jobs.append(_ScannerJob(scanner=todo_sweep_scanner, overlay=tag))
+    task_sweep_scanner = _task_sweep_scanner_for(backend)
+    if task_sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=task_sweep_scanner, overlay=tag))
     return jobs
 
 

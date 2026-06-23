@@ -1,4 +1,4 @@
-"""Tests for the ``todo_completion`` mechanical handler — re-check before complete (#129).
+"""Tests for the ``task_completion`` mechanical handler — re-check before complete (#129).
 
 The handler RE-verifies the artifact's terminal state against the live code
 host before advancing the FSM (fail-CLOSED: any uncertainty blocks the
@@ -21,7 +21,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase
-from teatree.loop.mechanical import todo_completion
+from teatree.loop.mechanical import task_completion
 from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -52,7 +52,7 @@ class _Overlay(OverlayBase):
         return issue_data.get("state") in {"closed", "completed", "merged"}
 
 
-class _TodoCompletionHarness(TestCase):
+class _TaskCompletionHarness(TestCase):
     OVERLAY = "t3-acme"
     URL = "https://example.com/issues/100"
 
@@ -73,13 +73,13 @@ class _TodoCompletionHarness(TestCase):
         )
 
 
-class RecheckBeforeCompleteTests(_TodoCompletionHarness):
+class RecheckBeforeCompleteTests(_TaskCompletionHarness):
     def test_completes_task_when_artifact_still_terminal(self) -> None:
         task = self._task()
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
 
@@ -89,7 +89,7 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
         host = _Host(issues_by_url={self.URL: {"state": "open"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING, "a re-opened artifact must NOT auto-complete"
 
@@ -98,7 +98,7 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
         host = _Host(raise_on_fetch=True)
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING, "uncertainty fails CLOSED at the completion gate"
 
@@ -106,7 +106,7 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
         task = self._task()
         overlay_patch, host_patch = self._patch(None)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
@@ -115,7 +115,7 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
         host = _Host(issues_by_url={self.URL: {"error": "404"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
@@ -124,7 +124,7 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
         host = _Host(issues_by_url={"": {"state": "closed"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": ""})
+            task_completion({"task_id": task.pk, "issue_url": ""})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
@@ -159,7 +159,7 @@ class MultiOverlayResolutionTests(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
             patch("teatree.backends.loader.get_code_host_for_url", return_value=host),
         ):
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED, (
             "with two overlays registered, the handler must resolve the owning overlay "
@@ -167,13 +167,13 @@ class MultiOverlayResolutionTests(TestCase):
         )
 
 
-class IdempotencyAndResilienceTests(_TodoCompletionHarness):
+class IdempotencyAndResilienceTests(_TaskCompletionHarness):
     def test_already_completed_task_no_ops(self) -> None:
         task = self._task(status=Task.Status.COMPLETED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})  # must not raise
+            task_completion({"task_id": task.pk, "issue_url": self.URL})  # must not raise
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
 
@@ -182,15 +182,15 @@ class IdempotencyAndResilienceTests(_TodoCompletionHarness):
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         overlay_patch, host_patch = self._patch(host)
         with overlay_patch, host_patch:
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
 
     def test_missing_task_id_no_ops(self) -> None:
-        todo_completion({})  # must not raise
+        task_completion({})  # must not raise
 
     def test_unknown_task_id_no_ops(self) -> None:
-        todo_completion({"task_id": 999999, "issue_url": self.URL})  # must not raise
+        task_completion({"task_id": 999999, "issue_url": self.URL})  # must not raise
 
     def test_overlay_resolution_failure_blocks_completion(self) -> None:
         task = self._task()
@@ -198,6 +198,6 @@ class IdempotencyAndResilienceTests(_TodoCompletionHarness):
             patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")),
             patch("teatree.backends.loader.get_code_host_for_url", return_value=_Host()),
         ):
-            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+            task_completion({"task_id": task.pk, "issue_url": self.URL})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING

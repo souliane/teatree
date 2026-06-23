@@ -223,7 +223,7 @@ def _classify_disposition(
 
 
 def _is_orphaned_task(payload: Payload) -> bool:
-    """True when *payload* belongs to a ``todo.orphaned`` operator-review advisory.
+    """True when *payload* belongs to a ``task.orphaned`` operator-review advisory.
 
     The scanner emits one signal per unverifiable task; without collapse,
     N orphaned tasks produce N identical-shaped rows in ``action_needed``
@@ -282,7 +282,7 @@ def _classify_one(c: _ClassifiedActions, action: DispatchAction, identity: _Cano
     """Route one statusline action into the right classified bucket.
 
     Pre-condition: ``action.kind == "statusline"``, not a slack user reply,
-    and not a ``todo.orphaned`` advisory (both filtered by the caller).
+    and not a ``task.orphaned`` advisory (both filtered by the caller).
     """
     payload = action.payload if isinstance(action.payload, dict) else {}
     url_str = _str_field(payload, "url")
