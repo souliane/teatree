@@ -75,7 +75,8 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
     persists it as a BUDGET ceiling to the tick-meta sidecar for the live
     claimer to read.
 
-    The ``[teatree] orchestrate_claim_enabled`` toggle (default OFF) gates the
+    The DB-home ``orchestrate_claim_enabled`` toggle (default OFF; ``t3
+    <overlay> config_setting set orchestrate_claim_enabled true``) gates the
     planner:
 
     *   **OFF (default)** — no budget key is written (any prior one is cleared),

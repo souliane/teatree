@@ -206,11 +206,13 @@ def is_clean_ignored(branch: str, *, overlay: str | None = None) -> bool:
     reaper, the CREATED-state row loop, and the branch-prune passes — so the
     never-reap guarantee lives in one place rather than three drifting copies.
 
-    ``clean_ignore`` is per-overlay overridable, so the patterns are resolved
-    through :func:`get_effective_settings` for the row's own overlay (``overlay``
-    = ``worktree.overlay``) or, on the repo-scoped branch-prune path, the active
-    overlay (``overlay=None``). Resolution per pattern set: ``[overlays.<name>]``
-    override, global ``[teatree] clean_ignore``, empty default.
+    The DB-home ``clean_ignore`` setting is per-overlay overridable, so the
+    patterns are resolved through :func:`get_effective_settings` for the row's
+    own overlay (``overlay`` = ``worktree.overlay``) or, on the repo-scoped
+    branch-prune path, the active overlay (``overlay=None``). Resolution per
+    pattern set: the overlay-scope ``ConfigSetting`` row, then the global-scope
+    row, then the empty default. A ``[teatree]`` / ``[overlays.<name>]`` TOML
+    value is ignored on read.
     """
     patterns = get_effective_settings(overlay).clean_ignore
     return any(fnmatch(branch, pattern) for pattern in patterns)

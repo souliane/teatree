@@ -23,9 +23,11 @@ Those carve-outs are the whole purpose of the ``on_behalf_post_mode``
 setting: it keeps the user in control of their colleague-visible voice
 while letting the agent draft freely and self-document on its own work.
 
-The setting is ``[teatree] on_behalf_post_mode`` (default
+The DB-home ``on_behalf_post_mode`` setting (default
 :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, per-overlay
-overridable, env override via ``T3_ON_BEHALF_POST_MODE``). This module
+overridable, env override via ``T3_ON_BEHALF_POST_MODE``) is set with
+``t3 <overlay> config_setting set on_behalf_post_mode <value>``; a
+``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on read. This module
 is intentionally a thin layer depending only on :mod:`teatree.config`
 — that lets the resolver be imported from anywhere (including
 ``teatree.cli`` and ``teatree.core``) without creating circular

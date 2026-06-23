@@ -133,9 +133,10 @@ def resolve_max_concurrent_local_stacks() -> int:
     """Resolve the effective limit, applying env + per-overlay + global chain.
 
     Mirrors the other gates that consume ``get_effective_settings`` —
-    a single read-through call so ``T3_OVERLAY_NAME`` and
-    ``[overlays.<name>] max_concurrent_local_stacks`` overrides win
-    over the global ``[teatree]`` value.
+    a single read-through call so ``T3_OVERLAY_NAME`` and the per-overlay
+    ``ConfigSetting`` row for the DB-home ``max_concurrent_local_stacks``
+    setting win over its global-scope row. A ``[teatree]`` /
+    ``[overlays.<name>]`` TOML value is ignored on read.
     """
     return int(get_effective_settings().max_concurrent_local_stacks)
 

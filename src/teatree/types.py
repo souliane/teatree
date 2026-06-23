@@ -16,7 +16,7 @@ class SlackVoiceClassifierMode(enum.StrEnum):
     """Strictness of the Slack voice/token mismatch classifier (#1395).
 
     Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config`
-    can parse the ``[teatree] slack_voice_classifier_mode`` setting
+    can parse the DB-home ``slack_voice_classifier_mode`` setting
     without importing the classifier implementation in
     :mod:`teatree.backends.slack.voice_classifier` (the
     ``teatree.backends → teatree.config`` direction is forbidden by

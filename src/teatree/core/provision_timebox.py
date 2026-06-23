@@ -45,8 +45,10 @@ logger = logging.getLogger(__name__)
 
 # Sensible default ceiling for one provisioning subprocess. A DSLR restore +
 # migrate on a healthy graph completes well within this; a forked graph or a
-# genuine hang blows past it and gets aborted + alerted. Overridable via
-# ``[teatree] provision_step_timeout_seconds`` (per-overlay overridable).
+# genuine hang blows past it and gets aborted + alerted. Overridable via the
+# DB-home ``provision_step_timeout_seconds`` setting (``t3 <overlay>
+# config_setting set provision_step_timeout_seconds <n>``, per-overlay
+# overridable); a ``[teatree]`` TOML value is ignored on read.
 DEFAULT_STEP_TIMEOUT_SECONDS = 1800
 
 # Heartbeat cadence: emit "still <step>… (Nm elapsed)" this often while the op
