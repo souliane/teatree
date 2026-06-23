@@ -280,6 +280,24 @@ $EDITOR src/app/thing.py                            # edit here — isolated bra
 
 Before any edit, confirm you are not in the main clone: `git rev-parse --show-toplevel` must resolve to a ticket worktree path, never the main clone root.
 
+#### Urgent relief from a misbehaving gate — kill switch, never a live clone edit
+
+When a teatree gate running in the main clone is **actively blocking you** and you need immediate relief while the durable fix is prepared in a worktree, the answer is the **out-of-repo kill switch**, not a live edit to the clone's `src/` or `hooks/`. The kill switch flips a config flag in `~/.teatree.toml` — it touches no tracked file, so it gives instant relief without polluting the shared base:
+
+```bash
+# RIGHT — disable the gate out-of-repo (kill switch / config), no clone edit:
+t3 <overlay> gate disable                  # flips [teatree] orchestrator_bash_gate_enabled = false in ~/.teatree.toml
+# the command is unconditionally runnable EVEN WHEN the gate is enabled (it never
+# matches the heavy-Bash denylist), so it is the always-available self-rescue.
+# re-enable once the durable fix lands:
+t3 <overlay> gate enable
+
+# WRONG — never sed/edit the gate code in the running main clone for relief:
+sed -i 's/raise/pass/' ~/workspace/<overlay>/teatree/hooks/gate.py   # FORBIDDEN — live clone edit
+```
+
+If even `t3 … gate disable` is somehow blocked, set `orchestrator_bash_gate_enabled = false` under `[teatree]` in `~/.teatree.toml` from any external shell — the kill switch is a plain config line and needs no `t3` at all. Other gates have their own switches: `t3 <overlay> gate skill-loading disable` for the skill-loading gate. See [`references/troubleshooting.md`](references/troubleshooting.md) § self-rescue for the full recovery path. The durable fix still goes through a worktree off `origin/main` (above) — the kill switch buys time, it is not the fix.
+
 ### Full Worktree Isolation (Non-Negotiable)
 
 Each worktree gets its own **isolated environment** — dedicated database, ports, containers, and env files. Never share infrastructure between worktrees:

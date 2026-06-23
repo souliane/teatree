@@ -52,6 +52,17 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("architecture_design_tach_check_before_new_import", "skills/architecture-design/SKILL.md", ("tach check",)),
     ("debug_diffs_base_before_blaming_code", "skills/debug/SKILL.md", ("git diff origin/main", "git log")),
     ("doc_update_discipline_cli_command", "skills/ship/SKILL.md", ("docs: n/a", "README.md")),
+    # urgent-relief scenario loads ONLY skills/workspace/SKILL.md, and the grader
+    # keys on `t3 … gate disable` / `kill.?switch` (the out-of-repo kill switch).
+    # That command lived only in a reference file (not auto-loaded by agent_path)
+    # and in src/, never in the loaded skill — so the model under test could not
+    # find it: the impossible-matcher class. The skill prose must name the kill
+    # switch so the metered scenario is gradeable for the right reason.
+    (
+        "main_clone_kill_switch_for_live_relief_not_edit",
+        "skills/workspace/SKILL.md",
+        ("gate disable", "kill switch"),
+    ),
     # under_load behavioural-drift scenarios — the canonical action must counter the
     # specific drift the metered transcript showed (run #18: each below was 0/3 or flaky
     # because the loaded prose did not pin down the exact shortcut the model took).
