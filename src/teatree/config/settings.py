@@ -349,8 +349,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "max_worktree_gc_per_tick": _parse_strict_int,
     "allow_destructive_ram": _parse_strict_bool,
     "ram_kill_allowlist": _parse_str_list,
-    "todo_sweep_disabled": _parse_strict_bool,
-    "todo_sweep_recheck_interval_hours": _parse_strict_int,
+    "task_sweep_disabled": _parse_strict_bool,
+    "task_sweep_recheck_interval_hours": _parse_strict_int,
     "max_concurrent_local_stacks": _parse_strict_int,
     "provision_step_timeout_seconds": _parse_strict_int,
     "idle_stack_reaper_disabled": _parse_strict_bool,
@@ -833,15 +833,17 @@ class UserSettings:
     # process is ever killed even when ``allow_destructive_ram = true``.
     allow_destructive_ram: bool = False
     ram_kill_allowlist: list[str] = field(default_factory=list)
-    # #129 TODO-sweep scanner — per-overlay; verifies open Task rows against
-    # their artifact's terminal state (issue closed / PR merged) and completes
-    # only on durable proof, never in bulk and never on a stale read. On by
-    # default; ``todo_sweep_disabled = true`` is the escape hatch.
-    # ``todo_sweep_recheck_interval_hours`` is the per-task anti-thrash window
+    # #129 task-sweep scanner — per-overlay; verifies open teatree Task rows
+    # against their artifact's terminal state (issue closed / PR merged) and
+    # completes only on durable proof, never in bulk and never on a stale read.
+    # On by default; ``task_sweep_disabled = true`` is the escape hatch.
+    # ``task_sweep_recheck_interval_hours`` is the per-task anti-thrash window
     # (a task swept within it is skipped this tick) and the idempotency window
-    # for the atomic ``last_sweep_check_ts`` stamp.
-    todo_sweep_disabled: bool = False
-    todo_sweep_recheck_interval_hours: int = 1
+    # for the atomic ``last_sweep_check_ts`` stamp. Pre-rename, these keys were
+    # ``todo_sweep_*``; a stored row under the old name still resolves via the
+    # backward-compat alias in ``config/resolution.py``.
+    task_sweep_disabled: bool = False
+    task_sweep_recheck_interval_hours: int = 1
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
     # Each running worktree (``services_up``/``ready``) holds docker
     # containers, browsers, language servers, and CI processes — on a

@@ -256,7 +256,7 @@ class TestInflightPrRows:
 
 
 def _orphaned(task_id: int, overlay: str = "teatree") -> DispatchAction:
-    """Build a ``todo.orphaned`` statusline action as the dispatcher emits it."""
+    """Build a ``task.orphaned`` statusline action as the dispatcher emits it."""
     return DispatchAction(
         kind="statusline",
         zone="action_needed",
@@ -271,7 +271,7 @@ def _orphaned(task_id: int, overlay: str = "teatree") -> DispatchAction:
 
 
 class TestOrphanedTaskCollapse:
-    """N ``todo.orphaned`` signals collapse to ONE summary line in action_needed."""
+    """N ``task.orphaned`` signals collapse to ONE summary line in action_needed."""
 
     def test_single_orphaned_task_renders_one_summary_line(self) -> None:
         zones = zones_for([_orphaned(42)], colorize=False)

@@ -1,11 +1,11 @@
-"""DB-backed tests for ``TodoSweepScanner`` — per-item artifact verification (#129).
+"""DB-backed tests for ``TaskSweepScanner`` — per-item artifact verification (#129).
 
-The TODO list is the open ``Task`` rows (PENDING/CLAIMED) whose ticket has an
-``issue_url``. The sweep verifies each task's artifact terminal state via the
-overlay's ``is_issue_done`` hook and emits ``todo.completion_detected`` only on
-durable proof, ``todo.orphaned`` on uncertainty (fail-OPEN, never
-auto-complete), and nothing for a genuinely-open task. Idempotency rides an
-atomic ``last_sweep_check_ts`` conditional UPDATE.
+The candidate set is the open teatree ``Task`` rows (PENDING/CLAIMED) whose
+ticket has an ``issue_url`` — never the harness TODO list. The sweep verifies
+each task's artifact terminal state via the overlay's ``is_issue_done`` hook and
+emits ``task.completion_detected`` only on durable proof, ``task.orphaned`` on
+uncertainty (fail-OPEN, never auto-complete), and nothing for a genuinely-open
+task. Idempotency rides an atomic ``last_sweep_check_ts`` conditional UPDATE.
 
 Real Task/Ticket/Session rows against the test DB; only the code host
 (``get_code_host_for_url``) is mocked — it is the unstoppable network external.
@@ -24,7 +24,7 @@ from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.overlay import OverlayBase
-from teatree.loop.scanners.todo_sweep import TodoSweepScanner
+from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -63,18 +63,18 @@ class _SweepHarness(TestCase):
     OVERLAY = "t3-acme"
     URL = "https://example.com/issues/100"
 
-    def _scanner(self, *, recheck_interval_hours: int = 1) -> TodoSweepScanner:
-        return TodoSweepScanner(
+    def _scanner(self, *, recheck_interval_hours: int = 1) -> TaskSweepScanner:
+        return TaskSweepScanner(
             overlay=_Overlay(),
             overlay_name=self.OVERLAY,
             recheck_interval_hours=recheck_interval_hours,
         )
 
     def _patch_host(self, host: _Host):
-        return patch("teatree.loop.scanners.todo_sweep.get_code_host_for_url", return_value=host)
+        return patch("teatree.loop.scanners.task_sweep.get_code_host_for_url", return_value=host)
 
     def _patch_no_host(self):
-        return patch("teatree.loop.scanners.todo_sweep.get_code_host_for_url", return_value=None)
+        return patch("teatree.loop.scanners.task_sweep.get_code_host_for_url", return_value=None)
 
     def _task(
         self,
@@ -100,7 +100,7 @@ class CompletionDetectionTests(_SweepHarness):
         with self._patch_host(host):
             signals = self._scanner().scan()
         assert len(signals) == 1
-        assert signals[0].kind == "todo.completion_detected"
+        assert signals[0].kind == "task.completion_detected"
         assert signals[0].payload["task_id"] == task.pk
 
     def test_open_issue_emits_nothing(self) -> None:
@@ -115,7 +115,7 @@ class CompletionDetectionTests(_SweepHarness):
         with self._patch_host(host):
             signals = self._scanner().scan()
         assert len(signals) == 1
-        assert signals[0].kind == "todo.completion_detected"
+        assert signals[0].kind == "task.completion_detected"
 
     def test_completed_task_is_not_swept(self) -> None:
         self._task(status=Task.Status.COMPLETED)
@@ -147,7 +147,7 @@ class CompletionDetectionTests(_SweepHarness):
         self._task(overlay="overlay-a", url=f"{self.URL}/a")
         self._task(overlay="overlay-b", url=f"{self.URL}/b")
         host = _Host(issues_by_url={f"{self.URL}/a": {"state": "closed"}, f"{self.URL}/b": {"state": "closed"}})
-        scanner = TodoSweepScanner(overlay=_Overlay(), overlay_name="")
+        scanner = TaskSweepScanner(overlay=_Overlay(), overlay_name="")
         with self._patch_host(host):
             signals = scanner.scan()
         assert len(signals) == 2
@@ -164,7 +164,7 @@ class CompletionDetectionTests(_SweepHarness):
 
 
 class FailOpenTests(_SweepHarness):
-    """Uncertainty never auto-completes — it emits ``todo.orphaned``."""
+    """Uncertainty never auto-completes — it emits ``task.orphaned``."""
 
     def test_network_error_emits_orphaned_not_completion(self) -> None:
         self._task()
@@ -172,14 +172,14 @@ class FailOpenTests(_SweepHarness):
         with self._patch_host(host):
             signals = self._scanner().scan()
         assert len(signals) == 1
-        assert signals[0].kind == "todo.orphaned"
+        assert signals[0].kind == "task.orphaned"
 
     def test_missing_code_host_emits_orphaned(self) -> None:
         self._task()
         with self._patch_no_host():
             signals = self._scanner().scan()
         assert len(signals) == 1
-        assert signals[0].kind == "todo.orphaned"
+        assert signals[0].kind == "task.orphaned"
 
     def test_error_payload_emits_orphaned(self) -> None:
         self._task()
@@ -187,7 +187,7 @@ class FailOpenTests(_SweepHarness):
         with self._patch_host(host):
             signals = self._scanner().scan()
         assert len(signals) == 1
-        assert signals[0].kind == "todo.orphaned"
+        assert signals[0].kind == "task.orphaned"
 
     def test_non_dict_issue_payload_emits_orphaned(self) -> None:
         self._task()
@@ -195,7 +195,7 @@ class FailOpenTests(_SweepHarness):
         host.issues_by_url = {}  # get_issue returns the {"error": ...} default
         with self._patch_host(host), patch.object(host, "get_issue", return_value=["not", "a", "dict"]):
             signals = self._scanner().scan()
-        assert signals[0].kind == "todo.orphaned"
+        assert signals[0].kind == "task.orphaned"
 
 
 class NeverBulkCompleteTests(_SweepHarness):
@@ -215,7 +215,7 @@ class NeverBulkCompleteTests(_SweepHarness):
         )
         with self._patch_host(host):
             signals = self._scanner().scan()
-        completed = [s for s in signals if s.kind == "todo.completion_detected"]
+        completed = [s for s in signals if s.kind == "task.completion_detected"]
         assert len(completed) == 2
         assert sorted(host.get_issue_calls) == sorted(urls), "every task fetched its own artifact"
 
@@ -263,7 +263,7 @@ class IdempotencyTests(_SweepHarness):
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         scanner = self._scanner()
         # Force the atomic claim to report 0 rows updated (a concurrent winner).
-        with self._patch_host(host), patch.object(TodoSweepScanner, "_claim_for_sweep", return_value=False):
+        with self._patch_host(host), patch.object(TaskSweepScanner, "_claim_for_sweep", return_value=False):
             assert scanner.scan() == []
         assert host.get_issue_calls == []
 
@@ -295,5 +295,5 @@ class PreMigrationResilienceTests(_SweepHarness):
 
 
 class ScannerNameTests(TestCase):
-    def test_name_is_todo_sweep(self) -> None:
-        assert TodoSweepScanner(overlay=_Overlay()).name == "todo_sweep"
+    def test_name_is_task_sweep(self) -> None:
+        assert TaskSweepScanner(overlay=_Overlay()).name == "task_sweep"

@@ -1,19 +1,21 @@
-"""TODO-list sweep scanner — verify open tasks against artifact terminal state (#129).
+"""Task-sweep scanner — verify open teatree Task rows against artifact terminal state (#129).
 
-"The TODO list" is the set of open :class:`Task` rows (status ``PENDING`` or
-``CLAIMED``) whose ``Ticket`` carries an ``issue_url``. Each tick the scanner
-walks those tasks and, for each, verifies the underlying artifact's *terminal*
-state — is the upstream issue closed / the PR merged? — via the overlay's
-``is_issue_done()`` hook (the same independent-evidence check
-``TicketCompletionScanner`` uses for post-ship tickets). Completion is driven
-by **durable artifact proof**, never a self-reported claim, and never in bulk:
-each task is verified individually before its FSM advances.
+This scanner reconciles teatree **Task** rows (the DB-backed lifecycle work
+units), never the agent harness's working list of session items. The candidate
+set is the open :class:`Task` rows (status ``PENDING`` or ``CLAIMED``) whose
+``Ticket`` carries an ``issue_url``. Each tick the scanner walks those tasks
+and, for each, verifies the underlying artifact's *terminal* state — is the
+upstream issue closed / the PR merged? — via the overlay's ``is_issue_done()``
+hook (the same independent-evidence check ``TicketCompletionScanner`` uses for
+post-ship tickets). Completion is driven by **durable artifact proof**, never a
+self-reported claim, and never in bulk: each task is verified individually
+before its FSM advances.
 
 Per-item outcome. A **terminal** artifact (issue closed / PR merged) emits
-``todo.completion_detected`` → the ``todo_completion`` mechanical handler
+``task.completion_detected`` → the ``task_completion`` mechanical handler
 RE-checks terminal state, then completes the task (advancing the ticket FSM via
 ``Task.complete``). A **network/auth error or no code host** emits
-``todo.orphaned`` (statusline-only) — fail-OPEN: never auto-complete on
+``task.orphaned`` (statusline-only) — fail-OPEN: never auto-complete on
 uncertainty, surface for operator review. **Otherwise** no signal is emitted
 (the task is genuinely still open).
 
@@ -46,21 +48,21 @@ _OPEN_STATUSES = ("pending", "claimed")
 
 
 @dataclass(slots=True)
-class TodoSweepScanner:
-    """Verify open Task items against artifact terminal state and advance the FSM.
+class TaskSweepScanner:
+    """Verify open teatree Task rows against artifact terminal state and advance the FSM.
 
     ``overlay`` is the active :class:`OverlayBase` (its ``is_issue_done`` hook
     is the terminal-state oracle); ``overlay_name`` scopes the candidate query
     to one overlay's tasks. ``recheck_interval_hours`` is the per-task
     anti-thrash window — a task verified within the window is skipped this tick.
-    The scanner is a pure signal collector; the ``todo_completion`` mechanical
+    The scanner is a pure signal collector; the ``task_completion`` mechanical
     handler performs the FSM transition (with its own re-check).
     """
 
     overlay: OverlayBase
     overlay_name: str = ""
     recheck_interval_hours: int = 1
-    name: str = "todo_sweep"
+    name: str = "task_sweep"
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
@@ -72,7 +74,7 @@ class TodoSweepScanner:
                     continue
                 signal = self._verify(task)
             except Exception:
-                logger.exception("TodoSweepScanner failed on task %s", task.pk)
+                logger.exception("TaskSweepScanner failed on task %s", task.pk)
                 continue
             if signal is not None:
                 signals.append(signal)
@@ -121,13 +123,13 @@ class TodoSweepScanner:
         try:
             issue_data = host.get_issue(ticket.issue_url)
         except Exception:  # noqa: BLE001 — any host error is fail-OPEN, never auto-complete.
-            logger.warning("todo_sweep: failed to fetch issue for task %s (%s)", task.pk, ticket.issue_url)
+            logger.warning("task_sweep: failed to fetch issue for task %s (%s)", task.pk, ticket.issue_url)
             return self._orphaned_signal(task)
         if not isinstance(issue_data, dict) or "error" in issue_data:
             return self._orphaned_signal(task)
         if self.overlay.is_issue_done(issue_data):
             return ScanSignal(
-                kind="todo.completion_detected",
+                kind="task.completion_detected",
                 summary=f"Task {task.pk} — artifact done upstream ({ticket.ticket_number})",
                 payload={
                     "task_id": task.pk,
@@ -140,7 +142,7 @@ class TodoSweepScanner:
 
     def _orphaned_signal(self, task: "Task") -> ScanSignal:
         return ScanSignal(
-            kind="todo.orphaned",
+            kind="task.orphaned",
             summary=f"Task {task.pk} — artifact state unverifiable, needs operator review",
             payload={
                 "task_id": task.pk,
@@ -151,4 +153,4 @@ class TodoSweepScanner:
         )
 
 
-__all__ = ["TodoSweepScanner"]
+__all__ = ["TaskSweepScanner"]

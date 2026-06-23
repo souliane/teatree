@@ -112,11 +112,11 @@ class JobsForDomainPartitionTestCase(TestCase):
             jobs_for_domain(Domain.TICKETS, None)
 
 
-class JobsForDomainTodoSweepTestCase(TestCase):
-    """``todo_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
+class JobsForDomainTaskSweepTestCase(TestCase):
+    """``task_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
 
-    The pre-seam mini-loops dropped ``todo_sweep`` (no mini-loop reproduced
-    :func:`teatree.loop.scanner_factories._todo_sweep_scanner_for`). The exhaustive
+    The pre-seam mini-loops dropped ``task_sweep`` (no mini-loop reproduced
+    :func:`teatree.loop.scanner_factories._task_sweep_scanner_for`). The exhaustive
     partition assigns it to ``Domain.TICKETS`` (it verifies overlay-scoped Task
     rows, the same surface as the active/stale ticket scanners).
     """
@@ -135,10 +135,10 @@ class JobsForDomainTodoSweepTestCase(TestCase):
             overlay=overlay,
         )
 
-    def test_todo_sweep_owned_by_tickets_domain(self) -> None:
+    def test_task_sweep_owned_by_tickets_domain(self) -> None:
         backend = self._backend_with_python_overlay()
         tickets_names = {job.scanner.name for job in jobs_for_domain(Domain.TICKETS, backend)}
-        assert "todo_sweep" in tickets_names
+        assert "task_sweep" in tickets_names
 
 
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"

@@ -250,12 +250,26 @@ def _db_overlay_overrides(overlay_name: str = "") -> dict[str, Any]:
     return _coerce_db_rows(_load_overlay_rows(overlay_name))
 
 
+# Retired ConfigSetting keys mapped to their current ``UserSettings`` field.
+# A row written under the old name on an install that pre-dates a rename still
+# resolves to the renamed field. The canonical key always wins when both rows
+# exist (the alias only fills a gap). ``todo_sweep_*`` → ``task_sweep_*`` (#129):
+# the loop unit reconciles teatree Task rows, not the harness TODO list, so the
+# settings follow the scanner's name.
+_LEGACY_SETTING_ALIASES: dict[str, str] = {
+    "todo_sweep_disabled": "task_sweep_disabled",
+    "todo_sweep_recheck_interval_hours": "task_sweep_recheck_interval_hours",
+}
+
+
 def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     """Coerce stored ``ConfigSetting`` values via the DB-home parser registry.
 
     Returns ``{field: coerced}`` for every row whose key is a registered
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; rows for unknown / non-DB
-    keys are dropped so a stray row never mutates the resolved settings.
+    keys are dropped so a stray row never mutates the resolved settings. A row
+    written under a retired key (``_LEGACY_SETTING_ALIASES``) is folded onto its
+    current field name; the canonical key wins when both rows are present.
 
     A per-row parser failure means a stored value is invalid for its setting's
     type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
@@ -264,15 +278,26 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     never swallowed back to the default with no signal.
     """
     overrides: dict[str, Any] = {}
+    fields_from_canonical_key: set[str] = set()
     for key, value in rows.items():
-        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+        is_alias = key in _LEGACY_SETTING_ALIASES
+        field_name = _LEGACY_SETTING_ALIASES.get(key, key)
+        parser = OVERLAY_OVERRIDABLE_SETTINGS.get(field_name)
         if parser is None:
             continue
+        # The canonical key is authoritative; a legacy-alias row only fills a gap
+        # and never overwrites a value the current key already supplied — order-
+        # independent, so it holds regardless of which row is iterated first.
+        if is_alias and field_name in fields_from_canonical_key:
+            continue
         try:
-            overrides[key] = parser(value)
+            coerced = parser(value)
         except (ValueError, TypeError, AttributeError) as exc:
             msg = f"Invalid stored ConfigSetting value for {key!r}: {exc}"
             raise ValueError(msg) from exc
+        overrides[field_name] = coerced
+        if not is_alias:
+            fields_from_canonical_key.add(field_name)
     return overrides
 
 

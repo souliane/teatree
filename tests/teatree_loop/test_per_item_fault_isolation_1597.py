@@ -13,7 +13,7 @@ Covered scanners:
 - TicketCompletionScanner
 - RedCardScanner (reaction loop + DM loop)
 - SlackReviewIntentScanner (reaction loop + mention loop)
-- TodoSweepScanner
+- TaskSweepScanner
 - IssueImplementerScanner
 - SlackDmInboundScanner
 """
@@ -38,8 +38,8 @@ from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
+from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
-from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -597,11 +597,11 @@ class TestSlackReviewIntentMentionIsolation(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TodoSweepScanner
+# TaskSweepScanner
 # ---------------------------------------------------------------------------
 
 
-class _TodoOverlay(OverlayBase):
+class _TaskSweepOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return []
 
@@ -617,11 +617,11 @@ URL_SWEEP_A = "https://example.com/issues/sweep/1"
 URL_SWEEP_B = "https://example.com/issues/sweep/2"
 
 
-class TestTodoSweepIsolation(TestCase):
+class TestTaskSweepIsolation(TestCase):
     """Second task still produces a signal when _verify raises on the first."""
 
     def test_failing_first_task_does_not_suppress_second_task_signal(self) -> None:
-        overlay = _TodoOverlay()
+        overlay = _TaskSweepOverlay()
         ticket_a = Ticket.objects.create(overlay="acme", issue_url=URL_SWEEP_A)
         ticket_b = Ticket.objects.create(overlay="acme", issue_url=URL_SWEEP_B)
         session_a = Session.objects.create(overlay="acme", ticket=ticket_a, agent_id="a")
@@ -629,10 +629,10 @@ class TestTodoSweepIsolation(TestCase):
         Task.objects.create(ticket=ticket_a, session=session_a, phase="coding")
         Task.objects.create(ticket=ticket_b, session=session_b, phase="coding")
 
-        scanner = TodoSweepScanner(overlay=overlay, overlay_name="acme")
+        scanner = TaskSweepScanner(overlay=overlay, overlay_name="acme")
 
         call_count = [0]
-        original_verify = TodoSweepScanner._verify
+        original_verify = TaskSweepScanner._verify
 
         def _raising_verify(self_inner, task: Any) -> Any:
             call_count[0] += 1
@@ -645,8 +645,8 @@ class TestTodoSweepIsolation(TestCase):
         host_b.get_issue = lambda url: {"state": "closed"}  # type: ignore[assignment]
 
         with (
-            patch.object(TodoSweepScanner, "_verify", _raising_verify),
-            patch("teatree.loop.scanners.todo_sweep.get_code_host_for_url", return_value=host_b),
+            patch.object(TaskSweepScanner, "_verify", _raising_verify),
+            patch("teatree.loop.scanners.task_sweep.get_code_host_for_url", return_value=host_b),
         ):
             signals = scanner.scan()
 

@@ -89,9 +89,9 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
-    # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
-    # review; the completion path routes through the mechanical handler below.
-    "todo.orphaned": "action_needed",
+    # #129 task-sweep — an orphaned (unverifiable) teatree task surfaces for
+    # operator review; the completion path routes through the mechanical handler below.
+    "task.orphaned": "action_needed",
     # Only the CI-green-gate skips reach here (see is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
@@ -227,9 +227,9 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
     # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
     "resource.cleanup_needed": ("mechanical", "free_resources"),
-    # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
+    # #129 task-sweep — a teatree task whose artifact is terminal → the mechanical
     # handler RE-checks then completes it (never bulk, never on a stale read).
-    "todo.completion_detected": ("mechanical", "todo_completion"),
+    "task.completion_detected": ("mechanical", "task_completion"),
     # #2122 issue-disposition triage — a high-confidence DEAD issue
     # (already-shipped / exact-duplicate / obsolete) → the mechanical handler
     # closes it idempotently with an audit-trail comment. Never an agent: the

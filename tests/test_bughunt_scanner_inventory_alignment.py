@@ -7,9 +7,9 @@ assigned_issues, slack_mentions, notion_view`` + "The first five run
 per-overlay …") while ``src/teatree/loop/scanners/`` actually holds ~30
 modules. A hunting agent reading the closed list as authoritative
 mis-judges what is wired — filing false "scanner missing" bugs or
-skipping real scanners (it would not know ``resource.*`` / ``todo.*``
-signals or the ``free_resources`` / ``todo_completion`` handlers exist).
-#1478 widened the gap by adding ``resource_pressure`` and ``todo_sweep``.
+skipping real scanners (it would not know ``resource.*`` / ``task.*``
+signals or the ``free_resources`` / ``task_completion`` handlers exist).
+#1478 widened the gap by adding ``resource_pressure`` and ``task_sweep``.
 
 This guard makes "the skill points at the live directory, never an
 exhaustive inline list" *mechanically enforced* rather than
@@ -49,7 +49,7 @@ class TestScannersPackageShape:
     def test_1478_pair_present_in_package(self) -> None:
         stems = _live_scanner_stems()
         assert "resource_pressure" in stems
-        assert "todo_sweep" in stems
+        assert "task_sweep" in stems
 
 
 class TestSkillPointsAtLiveDirectory:
@@ -81,7 +81,7 @@ class TestNewerFamilySiblingsCited:
 
     @pytest.mark.parametrize(
         "scanner",
-        ["resource_pressure", "todo_sweep", "pr_sweep", "self_update", "codex_review"],
+        ["resource_pressure", "task_sweep", "pr_sweep", "self_update", "codex_review"],
     )
     def test_family_sibling_named(self, skill_text: str, scanner: str) -> None:
         assert scanner in skill_text, f"{scanner} scanner missing from the bughunt reference"
@@ -89,4 +89,4 @@ class TestNewerFamilySiblingsCited:
     def test_mechanical_handlers_for_new_signals_named(self, skill_text: str) -> None:
         # The handlers a hunting agent would otherwise not know exist.
         assert "free_resources" in skill_text
-        assert "todo_completion" in skill_text
+        assert "task_completion" in skill_text

@@ -15,6 +15,15 @@ metadata:
 
 # Todos — The Current Session's Lists
 
+## Canonical glossary — TODO vs task (Non-Negotiable)
+
+Two words, two stores. They are routinely conflated; keep them strictly apart in every identifier, docstring, log line, config key, and prose surface:
+
+- **TODO** = the **harness** ("Claude") task list — the `TaskCreate` / `TaskList` / `TaskUpdate` tools (formerly `TodoWrite`). Live, in-memory, harness-owned. Never persisted by teatree.
+- **task** = a teatree **`Task` DB row** — a claimable lifecycle work unit with a phase, lease, and ticket (`t3 <overlay> tasks list`). DB-backed, teatree-owned.
+
+There is **no such thing** as a "teatree todo". A loop unit, setting, or signal that acts on `Task` rows is named `task_*` / `task.*`, never `todo_*` / `todo.*` — e.g. the `task_sweep` scanner (`TaskSweepScanner`, settings `task_sweep_*`, signals `task.completion_detected` / `task.orphaned`, handler `task_completion`) reconciles teatree `Task` rows, **not** the harness TODO list. Cross-ref: `BLUEPRINT.md` § "Loop scanners" (`TaskSweepScanner` row).
+
 A SHORT, read-only view of everything on the current harness session's plate. `/t3:todos` never starts work, never transitions a ticket, never posts — it prints the session's lists grouped by status and stops.
 
 There are **two distinct stores**, and they are built two different ways — never conflate them:

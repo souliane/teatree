@@ -107,10 +107,10 @@ Report: bugs found, filed, fixed, skipped (with reasons).
 
 Verify against the source before quoting in a bug report — these can drift.
 
-- **Scanners** — the scanner family lives in `src/teatree/loop/scanners/` and that directory is the **source of truth**; read it for the current set rather than trusting any inline roster (it holds ~30 modules and grows — #1478 added `resource_pressure` and `todo_sweep`). Describe what you found by **role**, not by a frozen list:
+- **Scanners** — the scanner family lives in `src/teatree/loop/scanners/` and that directory is the **source of truth**; read it for the current set rather than trusting any inline roster (it holds ~30 modules and grows — #1478 added `resource_pressure` and `task_sweep`). Describe what you found by **role**, not by a frozen list:
   - **Per-overlay signal-producers** run once per registered overlay when that overlay's backend resolves — e.g. `my_prs`, `reviewer_prs`, `assigned_issues`, `slack_mentions`, `slack_broadcasts`, `codex_review`, `pr_sweep` (non-exhaustive). A multi-overlay tick tags each with `[<overlay>]`.
   - **Global / cadence-gated scanners** run once per tick (some only every N hours via a settings-driven cadence) — e.g. `pending_tasks`, `notion_view`, `resource_pressure`, `self_update`, `pull_main_clone`, `outbound_audit` (non-exhaustive). They carry no overlay tag.
-  - **Mechanical handlers** (`src/teatree/loop/mechanical.py`, `mechanical_resources.py`) are the inline executors the dispatcher runs for handler-kind signals rather than handing to an agent — e.g. `free_resources` (for `resource.cleanup_needed`) and `todo_completion` (for `todo.completion_detected`). A signal whose kind maps to a handler that has gone missing is a bug.
+  - **Mechanical handlers** (`src/teatree/loop/mechanical.py`, `mechanical_resources.py`) are the inline executors the dispatcher runs for handler-kind signals rather than handing to an agent — e.g. `free_resources` (for `resource.cleanup_needed`) and `task_completion` (for `task.completion_detected`). A signal whose kind maps to a handler that has gone missing is a bug.
   - `build_default_scanners` in `src/teatree/loop/global_scanner_factories.py` is the authoritative assembly (which scanners run, per-overlay vs global, behind which cadence/flag). Quote it, don't memorise the list above — the examples are a non-exhaustive sample, not the inventory.
 - **Signal kinds** → **default zone / agent** (see `src/teatree/loop/dispatch.py`):
   - `my_pr.failed`, `my_pr.draft_notes` → `action_needed`

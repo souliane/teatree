@@ -54,9 +54,9 @@ from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.stale_tickets import StaleTicketsScanner
+from teatree.loop.scanners.task_sweep import TaskSweepScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
-from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 from teatree.loop.scanners.undelivered_notify import UndeliveredNotifyScanner
 
 __all__ = [
@@ -103,8 +103,8 @@ __all__ = [
     "SlackMergeNotifier",
     "SlackReviewIntentScanner",
     "StaleTicketsScanner",
+    "TaskSweepScanner",
     "TicketCompletionScanner",
     "TicketDispositionScanner",
-    "TodoSweepScanner",
     "UndeliveredNotifyScanner",
 ]
