@@ -1742,11 +1742,16 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     scenario in exactly one  │
 │                                                     shard, none dropped or   │
 │                                                     duplicated. The weekly   │
-│                                                     metered lane shards a    │
-│                                                     large lane (clean_room   │
-│                                                     ~167) into budget-safe   │
-│                                                     legs; omit (default) to  │
-│                                                     run the whole lane       │
+│                                                     metered lane shards each │
+│                                                     lane into budget-safe    │
+│                                                     legs on a lane-aware     │
+│                                                     ceiling (clean_room ~182 │
+│                                                     into ~13, under_load 14  │
+│                                                     into 4 — its             │
+│                                                     roster-spawning          │
+│                                                     scenarios are far        │
+│                                                     slower); omit (default)  │
+│                                                     to run the whole lane    │
 │                                                     unchanged.               │
 │ --format                                   TEXT     Report format: text,     │
 │                                                     json, or html            │

@@ -18,19 +18,26 @@
 #     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
 #     bypassed for a manual run.
 #
-# LANE+SHARD FAN-OUT (souliane/teatree#2492):
-#   The FULL 181-scenario x 3-trial suite does not finish in a single 2x80min
-#   budget. The catalog is NOT evenly split: clean_room is 167 scenarios and
-#   under_load is 14, so fanning out ONE leg per lane still leaves a 167-scenario
+# LANE+SHARD FAN-OUT (souliane/teatree#2492, #2683):
+#   The FULL suite (~196 scenarios x 3 trials) does not finish in a single 2x80min
+#   budget. The catalog is NOT evenly split: clean_room is ~182 scenarios and
+#   under_load is 14, so fanning out ONE leg per lane still leaves a 182-scenario
 #   clean_room leg (~92% of the suite) that hits the same 80min wall. So the
 #   `prepare` job computes a `{lane, shard}` matrix (`scripts/eval/lane_matrix.py`):
-#   each lane is split into ceil(count / 14) contiguous shards — a deterministic
-#   partition by scenario name (every scenario in exactly one shard, none dropped
-#   or duplicated). The `eval` job fans OUT one matrix leg per SHARD, each leg
-#   metering at most 14 scenarios (the proven-to-fit under_load size) — under_load
-#   stays one shard (1/1), clean_room becomes 12 shards of ~14. Full coverage,
-#   parallel wall-clock. `fail-fast: false` keeps each leg's verdict independent
-#   (a red shard never cancels the others).
+#   each lane is split into contiguous shards — a deterministic partition by
+#   scenario name (every scenario in exactly one shard, none dropped or duplicated).
+#   The per-shard ceiling is LANE-AWARE because the two lanes have wildly different
+#   per-scenario cost (#2683):
+#     * clean_room — ONE skill into an empty context, seconds-to-a-minute each, so
+#       the ceiling is 14: clean_room (~182) becomes ceil(182 / 14) ~= 13 shards.
+#     * under_load — FULL skill bundle + polluted context preamble + a spawned
+#       multi-agent roster, 10-45 MINUTES per scenario at 3 trials. Run 27995563148
+#       proved a single `1/1` under_load leg hits the 80min step cap (the 4800000ms
+#       timeout), so its ceiling is 4: under_load (14) becomes 4 shards.
+#   The `eval` job fans OUT one matrix leg per SHARD, each leg metering at most its
+#   lane's ceiling — so EVERY leg (not just clean_room) fits the budget. Full
+#   coverage, parallel wall-clock. `fail-fast: false` keeps each leg's verdict
+#   independent (a red shard never cancels the others).
 #
 # The "nothing new to test" skip is a PRE-CHECK that decides whether to invoke
 # the eval at all — it is NOT a skip-as-pass inside the eval. Once the eval IS
@@ -94,10 +101,12 @@ on:
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
   # no-PR guard / manual force) and (b) computes the per-leg {lane, shard} matrix.
-  # The full 181-scenario x 3-trial suite (clean_room 167 / under_load 14) cannot
-  # finish in a single 2x80min budget (#2492), and a single 167-scenario clean_room
-  # leg hits the same wall — so the eval job below fans OUT across SHARDS: one leg
-  # per shard, each metering at most 14 scenarios (the proven-to-fit size).
+  # The full ~196-scenario x 3-trial suite (clean_room ~182 / under_load 14) cannot
+  # finish in a single 2x80min budget (#2492), and BOTH a single ~182-scenario
+  # clean_room leg AND a single under_load leg hit the wall — so the eval job below
+  # fans OUT across SHARDS: one leg per shard, each metering at most its LANE's
+  # ceiling (clean_room 14, under_load 4 — #2683, roster-spawning scenarios cost
+  # 10-45 min each).
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -145,11 +154,12 @@ jobs:
           fi
       # Compute the {lane, shard} matrix the eval job fans out over. Empty `lane`
       # input (scheduled runs and the default manual run) = every permitted lane,
-      # sharded into budget-safe legs (clean_room 167 → 12 shards, under_load 14 →
-      # 1 shard). An explicit `lane` input shards only that lane. An unknown lane
-      # fails loud here rather than producing an empty matrix. The lane input is
-      # routed through an `env:` var (never inlined into the shell) and validated
-      # by lane_matrix.py against PERMITTED_LANES.
+      # sharded into budget-safe legs on the lane-aware ceiling (clean_room ~182 →
+      # ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 — #2683). An explicit
+      # `lane` input shards only that lane. An unknown lane fails loud here rather
+      # than producing an empty matrix. The lane input is routed through an `env:`
+      # var (never inlined into the shell) and validated by lane_matrix.py against
+      # PERMITTED_LANES.
       - name: Compute the lane+shard matrix
         id: matrix
         env:
@@ -172,8 +182,9 @@ jobs:
       # mid-run — each leg's verdict is independent signal.
       fail-fast: false
       # `include` with the prepare job's `{lane, shard}` objects: each leg meters
-      # exactly its lane's `index/total` shard (≤ 14 scenarios), so EVERY leg fits
-      # the budget — not just under_load.
+      # exactly its lane's `index/total` shard, bounded by the LANE's per-shard
+      # ceiling (clean_room ≤14, under_load ≤4 — #2683), so EVERY leg fits the
+      # budget — clean_room AND under_load alike.
       matrix:
         include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     # FAIL LOUD on a hang. Without a job-level cap a wedge ANYWHERE outside the
@@ -183,8 +194,8 @@ jobs:
     # The eval step is bounded to 80min x 2 attempts (160min worst case);
     # 180min caps the whole job just above that (plus the report/upload steps)
     # so a real hang is killed and surfaced as a red, diagnosable run instead of
-    # an indefinite stall. Each leg now meters ONE shard (≤ 14 scenarios), which
-    # fits the budget.
+    # an indefinite stall. Each leg now meters ONE shard bounded by its lane's
+    # ceiling (clean_room ≤14, under_load ≤4 — #2683), which fits the budget.
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -238,19 +249,22 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
-          # per-shard subset is at most 14 scenarios — the proven-to-fit under_load
-          # size — and fits the 2x80min budget where the full 181 (and a single
-          # 167-scenario clean_room leg) did not (#2492). The matrix values come from
-          # the prepare job's validated plan, never raw input — so `lane` is always a
+          # per-shard subset is bounded by the LANE's ceiling — clean_room ≤14,
+          # under_load ≤4 (#2683) — and fits the 2x80min budget where the full suite,
+          # a single ~182-scenario clean_room leg, AND a single under_load 1/1 leg
+          # (run 27995563148, 80min cap) did not. The matrix values come from the
+          # prepare job's validated plan, never raw input — so `lane` is always a
           # permitted lane and `shard` is always a valid index/total.
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
         with:
-          # A single shard is ≤ 14 scenarios x 3 trials, each a real metered
-          # `claude` SDK call. Each retry re-runs the whole leg from scratch
-          # (`--no-persist`, no resume), so a too-tight timeout just truncates and
-          # repeats partial work every attempt and never completes (the observed
-          # "hang"). 80min per attempt lets ONE shard finish comfortably; 2 attempts
+          # A single shard is ≤ its lane's ceiling (clean_room ≤14, under_load ≤4 —
+          # #2683) x 3 trials, each a real metered `claude` SDK call. Each retry
+          # re-runs the whole leg from scratch (`--no-persist`, no resume), so a
+          # too-tight timeout just truncates and repeats partial work every attempt
+          # and never completes (the observed "hang"). 80min per attempt lets ONE
+          # shard finish comfortably (under_load's roster-spawning scenarios are
+          # 10-45 min each, so ≤4 fits with headroom); 2 attempts
           # keep ONE transient-failure retry (the whole point of the retry wrapper —
           # an AI/network flake is retried, not red-failed) without a third
           # truncating pass. 2x80=160min sits under the 180min job cap. The

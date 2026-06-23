@@ -161,9 +161,10 @@ class TestGitHubScheduledGuardManualUnguarded:
         )
 
     def test_eval_fans_out_one_lane_shard_per_matrix_leg(self) -> None:
-        # #2492: the full 181-scenario suite does not fit the 2x80min budget, and a
-        # single 167-scenario clean_room leg hits the same wall, so each matrix leg
-        # meters ONE {lane, shard} (from the prepare job's validated plan).
+        # #2492/#2683: the full ~196-scenario suite does not fit the 2x80min budget,
+        # and BOTH a single ~182-scenario clean_room leg AND a single under_load 1/1
+        # leg hit the same wall, so each matrix leg meters ONE {lane, shard} (from
+        # the prepare job's validated plan, lane-aware ceiling).
         jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
         matrix = cast("dict[str, Any]", jobs["eval"]["strategy"]["matrix"])
         assert "include" in matrix, "The eval job must fan out over a {lane, shard} include matrix."
@@ -180,29 +181,40 @@ class TestGitHubScheduledGuardManualUnguarded:
 
     def test_each_emitted_leg_meters_a_budget_safe_scenario_count(self) -> None:
         # The blocking-finding fix: the matrix lane_matrix.py emits must bound EVERY
-        # leg's scenario count to the budget-safe ceiling — not just under_load.
-        # Computed against the LIVE catalog the workflow runs, so a catalog that
-        # grows past the bound without re-sharding turns this RED.
+        # leg's scenario count to its lane's budget-safe ceiling — not just
+        # clean_room. The ceiling is LANE-AWARE (#2683): under_load's roster-
+        # spawning scenarios (10-45 min each) get a much smaller ceiling than
+        # clean_room's. Computed against the LIVE catalog the workflow runs, so a
+        # catalog that grows past a lane's bound without re-sharding turns this RED.
         from teatree.eval.discovery import discover_specs  # noqa: PLC0415
         from teatree.eval.lane_shard import (  # noqa: PLC0415
-            MAX_SCENARIOS_PER_SHARD,
             filter_specs_by_shard,
+            max_scenarios_per_shard,
             plan_lane_shards,
         )
-        from teatree.eval.models import PERMITTED_LANES  # noqa: PLC0415
+        from teatree.eval.models import PERMITTED_LANES, UNDER_LOAD_LANE  # noqa: PLC0415
 
         specs = discover_specs()
         legs = plan_lane_shards(specs, sorted(PERMITTED_LANES))
-        assert len(legs) > len(PERMITTED_LANES), (
-            "the dominant clean_room lane (~167 scenarios) must be split into multiple shards, "
-            "not emitted as one giant per-lane leg (the cold-review blocking finding)."
+        # BOTH lanes must split: clean_room (~182, the cold-review finding) AND
+        # under_load (roster-spawning, the 80min-cap finding #2683). Each permitted
+        # lane therefore contributes more than one leg, so the total exceeds 2x the
+        # lane count.
+        assert len(legs) > 2 * len(PERMITTED_LANES), (
+            "every permitted lane must split into multiple shards: clean_room (~182 scenarios) "
+            "and under_load (roster-spawning, 10-45 min/scenario, #2683), not one leg each."
+        )
+        assert sum(1 for leg in legs if leg.lane == UNDER_LOAD_LANE) > 1, (
+            "under_load must be sharded into multiple legs (#2683), not run as a single 1/1 leg "
+            "that hits the 80min step cap."
         )
         for leg in legs:
             lane_specs = [s for s in specs if s.lane == leg.lane]
             shard_specs = filter_specs_by_shard(lane_specs, leg.shard)
-            assert len(shard_specs) <= MAX_SCENARIOS_PER_SHARD, (
+            bound = max_scenarios_per_shard(leg.lane)
+            assert len(shard_specs) <= bound, (
                 f"emitted leg {leg.lane} {leg.shard} meters {len(shard_specs)} scenarios, over the "
-                f"budget-safe bound {MAX_SCENARIOS_PER_SHARD}."
+                f"lane's budget-safe bound {bound}."
             )
 
 

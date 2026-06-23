@@ -1,13 +1,20 @@
-"""Each emitted metered-eval leg meters a budget-safe shard (souliane/teatree#2492).
+"""Each emitted metered-eval leg meters a budget-safe shard (souliane/teatree#2492, #2683).
 
-The catalog is NOT evenly split across lanes — clean_room is 167 scenarios,
-under_load is 14 — so fanning out one leg per *lane* leaves a 167-scenario
+The catalog is NOT evenly split across lanes — clean_room is ~182 scenarios,
+under_load is 14 — so fanning out one leg per *lane* leaves a 182-scenario
 clean_room leg that hits the same 80min wall the full suite did. The fix shards
-each lane into contiguous slices of at most :data:`MAX_SCENARIOS_PER_SHARD`
-scenarios. These tests pin the two structural invariants that keep the fix
-honest: every emitted shard is within the budget-safe bound, AND the shards are a
+each lane into contiguous slices of at most the lane's per-scenario-cost-aware
+ceiling. These tests pin the structural invariants that keep the fix honest:
+every emitted shard is within its lane's budget-safe bound, AND the shards are a
 clean partition of the lane (every scenario in exactly one shard, none dropped or
 duplicated).
+
+The two lanes have wildly different per-scenario cost (#2683): a clean_room
+scenario loads ONE skill into an empty context (seconds-to-a-minute), but an
+under_load scenario loads the FULL skill bundle, a polluted context preamble, and
+spawns a multi-agent roster — 10-45 minutes per scenario at 3 trials. So the
+per-shard ceiling is LANE-AWARE: clean_room keeps the 14 ceiling, under_load
+drops to a much smaller one so a roster-spawning shard fits the 80min cap.
 """
 
 from pathlib import Path
@@ -17,9 +24,11 @@ import pytest
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import (
     MAX_SCENARIOS_PER_SHARD,
+    UNDER_LOAD_MAX_SCENARIOS_PER_SHARD,
     LaneShard,
     ShardSpecError,
     filter_specs_by_shard,
+    max_scenarios_per_shard,
     parse_shard,
     plan_lane_shards,
     shard_count_for,
@@ -59,6 +68,21 @@ class TestParseShard:
             parse_shard(bad)
 
 
+class TestMaxScenariosPerShard:
+    def test_clean_room_keeps_the_default_ceiling(self) -> None:
+        assert max_scenarios_per_shard(CLEAN_ROOM_LANE) == MAX_SCENARIOS_PER_SHARD == 14
+
+    def test_under_load_has_a_smaller_roster_aware_ceiling(self) -> None:
+        # under_load scenarios spawn multi-agent rosters (10-45 min each at 3
+        # trials), so the lane's per-shard ceiling is much smaller than clean_room's
+        # — otherwise a single under_load shard blows the 80min cap (#2683).
+        assert max_scenarios_per_shard(UNDER_LOAD_LANE) == UNDER_LOAD_MAX_SCENARIOS_PER_SHARD
+        assert UNDER_LOAD_MAX_SCENARIOS_PER_SHARD < MAX_SCENARIOS_PER_SHARD
+
+    def test_unknown_lane_falls_back_to_the_default_ceiling(self) -> None:
+        assert max_scenarios_per_shard("some_future_lane") == MAX_SCENARIOS_PER_SHARD
+
+
 class TestShardCountFor:
     def test_at_or_below_bound_is_one_shard(self) -> None:
         assert shard_count_for(0) == 1
@@ -68,6 +92,13 @@ class TestShardCountFor:
     def test_above_bound_splits(self) -> None:
         assert shard_count_for(MAX_SCENARIOS_PER_SHARD + 1) == 2
         assert shard_count_for(167) == 12  # ceil(167 / 14)
+
+    def test_under_load_lane_uses_the_smaller_ceiling(self) -> None:
+        # 14 under_load scenarios over the smaller ceiling → several shards, not one.
+        bound = UNDER_LOAD_MAX_SCENARIOS_PER_SHARD
+        assert shard_count_for(bound, UNDER_LOAD_LANE) == 1
+        assert shard_count_for(bound + 1, UNDER_LOAD_LANE) == 2
+        assert shard_count_for(14, UNDER_LOAD_LANE) > 1
 
 
 class TestFilterSpecsByShard:
@@ -101,9 +132,20 @@ class TestFilterSpecsByShard:
 
 class TestPlanLaneShards:
     def test_lane_at_or_below_bound_is_a_single_leg(self) -> None:
-        specs = [_spec(f"s{n}", UNDER_LOAD_LANE) for n in range(MAX_SCENARIOS_PER_SHARD)]
+        specs = [_spec(f"s{n}", CLEAN_ROOM_LANE) for n in range(MAX_SCENARIOS_PER_SHARD)]
+        legs = plan_lane_shards(specs, [CLEAN_ROOM_LANE])
+        assert legs == [LaneShard(lane=CLEAN_ROOM_LANE, index=1, total=1)]
+
+    def test_under_load_lane_splits_on_its_smaller_ceiling(self) -> None:
+        # 14 roster-spawning under_load scenarios must split into multiple shards on
+        # the lane's smaller ceiling — the regression #2683 fixes (the lane ran as a
+        # single 1/1 leg and hit the 80min cap).
+        specs = [_spec(f"s{n:02d}", UNDER_LOAD_LANE) for n in range(14)]
         legs = plan_lane_shards(specs, [UNDER_LOAD_LANE])
-        assert legs == [LaneShard(lane=UNDER_LOAD_LANE, index=1, total=1)]
+        assert len(legs) > 1, "under_load (14 roster-spawning scenarios) must shard, not run as one leg."
+        for leg in legs:
+            shard_specs = filter_specs_by_shard(specs, leg.shard)
+            assert len(shard_specs) <= UNDER_LOAD_MAX_SCENARIOS_PER_SHARD
 
     def test_large_lane_splits_into_enough_shards(self) -> None:
         specs = [_spec(f"s{n:03d}") for n in range(167)]
@@ -124,11 +166,13 @@ class TestPlanLaneShards:
 
 
 class TestEveryEmittedLegFitsTheBudget:
-    """The blocking-finding fix: NO emitted job exceeds the budget-safe bound.
+    """The blocking-finding fix: NO emitted job exceeds its lane's budget-safe bound.
 
-    Run against the LIVE catalog (181 = clean_room 167 / under_load 14) so the
-    test goes RED the moment the catalog grows past what the bound allows without
-    the matrix re-sharding — exactly the silent budget-degrade #2492 warns about.
+    Run against the LIVE catalog (~196 = clean_room ~182 / under_load 14) so the
+    test goes RED the moment the catalog grows past a lane's bound without the
+    matrix re-sharding — exactly the silent budget-degrade #2492 warns about. The
+    bound is LANE-AWARE (#2683): under_load's roster-spawning scenarios use a much
+    smaller ceiling than clean_room's.
     """
 
     def test_no_emitted_shard_exceeds_the_budget_safe_bound(self) -> None:
@@ -137,9 +181,10 @@ class TestEveryEmittedLegFitsTheBudget:
         for leg in legs:
             lane_specs = [spec for spec in specs if spec.lane == leg.lane]
             shard_specs = filter_specs_by_shard(lane_specs, leg.shard)
-            assert len(shard_specs) <= MAX_SCENARIOS_PER_SHARD, (
+            bound = max_scenarios_per_shard(leg.lane)
+            assert len(shard_specs) <= bound, (
                 f"leg {leg.lane} {leg.shard} meters {len(shard_specs)} scenarios, over the "
-                f"budget-safe bound {MAX_SCENARIOS_PER_SHARD}; re-shard the lane in lane_matrix.py."
+                f"lane's budget-safe bound {bound}; re-shard the lane in lane_matrix.py."
             )
 
     @pytest.mark.parametrize("lane", sorted(PERMITTED_LANES))
@@ -159,4 +204,11 @@ class TestEveryEmittedLegFitsTheBudget:
         # dominant lane (~92% of the catalog) and MUST be split, not emitted as one
         # giant leg.
         legs = plan_lane_shards(discover_specs(), [CLEAN_ROOM_LANE])
-        assert len(legs) > 1, "clean_room (the dominant ~167-scenario lane) must be sharded, not one leg."
+        assert len(legs) > 1, "clean_room (the dominant ~182-scenario lane) must be sharded, not one leg."
+
+    def test_the_under_load_lane_is_actually_split(self) -> None:
+        # Guard the #2683 regression: under_load's roster-spawning scenarios are
+        # 10-45 min each, so the lane MUST split into multiple shards rather than run
+        # as one 1/1 leg that hits the 80min cap (run 27995563148).
+        legs = plan_lane_shards(discover_specs(), [UNDER_LOAD_LANE])
+        assert len(legs) > 1, "under_load (roster-spawning, 10-45 min/scenario) must be sharded, not one 1/1 leg."
