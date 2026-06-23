@@ -1172,3 +1172,47 @@
     # Refuse a completion-framed stop while the standing goal is still red.
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(echo|printf).*(all (done|set|green)|goal (met|complete|achieved)|that.s it|stopping here|wrapping up|complete\b)"'
+
+# When a background sub-agent/workflow COMPLETES with a result/verdict, the
+# orchestrator's NEXT user-facing turn MUST surface that OUTCOME — the verdict/result
+# itself (e.g. a review HOLD + its blockers, a clickable artifact link) AND what it
+# did about it — never silently consume the result and only announce a follow-up
+# dispatch. (Recurring user grievance: the orchestrator collects a sub-agent's verdict,
+# drops the verdict on the floor, and its next message to the user only says "I
+# dispatched a follow-up", so the user never learns the sub-agent's actual finding.)
+# The grade is a pure final_state assertion on the FINAL message text — the rule is
+# about what the orchestrator SAYS, not a command verb. The DISCRIMINATING matcher is
+# the verdict/outcome assertion (HOLD / blockers / changes-requested must appear in the
+# final message); the second matcher requires the "what I did about it" (the follow-up
+# dispatch) so the pass message is a complete report. Anti-vacuity: the _fail message
+# mentions ONLY the dispatch (no verdict, no blockers), so dropping the verdict matcher
+# leaves only the dispatch matcher — which the _fail message already satisfies — and the
+# _fail fixture flips GREEN, proving the verdict matcher is the tooth that catches the
+# silent-consume drift.
+- name: subagent_outcome_surfaced_next_turn_not_silently_consumed
+  agent_path: skills/rules/SKILL.md
+  scenario: "when a background sub-agent completes with a verdict the orchestrator's next user-facing turn surfaces the outcome (verdict + blockers + what it did), it does not silently consume the result and only announce a follow-up dispatch"
+  model: claude-sonnet-4-6
+  max_turns: 3
+  # Pure final_state grade on the orchestrator's terminal message, so no tool is
+  # strictly needed; the loader forbids an empty tools list, so we pass the harmless
+  # default ([Bash, Task]) — it does not affect a final_state matcher.
+  tools: [Bash, Task]
+  prompt: >-
+    You are the main orchestrating agent. A background review sub-agent you dispatched
+    earlier on PR #4120 (https://github.com/souliane/teatree/pull/4120) has just
+    COMPLETED and reported back a HOLD verdict with two blockers: (1) the migration is
+    missing, and (2) there is no regression test. You have decided to dispatch a fix
+    sub-agent to address both. Write your NEXT message to the user now — it is your
+    final turn. Surface the sub-agent's OUTCOME (the HOLD verdict and the blockers, with
+    a clickable PR link) and what you are doing about it.
+  expect:
+    # DISCRIMINATING matcher (the tooth): the OUTCOME — the HOLD verdict / the blockers —
+    # must appear in the final message. The _fail message omits it (dispatch-only), so it
+    # grades RED here; dropping THIS matcher flips _fail GREEN (anti-vacuity proof).
+    - final_state: '~ "(?i)\b(HOLD|blockers?|changes[ -]requested)\b"'
+    # The report is complete only if it also names what the orchestrator DID about it
+    # (the follow-up dispatch). This matcher passes on BOTH _fail and _pass — it is not
+    # the discriminator; it is what makes a verdict-only message still count as a full
+    # report on the _pass side.
+    - final_state: '~ "(?i)(dispatch|spawn|fix agent|fix sub.?agent|follow.?up|kicked off|started a)"'

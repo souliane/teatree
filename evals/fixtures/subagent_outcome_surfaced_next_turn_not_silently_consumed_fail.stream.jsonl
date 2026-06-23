@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-subagent-outcome-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The review sub-agent finished. Let me dispatch a fix agent."}, {"type": "tool_use", "id": "toolu_01", "name": "Task", "input": {"description": "Fix PR 4120", "prompt": "Address the review feedback on PR 4120 and report back."}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "dispatched"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I dispatched a follow-up fix agent to address the review feedback on PR #4120. I'll report when it lands."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
