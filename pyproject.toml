@@ -91,6 +91,16 @@ docs = [
 mutation = [
   "mutmut>=3.5,<4",
 ]
+# Order-dependence audit — `pytest-randomly` shuffles collection order so a test
+# that pollutes shared global state (a leaked env var, an unreset singleton, a
+# module-level cache) and the victim it breaks land in a failing relative order.
+# DELIBERATELY out of the default `dev` group: a plain `uv run pytest` and the
+# heavy `test (3.13)` coverage lane must stay deterministic. The dedicated
+# `test-shuffle` CI lane installs this group and runs the order-fragile subset
+# shuffled (souliane/teatree#2359 Class B).
+shuffle = [
+  "pytest-randomly>=3.15",
+]
 ui = [
   "trogon[typer]>=0.6",
 ]

@@ -473,6 +473,62 @@ jobs:
           (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
           so the required status context is satisfied without re-running the suite."
 
+  # GATE (heavy lane): order-dependence audit. Runs the order-fragile loop test
+  # subset under a SHUFFLED collection order (pytest-randomly) so a test that
+  # leaks shared global state — a stray env var, an unreset singleton, a
+  # module-level cache — and the victim it breaks cannot silently return
+  # (souliane/teatree#2359 Class B). The heavy `test (3.13)` lane runs the suite
+  # in its committed file order and so never exercises the polluter→victim
+  # adjacency; this lane does.
+  test-shuffle:
+    # WHY a SUBSET, not the whole suite: a small set of concurrency/timeout tests
+    # seed their isolated DB at import time and are only collectable in the
+    # suite's natural order, so a full-suite shuffle reds on an UNRELATED
+    # collection error. The Class B flakes live in ``tests/teatree_loop/``, which
+    # collects cleanly under shuffle — scoping here keeps the gate signal about
+    # order-dependence, not about that separate import-order fragility.
+    #
+    # WHY ``--group shuffle`` (not the default ``dev``): adding pytest-randomly to
+    # ``dev`` would shuffle every ``uv run pytest`` and the heavy coverage lane,
+    # destabilising them; the plugin is isolated to this lane.
+    #
+    # SEEDS: 7 is the recorded reproducer (it red'd 27 ``tests/teatree_loop/``
+    # tests on the pre-fix code); the others widen the order coverage. ``-n0`` is
+    # serial so a single in-process collection order is exercised end to end
+    # (xdist would isolate the polluter from the victim across workers).
+    #
+    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
+    # (preflight ``run_heavy_python=false``); any non-pure-docs PR runs it.
+    needs: preflight
+    if: >
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --group shuffle
+      - name: Run the order-fragile loop subset under shuffled collection
+        run: |
+          set -euo pipefail
+          for seed in 7 1 13 100; do
+            echo "::group::pytest-randomly seed=$seed"
+            uv run -p ${{ matrix.python-version }} pytest -n0 -q -p randomly \
+              --randomly-seed="$seed" tests/teatree_loop/
+            echo "::endgroup::"
+          done
+
   # ── 6. Architecture / quality fitness gates ────────────────────────────────
 
   # GATE (heavy lane, PR-only): diff-scoped mutation testing on safety modules;
