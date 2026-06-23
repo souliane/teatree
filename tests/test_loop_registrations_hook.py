@@ -1,3 +1,4 @@
+# test-path: cross-cutting — tests hooks/scripts/loop_registrations.py (hooks/); no src/teatree/ mirror.
 """Owner session registers one native Claude ``/loop`` per enabled DB Loop (#2650).
 
 The owner session's ``UserPromptSubmit`` handler emits ONE ``register_cron``

@@ -26,6 +26,7 @@ from django_typer.management import TyperCommand
 
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.connector_preflight import run_connector_preflight
+from teatree.core.loop_lease_manager import per_loop_owner_slot
 from teatree.core.models import LoopLease
 from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
 
@@ -114,7 +115,6 @@ class Command(TyperCommand):
     ) -> None:
         run_connector_preflight(overlay)
 
-        from teatree.core.loop_lease_manager import per_loop_owner_slot  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
         owner_slot = per_loop_owner_slot(loop) if loop else _MASTER_SLOT
