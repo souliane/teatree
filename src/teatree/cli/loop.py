@@ -38,6 +38,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.loop_claim_next import claim_next_command
+from teatree.cli.loop_claude_spec import register as register_claude_spec
 from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
@@ -529,3 +530,8 @@ loop_app.command("list")(list_command)
 # pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
 # off (same module-health reason) into ``teatree.cli.loop_state``.
 register_loop_state(loop_app)
+
+# #2650 — flat ``t3 loop claude-spec <name>``: print a loop's native Claude
+# ``/loop`` spec (slot_id + cron + prompt) the ``/t3:loops`` enable/disable skill
+# mirrors via CronCreate/CronDelete. Split off (same module-health reason).
+register_claude_spec(loop_app)

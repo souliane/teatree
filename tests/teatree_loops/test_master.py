@@ -71,6 +71,27 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         # never re-armed: its cadence anchor is untouched by the live tick
         assert Loop.objects.get(name="m-dream").last_run_at is None
 
+    def test_only_filter_scopes_the_tick_to_one_named_loop(self) -> None:
+        # #2650: the per-loop ``/loop`` fires ``t3 loops tick --loop <name>`` so
+        # the master must be able to build jobs for EXACTLY one enabled, due row
+        # (the rest stay untouched — their cadence anchors are not consumed).
+        now = timezone.now()
+        Loop.objects.create(name="m-only", delay_seconds=60, prompt=_prompt())  # enabled + due
+        Loop.objects.create(name="m-other", delay_seconds=60, prompt=_prompt())  # enabled + due
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-only"), _mini("m-other"))):
+            jobs = build_loop_table_jobs({}, now=now, only="m-only")
+        assert "job-m-only" in jobs
+        assert "job-m-other" not in jobs
+        assert Loop.objects.get(name="m-only").last_run_at == now
+        assert Loop.objects.get(name="m-other").last_run_at is None  # untouched
+
+    def test_only_filter_still_honours_enabled_and_due(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)
+        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-disabled"),)):
+            jobs = build_loop_table_jobs({}, now=now, only="m-disabled")
+        assert jobs == []
+
     def test_one_loop_raising_does_not_abort_the_rest(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="m-boom", delay_seconds=60, prompt=_prompt())

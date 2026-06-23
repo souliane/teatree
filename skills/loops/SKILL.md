@@ -10,13 +10,15 @@ triggers:
 requires:
   - rules
 metadata:
-  version: 0.0.3
+  version: 0.0.4
   subagent_safe: false
 ---
 
 # Loops — DB-Configured Loop Status + Trigger
 
 The day's autonomous work is driven by **DB-configured loops** (#1796/#2513). Each `Loop` row is the durable definition of one autonomous loop — a unique name, exactly one of a `script` or a `Prompt` (the loop XOR), its cadence (`delay_seconds` interval or `daily_at` wall-clock), an `enabled` flag, and `last_run_at` (the cadence anchor). The DB `Loop` table is the **single source of truth** for which loops run and on whose cadence: the live tick reads the table (#2513 cutover), and so do the statusline and `t3 loop list`. The domain scanners under `teatree.loops` stay as the scan units a loop invokes — they are not separate loops.
+
+**One native Claude `/loop` per enabled row (#2650).** There is no single fat-tick cron. The live set of native Claude Code `/loop`s **mirrors** the set of **enabled** `Loop` rows — ONE `/loop` per enabled loop (per-loop, not per-group), each firing `t3 loops tick --loop <name>` on that loop's own cadence. The **loop-owner** session registers them all at session start (a non-owner registers nothing); enabling/disabling a loop mirrors into Claude Code by CronCreate/CronDelete-ing that one loop's `/loop` (see *Enabling / disabling* below).
 
 ## When to load
 
@@ -44,9 +46,12 @@ t3 loops list            # the DB Loop rows directly: name, enabled, cadence, la
 ## Triggering loops
 
 ```bash
-t3 loops tick            # the MASTER tick: run every enabled, due Loop row ONCE (each on its own cadence), then render
-t3 loops run             # the master CONTINUOUSLY: tick, wait --interval, tick — until interrupted
+t3 loops tick                 # the MASTER tick: run every enabled, due Loop row ONCE (each on its own cadence), then render
+t3 loops tick --loop <name>   # run ONE enabled, due loop — the per-loop primitive each native Claude `/loop` fires (#2650)
+t3 loops run                  # the master CONTINUOUSLY: tick, wait --interval, tick — until interrupted
 ```
+
+`t3 loops tick --loop <name>` is what each native Claude `/loop` runs on its own cadence: it scopes the DB-master to that single row, claims the disjoint per-loop `loop:<name>` lease (so the N per-loop loops run in parallel, never serialised on the singleton `t3-master`), and skips the master piggyback cycles. It still honours the same enabled / due / unified-verdict gates as the full master.
 
 The master claims the singleton `t3-master` lease; a non-owner session SKIPs. Only loops whose `Loop` row is `enabled` AND `is_due` AND that `LoopsConfig.is_enabled` admits fan out — a disabled or cooling row is skipped, AND a loop held by a `LoopState` pause/disable (`t3 loop pause`/`disable`) or the `T3_LOOPS_DISABLED` env kill-switch is skipped too (the unified verdict, #2584), so triggering the master never runs a held loop and never bumps a held loop's cadence anchor. Each script-backed `Loop` row carries its OWN on-disk entry point `src/teatree/loops/<name>/loop.py` (the module exposing that loop's `MINI_LOOP`) — the `script` column is per-loop and load-bearing; there is no shared runner. The live tick reads each admitted row's column to decide what to dispatch, and the scoped per-loop runner (`run_scoped_tick`) honours `Loop.enabled` symmetrically; a row whose `script` does not resolve to a real registered loop module raises loudly rather than silently running nothing. A prompt-backed loop runs its `Prompt` body as the per-tick instruction — `arch_review` is the one prompt-backed default, instructing a sub-agent to run an architectural review with the `ac-reviewing-codebase` skill — see `/t3:prompts`.
 
@@ -61,5 +66,23 @@ t3 loop loop-state <name> # read the durable LoopState status (ENABLED when neve
 ```
 
 `enable`/`disable`/`resume` move the TWO planes the #2584 unified verdict reads in lock-step inside one transaction: the durable `LoopState` control tier (#1913) AND the row-level `Loop.enabled` column that the master tick gates on (`not row.enabled` skips a loop). They are the agent-facing way to toggle `enabled`; the Django admin (`Loop` rows) remains the place to edit a loop's cadence and prompt-vs-script. `pause` is the reversible control-plane hold only — it leaves `Loop.enabled` untouched so a paused loop returns to running with `resume` without re-enabling a row that was deliberately `disable`d.
+
+### Mirror the toggle into Claude Code (#2650)
+
+Flipping the DB row is only half the job: the live set of native Claude `/loop`s must mirror the enabled rows. A CLI **cannot** call `CronCreate`/`CronDelete` itself, so YOU (the agent, holding the harness cron tools) mirror it. `t3 loop claude-spec <name> [--json]` prints the loop's exact `/loop` spec — its stable `slot_id`, the `cron` derived from its cadence, and the recurring `prompt` (`t3 loops tick --loop <name>`).
+
+**To enable a loop `X` and start its `/loop`:**
+
+1. `t3 loop enable X` — flips `Loop.enabled=True` + `LoopState=ENABLED`.
+2. `t3 loop claude-spec X --json` — read `{slot_id, cron, prompt}`.
+3. Call `CronCreate(cron=<cron>, prompt=<prompt>, recurring=true)` — register the native `/loop`.
+
+**To disable a loop `X` and stop its `/loop`:**
+
+1. `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`.
+2. `t3 loop claude-spec X --json` — read the full `prompt`.
+3. `CronList`, find the job whose prompt **equals that full `prompt` string** (equivalently, contains the exact backtick-terminated token `` `t3 loops tick --loop X` `` — the **closing backtick is required**: a bare `--loop X` substring also matches a longer name like `X-fast`, so without it disabling `ship` could delete `ship-fast`'s cron). Then `CronDelete(id=<that job id>)` — remove the native `/loop`.
+
+(`t3 loop claude-spec` computes the spec from the row regardless of `enabled`, so reading it after a `disable` still works.)
 
 For ownership hand-off, claiming, the lease/owner machinery, and how the cron drives the tick, see `t3:teatree`.

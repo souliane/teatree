@@ -70,7 +70,9 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
     return registry_by_name[target]
 
 
-def build_loop_table_jobs(scanner_context: BuildJobsContext, *, now: dt.datetime) -> list[_ScannerJob]:
+def build_loop_table_jobs(
+    scanner_context: BuildJobsContext, *, now: dt.datetime, only: str | None = None
+) -> list[_ScannerJob]:
     """Scanner jobs for every loop the unified verdict admits and whose cadence is due.
 
     An ``off_live_tick`` loop (the heavy ``dream`` pass, #1933 § 3) is skipped
@@ -81,6 +83,11 @@ def build_loop_table_jobs(scanner_context: BuildJobsContext, *, now: dt.datetime
     verdict holds — a ``LoopState`` PAUSED/DISABLED row or the
     ``T3_LOOPS_DISABLED`` env kill-switch (#1913, #2584) — is skipped too, BEFORE
     ``mark_run``, so a held loop's cadence anchor is preserved.
+
+    ``only`` (#2650) scopes the build to a SINGLE named loop — the per-loop
+    ``/loop`` fires ``t3 loops tick --loop <name>``, so exactly that one row is
+    considered (every other row is untouched, its cadence anchor unconsumed). The
+    same enabled / due / unified-verdict gates still apply to that one row.
 
     For each admitted row the dispatch target is read from the row's OWN
     ``script``/``prompt`` column (#2513): a script row's ``script`` resolves to
@@ -99,6 +106,8 @@ def build_loop_table_jobs(scanner_context: BuildJobsContext, *, now: dt.datetime
     rows = {row.name: row for row in Loop.objects.all()}
     jobs: list[_ScannerJob] = []
     for loop in registry:
+        if only is not None and loop.name != only:
+            continue
         if loop.off_live_tick:
             continue
         row = rows.get(loop.name)
