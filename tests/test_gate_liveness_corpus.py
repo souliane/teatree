@@ -255,6 +255,36 @@ def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
     }
 
 
+# block-config-overwrite (PreToolUse Write/Edit/Bash): a Write that overwrites an
+# existing config/dotfile NOT read this session must block; recording the path in
+# <session>.reads first clears it.
+
+
+def _config_overwrite_cfg(ctx: GateContext) -> Path:
+    cfg = ctx.tmp_path / ".teatree.toml"
+    cfg.write_text("old = true\n", encoding="utf-8")
+    return cfg
+
+
+def _block_config_overwrite_deny(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
+    }
+
+
+def _block_config_overwrite_allow(ctx: GateContext) -> dict:
+    cfg = _config_overwrite_cfg(ctx)
+    ctx.write_state("reads", f"0.0\t{cfg}\n")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(cfg), "content": "new = true\n"},
+    }
+
+
 # protect-default-branch (PreToolUse Edit/Write/Read): an Edit on a file in a
 # teatree-managed repo checked out on main must block; a worktree branch allows.
 
@@ -708,6 +738,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_block_edit_before_planned_deny,
         allow_input=_block_edit_before_planned_allow,
         arrange=_arrange_block_edit_before_planned,
+    ),
+    GateRow(
+        gate_id="block-config-overwrite",
+        handler=router.handle_block_config_overwrite,
+        event="PreToolUse",
+        matched="Write",
+        deny_input=_block_config_overwrite_deny,
+        allow_input=_block_config_overwrite_allow,
     ),
     GateRow(
         gate_id="protect-default-branch",

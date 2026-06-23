@@ -100,6 +100,7 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "worktree", "provision"),
     ("t3", OVERLAY, "gate", "disable"),
     ("t3", OVERLAY, "gate", "skill-loading", "disable"),
+    ("t3", OVERLAY, "gate", "config-overwrite", "disable"),
     ("t3", OVERLAY, "gate", "fail-open", "enable"),
     ("manage.py", "migrate"),
 )

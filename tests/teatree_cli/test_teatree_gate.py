@@ -16,7 +16,12 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder
-from teatree.cli.teatree_gate import GATE_KEY, gate_is_enabled
+from teatree.cli.teatree_gate import (
+    CONFIG_OVERWRITE_GATE_KEY,
+    GATE_KEY,
+    config_overwrite_gate_is_enabled,
+    gate_is_enabled,
+)
 
 
 @pytest.fixture
@@ -78,6 +83,27 @@ class TestGateIsEnabledFailsOpen:
     def test_enabled_when_teatree_not_a_table(self, home: Path) -> None:
         (home / ".teatree.toml").write_text('teatree = "oops"\n', encoding="utf-8")
         assert gate_is_enabled() is True
+
+
+class TestConfigOverwriteGate:
+    """``t3 <overlay> gate config-overwrite disable|enable`` — the PR #2661 self-rescue."""
+
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+        result = CliRunner().invoke(app, ["gate", "config-overwrite", "disable"])
+        assert result.exit_code == 0, result.output
+        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
+        assert document["teatree"][CONFIG_OVERWRITE_GATE_KEY] is False
+        assert config_overwrite_gate_is_enabled() is False
+
+    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+        assert config_overwrite_gate_is_enabled() is True
+
+    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert runner.invoke(app, ["gate", "config-overwrite", "disable"]).exit_code == 0
+        assert config_overwrite_gate_is_enabled() is False
+        assert runner.invoke(app, ["gate", "config-overwrite", "enable"]).exit_code == 0
+        assert config_overwrite_gate_is_enabled() is True
 
 
 class TestTomlPreservation:

@@ -38,15 +38,24 @@ if TYPE_CHECKING:
 # as ``hooks.scripts.hook_router`` in a subprocess test.
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Alias the bare ``hook_router`` name to this module object so a sibling's
+# ``from hook_router import STATE_DIR`` and a test's ``import
+# hooks.scripts.hook_router`` resolve the SAME globals (a test patching
+# ``STATE_DIR`` must reach what the sibling reads). Unconditional, so it holds
+# regardless of whether the parent dir was already on ``sys.path``.
+if "hook_router" not in sys.modules:
+    sys.modules["hook_router"] = sys.modules[__name__]
 
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
+from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
@@ -810,15 +819,8 @@ def _skill_load_activates_teatree(skills: list[str]) -> bool:
     return any(_is_teatree_skill(s) for s in _resolve_skill_closure(bare))
 
 
-def _read_lines(path: Path) -> list[str]:
-    if not path.is_file():
-        return []
-    return [line for line in path.read_text(encoding="utf-8").strip().splitlines() if line]
-
-
-def _append_line(path: Path, line: str) -> None:
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"{line}\n")
+_read_lines = read_lines
+_append_line = append_line
 
 
 # ── UserPromptSubmit ────────────────────────────────────────────────
@@ -8373,6 +8375,7 @@ _HANDLERS: dict[str, list] = {
         handle_route_away_mode_question,
         handle_enforce_loop_registration,
         handle_block_edit_before_planned,
+        handle_block_config_overwrite,
         handle_protect_default_branch,
         handle_block_self_dm_via_mcp,
         handle_quote_scanner_pretool,

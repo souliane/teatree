@@ -36,6 +36,7 @@ import typer
 GATE_KEY = "orchestrator_bash_gate_enabled"
 SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
+CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -85,6 +86,11 @@ def skill_loading_gate_is_enabled() -> bool:
 def plan_edit_gate_is_enabled() -> bool:
     """Resolve the plan-edit gate (``PLAN_GATE_KEY``, default True)."""
     return _gate_key_is_enabled(PLAN_GATE_KEY)
+
+
+def config_overwrite_gate_is_enabled() -> bool:
+    """Resolve the read-before-overwrite config gate (``CONFIG_OVERWRITE_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY)
 
 
 def danger_gate_fail_open_is_enabled() -> bool:
@@ -191,6 +197,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="plan",
         key=PLAN_GATE_KEY,
         label="Plan-before-code edit-block gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="config-overwrite",
+        key=CONFIG_OVERWRITE_GATE_KEY,
+        label="Read-before-overwrite config/dotfile gate",
     )
 
     overlay_app.add_typer(gate_group, name="gate")
