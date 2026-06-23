@@ -103,6 +103,88 @@ class DiskCachePurgeTests(TestCase):
         assert marker.last_freed_at is not None
 
 
+class DiskDockerReclaimTests(TestCase):
+    """Under disk pressure the ladder reaps Docker build cache + dangling/unused images.
+
+    The disk-full incident: the build cache (15.5 GB) + unused images (~22 GB)
+    were the real ~37 GB hog, and the disk ladder only purged file caches +
+    stopped idle containers (RAM ladder) — it never reaped Docker disk. The fix
+    routes the safety-vetted ``reclaim_disk`` (build cache + DANGLING-only images
+    + UNREFERENCED-only volumes, never ``-a``) into the disk freeing pass, so a
+    running container's images can never be removed.
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self.tmp = Path(tempfile.mkdtemp(prefix="rp_docker_"))
+        self.addCleanup(_rmtree_safe, str(self.tmp))
+
+    def test_disk_plan_includes_docker_reclaim_step(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
+            mock_reclaim.return_value = _fake_reclaim_report()
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        marker = ResourcePressureMarker.load()
+        assert "RECLAIM docker" in marker.last_plan
+
+    def test_disk_freeing_invokes_safe_reclaim(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
+            mock_reclaim.return_value = _fake_reclaim_report()
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        mock_reclaim.assert_called_once()
+
+    def test_reclaimed_docker_bytes_counted_in_plan(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim:
+            mock_reclaim.return_value = _fake_reclaim_report(total_bytes=37 * _GIB)
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})
+        marker = ResourcePressureMarker.load()
+        assert "RECLAIM docker" in marker.last_plan
+        assert marker.last_freed_at is not None
+
+    def test_docker_reclaim_failure_is_swallowed(self) -> None:
+        """A docker prune failure never crashes the freeing pass."""
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch.object(mechanical_resources, "reclaim_disk", side_effect=RuntimeError("docker down")):
+            free_resources({"resource": "disk", "disk_cache_allowlist": []})  # must not raise
+
+    def test_ram_ladder_does_not_invoke_disk_reclaim(self) -> None:
+        """The Docker disk reclaim belongs to the disk ladder, not the RAM ladder."""
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            patch.object(mechanical_resources, "_idle_containers", return_value=[]),
+            patch.object(mechanical_resources, "_docker_container_prune"),
+            patch.object(mechanical_resources, "reclaim_disk") as mock_reclaim,
+        ):
+            free_resources({"resource": "ram", "allow_destructive_ram": False})
+        mock_reclaim.assert_not_called()
+
+    def test_reclaim_uses_only_zero_dataloss_argv(self) -> None:
+        """The reclaim set never contains ``-a`` / ``system prune`` (running images survive).
+
+        This pins the safety boundary at the resource_pressure call site: the
+        ladder uses the sanctioned ``reclaim_disk`` whose fixed argv can never
+        reap a running container's images. Asserted against the REAL reclaim
+        plan, not a mock.
+        """
+        from teatree.docker.reclaim import reclaim_disk  # noqa: PLC0415
+
+        report = reclaim_disk(dry_run=True)
+        argvs = [" ".join(step.argv) for step in report.planned]
+        assert any("builder prune" in a for a in argvs), "build cache must be in the reclaim set"
+        for argv in argvs:
+            assert "-a" not in argv.split(), f"reclaim must never use -a (would reap running images): {argv}"
+            assert "--all" not in argv, f"reclaim must never use --all: {argv}"
+            assert "system" not in argv.split(), f"reclaim must never use `system prune`: {argv}"
+
+
 class DryRunFirstTests(TestCase):
     """The plan is persisted before execution, and recorded even when flags are off."""
 
@@ -709,6 +791,18 @@ class HelperTests(TestCase):
         ):
             reclaimed = mechanical_resources._gc_worktrees({})
         assert reclaimed == pytest.approx(0.0), "a failed removal must not count toward reclaimed bytes"
+
+
+def _fake_reclaim_report(total_bytes: int = 0) -> object:
+    """A stand-in ``ReclaimReport`` whose ``total_bytes`` the ladder reads."""
+    from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep  # noqa: PLC0415
+
+    step = ReclaimStep(
+        argv=["docker", "builder", "prune", "-af"],
+        label="build cache",
+        outcome=PruneOutcome(reclaimed="x", bytes_reclaimed=total_bytes),
+    )
+    return ReclaimReport(steps=(step,), planned=(step,), dry_run=False)
 
 
 def _rmtree_safe(path: str) -> None:

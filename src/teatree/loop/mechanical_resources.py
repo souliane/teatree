@@ -1,9 +1,20 @@
 """Resource-pressure freeing handler — the executor for ``resource.cleanup_needed`` (#128).
 
 Split out of :mod:`teatree.loop.mechanical` so the ladder (cache purge,
-idle-container stop, flag-gated worktree GC, flag-gated renderer SIGTERM)
-lives in one self-describing module and ``mechanical.py`` only registers the
-entry point in ``HANDLERS``.
+Docker disk reclaim, idle-container stop, flag-gated worktree GC, flag-gated
+renderer SIGTERM) lives in one self-describing module and ``mechanical.py``
+only registers the entry point in ``HANDLERS``.
+
+Docker disk reclaim (the RETRO fix): the disk-full incident was driven by
+Docker build cache (~15.5 GB) + unused images (~22 GB) — the real ~37 GB hog —
+which the disk ladder previously never reaped (it only purged file caches and
+stopped idle containers in the RAM ladder). The disk ladder now routes the
+sanctioned :func:`teatree.docker.reclaim.reclaim_disk` (build cache +
+DANGLING-only images + UNREFERENCED-only volumes via a FIXED argv that can
+never contain ``-a`` / ``system prune``), so a running container's images, a
+tagged application image, and an attached DB volume backing a live worktree all
+survive. It is non-destructive by construction, so — like the cache purge and
+``uv cache prune`` — it runs WITHOUT the ``allow_destructive_disk`` flag.
 
 Contract — every step is dry-run-first and best-effort. (1) Compute the
 freeing *plan* (candidate paths/targets + byte estimates) and persist it to
@@ -34,6 +45,7 @@ from pathlib import Path
 from django.utils import timezone
 
 from teatree.config import workspace_dir
+from teatree.docker.reclaim import reclaim_disk
 from teatree.loop.dispatch import ActionPayload
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -126,6 +138,7 @@ def _plan_disk(payload: ActionPayload) -> FreePlan:
         plan.estimated_reclaim_gb += size_gb
     plan.steps.append("RUN uv cache prune")
     plan.steps.append(f"CLEAN /tmp/claude-statusline entries older than {_STALE_STATUSLINE_DAYS}d")
+    plan.steps.append("RECLAIM docker build cache + dangling images + unreferenced volumes (safe, never -a)")
     if payload.get("allow_destructive_disk"):
         worktrees = _gc_candidate_worktrees(payload)
         for wt in worktrees:
@@ -158,8 +171,28 @@ def _execute_disk(plan: FreePlan, payload: ActionPayload) -> None:
         plan.reclaimed_gb += _purge_dir(path)
     _run_uv_cache_prune()
     _clean_stale_statusline()
+    plan.reclaimed_gb += _reclaim_docker_disk(plan)
     if payload.get("allow_destructive_disk"):
         plan.reclaimed_gb += _gc_worktrees(payload)
+
+
+def _reclaim_docker_disk(plan: FreePlan) -> float:
+    """Run the safe Docker disk reclaim; return GB reclaimed (best-effort).
+
+    Delegates to :func:`teatree.docker.reclaim.reclaim_disk` — the fixed-argv
+    build-cache + dangling-image + unreferenced-volume prune that can never use
+    ``-a``/``system prune``, so a running container's images are never reaped.
+    A failure (no docker daemon, a prune error) is swallowed and recorded so
+    the freeing pass continues; the per-step reclaimed bytes land in the plan.
+    """
+    try:
+        report = reclaim_disk()
+    except Exception:
+        logger.exception("free_resources: docker disk reclaim failed — swallowed")
+        return 0.0
+    reclaimed_gb = report.total_bytes / _GIB
+    plan.steps.append(f"  → docker reclaimed {report.total_human}")
+    return reclaimed_gb
 
 
 def _purge_dir(path: str) -> float:

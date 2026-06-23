@@ -26,6 +26,7 @@ from teatree.cli._doctor_checks import (
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
+    _check_loop_tick_runner,
     _check_mcp_connectivity,
     _check_single_db,
     _check_singletons,
@@ -69,6 +70,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
+    "_check_loop_tick_runner",
     "_check_mcp_connectivity",
     "_check_single_db",
     "_check_singletons",
@@ -566,6 +568,13 @@ def check() -> bool:
     # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
+
+    # Loop-tick-runner gate (resource_pressure RETRO). Runs after
+    # ``ensure_django`` because it reads the ``Loop`` / ``LoopLease`` rows. A
+    # hard FAIL: loops *configured* (enabled rows) with no live tick runner
+    # driving them is the silent "configured but never ticking" gap that let
+    # disk fill to 99% unreaped — the intervals are config, not a scheduler.
+    ok = _check_loop_tick_runner() and ok
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay

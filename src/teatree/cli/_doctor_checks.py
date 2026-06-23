@@ -304,6 +304,23 @@ def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
     return False
 
 
+def _check_loop_tick_runner() -> bool:
+    """FAIL when loops are enabled but no live tick runner drives them (RETRO).
+
+    The resource_pressure disk-full incident: ``t3 loop status`` showed scanners
+    *configured* with intervals but ``crontab -l`` had NO entry firing
+    ``t3 loop tick`` — the intervals are config, not a live scheduler, so NO
+    scanner ever ran and disk hit 99% unreaped. This surfaces that silent gap.
+    Delegates the ORM read to ``teatree.core.gates.loop_runner_guard`` (a gate,
+    per the 'ORM access lives in a gate/command' rule); the gate is crash-proof
+    and degrades to a WARN + pass on any DB error, mirroring the sibling
+    DB-reading doctor checks.
+    """
+    from teatree.core.gates.loop_runner_guard import doctor_check_loop_tick_runner  # noqa: PLC0415
+
+    return doctor_check_loop_tick_runner()
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 

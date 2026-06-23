@@ -163,6 +163,7 @@ graph TD
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.core.modelkit
+    teatree.loop --> teatree.docker
     teatree.loop --> teatree.backends
     teatree.loop --> teatree.backends.github
     teatree.loop --> teatree.backends.gitlab
