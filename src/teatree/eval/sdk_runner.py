@@ -40,19 +40,28 @@ import dataclasses
 import os
 import re
 import shutil
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.eval.context_budget import extract_sections
+from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
-from teatree.eval.toolset import build_delegation_agents, compute_available_tools, compute_disallowed_tools
+from teatree.eval.toolset import (
+    build_delegation_agents,
+    compute_available_tools,
+    compute_disallowed_tools,
+    scenario_exposes_subagent_spawn,
+)
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
 
 #: Env var names for the metered lane's GENEROUS, configurable resource caps. A
@@ -63,6 +72,16 @@ _WATCHDOG_ENV_VAR = "T3_EVAL_WATCHDOG_SECONDS"
 _MAX_TURNS_ENV_VAR = "T3_EVAL_MAX_TURNS"
 _METERED_BUDGET_ENV_VAR = "T3_EVAL_MAX_BUDGET_USD"
 _METERED_EFFORT_ENV_VAR = "T3_EVAL_EFFORT"
+
+#: ``shutil.which("claude")`` transiently returns ``None`` when the bundled Claude
+#: Code CLI auto-updates MID-RUN — the nvm symlink is swapped out for a moment, so
+#: the binary momentarily resolves to nothing. A hard fail there fires
+#: ``ClaudeCliMissingError`` and reds every REMAINING scenario in the batch (one
+#: observed run lost 191/197 scenarios to a single transient miss). The resolver
+#: re-probes with a short bounded backoff so a mid-run swap is ridden out, while a
+#: genuinely-absent binary still fails after the bounded attempts are exhausted.
+CLAUDE_RESOLVE_MAX_ATTEMPTS = 4
+CLAUDE_RESOLVE_BACKOFF_SECONDS = 0.5
 
 #: GENEROUS per-scenario wall-clock watchdog (seconds). 120s was too tight for
 #: sub-agent-spawning scenarios (an orchestrator that delegates an investigation
@@ -297,6 +316,34 @@ class ClaudeCliMissingError(RuntimeError):
     """
 
 
+def resolve_claude_path(
+    *,
+    max_attempts: int = CLAUDE_RESOLVE_MAX_ATTEMPTS,
+    backoff_seconds: float = CLAUDE_RESOLVE_BACKOFF_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str | None:
+    """Resolve the ``claude`` binary path, riding out a transient mid-run absence.
+
+    ``shutil.which("claude")`` momentarily returns ``None`` when the bundled CLI
+    auto-updates mid-run (the nvm symlink is swapped). A single miss must NOT red
+    the rest of the batch, so this RE-PROBES up to *max_attempts* times with a
+    short *backoff_seconds* pause between tries. The FIRST successful resolution
+    returns immediately (no wasted sleeps); a binary that is still unresolved after
+    every attempt returns ``None`` (the caller then skips or hard-errors per
+    ``require_executed``) — the bounded loop never spins forever on a genuinely
+    absent binary. *sleep* is injectable so the retry is testable without real time.
+    """
+    attempt = 0
+    while True:
+        path = shutil.which("claude")
+        if path is not None:
+            return path
+        attempt += 1
+        if attempt >= max_attempts:
+            return None
+        sleep(backoff_seconds)
+
+
 @dataclasses.dataclass(frozen=True)
 class CleanRoomConfig:
     """The inputs to a clean-room SDK invocation shared by runner and judge."""
@@ -437,13 +484,14 @@ class SdkInProcessRunner:
         return spec.max_turns
 
     def run(self, spec: EvalSpec) -> EvalRun:
-        if shutil.which("claude") is None:
+        if resolve_claude_path() is None:
             if self._require_executed:
                 msg = (
-                    "claude binary not on PATH but --require-executed is armed: the metered "
-                    "sdk backend can execute no scenario, so the suite would report an "
-                    "all-skipped green. Provision the Claude CLI (and CLAUDE_CODE_OAUTH_TOKEN) "
-                    "on the runner — sdk + require-executed must never decoratively skip."
+                    "claude binary not on PATH (after bounded re-resolve) but --require-executed "
+                    "is armed: the metered sdk backend can execute no scenario, so the suite would "
+                    "report an all-skipped green. Provision the Claude CLI (and "
+                    "CLAUDE_CODE_OAUTH_TOKEN) on the runner — sdk + require-executed must never "
+                    "decoratively skip."
                 )
                 raise ClaudeCliMissingError(msg)
             return self._skip_run(spec, "claude binary not on PATH")
@@ -524,11 +572,11 @@ class SdkInProcessRunner:
         # declares none. The matchers are unchanged; this caps the RUN, not the teeth.
         max_budget_usd = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
         watchdog = spec.watchdog_seconds if spec.watchdog_seconds is not None else WATCHDOG_SECONDS
-        with isolated_claude_env() as (env, cwd):
+        with self._resolve_eval_target(spec) as (workspace, cwd, env):
             options = build_sdk_options(
                 CleanRoomConfig(
                     system_prompt=system_prompt,
-                    workspace=self._workspace,
+                    workspace=workspace,
                     cwd=cwd,
                     env=env,
                     allowed_tools=spec.tools,
@@ -542,6 +590,31 @@ class SdkInProcessRunner:
                 )
             )
             return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=watchdog)
+
+    @contextmanager
+    def _resolve_eval_target(self, spec: EvalSpec) -> Iterator[tuple[Path, str, dict[str, str]]]:
+        """Yield ``(workspace, cwd, env)`` — ISOLATED to a throwaway for spawning scenarios.
+
+        A non-spawning scenario keeps the existing clean-room shape: the
+        configured ``workspace``, the :func:`isolated_claude_env` neutral cwd, and
+        the personal-context-redirected env.
+
+        A SUB-AGENT-SPAWNING scenario (:func:`scenario_exposes_subagent_spawn`)
+        additionally runs against a per-run EPHEMERAL CHECKOUT: ``workspace`` (the
+        SDK ``add_dirs`` grant) and ``cwd`` both point at the throwaway, and the env
+        is overlaid by :func:`ephemeral_checkout_env` so ``import teatree`` and
+        ``git`` resolve into the throwaway rather than the developer's real clone.
+        Without this, a spawned sub-agent locates the real clone via the editable
+        install + shared ``.git`` (a neutral cwd does NOT block that) and does
+        destructive git work on it — the corruption this isolation prevents.
+        """
+        with isolated_claude_env() as (env, cwd):
+            if not scenario_exposes_subagent_spawn(spec):
+                yield self._workspace, cwd, env
+                return
+            with provision_ephemeral_checkout() as checkout:
+                isolated_env = ephemeral_checkout_env(env, checkout)
+                yield checkout, str(checkout), isolated_env
 
     @staticmethod
     def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:
