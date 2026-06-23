@@ -224,7 +224,12 @@ class TestLoopManager(TestCase):
 
 
 class TestLoopSeed(TestCase):
-    """The data migration seeds one autonomous row per loop (#1796)."""
+    """The ``0001_initial`` migration seed lands one autonomous row per loop (#1796).
+
+    Since the #2652 squash the default-loops seed is folded into ``0001_initial``
+    as a ``RunPython`` (in its final per-loop-script / paused shape), so a fresh
+    migrate lands exactly these rows.
+    """
 
     def test_interval_loops_seeded_with_their_cadence(self) -> None:
         assert Loop.objects.get(name="inbox").delay_seconds == 60
@@ -232,10 +237,10 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="followup").delay_seconds == 1800
         assert Loop.objects.get(name="arch_review").delay_seconds == 10800
 
-    def test_orphan_slack_answer_row_is_removed(self) -> None:
+    def test_orphan_slack_answer_row_is_not_seeded(self) -> None:
         # #2584: ``slack_answer`` has no registry MiniLoop, so the autonomous
-        # fan-out can never run it — migration 0091 removes the orphan Loop row
-        # 0078 seeded. It runs only via the won-tick piggyback cycle.
+        # fan-out can never run it — the seed never creates a ``slack_answer``
+        # Loop row. It runs only via the won-tick piggyback cycle.
         assert not Loop.objects.filter(name="slack_answer").exists()
 
     def test_daily_loops_seeded_with_schedule(self) -> None:
@@ -244,18 +249,17 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="dogfood").delay_seconds == 86400
 
     def test_eval_local_seeded_paused_daily(self) -> None:
-        # The #2513 cutover seeds every loop PAUSED, and migration
-        # 0087_pause_all_loops disables the rows seeded enabled by 0078 — the row
-        # IS seeded with its daily cadence, just not enabled until an operator
-        # turns it on.
+        # The #2513 cutover seeds every loop PAUSED: the seed lands each row
+        # ``enabled=False`` directly — the row IS seeded with its daily cadence,
+        # just not enabled until an operator turns it on.
         loop = Loop.objects.get(name="eval_local")
         assert loop.enabled is False
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
-        # 18 after #2584 removed the orphan ``slack_answer`` row (19 from 0078
-        # minus the one loop with no registry MiniLoop). The seeded set now
-        # equals ``iter_loops()`` — pinned by
+        # 18 default loops (#2584): the orphan ``slack_answer`` is never seeded
+        # (the one loop with no registry MiniLoop). The seeded set equals
+        # ``iter_loops()`` — pinned by
         # tests/teatree_loops/test_seed.py::test_seeded_loop_table_matches_iter_loops.
         assert Loop.objects.count() == 18
         assert Loop.objects.filter(name="dispatch").exists()
@@ -277,7 +281,7 @@ class TestLoopBackfillSatisfiesXor(TestCase):
     def test_other_loops_run_their_own_per_loop_module(self) -> None:
         # #2513: each script loop's ``script`` is its OWN module, never the
         # retired shared ``run.py``. The DB ``script`` column is per-loop and
-        # load-bearing — migration 0094 repointed every default script row.
+        # load-bearing — the seed points every default script row at its own module.
         loop = Loop.objects.get(name="dispatch")
         assert loop.script == "src/teatree/loops/dispatch/loop.py"
         assert loop.prompt_id is None

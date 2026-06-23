@@ -266,3 +266,9 @@ class TestFirstPartyScopeBeyondSrc:
         assert mod._is_first_party("scripts/privacy_scan.py")
         assert not mod._is_first_party("tests/test_module_health_ratchet.py")
         assert not mod._is_first_party("docs/blueprint/overview.md")
+
+    def test_auto_generated_migrations_are_exempt(self) -> None:
+        # A squashed 0001_initial legitimately captures a whole app's schema in
+        # one (large, auto-generated) file — it is exempt from the LOC/function
+        # caps, mirroring its exclusion from coverage, ruff E501, and jscpd.
+        assert not mod._is_first_party("src/teatree/core/migrations/0001_initial.py")

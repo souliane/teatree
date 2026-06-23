@@ -45,9 +45,15 @@ _SINGLE_PATH_FIELD = 1
 # split. One shared predicate keeps staged-mode and diff-mode scope identical.
 _FIRST_PARTY_PREFIXES = ("src/", "hooks/", "scripts/")
 
+# Auto-generated Django migrations are exempt from the module-health caps: a
+# squashed ``0001_initial`` legitimately captures a whole app's schema in one
+# file and cannot be "split by concern" (Django runs a migration as one unit).
+# This mirrors their exclusion from coverage, ruff E501, and the jscpd scan.
+_MIGRATIONS_SEGMENT = "/migrations/"
+
 
 def _is_first_party(path: str) -> bool:
-    return path.startswith(_FIRST_PARTY_PREFIXES)
+    return path.startswith(_FIRST_PARTY_PREFIXES) and _MIGRATIONS_SEGMENT not in path
 
 
 _DICT_OBJECT_PATTERNS = [
