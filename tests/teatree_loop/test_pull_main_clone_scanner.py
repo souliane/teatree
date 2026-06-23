@@ -116,6 +116,42 @@ def _make_tracked_dirty(clone: Path) -> None:
     (clone / "a.txt").write_text("a-modified")
 
 
+def _seed_origin_changing_a_in_second_commit(origin_dir: Path) -> None:
+    """Bare origin whose second commit *changes* ``a.txt`` content.
+
+    Models the #2614 incident's upstream side: a path's new content lands on
+    ``origin/main`` via a proper PR (second commit). A clone parked at the
+    first commit can then carry a dirty working copy of that same path whose
+    blob is byte-identical to the upstream version — a stale duplicate.
+    """
+    env = _git_env()
+    seed = origin_dir.parent / f"_seed_{origin_dir.name}"
+    seed.mkdir()
+    _run("git", "init", "--initial-branch=main", str(seed), cwd=origin_dir.parent, env=env)
+    (seed / "a.txt").write_text("a-original")
+    (seed / "c.txt").write_text("c-original")
+    _run("git", "add", "a.txt", "c.txt", cwd=seed, env=env)
+    _run("git", "commit", "-m", "first", cwd=seed, env=env)
+    (seed / "a.txt").write_text("a-upstream-v2")
+    (seed / "b.txt").write_text("b")
+    _run("git", "add", "a.txt", "b.txt", cwd=seed, env=env)
+    _run("git", "commit", "-m", "second changes a.txt", cwd=seed, env=env)
+    _run("git", "init", "--bare", "--initial-branch=main", str(origin_dir), cwd=origin_dir.parent, env=env)
+    _run("git", "remote", "add", "origin", str(origin_dir), cwd=seed, env=env)
+    _run("git", "push", "-u", "origin", "main", cwd=seed, env=env)
+
+
+def _origin_blob_for(clone: Path, path: str) -> str:
+    """The content ``origin/main`` holds for *path* — the byte-identical target."""
+    env = _git_env()
+    return _run("git", "show", f"origin/main:{path}", cwd=clone, env=env).stdout
+
+
+def _stage_path(clone: Path, path: str) -> None:
+    env = _git_env()
+    _run("git", "add", path, cwd=clone, env=env)
+
+
 def _make_diverged_non_ff(clone: Path) -> str:
     """Put a local commit on the clone's default branch so the pull is non-ff.
 
@@ -136,6 +172,13 @@ def _head_sha(clone: Path) -> str:
     return _run("git", "rev-parse", "HEAD", cwd=clone, env=env).stdout.strip()
 
 
+def _tracked_dirty(clone: Path) -> bool:
+    """True iff the clone has uncommitted *tracked* changes (staged or unstaged)."""
+    env = _git_env()
+    porcelain = _run("git", "status", "--porcelain", cwd=clone, env=env).stdout
+    return any(line and not line.startswith("??") for line in porcelain.splitlines())
+
+
 def _origin_head(origin: Path, parent: Path) -> str:
     return _run("git", "-C", str(origin), "rev-parse", "main", cwd=parent).stdout.strip()
 
@@ -151,6 +194,11 @@ class PullMainCloneScannerBehaviorTests(TestCase):
         self._tmp = Path(self._make_tempdir())
         self.origin = self._tmp / "origin.git"
         _seed_origin_with_two_commits(self.origin)
+        # A second origin whose second commit *changes* a.txt — used by the
+        # #2614 self-heal cases that need an upstream-evolved tracked path.
+        self._tmp_changing = Path(self._make_tempdir())
+        self.origin_changing = self._tmp_changing / "origin.git"
+        _seed_origin_changing_a_in_second_commit(self.origin_changing)
 
     def _make_tempdir(self) -> str:
         d = tempfile.mkdtemp(prefix="pull_main_clone_scanner_")
@@ -202,6 +250,108 @@ class PullMainCloneScannerBehaviorTests(TestCase):
         signal = signals[0]
         assert signal.kind == "pull_main_clone.skipped"
         assert "dirty" in signal.payload["reason"] or "tracked" in signal.payload["reason"]
+
+    def test_byte_identical_dirty_blob_is_auto_healed_then_pulled(self) -> None:
+        """#2614 self-heal: a dirty path whose blob == ``origin/main``'s is discarded, then ff-pulled.
+
+        The stale-duplicate incident — the path's content already merged upstream
+        via a proper PR, leaving the local working copy byte-identical to
+        ``origin/main``. Discarding it is provably data-loss-free (the content is
+        already upstream), so the scanner auto-discards and proceeds with the FF
+        pull instead of skipping the tick forever.
+        """
+        clone = self._tmp_changing / "acme-backend"
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin_changing, clone=clone)
+        # Make a.txt byte-identical to origin/main's version: a stale duplicate.
+        (clone / "a.txt").write_text(_origin_blob_for(clone, "a.txt"))
+        origin_head = _origin_head(self.origin_changing, self._tmp_changing)
+        assert old_sha != origin_head
+
+        signals = self._scanner(repos=[("acme:acme-backend", clone)]).scan()
+
+        assert _head_sha(clone) == origin_head, "scanner did not ff-pull after auto-healing the duplicate"
+        assert not _tracked_dirty(clone), "the stale duplicate was not discarded"
+        assert len(signals) == 1
+        assert signals[0].kind == "pull_main_clone.updated"
+
+    def test_byte_identical_staged_dirty_blob_is_auto_healed_then_pulled(self) -> None:
+        """The exact incident shape — the duplicate was ``git add``-staged, not just unstaged."""
+        clone = self._tmp_changing / "acme-backend"
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin_changing, clone=clone)
+        (clone / "a.txt").write_text(_origin_blob_for(clone, "a.txt"))
+        _stage_path(clone, "a.txt")
+        origin_head = _origin_head(self.origin_changing, self._tmp_changing)
+        assert old_sha != origin_head
+
+        signals = self._scanner(repos=[("acme:acme-backend", clone)]).scan()
+
+        assert _head_sha(clone) == origin_head, "scanner did not ff-pull after auto-healing the staged duplicate"
+        assert not _tracked_dirty(clone), "the staged stale duplicate was not discarded"
+        assert len(signals) == 1
+        assert signals[0].kind == "pull_main_clone.updated"
+
+    def test_genuinely_different_dirty_blob_keeps_skip_and_warning(self) -> None:
+        """A dirty path whose blob DIFFERS from ``origin/main`` keeps the safe skip — never reset.
+
+        The data-loss guard: genuine local work whose content is NOT upstream must
+        be preserved. The scanner skips with the ``dirty_tracked`` warning exactly
+        as before — it never resets, forces, or stashes a differing blob.
+        """
+        clone = self._tmp_changing / "acme-backend"
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin_changing, clone=clone)
+        (clone / "a.txt").write_text("genuine-local-work-not-upstream")
+
+        signals = self._scanner(repos=[("acme:acme-backend", clone)]).scan()
+
+        assert _head_sha(clone) == old_sha, "scanner moved HEAD despite genuine local work"
+        assert (clone / "a.txt").read_text() == "genuine-local-work-not-upstream", "genuine work was clobbered"
+        assert len(signals) == 1
+        signal = signals[0]
+        assert signal.kind == "pull_main_clone.skipped"
+        assert "dirty" in signal.payload["reason"] or "tracked" in signal.payload["reason"]
+
+    def test_mixed_dirty_one_identical_one_genuine_keeps_skip(self) -> None:
+        """A mix — one duplicate path + one genuine path — keeps the safe skip; nothing reset.
+
+        The self-heal acts ONLY when *every* dirty path is provably upstream. A
+        single genuinely-different path keeps the whole skip-with-warning, so the
+        duplicate path is left untouched too — never a partial reset.
+        """
+        clone = self._tmp_changing / "acme-backend"
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin_changing, clone=clone)
+        # a.txt is a byte-identical duplicate of origin/main; c.txt is genuine work.
+        (clone / "a.txt").write_text(_origin_blob_for(clone, "a.txt"))
+        (clone / "c.txt").write_text("genuine-local-edit-not-upstream")
+
+        signals = self._scanner(repos=[("acme:acme-backend", clone)]).scan()
+
+        assert _head_sha(clone) == old_sha, "scanner moved HEAD despite one genuine dirty path"
+        assert (clone / "c.txt").read_text() == "genuine-local-edit-not-upstream", "genuine work was clobbered"
+        assert len(signals) == 1
+        assert signals[0].kind == "pull_main_clone.skipped"
+
+    def test_worktree_matches_origin_but_staged_blob_differs_keeps_skip(self) -> None:
+        """Worktree == origin, but a *staged* blob differs from BOTH origin and HEAD → skip.
+
+        The data-loss edge the index check guards: the visible working-tree blob
+        is byte-identical to ``origin/main``, yet the index carries a third,
+        genuinely-different staged blob. Discarding would drop that staged work,
+        so the self-heal must NOT fire — the whole set keeps the safe skip.
+        """
+        clone = self._tmp_changing / "acme-backend"
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin_changing, clone=clone)
+        # Stage a genuinely-different blob, THEN make the worktree match origin.
+        (clone / "a.txt").write_text("staged-genuine-work-differs-from-everything")
+        _stage_path(clone, "a.txt")
+        (clone / "a.txt").write_text(_origin_blob_for(clone, "a.txt"))
+
+        signals = self._scanner(repos=[("acme:acme-backend", clone)]).scan()
+
+        assert _head_sha(clone) == old_sha, "scanner moved HEAD despite a differing staged blob"
+        index_blob = _run("git", "show", ":a.txt", cwd=clone, env=_git_env()).stdout
+        assert index_blob == "staged-genuine-work-differs-from-everything", "staged work was clobbered"
+        assert len(signals) == 1
+        assert signals[0].kind == "pull_main_clone.skipped"
 
     def test_feature_branch_checkout_is_skipped(self) -> None:
         """A main clone parked on a feature branch is skipped — work-in-flight is sacred."""
