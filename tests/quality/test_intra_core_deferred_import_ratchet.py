@@ -42,7 +42,7 @@ _TACH = _REPO_ROOT / "tach.toml"
 # severed. The drop from PR-2a's 206 is exactly those 17 converted imports.
 # SHRINK-ONLY: lower this as PR-3 converts remaining deferred edges into
 # declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_CORE_DEFERRED = 188
+_FROZEN_INTRA_CORE_DEFERRED = 187
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:
