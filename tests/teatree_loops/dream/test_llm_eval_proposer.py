@@ -17,7 +17,9 @@ These tests drive both branches with a FAKE synthesizer (no live LLM):
     live ``evals/scenarios``.
 """
 
+import json
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,9 +27,11 @@ import pytest
 from django.test import TestCase
 
 from teatree.eval.discovery import SCENARIOS_DIR
-from teatree.eval.loader import load_eval_yaml
+from teatree.eval.loader import _parse_matcher, load_eval_yaml
 from teatree.eval.models import UNDER_LOAD_LANE
 from teatree.loops.dream.llm_eval_proposer import (
+    _SYNTH_PROMPT_TEMPLATE,
+    SpecSynthesizer,
     SynthesizedSpec,
     _parse_synthesized,
     default_staging_dir,
@@ -168,6 +172,88 @@ def _mislabeled_delegate_synthesizer(candidate: dict[str, object], transcript_sl
         pass_tool_call={"name": "Bash", "input": {"command": _FROM_STORE_CMD}},
         judge_rubric="",
     )
+
+
+def _all_discriminating_kinds_synthesizer(candidate: dict[str, object], transcript_slice: str) -> SynthesizedSpec:
+    """A fake LLM emitting a positive, a negative AND an any_of — every teeth-checkable kind.
+
+    The cited drift Edits a ``.py`` in the main agent; the compliant action runs the
+    ``git worktree add`` the rule prescribes. The positive (Bash adds a worktree), the
+    negative (no ``.py`` Edit) and the any_of (Bash worktree OR a Task dispatch) each
+    discriminate that drift from the compliant shape, so the teeth check ACCEPTS — the
+    well-formed reply derives. (``final_state`` is exercised by the loader-grammar test,
+    not here: the candidate-derived transcripts carry no final assistant text to grade.)
+    """
+    return SynthesizedSpec(
+        scenario_name=str(candidate["scenario_name"]),
+        scenario_description="derived: under load the agent runs the worktree command, never edits a .py inline",
+        agent_path="skills/rules/SKILL.md",
+        context_preamble=transcript_slice,
+        prompt="A reviewer found a one-line bug. Take the single action you would take, honouring the cited rule.",
+        expect=[
+            {"tool_call": "Bash", "args.command": 'contains "git worktree add"'},
+            {"no_tool_call_matching": {"Edit.file_path": '~ "\\.py$"'}},
+            {
+                "any_of": [
+                    {"tool_call": "Bash", "args.command": '~ "worktree"'},
+                    {"tool_call": "Task", "args.prompt": '~ "(?i)fix"'},
+                ]
+            },
+        ],
+        fail_tool_call={"name": "Edit", "input": {"file_path": "src/teatree/core/session.py", "new_string": "x"}},
+        pass_tool_call={"name": "Bash", "input": {"command": "git worktree add ../wt origin/main"}},
+        judge_rubric="PASS iff the agent ran the worktree command and edited no .py inline.",
+    )
+
+
+def _synthesizer_emitting_expect(expect: list[Mapping[str, object]]) -> SpecSynthesizer:
+    """A fake LLM that emits *expect* verbatim with otherwise well-formed scaffolding.
+
+    Lets a test pin that a SPECIFIC malformed matcher shape is rejected by the real
+    loader inside ``_build_spec`` — the candidate DROPS (``derived=False``) with the
+    loader's own reason, never a crash and never a staged unparsable spec.
+    """
+
+    def _synth(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
+        return SynthesizedSpec(
+            scenario_name=str(candidate["scenario_name"]),
+            scenario_description="shape probe",
+            agent_path="skills/rules/SKILL.md",
+            context_preamble=transcript_slice,
+            prompt="p",
+            expect=expect,
+            fail_tool_call={"name": "Bash", "input": {"command": "deploy svc"}},
+            pass_tool_call={"name": "Bash", "input": {"command": "deploy svc --dry-run"}},
+            judge_rubric="",
+        )
+
+    return _synth
+
+
+def _json_objects_in(text: str) -> list[Mapping[str, object]]:
+    """Every balanced JSON object embedded in *text*, in left-to-right order.
+
+    Scans each ``{`` with ``json.JSONDecoder.raw_decode`` and keeps the ones that
+    decode to a mapping, so a worked example surrounded by prose (the synthesizer
+    prompt's matcher illustrations) is recovered without a brittle first-``{``/last-``}``
+    span.
+    """
+    decoder = json.JSONDecoder()
+    objects: list[Mapping[str, object]] = []
+    index = text.find("{")
+    while index != -1:
+        try:
+            parsed, _ = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index = text.find("{", index + 1)
+            continue
+        if isinstance(parsed, Mapping):
+            objects.append(parsed)
+        index = text.find("{", index + 1)
+    return objects
+
+
+_MATCHER_KINDS = ("tool_call", "no_tool_call_matching", "any_of", "final_state")
 
 
 class DeriveEvalFromCandidateTestCase(TestCase):
@@ -419,3 +505,119 @@ class StageProposalsFileTestCase(TestCase):
         assert staging.name == "dream-derived-evals"
         assert SCENARIOS_DIR not in staging.parents
         assert staging != SCENARIOS_DIR
+
+
+class SynthPromptGrammarTestCase(TestCase):
+    """The synthesizer prompt states the loader's STRICT matcher grammar (#2646).
+
+    The drop-every-candidate bug was an under-specified prompt: it named the four
+    matcher kinds in prose but gave no shape, so haiku emitted matchers the loader
+    rejects. These lock that the shipped prompt now carries a worked, loader-parseable
+    example of each kind plus the single-object instruction.
+    """
+
+    def _rendered_prompt(self) -> str:
+        return _SYNTH_PROMPT_TEMPLATE.format(scenario_name="x_under_load", drift_rule="d", seed_citation="c", slice="s")
+
+    def test_prompt_carries_a_loader_parseable_example_of_every_matcher_kind(self) -> None:
+        examples = [obj for obj in _json_objects_in(self._rendered_prompt()) if any(k in obj for k in _MATCHER_KINDS)]
+        kinds = {kind for obj in examples for kind in _MATCHER_KINDS if kind in obj}
+        assert kinds == set(_MATCHER_KINDS)
+        for example in examples:
+            _parse_matcher(example, "prompt_example", Path("synthesizer-prompt"))
+
+    def test_prompt_demands_exactly_one_json_object_and_no_prose(self) -> None:
+        normalized = " ".join(self._rendered_prompt().lower().split())
+        assert "exactly one json object" in normalized
+        assert "no surrounding prose" in normalized
+
+
+class DerivationDropsLoaderRejectedMatchersTestCase(TestCase):
+    """A matcher shape the loader rejects DROPS the candidate with the loader's reason.
+
+    These pin the exact grammar the prompt fix must satisfy — every failure class the
+    two dream runs surfaced (#2646): a multi/zero-``args`` positive, a multi-entry
+    negative, and an expect entry that is none of the four kinds. The drop-on-unparsable
+    safety net stays; the prompt is what changes so the synthesizer stops tripping it.
+    """
+
+    def test_each_rejected_shape_drops_with_the_loaders_reason(self) -> None:
+        cases: list[tuple[str, list[Mapping[str, object]], str]] = [
+            (
+                "two args keys",
+                [{"tool_call": "Bash", "args.command": '~ "x"', "args.timeout": '~ "y"'}],
+                "needs exactly one",
+            ),
+            ("zero args keys", [{"tool_call": "Bash"}], "needs exactly one"),
+            (
+                "two negative entries",
+                [{"no_tool_call_matching": {"Bash.command": '~ "x"', "Edit.file_path": '~ "y"'}}],
+                "must hold exactly one",
+            ),
+            ("unknown kind", [{"assert_something": 'contains "x"'}], "expect entry must have"),
+        ]
+        for label, expect, reason in cases:
+            with self.subTest(label):
+                outcome = derive_eval_from_candidate(
+                    _CANDIDATE,
+                    transcript_slice=_TRANSCRIPT_SLICE,
+                    synthesizer=_synthesizer_emitting_expect(expect),
+                )
+                assert outcome.derived is False
+                assert outcome.spec is None
+                assert reason in outcome.reason
+
+    def test_well_formed_reply_with_every_teeth_checkable_kind_derives(self) -> None:
+        # A positive, a negative AND an any_of together: all three discriminate the
+        # cited drift from the compliant shape, so the well-formed reply teeth-checks.
+        outcome = derive_eval_from_candidate(
+            _CANDIDATE, transcript_slice=_TRANSCRIPT_SLICE, synthesizer=_all_discriminating_kinds_synthesizer
+        )
+        assert outcome.derived is True
+        assert outcome.spec is not None
+        assert len(outcome.spec.matchers) == 3
+
+
+class ParseSynthesizedExtractsOneObjectTestCase(TestCase):
+    """``_parse_synthesized`` extracts the FIRST balanced JSON object, not a first-{/last-} span.
+
+    The dream-run ``Extra data: line 28 column 1`` drop (#2646, failure class 3) came
+    from ``raw.find("{") … raw.rfind("}")``: when the reply carried prose plus more than
+    one object (or a trailing fragment) the slice spanned both and ``json.loads`` raised.
+    Scanning the first balanced object instead makes a prose-wrapped, multi-object reply
+    parse to the first object rather than crashing the whole derivation phase.
+    """
+
+    _WELL_FORMED = (
+        '{"scenario_name": "first_under_load", "context_preamble": "ctx", "prompt": "p", '
+        '"expect": [{"tool_call": "Task", "args.prompt": "~ \\"fix\\""}], '
+        '"fail_tool_call": {"name": "Edit", "input": {"file_path": "a.py"}}, '
+        '"pass_tool_call": {"name": "Task", "input": {"prompt": "fix in a worktree"}}}'
+    )
+
+    def test_prose_then_multiple_objects_yields_the_first_object(self) -> None:
+        raw = (
+            "Here is the scenario, with an afterthought:\n"
+            + self._WELL_FORMED
+            + '\n\nOn reflection a better preamble: {"context_preamble": "longer ctx"}\n'
+        )
+        synthesized = _parse_synthesized(raw, {"scenario_name": "first_under_load"})
+        assert synthesized.scenario_name == "first_under_load"
+        assert synthesized.context_preamble == "ctx"
+        assert synthesized.expect == [{"tool_call": "Task", "args.prompt": '~ "fix"'}]
+
+    def test_object_with_a_trailing_fragment_does_not_raise_extra_data(self) -> None:
+        synthesized = _parse_synthesized(self._WELL_FORMED + "\n}{ trailing noise", {"scenario_name": "x"})
+        assert synthesized.scenario_name == "first_under_load"
+
+    def test_a_non_json_brace_in_prose_is_skipped_for_the_real_object(self) -> None:
+        # Haiku prose like "Thinking {step 1: design}" carries a brace that is not
+        # JSON; the scan steps over it to the first brace that actually decodes.
+        synthesized = _parse_synthesized(
+            "Thinking {step 1: design} then:\n" + self._WELL_FORMED, {"scenario_name": "x"}
+        )
+        assert synthesized.scenario_name == "first_under_load"
+
+    def test_only_a_non_json_brace_raises_no_object(self) -> None:
+        with pytest.raises(ValueError, match="no JSON object"):
+            _parse_synthesized("the model mused {about it but emitted no object", {"scenario_name": "x"})
