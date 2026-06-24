@@ -37,6 +37,13 @@ def _init_repo(root: Path) -> None:
     run_git(root, "commit", "-qm", "init")
 
 
+def _chmod_tree(root: Path, mode: int) -> None:
+    Path(root).chmod(mode)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in (*dirnames, *filenames):
+            Path(Path(dirpath) / name).chmod(mode)
+
+
 class TestResolveTeatreeRepoRoot:
     def test_resolves_the_running_teatree_clone_to_a_git_toplevel(self) -> None:
         root = resolve_teatree_repo_root()
@@ -52,7 +59,7 @@ class TestResolveTeatreeRepoRoot:
 
 
 class TestProvisionEphemeralCheckout:
-    def test_creates_a_detached_worktree_that_is_not_the_real_clone(
+    def test_creates_a_detached_clone_that_is_not_the_real_clone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         real = tmp_path / "real-clone"
@@ -63,10 +70,28 @@ class TestProvisionEphemeralCheckout:
             assert checkout.is_dir()
             assert checkout != real
             assert (checkout / "src" / "teatree" / "__init__.py").is_file()
-            # A detached HEAD worktree of the real clone — sub-agent writes land here.
+            # A detached-HEAD independent clone — sub-agent writes land here.
             assert _git(checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD", (
                 "ephemeral checkout must be detached, not on a real branch"
             )
+
+    def test_provisions_against_a_read_only_source_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The CI eval mounts the repo ``:ro``; provisioning must only READ the source.
+
+        ``git worktree add`` writes the worktree's metadata into the source's
+        ``.git/worktrees/`` and so FAILS on a read-only repo (the regression this
+        guards) — a clone reads the source and writes only to the throwaway.
+        """
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+        _chmod_tree(real / ".git", 0o555)
+        try:
+            with provision_ephemeral_checkout() as checkout:
+                assert (checkout / "src" / "teatree" / "__init__.py").is_file()
+                assert _git(checkout, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+        finally:
+            _chmod_tree(real / ".git", 0o755)
 
     def test_sub_agent_writes_land_in_the_ephemeral_not_the_real_clone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -111,8 +136,12 @@ class TestProvisionEphemeralCheckout:
             captured = checkout
             assert captured.is_dir()
         assert not captured.exists(), "the ephemeral checkout directory must be removed on exit"
-        registered = _git(real, "worktree", "list", "--porcelain")
-        assert str(captured) not in registered, "the ephemeral worktree must be deregistered from the real clone"
+        # An independent clone is never a worktree of the source, so provisioning must
+        # leave the real clone with exactly its own (single) worktree entry — nothing leaked.
+        worktree_lines = [
+            line for line in _git(real, "worktree", "list", "--porcelain").splitlines() if line.startswith("worktree ")
+        ]
+        assert worktree_lines == [f"worktree {real}"], "provisioning must not register a worktree on the source clone"
 
     def test_cleans_up_even_when_the_body_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real = tmp_path / "real-clone"
@@ -135,6 +164,15 @@ class TestProvisionEphemeralCheckout:
     def test_refuses_when_real_root_unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: None)
         with pytest.raises(EphemeralCheckoutError, match="REFUSES to run"), provision_ephemeral_checkout():
+            pass
+
+    def test_refuses_when_the_source_is_not_clonable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A resolvable path that is NOT a git repo makes `git clone` fail; provisioning
+        # must REFUSE (raise) rather than yield a half-built checkout or fall back.
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: not_a_repo)
+        with pytest.raises(EphemeralCheckoutError, match="git clone failed"), provision_ephemeral_checkout():
             pass
 
 

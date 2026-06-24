@@ -12,17 +12,21 @@ teatree clone. The sub-agent finds it two ways a neutral cwd cannot block:
     resolves through the install's ``.pth`` straight into the developer's
     ``src/teatree`` (the real clone), so the sub-agent learns the real repo path
     even from a ``/tmp`` cwd;
-*   the **shared ``.git``** — a worktree of the real clone shares its object store
-    and refs, so a commit/branch-switch reaches the real repository.
+*   **git reachability** — ``git`` resolves the repo by walking up from the cwd (and
+    via any inherited ``GIT_*`` pins), so a commit or branch-switch can still reach the
+    real repository whenever it is discoverable.
 
 Running from a ``/tmp`` cwd therefore did NOT protect the developer's clone (the
 issue this module fixes was observed corrupting the main clone and two live
-worktrees). The fix is a per-run EPHEMERAL CHECKOUT: a ``git worktree --detach``
-in a temp dir whose own working tree + detached ``HEAD`` absorb every write the
-sub-agent makes, plus an :func:`ephemeral_checkout_env` overlay that redirects the
-TWO real-clone resolution levers at it — ``PYTHONPATH`` (so ``import teatree``
-resolves into the ephemeral ``src``, NOT the editable ``.pth``) and the git
-discovery vars (so ``git`` operations resolve to the ephemeral working tree).
+worktrees). The fix is a per-run EPHEMERAL CHECKOUT: an independent ``git clone`` at a
+detached ``HEAD`` in a temp dir whose own working tree, refs, and object store absorb
+every write the sub-agent makes, plus an :func:`ephemeral_checkout_env` overlay that
+redirects the TWO real-clone resolution levers at it — ``PYTHONPATH`` (so
+``import teatree`` resolves into the ephemeral ``src``, NOT the editable ``.pth``) and
+the git discovery vars (so ``git`` operations resolve to the ephemeral working tree).
+A clone (not a worktree) reads the source READ-ONLY, so it also works when the eval
+mounts the repo ``:ro`` in CI — and gives full isolation (separate refs + object
+store), so a sub-agent's commits never even land as loose objects in the real store.
 The checkout is torn down when the run finishes, so nothing leaks.
 
 When the real teatree root cannot be located (a packaged install with no source
@@ -39,8 +43,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from teatree.utils.git_run import check as git_check
 from teatree.utils.git_run import run as git_run
-from teatree.utils.git_worktree import worktree_add_at_ref, worktree_remove
 
 
 class EphemeralCheckoutError(RuntimeError):
@@ -66,21 +70,38 @@ def resolve_teatree_repo_root() -> Path | None:
     return Path(toplevel) if toplevel else None
 
 
+def _clone_detached(repo_root: Path, checkout: Path) -> bool:
+    """Clone *repo_root* into *checkout* at a detached ``HEAD``; ``True`` on success.
+
+    A ``git clone`` READS the source and writes ONLY to the destination, so it works
+    when the source is mounted READ-ONLY — the CI eval container mounts the repo ``:ro``
+    so a metered run can never mutate the working tree. The superseded
+    ``git worktree add`` had to write the worktree's metadata into the source's
+    ``.git/worktrees/`` and so could not run under that ``:ro`` mount. The clone is also
+    STRONGER isolation than a worktree: with its own ``HEAD``/refs/index and its own
+    object store, a sub-agent's branch switches AND commits stay inside the throwaway —
+    a shared worktree left the sub-agent's commits as loose objects in the real store.
+    """
+    if not git_check(repo=str(repo_root), args=["clone", "--quiet", str(repo_root), str(checkout)]):
+        return False
+    return git_check(repo=str(checkout), args=["checkout", "--quiet", "--detach", "HEAD"])
+
+
 @contextmanager
 def provision_ephemeral_checkout() -> Iterator[Path]:
-    """Yield a throwaway ``git worktree --detach`` of the real teatree clone.
+    """Yield a throwaway independent ``git clone`` of the real teatree clone.
 
-    The yielded directory is a detached worktree: its own working tree and
-    detached ``HEAD`` absorb every file write, branch switch, and commit the SDK
-    sub-agent makes, so the real clone's and live worktrees' working trees and
-    branch refs stay untouched. A detached worktree shares the real clone's
-    object store, so a sub-agent commit can leave loose (garbage-collectable)
-    objects there — that is harmless garbage, not corruption of the developer's
-    work. The worktree is removed (``git worktree remove --force``) and its temp
-    parent deleted on context exit, success or failure.
+    The yielded directory is an independent clone at a detached ``HEAD``: its own
+    working tree, refs, index, and object store absorb every file write, branch
+    switch, and commit the SDK sub-agent makes, so the real clone's and live
+    worktrees' working trees and branch refs stay untouched — and, unlike a shared
+    worktree, the sub-agent's commits never even land as loose objects in the real
+    store. The clone reads the source READ-ONLY, so it also provisions when the eval
+    mounts the repo ``:ro`` (the CI container). The temp parent is deleted on context
+    exit, success or failure.
 
     Raises :class:`EphemeralCheckoutError` when the real teatree root cannot be
-    located or the worktree cannot be created — the spawning scenario then refuses
+    located or the clone cannot be created — the spawning scenario then refuses
     to run on the real clone.
     """
     repo_root = resolve_teatree_repo_root()
@@ -96,16 +117,15 @@ def provision_ephemeral_checkout() -> Iterator[Path]:
     parent = Path(tempfile.mkdtemp(prefix="t3-eval-ephemeral-checkout-"))
     checkout = parent / "teatree"
     try:
-        if not worktree_add_at_ref(str(repo_root), str(checkout), "HEAD"):
+        if not _clone_detached(repo_root, checkout):
             msg = (
                 f"cannot provision an isolated ephemeral checkout at {checkout}: "
-                "git worktree add failed. The sub-agent-spawning scenario REFUSES "
+                "git clone failed. The sub-agent-spawning scenario REFUSES "
                 "to run on the real clone."
             )
             raise EphemeralCheckoutError(msg)
         yield checkout
     finally:
-        worktree_remove(str(repo_root), str(checkout))
         shutil.rmtree(parent, ignore_errors=True)
 
 
