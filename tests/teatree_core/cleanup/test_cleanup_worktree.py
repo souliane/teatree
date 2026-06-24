@@ -17,6 +17,7 @@ from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
+from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
 
 _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
@@ -704,6 +705,73 @@ class TestCleanupWorktree(TestCase):
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
+
+
+class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
+    """souliane/teatree#2664 — teardown completes ALL steps on a stale base.
+
+    The benign prek hook-cleanup path (``_remove_git_worktree`` →
+    ``prek_hook.remove_stale_hooks`` → ``_shared_hooks_dir`` → ``run_step``)
+    drags in a lazy ``import teatree.core.provision_timebox``. When the executing
+    checkout's base predates that module the import raised ``ModuleNotFoundError``
+    and aborted ``cleanup_worktree`` mid-stream — every step ordered AFTER the
+    abort (DB drop, pass-entry removal, ``Worktree`` row delete) was SKIPPED,
+    leaving an orphaned DB and DB row. The fix makes the abort impossible, so the
+    later steps run.
+    """
+
+    def _make_worktree(self, *, db_name: str = "wt_2664") -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/2664",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-2664",
+            db_name=db_name,
+            extra={"worktree_path": "/tmp/wt/org/repo"},
+        )
+
+    @_patch_overlay
+    @_patch_config
+    def test_db_drop_and_row_delete_still_run_when_module_absent(
+        self,
+        mock_config: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """The prek hook-cleanup import failing must not skip the later teardown steps.
+
+        ``git`` is NOT wholesale-mocked here: the real ``cleanup.git`` runs so
+        ``prek_hook.remove_stale_hooks`` genuinely reaches ``run_step`` (the
+        abort site) against a tmp worktree path with no checkout. The assertion
+        is anti-vacuous — it pins that the DB-drop step IS invoked and the
+        ``Worktree`` row IS deleted, the two steps the abort skipped, not merely
+        that no exception escaped.
+        """
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+
+        wt = self._make_worktree(db_name="wt_2664")
+        wt_id = wt.pk
+
+        with (
+            patch("teatree.core.cleanup.git") as mock_git,
+            patch("teatree.core.cleanup.drop_db") as mock_drop,
+            patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            provision_timebox_unimportable(),
+        ):
+            _no_unpushed(mock_git)
+            mock_git.status_porcelain.return_value = ""
+            mock_git.unsynced_commits.return_value = []
+            result = cleanup_worktree(wt, strict_hygiene=False)
+
+        mock_drop.assert_called_once()
+        assert mock_drop.call_args.args == ("wt_2664",)
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+        assert result.clean is True
 
 
 class TestCleanupWorktreeLoudTeardown(TestCase):

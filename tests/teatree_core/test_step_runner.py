@@ -9,6 +9,11 @@ from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
 from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
+from tests.teatree_core._provision_timebox_stub import (
+    BROKEN_DEPENDENCY_NAME,
+    provision_timebox_internally_broken,
+    provision_timebox_unimportable,
+)
 
 
 class TestStepResult(TestCase):
@@ -99,6 +104,78 @@ class TestRunStep(TestCase):
         result = run_step("missing", ["nonexistent_binary_xyz123"])
         assert result.success is False
         assert "command not found" in result.error
+
+
+class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
+    """souliane/teatree#2664 — ``run_step`` degrades when ``provision_timebox`` is absent.
+
+    Teardown runs the WORKTREE's own checkout (``uv --directory <worktree>
+    run``). A worktree whose base predates ``provision_timebox`` (#2220) cannot
+    import it, so the lazy ``from teatree.core.provision_timebox import
+    run_timeboxed_step`` in ``run_step`` raised ``ModuleNotFoundError`` and
+    aborted the whole teardown runner mid-stream — skipping every step ordered
+    after the abort (DB drop, ``Worktree`` row delete, docker down). The
+    optional time-box enhancement must degrade to a plain subprocess run, never
+    abort the caller.
+    """
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_does_not_raise_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="hooks\n", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("git-hooks-path", ["git", "rev-parse", "--git-path", "hooks"], check=False)
+
+        assert result.success is True
+        assert result.name == "git-hooks-path"
+        assert "hooks" in result.stdout
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_soft_fail_stays_benign_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.return_value = MagicMock(returncode=1, stdout="", stderr="ignored")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("soft-fail", ["false"], check=False)
+
+        assert result.success is True
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_command_not_found_surfaced_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.side_effect = FileNotFoundError("no such file: nope")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("missing", ["nope"], check=False)
+
+        assert result.success is False
+        assert "command not found" in result.error
+
+    @patch("teatree.utils.run.subprocess")
+    def test_run_step_timeout_surfaced_when_module_absent(self, mock_sp: MagicMock) -> None:
+        mock_sp.run.side_effect = subprocess.TimeoutExpired(cmd=["slow"], timeout=1)
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+
+        with provision_timebox_unimportable():
+            result = run_step("slow", ["sleep", "999"], timeout=1, check=False)
+
+        assert result.success is False
+        assert "timed out" in result.error
+
+    def test_run_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        """A present ``provision_timebox`` failing on its OWN broken import must NOT be swallowed.
+
+        The catch is narrowed to the module's own absence (``ModuleNotFoundError.name`` ==
+        ``teatree.core.provision_timebox``). A present-but-internally-broken module raises a
+        ``ModuleNotFoundError`` whose ``.name`` is the missing DEPENDENCY, so ``run_step`` must
+        re-raise it rather than silently degrading to a plain run — which would disable the
+        timeout/heartbeat/alert for every healthy install and mask the real bug.
+        """
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_step("probe", ["true"], check=False)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
 class TestRunCallableStep(TestCase):
