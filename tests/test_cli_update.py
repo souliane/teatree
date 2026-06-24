@@ -20,7 +20,6 @@ import typer
 import teatree.cli.setup as setup_mod
 import teatree.config as config_mod
 from teatree.cli import update as update_mod
-from teatree.cli._update_reconcile import _cherry_not_upstream, _merge_commits_in_range
 from teatree.cli.update import (
     ReinstallResult,
     RepoUpdate,
@@ -31,6 +30,7 @@ from teatree.cli.update import (
     _reinstall_and_resetup,
     update_repo,
 )
+from teatree.core.branch_classification import branch_content_upstream, content_equivalence_blockers
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -961,26 +961,21 @@ class TestUpdateReconcilesSquashMergedClone:
 class TestContentGateFailsSafe:
     """An inconclusive content check must REFUSE the reset, never authorize it.
 
-    Both gate probes (``git cherry`` and ``git rev-list --merges``) fail safe:
-    a non-zero git exit (a corrupt ref, a missing target) is inconclusive, so
-    the helper reports an opaque genuine "sha" and the caller keeps the
-    conservative refuse — ambiguity never reaps real work.
+    The shared :func:`content_equivalence_blockers` gate (``git cherry`` patch-id
+    + a merge-commit check) fails CLOSED: an unresolvable target makes both probes
+    exit non-zero (inconclusive), so the helper reports an opaque blocker and the
+    caller keeps the conservative refuse — ambiguity never reaps real work. This is
+    the SAME helper the clean-all force-delete path consumes (#2609).
     """
 
-    def test_cherry_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
+    def test_inconclusive_probe_reports_a_blocker(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         # An unresolvable target makes `git cherry` exit non-zero (rc 128).
-        blockers = _cherry_not_upstream(clone, "origin/does-not-exist")
-        assert blockers, "an inconclusive git cherry must report a blocker, not an empty pass"
+        blockers = content_equivalence_blockers(str(clone), "main", "origin/does-not-exist")
+        assert blockers, "an inconclusive content probe must report a blocker, not an empty pass"
         assert "inconclusive" in blockers[0]
-
-    def test_rev_list_merges_failure_reports_a_genuine_blocker(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        blockers = _merge_commits_in_range(clone, "origin/does-not-exist")
-        assert blockers, "an inconclusive git rev-list --merges must report a blocker, not an empty pass"
-        assert "inconclusive" in blockers[0]
+        assert branch_content_upstream(str(clone), "main", "origin/does-not-exist") is False
 
 
 class TestRunCallback:

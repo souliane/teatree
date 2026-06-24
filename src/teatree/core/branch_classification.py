@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from teatree.utils import git
-from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
@@ -110,6 +110,59 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
         else:
             classification.genuinely_ahead.append(commit)
     return classification
+
+
+def content_equivalence_blockers(repo: str, branch: str, target: str = "origin/main") -> list[str]:
+    """Return the commit(s) on ``branch`` NOT provably content-equivalent to ``target``.
+
+    The AUTHORITATIVE content gate every destructive caller must pass before
+    destroying ``branch`` (#2609). :func:`classify_branch_commits` buckets by
+    canonicalized SUBJECT alone — fine to *recognize* a forge-squash-merged
+    candidate, but unsafe to *authorize* a destroy: a genuine un-upstreamed
+    commit whose subject collides with an already-upstreamed subject (a routine
+    ``docs: update skills``), an amended commit that added content after the
+    original squash, or a merge commit carrying unique content all slip past it.
+    This proves equivalence by CONTENT instead, so an empty list is positive
+    proof that destroying ``branch`` loses nothing.
+
+    Two authoritative checks, both contributing blockers. ``git cherry <target>
+    <branch>`` compares each unique commit by **patch-id** (content), not SHA or
+    subject: a ``-`` prefix means the patch already landed upstream
+    (squash-merge), a ``+`` prefix means it is genuinely un-upstreamed — the ``+``
+    sha(s) are blockers. ``git rev-list --merges <target>..<branch>`` lists merge
+    commits unique to the branch; a merge commit can carry content in neither
+    parent (an evil-merge) and has no single patch-id ``git cherry`` can compare,
+    so any merge commit in the unique range blocks conservatively.
+
+    **Fails CLOSED.** A failed ``git cherry`` / ``git rev-list`` (unresolvable
+    target, corrupt repo, any git error) is inconclusive — the helper returns an
+    opaque ``"(... inconclusive)"`` blocker so the caller REFUSES the destroy.
+    Destruction requires a POSITIVE proof of content-equivalence; ambiguity never
+    authorizes it.
+    """
+    blockers: list[str] = []
+    try:
+        cherry = git.run_strict(repo=repo, args=["cherry", target, branch])
+    except CommandFailedError:
+        return ["(git cherry failed — content check inconclusive)"]
+    blockers.extend(line[1:].strip() for line in cherry.splitlines() if line.strip().startswith("+"))
+    try:
+        merges = git.run_strict(repo=repo, args=["rev-list", "--merges", f"{target}..{branch}"])
+    except CommandFailedError:
+        return [*blockers, "(git rev-list --merges failed — merge check inconclusive)"]
+    blockers.extend(sha.strip() for sha in merges.splitlines() if sha.strip())
+    return blockers
+
+
+def branch_content_upstream(repo: str, branch: str, target: str = "origin/main") -> bool:
+    """Whether every commit on ``branch`` is provably content-equivalent to ``target``.
+
+    The boolean view of :func:`content_equivalence_blockers`: ``True`` only when
+    the content gate found NO blocker, so destroying ``branch`` loses nothing.
+    ``False`` on any blocker AND on any inconclusive git error (the helper fails
+    closed) — destruction requires positive proof.
+    """
+    return not content_equivalence_blockers(repo, branch, target)
 
 
 def _pr_merge_commit_sha(repo: str, branch: str) -> str:

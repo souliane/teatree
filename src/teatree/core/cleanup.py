@@ -28,6 +28,7 @@ from teatree.core.branch_classification import (
     _branch_tree_matches_squash,
     _pr_merge_commit_sha,
     classify_branch_commits,
+    content_equivalence_blockers,
     probe_host_cli,
 )
 from teatree.core.clone_paths import resolve_clone_path
@@ -56,6 +57,10 @@ logger = logging.getLogger(__name__)
 
 
 _SUBJECT_PREVIEW_LIMIT = 3
+
+# A full git sha is 40 hex chars; below this a "sha" is a fail-closed diagnostic
+# string (e.g. "(git cherry failed …)") surfaced verbatim, not sliced.
+_SHORT_SHA_LEN = 7
 
 
 @dataclass(slots=True)
@@ -150,24 +155,34 @@ def _effective_target(repo_main: str, wt_path: str, worktree: Worktree) -> _Effe
 
 
 def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _EffectiveTarget) -> None:
-    """Raise ``RuntimeError`` when the branch carries commits not on ``origin/main``.
+    """Raise ``RuntimeError`` when the branch carries work not provably on ``origin/main``.
 
     Operates on ``target`` (the effective branch resolved from git), not the
     possibly-drifted DB ``Worktree.branch`` slug. The ``origin/main``-relative
-    classification needs a named branch reachable from the main clone, so it runs
-    against the main clone using the effective label; a detached HEAD has no named
-    branch to classify and is skipped (the #706 data-loss guard already covered
-    its unpushed commits via the worktree-dir probe).
+    check needs a named branch reachable from the main clone, so it runs against
+    the main clone using the effective label; a detached HEAD has no named branch
+    and is skipped (the #706 data-loss guard already covered its unpushed commits
+    via the worktree-dir probe).
 
-    Merge commits and squash-merged commits are ignored — only ``genuinely_ahead``
-    work blocks cleanup. Two fallbacks run before refusing, both confirming the
-    work already shipped: first the PR's merge commit tree is compared against the
-    branch tip (an empty diff means the cumulative content is captured in the
-    squash, typical for post-merge retro commits); then, for branches that
-    diverged so far the squash tree no longer matches, the forge is asked
-    canonically whether the branch's PR is merged (#1578). The error message
-    lists up to ``_SUBJECT_PREVIEW_LIMIT`` commit subjects so the caller can
-    decide whether to push or abandon.
+    **Content-equivalence authorizes the destroy, not subject-match (#2609).**
+    :func:`classify_branch_commits` is a cheap SUBJECT recognizer — it cannot
+    authorize a force-delete, because a genuine un-upstreamed commit whose subject
+    collides with an already-upstreamed subject (a routine ``docs: update skills``)
+    drains into ``squash_merged`` and would falsely empty ``genuinely_ahead``. The
+    AUTHORITATIVE gate is :func:`content_equivalence_blockers` (``git cherry``
+    patch-id + a merge-commit check): an empty blocker list is positive proof every
+    commit's CONTENT is already upstream, so the worktree is safe to remove. It
+    fails CLOSED — any inconclusive git probe reports a blocker and the cleanup is
+    refused.
+
+    Two positive merged-evidence fallbacks override a non-empty blocker list, both
+    confirming the work already shipped despite a patch-id mismatch: the PR's merge
+    commit tree compared against the branch tip (an empty diff means the cumulative
+    content is captured in the squash, typical for post-merge retro commits), and
+    the forge's canonical PR-merged report (#1578, for branches diverged so far the
+    squash tree no longer matches). The error message lists up to
+    ``_SUBJECT_PREVIEW_LIMIT`` blockers so the caller can decide whether to push or
+    abandon.
     """
     branch = target.branch_to_delete
     if branch is None:
@@ -175,24 +190,23 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
         # #706 unpushed guard already probed HEAD in the worktree dir, so any
         # work-to-lose was caught there.
         return
-    unsynced = git.unsynced_commits(repo_main, branch)
-    if not unsynced:
+    if not git.unsynced_commits(repo_main, branch):
         return
-    classification = classify_branch_commits(repo_main, branch)
-    if not classification.genuinely_ahead:
+    blockers = content_equivalence_blockers(repo_main, branch)
+    if not blockers:
         return
     if _branch_tree_matches_squash(repo_main, branch):
         return
     if _branch_pr_is_merged(repo_main, branch):
         return
-    preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
-    subjects = ", ".join(c.subject for c in preview)
-    if len(classification.genuinely_ahead) > _SUBJECT_PREVIEW_LIMIT:
-        subjects += ", …"
+    preview = blockers[:_SUBJECT_PREVIEW_LIMIT]
+    listed = ", ".join(sha[:_SHORT_SHA_LEN] if len(sha) >= _SHORT_SHA_LEN else sha for sha in preview)
+    if len(blockers) > _SUBJECT_PREVIEW_LIMIT:
+        listed += ", …"
     msg = (
         f"{worktree.repo_path} ({target.label}): "
-        f"refused cleanup — {len(classification.genuinely_ahead)} unsynced commit(s) "
-        f"not on origin/main: {subjects}. "
+        f"refused cleanup — {len(blockers)} commit(s) not provably on origin/main "
+        f"(content not upstream): {listed}. "
         "Push them to a new branch or pass force=True."
     )
     raise RuntimeError(msg)
