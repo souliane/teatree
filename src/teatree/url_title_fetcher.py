@@ -5,14 +5,14 @@ content of a linked PR/issue, not just the prompt text. Without this, pasting
 a bare PR URL from a generic-looking repo does not load skills that only the
 PR's *title* would identify (e.g. a domain-specific skill on a feature PR).
 
-Set ``T3_HOOK_FETCH_TITLES=0`` to disable. Titles are cached at
+Set ``hook_fetch_titles`` off to disable (``t3 <overlay> config_setting set
+hook_fetch_titles false``; ``T3_HOOK_FETCH_TITLES=0`` env still wins). Titles are cached at
 ``~/.cache/teatree/url-titles.json`` indefinitely (titles rarely change;
 delete the file to invalidate).
 """
 
 import concurrent.futures
 import json
-import os
 import re
 import shutil
 from collections.abc import Callable
@@ -100,11 +100,17 @@ def _extract_jobs(prompt: str) -> list[tuple[str, Callable[[], str]]]:
 def fetch_titles(prompt: str) -> list[str]:
     """Return titles for every GitLab/GitHub URL in *prompt*. Cached + parallel.
 
-    Returns ``[]`` when ``T3_HOOK_FETCH_TITLES=0``, when no URLs are found, or
+    Returns ``[]`` when ``hook_fetch_titles`` is off, when no URLs are found, or
     when every fetch fails. Failures are not cached so transient errors retry
-    next time.
+    next time. DB-home (#1775): resolved via the effective-settings tier
+    (set with ``t3 <overlay> config_setting set hook_fetch_titles false``;
+    ``T3_HOOK_FETCH_TITLES`` env still wins). The UserPromptSubmit hook runs
+    pre-Django, so there the DB tier is skipped (fail-safe) and env + the
+    dataclass default govern — identical to the legacy behaviour.
     """
-    if os.environ.get("T3_HOOK_FETCH_TITLES", "1") == "0":
+    from teatree.config import get_effective_settings  # noqa: PLC0415
+
+    if not get_effective_settings().hook_fetch_titles:
         return []
     jobs = _extract_jobs(prompt)
     if not jobs:

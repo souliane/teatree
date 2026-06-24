@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 from typing import TYPE_CHECKING, ClassVar
 
@@ -25,8 +24,6 @@ def _check_plan_artifact(ticket: object) -> bool:
 
 
 def _auto_ship_enabled() -> bool:
-    if os.environ.get("T3_AUTO_SHIP", "").lower() == "true":
-        return True
     return get_effective_settings().mode == Mode.AUTO
 
 
@@ -517,7 +514,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         else:
             reason = (
                 "Auto-scheduled shipping — gated for user approval "
-                '(set teatree.mode = "auto" or T3_AUTO_SHIP=true to skip)'
+                "(set mode = auto via config_setting set, or T3_MODE=auto, to skip)"
             )
         return Task.objects.create(
             ticket=self,

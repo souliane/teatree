@@ -1,9 +1,11 @@
 """Pre-publish scanner that strips ``Closes/Fixes/Resolves`` trailers (#1398).
 
-The user-scoped setting ``[teatree.publish_gates] ban_close_trailers_on_namespaces``
-lists fnmatch patterns over ``namespace/repo``. When the target PR/MR's
-repo matches one of the patterns and the body carries an auto-close
-trailer, the trailer line is silently stripped before publishing.
+The user-scoped setting ``ban_close_trailers_on_namespaces`` lists fnmatch
+patterns over ``namespace/repo``. When the target PR/MR's repo matches one of
+the patterns and the body carries an auto-close trailer, the trailer line is
+silently stripped before publishing. DB-home (#1775); set via ``t3 <overlay>
+config_setting set ban_close_trailers_on_namespaces``; the TOML value is ignored
+on read.
 
 Distinct from the overlay-scoped ``forbid_close_keywords`` gate (#1012)
 which raises ``SystemExit`` to refuse the publish: this scanner cleans

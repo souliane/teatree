@@ -558,17 +558,18 @@ class Command(TyperCommand):
 
 
 def _env_propose_evals() -> bool:
-    """Read the ``T3_DREAM_PROPOSE_EVALS`` opt-in env for the manual ``run`` path.
+    """Resolve the ``dream_propose_evals`` opt-in for the manual ``run`` path.
 
     The manual ``run`` enables the eval phase when ``--propose-evals`` is given OR
-    this env is truthy (``1``/``true``/``yes``, case-insensitive). The cadence-
-    driven ``tick`` path does NOT route through here — it resolves the seam (LIVE
-    by default, env/toml kill-switch) via
+    this setting is on. DB-home (#1775): resolved via the effective-settings tier
+    (set with ``t3 <overlay> config_setting set dream_propose_evals true``). The
+    cadence-driven ``tick`` path does NOT route through here — it resolves the
+    seam (LIVE by default, env/toml kill-switch) via
     :func:`teatree.loops.dream.loop.propose_evals_enabled`.
     """
-    import os  # noqa: PLC0415
+    from teatree.config import get_effective_settings  # noqa: PLC0415
 
-    return os.environ.get("T3_DREAM_PROPOSE_EVALS", "").strip().lower() in {"1", "true", "yes"}
+    return get_effective_settings().dream_propose_evals
 
 
 def _parse_since(raw: str) -> dt.datetime | None:

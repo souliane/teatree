@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import TestCase
 from typer.testing import CliRunner
 
 import teatree.agents.skill_bundle as skill_bundle_mod
@@ -711,6 +712,44 @@ class TestLaunchClaude:
             cmd = mock_exec.call_args[0][1]
             context_arg = cmd[cmd.index("--append-system-prompt") + 1]
             assert "ask the user which lifecycle skill to load" in context_arg
+
+
+class TestLaunchClaudeContributeDbHome(TestCase):
+    """``--plugin-dir`` is gated on the DB-home ``contribute_plugin_dir`` (#2697)."""
+
+    @pytest.fixture(autouse=True)
+    def _stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("T3_CONTRIBUTE", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    def _launch_and_get_cmd(self) -> list[str]:
+        from teatree.cli.agent import _launch_claude  # noqa: PLC0415
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(cli_doctor_mod.IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(cli_agent_mod.os, "execvp") as mock_exec,
+        ):
+            _launch_claude(
+                task="",
+                project_root=self.tmp_path,
+                context_lines=["test"],
+                skills=[],
+                ask_user_which_skill=False,
+            )
+            return mock_exec.call_args[0][1]
+
+    def test_plugin_dir_added_when_db_contribute_plugin_dir_on(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("contribute_plugin_dir", value=True)
+        assert "--plugin-dir" in self._launch_and_get_cmd()
+
+    def test_no_plugin_dir_when_contribute_unset(self) -> None:
+        assert "--plugin-dir" not in self._launch_and_get_cmd()
 
 
 # ── _detect_agent_ticket_status ──────────────────────────────────────

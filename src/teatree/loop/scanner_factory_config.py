@@ -8,7 +8,6 @@ module-health LOC cap; re-exported there so existing import sites are unchanged.
 """
 
 import logging
-import os
 import tomllib
 from pathlib import Path
 
@@ -18,15 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 def _gitlab_approvals_enabled() -> bool:
-    """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
+    """Resolve the GitLab-approval poll-scanner feature flag.
 
-    Default off — the scanner is poll-driven and overlaps with the webhook
-    path; deployments that already wire ``/hooks/gitlab/`` do not need it.
-    Returns True for any truthy value (``1``, ``true``, ``yes``,
-    case-insensitive); anything else (unset, ``0``, ``false``) is off.
+    DB-home (#1775): resolved via the effective-settings tier — an overlay-scoped
+    ``ConfigSetting`` row wins over the global one. Default off — the scanner is
+    poll-driven and overlaps with the webhook path; deployments that already wire
+    ``/hooks/gitlab/`` do not need it. Set via
+    ``t3 <overlay> config_setting set gitlab_approval_scanner_enabled true``.
     """
-    raw = os.environ.get("TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED", "")
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        return get_effective_settings().gitlab_approval_scanner_enabled
+    except Exception:  # noqa: BLE001 — never break a tick on a config read.
+        logger.warning("Failed to resolve gitlab_approval_scanner_enabled; defaulting to off")
+        return False
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:

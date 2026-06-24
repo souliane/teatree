@@ -131,18 +131,49 @@ class TestPhaseAutoDispatch(TestCase):
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "user approval" in task.execution_reason
 
-    def test_shipping_is_interactive_with_auto_reason_when_t3_auto_ship_true(self) -> None:
-        # Shipping is loop-dispatched, so it always runs as an in-session
-        # sub-agent (subscription-covered). Auto mode no longer flips the
-        # target to headless — it only changes the approval posture, carried
-        # on the reason ("auto mode" = push without waiting for approval).
+    def test_shipping_is_auto_when_db_mode_is_auto(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("mode", value="auto")
         ticket = Ticket.objects.create()
 
-        with patch.dict("os.environ", {"T3_AUTO_SHIP": "true", "T3_MODE": "interactive"}):
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("T3_AUTO_SHIP", None)
+            env.pop("T3_MODE", None)
             task = ticket.schedule_shipping()
 
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "auto mode" in task.execution_reason
+
+    def test_shipping_gates_on_user_approval_when_db_mode_is_manual(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("mode", value="interactive")
+        ticket = Ticket.objects.create()
+
+        with patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("T3_AUTO_SHIP", None)
+            env.pop("T3_MODE", None)
+            task = ticket.schedule_shipping()
+
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert "user approval" in task.execution_reason
+
+    def test_t3_auto_ship_env_no_longer_overrides_db_mode_manual(self) -> None:
+        # #2697 behaviour change: the T3_AUTO_SHIP env short-circuit is gone.
+        # An env T3_AUTO_SHIP=true can no longer force auto-ship when the DB
+        # resolves mode=manual — the resolved mode is the sole authority.
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("mode", value="interactive")
+        ticket = Ticket.objects.create()
+
+        with patch.dict("os.environ", {"T3_AUTO_SHIP": "true"}, clear=False) as env:
+            env.pop("T3_MODE", None)
+            task = ticket.schedule_shipping()
+
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
+        assert "user approval" in task.execution_reason
 
     def test_shipping_is_interactive_with_auto_reason_when_global_mode_is_auto(self) -> None:
         # teatree.mode = auto (or T3_MODE=auto) is blanket publish consent, but

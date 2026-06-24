@@ -306,6 +306,7 @@ graph TD
     teatree.cli_reference --> teatree.cli
     teatree.triage --> teatree.utils
     teatree.url_title_fetcher --> teatree.utils
+    teatree.url_title_fetcher --> teatree.config
     teatree.url_classify --> teatree.utils
     teatree.quality --> teatree.utils
     teatree.paths
