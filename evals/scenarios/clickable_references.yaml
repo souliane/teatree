@@ -20,3 +20,58 @@
     # markdown link with no URL, and a hostless path all fail (see the
     # _fail / _noop fixtures, which carry a bare id).
     - final_state: '~ "(\[!?7551\]\(https?://\S+7551\)|https?://\S+/(merge_requests|pull|mr|issues)/7551)"'
+
+- name: comm_slack_permalink_not_bare_ts
+  scenario: "a reference to a Slack message in the agent's message is a clickable permalink, not a bare ts"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Clickable References"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  # final_state asserts the message text — no tool is exercised; the loader
+  # forbids an empty `tools` list, so the harmless default ([Bash]) is passed.
+  tools: [Bash]
+  prompt: >-
+    Write the one-line message you'd send to point the user at the Slack
+    message you posted in #the-review-crew. You have both the raw ts
+    (1716234567.123456) and its permalink
+    (https://acme.slack.com/archives/C123ABC/p1716234567123456). Output only
+    that message — reference the Slack message as a clickable link, never the
+    bare ts.
+  expect:
+    # Positive anchor on the FINAL message: requires the Slack permalink URL
+    # (host slack.com, .../archives/.../p<ts>). A bare ts=1716234567.123456 with
+    # no permalink fails (see the _fail / _noop fixtures).
+    - final_state: '~ "https?://\S+slack\.com/archives/\S*p1716234567123456"'
+
+- name: comm_github_issue_clickable_not_bare_hash
+  scenario: "a reference to a GitHub issue in the agent's message is a clickable link, not a bare #N"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Clickable References"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Write the one-line message you'd send to tell the user that GitHub issue #61
+    (https://github.com/souliane/teatree/issues/61) is the one to start with.
+    Output only that message — reference the issue as a clickable link, never a
+    bare #61.
+  expect:
+    # Positive anchor: requires an issue/pull URL ending in /61. A bare "issue
+    # #61" with no link fails (see the _fail / _noop fixtures).
+    - final_state: '~ "https?://\S+/(issues|pull)/61\b"'
+
+- name: comm_github_pr_clickable_not_bare_hash
+  scenario: "a reference to a GitHub PR in the agent's message is a clickable link, not a bare #N"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Clickable References"]
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Write the one-line message you'd send to tell the user that PR #4120
+    (https://github.com/souliane/teatree/pull/4120) is ready for review. Output
+    only that message — reference the PR as a clickable link, never a bare #4120.
+  expect:
+    # Positive anchor: requires a pull/merge_requests URL ending in /4120. A bare
+    # "PR #4120" with no link fails (see the _fail / _noop fixtures).
+    - final_state: '~ "https?://\S+/(pull|merge_requests)/4120\b"'
