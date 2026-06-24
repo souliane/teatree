@@ -2005,10 +2005,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     dashboard (overall       │
 │                                                     counts + total cost +    │
 │                                                     model + a `scenario |    │
-│                                                     lane | verdict | trials` │
-│                                                     table) to this path.     │
-│                                                     Unlike --transcript-html │
-│                                                     it carries NO transcript │
+│                                                     lane | verdict | trials  │
+│                                                     | cost` table) to this   │
+│                                                     path. Unlike             │
+│                                                     --transcript-html it     │
+│                                                     carries NO transcript    │
 │                                                     (no reasoning, tool      │
 │                                                     calls, or judge          │
 │                                                     rationale), so it is the │

@@ -409,6 +409,7 @@ class _SummaryRow:
     lane: str
     verdict: str
     trials: str
+    cost: str
 
 
 def _lane_of(spec_name: str, lane: str | None) -> str:
@@ -431,6 +432,7 @@ def _row_from_scenario(result: ScenarioResult) -> _SummaryRow:
         lane=result.spec.lane,
         verdict=result.verdict,
         trials="-" if result.skipped else "1/1",
+        cost="-" if result.skipped else f"${result.run.cost_usd:.4f}",
     )
 
 
@@ -441,6 +443,7 @@ def _row_from_pass_at_k(result: "PassAtKResult") -> _SummaryRow:
         lane=_lane_of(result.spec_name, None),
         verdict=verdict,
         trials="-" if result.skipped else f"{result.passes}/{result.trials}",
+        cost="-" if result.skipped else f"${result.cost_usd:.4f}",
     )
 
 
@@ -458,7 +461,8 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     """Render a SANITIZED aggregate markdown dashboard for a single- or multi-trial run.
 
     A header (overall pass/fail/skip counts, total metered cost, model) plus a
-    ``scenario | lane | verdict | trials`` table. Accepts either the single-trial
+    ``scenario | lane | verdict | trials | cost`` table — the per-scenario metered
+    cost makes an expensive scenario obvious at a glance. Accepts either the single-trial
     ``list[ScenarioResult]`` or the multi-trial ``Sequence[PassAtKResult]``;
     ``trials`` is ``1/1`` for a single trial and ``passes/trials`` (e.g. ``2/3``)
     for pass@k. Built ONLY from the spec identity, the verdict, and pass/trial
@@ -478,8 +482,8 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
         f"· model `{model}` · cost ${total_cost_usd:.4f}"
     )
     table = [
-        "| scenario | lane | verdict | trials |",
-        "| --- | --- | --- | --- |",
-        *(f"| {row.scenario} | {row.lane} | {row.verdict} | {row.trials} |" for row in rows),
+        "| scenario | lane | verdict | trials | cost |",
+        "| --- | --- | --- | --- | --- |",
+        *(f"| {row.scenario} | {row.lane} | {row.verdict} | {row.trials} | {row.cost} |" for row in rows),
     ]
     return "\n".join([header, "", *table, ""])

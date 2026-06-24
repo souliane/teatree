@@ -107,7 +107,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     CI path where nothing reaches the host run-history.
 
     ``summary_md`` is a writable path to drop the SANITIZED aggregate dashboard
-    markdown at (counts + cost + a ``scenario | lane | verdict | trials`` table,
+    markdown at (counts + cost + a ``scenario | lane | verdict | trials | cost`` table,
     NO transcript) — the publish-safe sibling of ``transcript_html`` the weekly
     dashboard and the PR step-summary consume.
     """

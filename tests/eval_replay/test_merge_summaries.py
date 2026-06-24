@@ -29,18 +29,18 @@ _META = ["--run-url", "https://x/run/1", "--sha", "deadbeef", "--generated-at", 
 
 _SHARD_A = """**1 passed**, **1 failed**, **0 skipped** (of 2) · model `claude-sonnet-4-6` · cost $0.5000
 
-| scenario | lane | verdict | trials |
-| --- | --- | --- | --- |
-| zeta | clean_room | pass | 3/3 |
-| alpha | under_load | fail | 0/3 |
+| scenario | lane | verdict | trials | cost |
+| --- | --- | --- | --- | --- |
+| zeta | clean_room | pass | 3/3 | $0.3000 |
+| alpha | under_load | fail | 0/3 | $0.2000 |
 """
 
 _SHARD_B = """**1 passed**, **0 failed**, **1 skipped** (of 2) · model `claude-sonnet-4-6` · cost $0.2500
 
-| scenario | lane | verdict | trials |
-| --- | --- | --- | --- |
-| beta | clean_room | pass | 2/3 |
-| gamma | clean_room | skip | - |
+| scenario | lane | verdict | trials | cost |
+| --- | --- | --- | --- | --- |
+| beta | clean_room | pass | 2/3 | $0.2500 |
+| gamma | clean_room | skip | - | - |
 """
 
 
@@ -64,6 +64,9 @@ class TestMergeSummaries:
         assert "2 passed" in out
         assert "1 failed" in out
         assert "1 skipped" in out
+        # Per-scenario cost survives the merge and the dashboard sums it: 0.30+0.20+0.25 = 0.75.
+        assert "$0.3000" in out
+        assert "total cost $0.7500" in out
 
     def test_run_line_carries_injected_metadata(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         shard_dir = _write_shards(tmp_path)

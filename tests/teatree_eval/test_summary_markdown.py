@@ -2,9 +2,10 @@
 
 ``render_summary_markdown`` produces the aggregate dashboard a PR's
 ``$GITHUB_STEP_SUMMARY`` (and the weekly per-shard artifact) shows: overall
-counts, total cost, model, and a ``scenario | lane | verdict | trials`` table. It
-is built ONLY from ``spec.name``, ``spec.lane``, the verdict, pass/trial counts,
-and the summary dict — NEVER from ``run.text_blocks``, ``run.tool_calls``, a
+counts, total cost, model, and a ``scenario | lane | verdict | trials | cost``
+table. It is built ONLY from ``spec.name``, ``spec.lane``, the verdict, pass/trial
+counts, the per-scenario ``run.cost_usd``, and the summary dict — NEVER from
+``run.text_blocks``, ``run.tool_calls``, a
 tool-call input, or a judge rationale. The transcript stays in the PRIVATE
 ``--transcript-html`` artifact; this summary is publish-safe.
 """

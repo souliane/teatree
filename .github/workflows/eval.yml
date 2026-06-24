@@ -80,7 +80,7 @@
 #
 # PUBLISH + FAILURE NOTIFICATION (souliane/teatree#2704)
 #   After the shard fan-out, the `publish` job merges every shard's SANITIZED
-#   summary (`eval-summary-*` — counts + a scenario|lane|verdict|trials table, NO
+#   summary (`eval-summary-*` — counts + a scenario|lane|verdict|trials|cost table, NO
 #   transcript) into the public dashboard `docs/evals/index.md` and pushes it to
 #   main; that push triggers `docs.yml`, which serves the dashboard on Pages. The
 #   private per-trial transcripts stay in the `eval-report-*` artifacts.
@@ -303,7 +303,7 @@ jobs:
           # the file is simply overwritten with the last attempt's results — no
           # staleness.
           # `--summary-md` writes the SANITIZED publish-safe dashboard (counts +
-          # a scenario|lane|verdict|trials table, NO transcript) alongside the
+          # a scenario|lane|verdict|trials|cost table, NO transcript) alongside the
           # private transcript — both land in $RUNNER_TEMP (the writable artifacts
           # mount). The `publish` job merges every shard's summary into the public
           # dashboard; the transcript stays in the private `eval-report-*` artifact.
@@ -327,7 +327,7 @@ jobs:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
-      # The SANITIZED publish-safe summary (counts + a scenario|lane|verdict|trials
+      # The SANITIZED publish-safe summary (counts + a scenario|lane|verdict|trials|cost
       # table, NO transcript) — a SEPARATE artifact from the private transcript so
       # the `publish` job can download just these and merge them into the public
       # dashboard. `if: always()` so a red shard still publishes its summary.

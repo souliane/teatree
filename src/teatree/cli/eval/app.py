@@ -272,7 +272,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--summary-md",
         help=(
             "Write a SANITIZED aggregate markdown dashboard (overall counts + total cost + "
-            "model + a `scenario | lane | verdict | trials` table) to this path. Unlike "
+            "model + a `scenario | lane | verdict | trials | cost` table) to this path. Unlike "
             "--transcript-html it carries NO transcript (no reasoning, tool calls, or judge "
             "rationale), so it is the PUBLISH-safe artifact for a PR's $GITHUB_STEP_SUMMARY and "
             "the weekly public dashboard. Written from THIS run's results (single-trial AND --trials)."
