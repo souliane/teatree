@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.core import prek_hook
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner, _setup_worktree_dir
 from teatree.core.step_runner import StepResult
@@ -126,6 +127,94 @@ class TestPrekInstallProducesHookFile:
         # is the very bypass class we're guarding against.
         body = pre_commit.read_text()
         assert "prek" in body.lower(), f"pre-commit hook at {pre_commit} does not dispatch to prek:\n{body}"
+
+
+@pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")
+class TestPrekInstallTolerantOfRedundantHooksPath:
+    """A redundant ``core.hooksPath`` must not silently disable commit gating.
+
+    souliane/teatree#2706 — a provisioned clone carried a LOCAL
+    ``core.hooksPath`` pointing at git's own default hooks dir
+    (``<git-common-dir>/hooks``). The value is redundant (it equals the
+    default), but its mere presence makes ``prek install`` refuse (it
+    cowardly refuses to install hooks while ``core.hooksPath`` is set), so
+    provisioning installed NO hook and every ``git commit`` / ``git push``
+    ran nothing — a ruff-failing push reached CI as the only gate.
+    ``install()`` must clear a redundant ``core.hooksPath`` so prek installs
+    a real hook, while NEVER clobbering a genuinely custom one (that would
+    change the user's intended hook routing).
+    """
+
+    def _resolved(self, path: Path) -> Path:
+        return path.resolve()
+
+    def _default_hooks_dir(self, wt: Path) -> Path:
+        # ``--git-path hooks`` resolves the SHARED hooks dir even from a
+        # worktree (it points at the main clone's ``.git/hooks``), matching
+        # production's ``prek_hook._shared_hooks_dir`` rather than the
+        # worktree-private gitdir that ``--git-common-dir`` returns relative
+        # to the worktree.
+        rel = subprocess.run(
+            [_GIT_BIN, "-C", str(wt), "rev-parse", "--git-path", "hooks"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        path = Path(rel)
+        if not path.is_absolute():
+            path = (wt / path).resolve()
+        return path.resolve()
+
+    def test_redundant_hookspath_is_cleared_and_hook_installs(self, real_worktree: tuple[Path, Path]) -> None:
+        main, wt = real_worktree
+        default_hooks = self._default_hooks_dir(wt)
+        # Set the redundant LOCAL core.hooksPath — the exact #2706 footgun.
+        # Its mere presence makes ``prek install`` refuse (it cowardly refuses
+        # to install hooks while ``core.hooksPath`` is set) on a real
+        # provisioned clone, leaving NO active pre-commit/pre-push hook.
+        # ``install()`` must clear the redundant value so the hook installs.
+        _git(main, "config", "--local", "core.hooksPath", str(default_hooks))
+
+        result = prek_hook.install(str(wt))
+
+        assert result.success, f"install() must succeed after clearing a redundant hooksPath: {result.error!r}"
+        # The redundant local value must be gone — this is the load-bearing
+        # observable: on the unfixed code nothing unsets it, so it stays set.
+        readback = subprocess.run(
+            [_GIT_BIN, "-C", str(wt), "config", "--local", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert readback.returncode != 0, (
+            f"redundant local core.hooksPath must be unset, still: {readback.stdout.strip()!r}"
+        )
+        # And a real, executable, prek-dispatching pre-commit hook now exists.
+        pre_commit = default_hooks / "pre-commit"
+        assert pre_commit.is_file(), f"expected pre-commit hook at {pre_commit}"
+        assert pre_commit.stat().st_mode & 0o100, f"pre-commit hook at {pre_commit} is not executable"
+        assert "prek" in pre_commit.read_text().lower()
+
+    def test_custom_hookspath_is_preserved_not_clobbered(self, real_worktree: tuple[Path, Path]) -> None:
+        main, wt = real_worktree
+        custom = wt / "custom-hooks"
+        custom.mkdir()
+        _git(main, "config", "--local", "core.hooksPath", str(custom))
+
+        prek_hook.install(str(wt))
+
+        # A genuinely custom hooksPath is the user's intent — never silently
+        # discarded. It must still be configured after install().
+        readback = subprocess.run(
+            [_GIT_BIN, "-C", str(wt), "config", "--local", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert readback.returncode == 0, "a custom (non-redundant) core.hooksPath must be preserved"
+        assert self._resolved(Path(readback.stdout.strip())) == self._resolved(custom), (
+            f"custom core.hooksPath was changed: {readback.stdout.strip()!r}"
+        )
 
 
 class TestPrekInstallFailureSurfaces(TestCase):

@@ -27,6 +27,76 @@ def _shared_hooks_dir(wt_path: str) -> Path | None:
     return hooks_dir
 
 
+def _local_hooks_path(wt_path: str) -> str | None:
+    """Return the LOCAL-scope ``core.hooksPath`` value, or ``None`` if unset.
+
+    Reads ``--local`` only: a redundant value baked into the repo's own config
+    (the #2706 footgun) is what blocks ``prek install``; a global/system
+    ``core.hooksPath`` is the user's machine-wide intent and is never touched.
+    """
+    result = run_step(
+        "git-hookspath-get",
+        ["git", "config", "--local", "--get", "core.hooksPath"],
+        cwd=wt_path,
+        check=False,
+    )
+    value = result.stdout.strip()
+    return value or None
+
+
+def _default_hooks_dir(wt_path: str) -> Path | None:
+    """The repo's DEFAULT hooks dir (``<git-common-dir>/hooks``).
+
+    This is where git looks for hooks when ``core.hooksPath`` is unset — and
+    where ``prek install`` writes. A ``core.hooksPath`` resolving here is
+    redundant; one resolving elsewhere is a genuine custom override.
+    """
+    result = run_step(
+        "git-common-dir",
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=wt_path,
+        check=False,
+    )
+    if not result.success or not result.stdout.strip():
+        return None
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = (Path(wt_path) / common).resolve()
+    return (common / "hooks").resolve()
+
+
+def _clear_redundant_hooks_path(wt_path: str) -> bool:
+    """Unset a LOCAL ``core.hooksPath`` that merely re-points at the default.
+
+    ``prek install`` refuses ("Cowardly refusing to install hooks with
+    ``core.hooksPath`` set") whenever the key is present, even when its value
+    equals git's own default hooks dir — so a redundant value left by an IDE
+    or a stale setup silently disables every commit/push hook (#2706). When
+    the local value resolves to the default hooks dir it carries no intent, so
+    we unset it (local scope only) and let ``prek install`` proceed. A value
+    pointing ELSEWHERE is a real custom override and is left untouched.
+
+    Returns ``True`` when a redundant value was unset.
+    """
+    configured = _local_hooks_path(wt_path)
+    if configured is None:
+        return False
+    default = _default_hooks_dir(wt_path)
+    if default is None:
+        return False
+    if Path(configured).resolve() != default:
+        return False  # genuine custom hooksPath — preserve the user's intent
+    result = run_step(
+        "git-hookspath-unset",
+        ["git", "config", "--local", "--unset", "core.hooksPath"],
+        cwd=wt_path,
+        check=False,
+    )
+    if result.success:
+        logger.info("Unset redundant local core.hooksPath (== default hooks dir) so prek can install")
+    return result.success
+
+
 def _is_prek_hook(path: Path) -> bool:
     return path.is_file() and _PREK_MARKER in _read(path)
 
@@ -44,6 +114,7 @@ def _baked_prek_path(body: str) -> str | None:
 
 
 def install(wt_path: str) -> StepResult:
+    _clear_redundant_hooks_path(wt_path)
     result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path, check=False)
     if result.success:
         harden_hooks(wt_path)
