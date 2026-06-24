@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import BranchClassification, BranchCommit, cleanup_worktree
+from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
@@ -21,7 +21,11 @@ from teatree.utils.run import CommandFailedError
 _patch_config = patch("teatree.core.cleanup.load_config")
 _patch_git = patch("teatree.core.cleanup.git")
 _patch_overlay = patch("teatree.core.cleanup.get_overlay_for_worktree")
-_patch_classify = patch("teatree.core.cleanup.classify_branch_commits")
+# The origin/main hygiene gate is now authorized by the CONTENT gate (#2609),
+# not subject-match — so a test that drives the gate patches
+# ``content_equivalence_blockers``, the helper every destructive caller funnels
+# through, rather than the cheap ``classify_branch_commits`` recognizer.
+_patch_content = patch("teatree.core.cleanup.content_equivalence_blockers")
 # Pin the #2205 merged-evidence override to False so tests that set
 # ``commits_absent_from_all_remotes`` to a non-empty list still hit the
 # data-loss guard rather than silently passing through the squash-merge override.
@@ -29,14 +33,18 @@ _patch_ref_tree = patch("teatree.core.cleanup._ref_captured_by_merge", return_va
 
 
 def _no_unpushed(mock_git: MagicMock) -> None:
-    """Default the #706 data-loss guard helper to "nothing unpushed".
+    """Default the #706 + #2609 hygiene gates to "nothing to lose" on the wholesale git mock.
 
-    Tests exercising unrelated cleanup behaviour share the wholesale ``git``
-    mock; without this the guard sees a truthy ``MagicMock`` and refuses
-    spuriously. Tests that target the guard override the return value after
+    Tests exercising unrelated cleanup behaviour share the wholesale ``cleanup.git``
+    mock; without this the #706 guard sees a truthy ``MagicMock`` and refuses
+    spuriously. The #2609 content gate (``content_equivalence_blockers``) lives in
+    ``branch_classification`` and runs real ``git`` — so it is short-circuited here
+    by defaulting ``unsynced_commits`` to empty (a fully-synced branch never reaches
+    the content gate). Tests that target a guard override the relevant value after
     calling this.
     """
     mock_git.commits_absent_from_all_remotes.return_value = []
+    mock_git.unsynced_commits.return_value = []
 
 
 def _mock_workspace(mock_config: MagicMock) -> None:
@@ -265,124 +273,120 @@ class TestCleanupWorktree(TestCase):
 
         assert not Worktree.objects.filter(pk=wt_id).exists()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_raises_when_genuinely_ahead_commits_present(
+    def test_raises_when_content_not_upstream(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
+        """A commit the content gate cannot prove upstream blocks cleanup (#2609)."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="chore: cve fix", is_merge=False)]
-        )
+        mock_content.return_value = ["abc123"]  # patch NOT upstream → blocker
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
-            pytest.raises(RuntimeError, match="unsynced commit"),
+            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_not_called()
         mock_git.branch_delete.assert_not_called()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_cleans_when_genuinely_ahead_tree_matches_pr_squash_commit(
+    def test_cleans_when_content_not_upstream_but_tree_matches_pr_squash_commit(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
         """Post-merge follow-ups tree-equal to PR squash are safe to clean.
 
-        Genuinely-ahead commits whose cumulative tree matches the PR's squash
-        commit are still safe to remove because their content is already in
-        main. Reproduces the common case where an agent pushes retro/docs
-        commits AFTER the PR was squash-merged; those commits' net effect
-        is already captured by the squash tree.
+        The content gate reports a blocker (the patch-id differs from the squash),
+        but the cumulative tree matches the PR's squash commit, so the content is
+        already in main. Reproduces the common case where an agent pushes
+        retro/docs commits AFTER the PR was squash-merged.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="retro: post-merge docs", is_merge=False)]
-        )
+        mock_content.return_value = ["abc123"]  # patch differs from squash → blocker
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         # The squash-tree match (PR merge commit tree == branch tip) is the
-        # safe-to-remove signal — control it at cleanup's call site.
+        # positive merged-evidence override — control it at cleanup's call site.
         with patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=True):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_raises_when_genuinely_ahead_tree_differs_from_pr_squash_commit(
+    def test_raises_when_content_not_upstream_and_tree_differs_from_pr_squash_commit(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
-        """Genuinely ahead commits whose tree differs from the squash carry real work."""
+        """A content blocker whose tree differs from the squash carries real work."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: new work", is_merge=False)]
-        )
-        mock_git.check.return_value = False  # git diff --quiet returns 1 → tree differs
+        mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value="squash123"),
-            pytest.raises(RuntimeError, match="unsynced commit"),
+            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_cleans_when_only_squash_merged_and_merge_commits(
+    def test_cleans_when_content_is_proven_upstream(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
-        """Branches whose only "unsynced" commits are squash-merged or merge commits are safe to clean."""
+        """Branches whose commits are content-equivalent upstream are safe to clean.
+
+        The content gate returns no blocker (every unique commit is patch-equivalent
+        upstream, or only merge/squash-merged commits remain), so the worktree is
+        removed without any forge query.
+        """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: squashed on main"]
-        mock_classify.return_value = BranchClassification(
-            squash_merged=[BranchCommit(sha="abc123", subject="feat: squashed on main", is_merge=False)],
-            merge_commits=[BranchCommit(sha="mrg001", subject="Merge branch 'main'", is_merge=True)],
-            genuinely_ahead=[],
-        )
+        mock_content.return_value = []  # content proven upstream
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         cleanup_worktree(wt)
@@ -390,37 +394,34 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_reaps_genuinely_ahead_branch_when_forge_says_pr_merged(
+    def test_reaps_content_blocked_branch_when_forge_says_pr_merged(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
         """#1578 — a long-diverged branch whose PR the forge reports MERGED is reaped.
 
-        The subject-match classifier reports ``genuinely_ahead`` and the squash
-        tree no longer matches the branch tip (the branch diverged long ago), so
-        the prior guards refuse. The canonical forge PR-state check overrides:
-        a merged PR is the ground truth that the work shipped.
+        The content gate reports a blocker (the squash created a new SHA so the
+        patch-id no longer matches) and the squash tree no longer matches the
+        branch tip, so the prior signals refuse. The canonical forge PR-state
+        check overrides: a merged PR is the ground truth that the work shipped.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: shipped via squash long ago"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: shipped via squash long ago", is_merge=False)]
-        )
-        mock_git.check.return_value = False  # tree differs — branch tip diverged from squash
+        mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value="squash123"),
+            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True),
         ):
             cleanup_worktree(wt)
@@ -428,38 +429,35 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
-    def test_refuses_genuinely_ahead_branch_when_no_merged_pr(
+    def test_refuses_content_blocked_branch_when_no_merged_pr(
         self,
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
-        """#1578 load-bearing safety test — real pending work (no merged PR) is still refused.
+        """#1578/#2609 load-bearing safety test — real pending work (no merged PR) is still refused.
 
-        The forge canonically reports no merged PR for the branch, so the
-        conservative refuse-and-report stands: genuinely-ahead work is never
-        auto-discarded.
+        The content gate reports a blocker and the forge canonically reports no
+        merged PR, so the conservative refuse-and-report stands: genuine work is
+        never auto-discarded on a subject match alone.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         mock_overlay.return_value.get_cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: genuine unpushed work"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: genuine unpushed work", is_merge=False)]
-        )
-        mock_git.check.return_value = False  # tree differs — not captured by any squash
+        mock_content.return_value = ["abc123"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
+            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
-            pytest.raises(RuntimeError, match="unsynced commit"),
+            pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
 
@@ -621,7 +619,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.commits_absent_from_all_remotes.assert_not_called()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -630,12 +628,14 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
         """Pushed-but-unmerged branch is refused under strict hygiene (default).
 
         The origin/main hygiene gate still blocks it — the sync-backend /
-        clean-all contract is unchanged.
+        clean-all contract is unchanged. A branch pushed to its own ref survives
+        the #706 data-loss guard, but its content is not on origin/main, so the
+        content gate refuses it.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
@@ -643,19 +643,18 @@ class TestCleanupWorktree(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed → data-loss guard passes
         mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: pushed not merged", is_merge=False)]
-        )
+        mock_content.return_value = ["abc123"]  # content not on origin/main
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.branch_classification._pr_merge_commit_sha", return_value=""),
-            pytest.raises(RuntimeError, match="unsynced commit"),
+            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt, strict_hygiene=True)
         mock_git.worktree_remove.assert_not_called()
 
-    @_patch_classify
+    @_patch_content
     @_patch_overlay
     @_patch_git
     @_patch_config
@@ -664,12 +663,13 @@ class TestCleanupWorktree(TestCase):
         mock_config: MagicMock,
         mock_git: MagicMock,
         mock_overlay: MagicMock,
-        mock_classify: MagicMock,
+        mock_content: MagicMock,
     ) -> None:
         """Pushed-but-unmerged branch is allowed when strict hygiene is off.
 
         This is the automated FSM teardown contract — a branch pushed to its
-        own remote ref passes; only the data-loss guard still applies.
+        own remote ref passes; only the data-loss guard still applies. The
+        content hygiene gate is skipped entirely, so it is never consulted.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
@@ -677,13 +677,12 @@ class TestCleanupWorktree(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed
         mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
-        mock_classify.return_value = BranchClassification(
-            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: pushed not merged", is_merge=False)]
-        )
+        mock_content.return_value = ["abc123"]  # would block under strict hygiene
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         cleanup_worktree(wt, strict_hygiene=False)
         mock_git.worktree_remove.assert_called_once()
+        mock_content.assert_not_called()
 
     @_patch_overlay
     @_patch_git

@@ -1657,14 +1657,10 @@ class TestWorkspaceCleanAll(TestCase):
             def _unsynced(_repo: str, branch: str) -> list[str]:
                 return ["abc123 chore: unpushed"] if branch == "ac-frontend-360-ticket" else []
 
-            def _classify(_repo: str, branch: str, target: str = "origin/main") -> cleanup_mod.BranchClassification:
-                if branch == "ac-frontend-360-ticket":
-                    return cleanup_mod.BranchClassification(
-                        genuinely_ahead=[
-                            cleanup_mod.BranchCommit(sha="abc123", subject="chore: unpushed", is_merge=False),
-                        ],
-                    )
-                return cleanup_mod.BranchClassification()
+            def _blockers(_repo: str, branch: str, target: str = "origin/main") -> list[str]:
+                # The frontend branch's commit content is NOT on origin/main —
+                # the authoritative content gate (#2609) refuses its force-delete.
+                return ["abc123"] if branch == "ac-frontend-360-ticket" else []
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = workspace
@@ -1672,7 +1668,9 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
+                patch.object(cleanup_mod, "content_equivalence_blockers", side_effect=_blockers),
+                patch.object(cleanup_mod, "_branch_tree_matches_squash", return_value=False),
+                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
                 # Isolate the recovery-capture seam — the fake repos (.git is a
                 # bare dir) can't satisfy a real ``git bundle``; this test
                 # targets the origin/main hygiene refusal, not capture.
@@ -1683,7 +1681,7 @@ class TestWorkspaceCleanAll(TestCase):
                 mock_git.unsynced_commits.side_effect = _unsynced
                 # Both branches are pushed to their own remote ref, so the
                 # #706 data-loss guard passes; this test targets the stricter
-                # origin/main hygiene refusal on the frontend branch.
+                # origin/main content hygiene refusal on the frontend branch.
                 mock_git.commits_absent_from_all_remotes.return_value = []
                 # No drift: each on-disk worktree's effective branch is its DB
                 # slug. The hygiene classification runs against that real branch.
@@ -1694,7 +1692,7 @@ class TestWorkspaceCleanAll(TestCase):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert any("Cleaned: backend" in c for c in cleaned)
-            assert any("ac-frontend-360-ticket" in c and "unsynced" in c.lower() for c in cleaned)
+            assert any("ac-frontend-360-ticket" in c and "content not upstream" in c.lower() for c in cleaned)
             assert Worktree.objects.filter(branch="ac-backend-360-ticket").count() == 0
             assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
 
@@ -1732,13 +1730,6 @@ class TestWorkspaceCleanAll(TestCase):
                 extra={"worktree_path": str(stuck_wt_dir)},
             )
 
-            def _classify(_repo: str, branch: str, target: str = "origin/main") -> cleanup_mod.BranchClassification:
-                return cleanup_mod.BranchClassification(
-                    genuinely_ahead=[
-                        cleanup_mod.BranchCommit(sha="abc123", subject="chore: unpushed", is_merge=False),
-                    ],
-                )
-
             stdin_read_msg = "clean-all read stdin in a non-interactive context (#279)"
 
             def _input_must_not_be_called(*_a: object, **_k: object) -> str:
@@ -1755,7 +1746,11 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
+                # The content gate (#2609) reports the branch as not provably
+                # upstream → clean-all refuses it without a stdin prompt.
+                patch.object(cleanup_mod, "content_equivalence_blockers", return_value=["abc123"]),
+                patch.object(cleanup_mod, "_branch_tree_matches_squash", return_value=False),
+                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
                 patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
@@ -1766,7 +1761,7 @@ class TestWorkspaceCleanAll(TestCase):
                 mock_git.current_branch.side_effect = lambda _wt: "ac-frontend-279-ticket"
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-            assert any("ac-frontend-279-ticket" in c and "unsynced" in c.lower() for c in cleaned)
+            assert any("ac-frontend-279-ticket" in c and "content not upstream" in c.lower() for c in cleaned)
             assert Worktree.objects.filter(branch="ac-frontend-279-ticket").count() == 1
 
     @_no_prune
