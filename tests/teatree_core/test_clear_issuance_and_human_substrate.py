@@ -64,6 +64,32 @@ def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
             row.delete()
 
 
+@contextmanager
+def _overlay_standing_signoff(overlay: str, *, autonomy: str, require_human_approval_to_merge: bool) -> Iterator[None]:
+    """Stage ``overlay``'s ``autonomy`` AND ``require_human_approval_to_merge`` together.
+
+    Both are DB-home (#1775) so they are staged as ``ConfigSetting`` rows scoped
+    to the overlay. This wires the canonical documented auto-merge knobs
+    (``mode = auto`` is collapsed in by ``autonomy``/the resolver) so a test can
+    pin the exact owner statement: e.g. ``autonomy = babysit`` (default, never
+    flipped) + ``require_human_approval_to_merge = false`` (the owner's explicit
+    "no per-PR human merge approval" grant).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / ".teatree.toml"
+        cfg.write_text("[teatree]\n", encoding="utf-8")
+        autonomy_row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+        approval_row = ConfigSetting.objects.set_value(
+            "require_human_approval_to_merge", require_human_approval_to_merge, scope=overlay
+        )
+        try:
+            with patch("teatree.config.CONFIG_PATH", cfg):
+                yield
+        finally:
+            approval_row.delete()
+            autonomy_row.delete()
+
+
 def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
     joined = " ".join(argv)
     if "headRefOid" in joined:
@@ -952,3 +978,109 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
             pytest.raises(MergePreconditionError, match="substrate"),
         ):
             _assert_preconditions(clear, slug=_FOREIGN_REPO)
+
+
+class TestRequireHumanApprovalFalseStandingGrantSatisfiesSubstrateSignoff(TestCase):
+    """#2666: ``require_human_approval_to_merge = false`` is the SAME standing grant as ``autonomy = full``.
+
+    An owner who turned auto-merge ON via the canonical documented knobs —
+    ``mode = auto`` + ``require_human_approval_to_merge = false`` — but left
+    ``autonomy`` at the default ``babysit`` (never flipping the newer single
+    switch) had their OWN green, cold-reviewed substrate CLEAR refused with "the
+    overlay autonomy is not full". ``require_human_approval_to_merge = false`` IS
+    the owner's standing "no per-PR human merge approval needed" statement — the
+    same one ``autonomy = full`` makes — so the substrate sign-off must honor it.
+
+    The quality/safety floor (independent cold-review, reviewed-SHA bind,
+    CI-green, not-draft, maker≠checker) is never relaxed by this — only the
+    per-PR human sign-off is what the standing grant removes.
+    """
+
+    def test_explicit_require_false_at_babysit_satisfies_substrate_signoff(self) -> None:
+        """MUST-ALLOW: babysit + require_human_approval_to_merge=false signs off the substrate CLEAR.
+
+        RED before the fix: the standing-grant check keyed solely on
+        ``autonomy = full``, so an explicit ``require_human_approval_to_merge =
+        false`` at the default ``babysit`` tier was ignored and the merge was
+        refused with "the overlay autonomy is not full".
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2660)
+        with _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False):
+            precheck = _assert_preconditions(clear)
+        assert precheck is not None
+
+    def test_explicit_require_false_at_babysit_merges_end_to_end(self) -> None:
+        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2661)
+        with (
+            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop"),
+            )
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert result["merged"]
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+
+    def test_default_require_true_at_babysit_still_refused(self) -> None:
+        """MUST-DENY: babysit + require_human_approval_to_merge=true keeps the per-PR sign-off.
+
+        The default posture (the owner has NOT declared a standing grant) keeps
+        the substrate sign-off mandatory — the anti-vacuity twin of the
+        must-ALLOW above.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2662)
+        with (
+            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=True),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_notify_tier_with_require_false_still_refused(self) -> None:
+        """MUST-DENY: the notify collaborative tier keeps the per-PR human authoriser mandatory.
+
+        ``notify`` also collapses ``require_human_approval_to_merge`` to false,
+        but a notify-tier MR merges only after a colleague approval, so its
+        substrate CLEAR is NOT a self-owned standing grant — the per-PR human
+        authoriser stays mandatory. This guards against reading the collapsed
+        ``require_human_approval_to_merge = false`` as an owner statement when it
+        is merely a tier side effect of the collaborative tier.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2663)
+        with (
+            _overlay_autonomy("t3-teatree", "notify"),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_require_false_does_not_relax_maker_checker_floor(self) -> None:
+        """MUST-DENY: require=false + reviewer==maker still refuses — the maker≠checker floor holds."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2664, reviewer_identity="coding-agent")
+        with (
+            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+            pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"),
+        ):
+            _assert_preconditions(clear)
+
+    def test_require_false_does_not_relax_sha_bind_floor(self) -> None:
+        """MUST-DENY: require=false + head moved off reviewed_sha still refuses — SHA bind holds."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40)
+        with (
+            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+            pytest.raises(MergePreconditionError, match="head moved"),
+        ):
+            _assert_preconditions(clear)

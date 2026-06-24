@@ -128,25 +128,30 @@ def _assert_clear_authorized(
     #    things satisfy the per-PR sign-off, in this order:
     #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
     #         at merge time (the owner approved this exact diff), OR
-    #      b. the overlay's STANDING autonomy grant resolving to ``full`` — the
-    #         owner recorded once, in config, that this overlay merges
-    #         end-to-end without a per-PR sign-off (invariant 4 carve-out).
+    #      b. the overlay's STANDING merge-approval grant — the owner recorded
+    #         once, in config, that this overlay merges end-to-end without a
+    #         per-PR sign-off (invariant 4 carve-out). EITHER equivalent owner
+    #         statement counts (#2666): ``autonomy = full``, OR an explicit
+    #         ``require_human_approval_to_merge = false`` on a non-collaborative
+    #         tier — see ``_overlay_grants_standing_substrate_signoff``.
     #    Either way the AGENT executes through this same SHA-bound, audited
     #    transition (invariant 8) — never raw ``gh``, never a human-performed
     #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
     #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
-    #    the carve-out; autonomy=full removes ONLY the per-PR human sign-off.
+    #    the carve-out; the standing grant removes ONLY the per-PR human sign-off.
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
-        and not _overlay_grants_full_substrate_autonomy(clear, resolved_slug=slug)
+        and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
     ):
         detail = (
-            "no human authoriser recorded on the CLEAR and the overlay autonomy is not full"
+            "no human authoriser recorded on the CLEAR and the overlay carries no standing "
+            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
             if not clear.human_authorizer
             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
             if presented
-            else "no --human-authorized presented at merge time and the overlay autonomy is not full"
+            else "no --human-authorized presented at merge time and the overlay carries no standing "
+            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
@@ -211,17 +216,33 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
     return str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
 
 
-def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
-    """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
+def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
+    """Whether the CLEAR's overlay carries a standing substrate sign-off grant (invariant 4 carve-out).
 
-    Resolves the effective autonomy for the CLEAR's overlay
-    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings`.
-    ``full`` is the owner's standing, recorded grant that this overlay merges
-    end-to-end without a per-PR human sign-off; it satisfies the substrate
-    sign-off in place of a per-CLEAR ``human_authorizer``. Any other tier
-    (``notify`` / ``babysit``), or an unresolvable overlay, is fail-closed:
-    the per-CLEAR human authoriser stays mandatory. The carve-out touches ONLY
-    the per-PR sign-off — every other substrate-merge floor guard runs unchanged.
+    Resolves the effective settings for the CLEAR's overlay
+    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings` and
+    treats the substrate per-PR human sign-off as satisfied when the owner has
+    recorded EITHER equivalent standing grant (#2666):
+
+    1.  ``autonomy = full`` — the single switch that collapses every approval
+        gate, OR
+    2.  an explicit ``require_human_approval_to_merge = false`` on a
+        NON-collaborative tier — the canonical documented auto-merge knob
+        (``mode = auto`` + ``require_human_approval_to_merge = false``). This IS
+        the owner's standing "no per-PR human merge approval needed" statement,
+        the same one ``autonomy = full`` makes, so an owner who set it but left
+        ``autonomy`` at the default ``babysit`` must not have their OWN green,
+        cold-reviewed substrate CLEAR refused.
+
+    The ``notify`` collaborative tier is EXCLUDED: it also collapses
+    ``require_human_approval_to_merge`` to ``false``, but a notify-tier MR merges
+    only after a colleague approval, so its ``false`` is a tier side effect, not
+    a self-owned standing grant — its substrate CLEAR keeps the per-PR human
+    authoriser mandatory. Any other below-full tier with the merge-approval gate
+    ON, or an unresolvable overlay, is fail-closed: the per-CLEAR human authoriser
+    stays mandatory. The carve-out touches ONLY the per-PR sign-off — every other
+    substrate-merge floor guard (independent cold-review, reviewed-SHA bind,
+    CI-green, not-draft, never-lockout, privacy scan) runs unchanged.
 
     *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
@@ -234,7 +255,15 @@ def _overlay_grants_full_substrate_autonomy(clear: "MergeClear", *, resolved_slu
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False
-    return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
+    settings = get_effective_settings(overlay_name=overlay_name)
+    if settings.autonomy is Autonomy.FULL:
+        return True
+    # The collaborative ``notify`` tier collapses the merge-approval gate to
+    # ``false`` too, but merges only after a colleague approval — its ``false``
+    # is a tier side effect, never the owner's self-merge grant.
+    if settings.autonomy is Autonomy.NOTIFY:
+        return False
+    return settings.require_human_approval_to_merge is False
 
 
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
