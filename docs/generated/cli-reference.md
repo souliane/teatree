@@ -2756,7 +2756,7 @@ Usage: t3 setup slack-bot [OPTIONS]
 │    --skip-smoke-test              Skip the round-trip DM verification.       │
 │    --config                 PATH  Path to teatree config (default:           │
 │                                   ~/.teatree.toml).                          │
-│                                   [default: /Users/adrien/.teatree.toml]     │
+│                                   [default: ~/.teatree.toml]                 │
 │    --help                         Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2771,7 +2771,7 @@ Usage: t3 setup slack-user-token [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --reset               Overwrite the existing token without prompting.        │
 │ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
-│                       [default: /Users/adrien/.teatree.toml]                 │
+│                       [default: ~/.teatree.toml]                             │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2790,8 +2790,7 @@ Usage: t3 setup slack-provision [OPTIONS]
 │                                              config).                        │
 │ --config                               PATH  Path to teatree config          │
 │                                              (default: ~/.teatree.toml).     │
-│                                              [default:                       │
-│                                              /Users/adrien/.teatree.toml]    │
+│                                              [default: ~/.teatree.toml]      │
 │ --open-browser    --no-open-browser          Open the OAuth (re)install URL  │
 │                                              in the browser.                 │
 │                                              [default: open-browser]         │
