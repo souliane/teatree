@@ -77,18 +77,28 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Diff the PR against its base (same diff source as ci.yml's preflight job)
-      # and resolve the changed scenario files to scenario names. `|| true` keeps a
-      # diff error from failing the job — an empty names.txt simply means "no
-      # scenario changed" and the eval job is skipped.
+      # Diff the PR against its base (same diff source as ci.yml's preflight job) and
+      # resolve the changed scenario files to scenario names. Distinguish "no scenario
+      # changed" (the resolver's `--skip-code`) from a REAL failure (bad git ref, import
+      # error, malformed YAML): a bare `|| true` would swallow both and silently skip
+      # the eval on a broken resolver — indistinguishable from a clean no-change PR.
+      # skip-code 3 is disambiguated from Python's uncaught-exception exit 1 and
+      # argparse's exit 2. The git diff is its own command so a bad ref fails loud
+      # (default bash `-e`) rather than being masked by the resolver's skip exit.
       - name: Select the scenarios this PR changed
         id: select
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags origin "$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" \
-            | uv run python scripts/eval/scenarios_for_changed.py > names.txt || true
+          git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          rc=0
+          uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 \
+            < changed-files.txt > names.txt || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "scenarios_for_changed.py failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
+            exit "$rc"
+          fi
           NAMES="$(paste -sd, names.txt)"
           echo "names=$NAMES" >> "$GITHUB_OUTPUT"
           if [ -n "$NAMES" ]; then

@@ -254,6 +254,16 @@ jobs:
       # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
       # (reasoning + tool calls) so a maintainer can diagnose a red shard.
+      # A filesystem-safe per-lane-and-shard suffix, computed BEFORE the eval run so
+      # the summary file is uniquely named per shard. `merge-multiple` flattens every
+      # shard's summary into ONE dir in the publish job — a shared basename would
+      # collide (last-writer-wins) and silently drop all but one shard's results.
+      - name: Compute a filesystem-safe artifact suffix
+        id: artifact
+        env:
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
+        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
@@ -300,19 +310,14 @@ jobs:
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary.md"
+              --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
       # the leg's exit code). No render step — the artifact was written by the run.
       # The name is per-lane-and-shard so parallel matrix legs never collide on one
       # artifact (the `/` in the shard token is replaced — artifact names forbid it).
-      - name: Compute a filesystem-safe artifact suffix
-        id: artifact
-        env:
-          EVAL_LANE: ${{ matrix.lane }}
-          EVAL_SHARD: ${{ matrix.shard }}
-        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+      # The `artifact` suffix step runs earlier, just before the eval run.
       - name: Upload the per-trial transcript report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -329,12 +334,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-summary-${{ steps.artifact.outputs.suffix }}
-          path: ${{ runner.temp }}/eval-summary.md
+          path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
           if-no-files-found: warn
 
   # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
-  # commit it to main. `needs: eval` + `if: always()` so it runs even when some
-  # shard went red (a red dashboard is still worth publishing). It downloads only
+  # commit it to main. `needs: [prepare, eval]` + `if: always() && run_eval == 'true'`
+  # so it still runs when a shard went red (a red dashboard is worth publishing) but is
+  # SKIPPED when prepare gated the eval out — otherwise it would download zero summaries
+  # and commit a zero-row dashboard over the real one. It downloads only
   # the `eval-summary-*` artifacts (NEVER the private transcripts), merges them via
   # scripts/eval/merge_summaries.py into docs/evals/index.md, writes the same
   # content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits + pushes
@@ -345,8 +352,8 @@ jobs:
   # FAILURE NOTIFICATION: a red weekly run is surfaced by GitHub's NATIVE failed-run
   # email to the maintainer (no extra secret, no bot) — see the top-of-file note.
   publish:
-    needs: eval
-    if: always()
+    needs: [prepare, eval]
+    if: always() && needs.prepare.outputs.run_eval == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
