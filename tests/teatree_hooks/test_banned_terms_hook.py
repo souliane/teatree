@@ -221,6 +221,69 @@ def test_live_hook_blocks_customer_term_to_public_repo(
     assert decision["permissionDecision"] == "deny"
 
 
+# The banned term is the org PREFIX (``customercorp``); the configured private repo
+# is the full ``<org>-engineering`` namespace. A body citing the customer repo's own
+# work-item URL tokenizes ``customercorp`` out of that URL -- the address of the repo,
+# not a leak -- so a PUBLIC post whose ONLY occurrence is inside that URL must downgrade.
+_OWN_URL_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["customercorp-engineering"]\n'
+_OWN_REPO_URL = "https://gitlab.com/customercorp-engineering/their-svc/-/issues/8223"
+
+
+def test_live_hook_allows_customer_term_only_inside_own_repo_url_to_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point must-WARN: a PUBLIC teatree post whose body's only occurrence
+    # of the customer term is inside the customer repo's own work-item URL is the
+    # ADDRESS of that repo, not a leak. The gate downgrades to a stderr warning.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _OWN_URL_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": f'gh issue comment 5 --repo souliane/teatree --body "Tracked upstream — see {_OWN_REPO_URL}"'
+        },
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+    assert "own configured repo" in captured.err
+
+
+def test_live_hook_blocks_bare_customer_term_alongside_own_repo_url_to_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point must-DENY: the same URL is present, but the customer term
+    # ALSO appears as a bare word outside it. A bare occurrence is a genuine leak,
+    # so the URL carve-out must NOT vouch for it -- the public post hard-blocks.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _OWN_URL_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": (
+                "gh issue comment 5 --repo souliane/teatree "
+                f'--body "Rolling out the customercorp integration — see {_OWN_REPO_URL}"'
+            )
+        },
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
 def test_live_hook_allows_customer_term_to_colleague_private_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

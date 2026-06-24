@@ -47,6 +47,7 @@ if "hook_router" not in sys.modules:
     sys.modules["hook_router"] = sys.modules[__name__]
 
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
+from banned_terms_deny import emit_banned_term_deny
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
 from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
@@ -3194,39 +3195,6 @@ _BANNED_TERMS_CREDENTIAL_DENY = (
 )
 
 
-def _emit_banned_term_deny(
-    tool_name: str,
-    command: str,
-    payload: str,
-    term: str,
-    cwd_repo: "Path | None",
-) -> bool:
-    from teatree.hooks import publish_surface  # noqa: PLC0415
-
-    if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
-        sys.stderr.write(
-            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
-            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
-        )
-        return False
-    if tool_name == "Bash" and publish_surface.own_slug_term_downgrades(command, term, cwd_repo):
-        sys.stderr.write(
-            f"WARNING: banned-terms gate (#1415) — term '{term}' is this private repo's own slug "
-            "on its own commit; downgraded to warn (#126). A work-item URL naming the repo is not a leak.\n"
-        )
-        return False
-    unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
-    if unknown_slug:
-        sys.stderr.write(
-            f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
-            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
-            "for a reliable offline carve-out.\n"
-        )
-    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
-
-    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
-
-
 def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
     """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
 
@@ -3282,7 +3250,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
     if marker_decision is not None:
         return marker_decision
-    return _emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
+    return emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────

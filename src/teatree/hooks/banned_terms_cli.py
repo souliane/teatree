@@ -51,22 +51,41 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 _GIT_DIFF_TIMEOUT_S = 10
 
 
-def _load_terms(config: Path) -> tuple[str, ...]:
-    """Return the first ``banned_terms`` array found in the TOML config.
+def _load_array(config: Path, key: str) -> tuple[str, ...]:
+    """Return the first ``key`` array found in any TOML section (or the root).
 
     Mirrors the old shell extractor: scan every top-level section (and the
-    document root) for a ``banned_terms`` key and use the first one found.
+    document root) for *key* and use the first one found. Backs both the
+    ``banned_terms`` list and the ``banned_terms_allowlist`` carve-out.
     """
     try:
         data = tomllib.loads(config.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return ()
     for value in [*data.values(), data]:
-        if isinstance(value, dict) and "banned_terms" in value:
-            terms = value["banned_terms"]
-            if isinstance(terms, list):
-                return tuple(str(t).strip() for t in terms if str(t).strip())
+        if isinstance(value, dict) and key in value:
+            entries = value[key]
+            if isinstance(entries, list):
+                return tuple(str(e).strip() for e in entries if str(e).strip())
     return ()
+
+
+def _load_terms(config: Path) -> tuple[str, ...]:
+    """Return the first ``banned_terms`` array found in the TOML config."""
+    return _load_array(config, "banned_terms")
+
+
+def _load_allowlist(config: Path) -> tuple[str, ...]:
+    """Return the ``banned_terms_allowlist`` carve-out array from the TOML config.
+
+    The allow-list names the company's OWN identifiers (synthetic example:
+    ``myorg-engineering`` / ``myorg-product``, internal-URL namespaces) that are
+    NEVER a leak — they are the org's own org/repo names, not customer PII. Each
+    entry's token-run is removed from a line before banned-term matching, so a
+    shorter banned term (a bare org slug) can no longer surface inside a longer
+    company-owned identifier. Empty (default) preserves the prior behaviour.
+    """
+    return _load_array(config, "banned_terms_allowlist")
 
 
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
@@ -111,14 +130,17 @@ def staged_added_lines(repo: Path, file: str) -> list[str] | None:
     return added
 
 
-def _diff_only_report(files: list[str], terms: tuple[str, ...], repo: Path) -> list[str]:
+def _diff_only_report(
+    files: list[str], terms: tuple[str, ...], repo: Path, allowlist: tuple[str, ...] = ()
+) -> list[str]:
     """Build the BANNED TERM report scanning only each file's staged ADDED lines.
 
     When the staged diff cannot be resolved for a file (``staged_added_lines``
     returns ``None``), fall back to that file's FULL-file scan — failing closed,
-    never open. The added-line scan applies the same per-line email carve-out
-    and whole-token matcher (:mod:`teatree.hooks.term_match`) the full scan uses,
-    so the two paths agree on every line they both see.
+    never open. The added-line scan applies the same per-line email carve-out,
+    the company-identifier *allowlist* carve-out, and whole-token matcher
+    (:mod:`teatree.hooks.term_match`) the full scan uses, so the two paths agree
+    on every line they both see.
     """
     report: list[str] = []
     for file in files:
@@ -127,13 +149,13 @@ def _diff_only_report(files: list[str], terms: tuple[str, ...], repo: Path) -> l
         if added is None:
             if not path.is_file():
                 continue
-            hits = _file_matches(str(path), terms)
+            hits = _file_matches(str(path), terms, allowlist=allowlist)
             if not hits:
                 continue
             report.append(f"BANNED TERM in {file}:")
             report.extend(f"  {line_number}:{line}" for line_number, _term, line in hits)
             continue
-        flagged = [line for line in added if line_matches(strip_emails(line), terms)]
+        flagged = [line for line in added if line_matches(strip_emails(line), terms, allowlist)]
         if not flagged:
             continue
         report.append(f"BANNED TERM in {file}:")
@@ -141,14 +163,14 @@ def _diff_only_report(files: list[str], terms: tuple[str, ...], repo: Path) -> l
     return report
 
 
-def _full_file_report(files: list[str], terms: tuple[str, ...]) -> list[str]:
+def _full_file_report(files: list[str], terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[str]:
     """Build the BANNED TERM report scanning each staged file in full."""
     report: list[str] = []
     for file in files:
         path = Path(file)
         if not path.is_file():
             continue
-        hits = _file_matches(str(path), terms)
+        hits = _file_matches(str(path), terms, allowlist=allowlist)
         if not hits:
             continue
         report.append(f"BANNED TERM in {file}:")
@@ -174,11 +196,12 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     terms = _load_terms(config)
     if not terms:
         return 0  # no terms ⇒ no-op
+    allowlist = _load_allowlist(config)
 
     if args.diff_only:
-        report = _diff_only_report(args.files, terms, Path.cwd())
+        report = _diff_only_report(args.files, terms, Path.cwd(), allowlist)
     else:
-        report = _full_file_report(args.files, terms)
+        report = _full_file_report(args.files, terms, allowlist)
 
     if report:
         report.extend(("", f"Banned terms: {','.join(terms)}", "These terms must not appear in this repo."))

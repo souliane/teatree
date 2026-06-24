@@ -180,6 +180,96 @@ class TestNoTermsConfigured:
         assert term_match.matched_term("anything at all", ("---",)) is None
 
 
+class TestCompanyIdentifierAllowlistCarveOut:
+    """The #1415 company-identifier carve-out (``allowlist`` parameter).
+
+    A short banned term (``op`` here, the synthetic stand-in for the real org
+    slug) must NOT surface inside a LONGER company-owned identifier that the
+    operator allow-listed (``op-engineering`` / ``op-product``), nor inside an
+    internal URL whose path carries those identifiers. A genuine customer
+    codename NOT on the allow-list is unaffected — proving the carve-out does
+    not gut the gate. All terms are SYNTHETIC neutral fakes.
+    """
+
+    _TERMS = ("op", "customercodename")
+    _ALLOW = ("op-engineering", "op-product", "op-client-workspace")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "op-engineering",
+            "op-product",
+            "the op-engineering/op-product repo",
+            "xx op-client-workspace yy",
+            "https://gitlab.example/op-engineering/op-product/-/merge_requests/123",
+            "see opEngineering and opProduct",  # camelCase company identifiers
+        ],
+    )
+    def test_short_term_inside_allowlisted_identifier_is_not_flagged(self, text: str) -> None:
+        # ``op`` is a sub-token of every allow-listed identifier here, so the
+        # carve-out consumes the identifier and ``op`` never reaches matching.
+        assert term_match.matched_term(text, self._TERMS, self._ALLOW) is None
+
+    def test_internal_url_with_company_namespace_passes(self) -> None:
+        url = "See https://gitlab.example/op-engineering/op-product/-/merge_requests/1 for details."
+        assert term_match.matched_term(url, self._TERMS, self._ALLOW) is None
+
+    def test_genuine_customer_codename_still_blocks_with_allowlist(self) -> None:
+        # The control: a real customer codename NOT on the allow-list is still
+        # blocked — the carve-out exempts only the company's own identifiers.
+        text = "affects customercodename tenant"
+        assert term_match.matched_term(text, self._TERMS, self._ALLOW) == "customercodename"
+
+    def test_customer_codename_blocks_even_beside_allowlisted_identifier(self) -> None:
+        text = "op-product change for the customercodename tenant"
+        assert term_match.matched_term(text, self._TERMS, self._ALLOW) == "customercodename"
+
+    def test_bare_short_term_not_part_of_identifier_still_matches(self) -> None:
+        # A standalone ``op`` token NOT part of an allow-listed compound still
+        # matches — the carve-out exempts the company's own COMPOUND identifiers,
+        # not every appearance of the sub-token.
+        assert term_match.matched_term("set op to true", self._TERMS, self._ALLOW) == "op"
+
+    def test_no_allowlist_preserves_prior_behaviour(self) -> None:
+        # With no allow-list, the short term surfaces inside the identifier
+        # exactly as before — the carve-out is opt-in and inert by default.
+        assert term_match.matched_term("op-engineering", self._TERMS) == "op"
+
+    def test_empty_allowlist_entries_ignored(self) -> None:
+        assert term_match.matched_term("op-engineering", self._TERMS, ("", "   ", "--")) == "op"
+
+    def test_longer_identifier_consumed_as_one_run(self) -> None:
+        # ``op-client-workspace`` (3 tokens) is consumed whole even though
+        # ``op-product`` (2 tokens) shares the ``op`` prefix — longest-first.
+        assert term_match.matched_term("op-client-workspace", self._TERMS, self._ALLOW) is None
+
+    def test_line_matches_honours_allowlist(self) -> None:
+        assert term_match.line_matches("op-engineering ships", self._TERMS, self._ALLOW) is False
+        assert term_match.line_matches("op alone here", self._TERMS, self._ALLOW) is True
+
+
+class TestStripAllowlistedTokens:
+    """The token-run remover backing the carve-out, exercised directly."""
+
+    def test_removes_a_multi_token_run(self) -> None:
+        toks = term_match.tokens("the op engineering team")
+        assert term_match._strip_allowlisted_tokens(toks, ("op-engineering",)) == ["the", "team"]
+
+    def test_removes_a_single_token_entry(self) -> None:
+        toks = term_match.tokens("the widget here")
+        assert term_match._strip_allowlisted_tokens(toks, ("widget",)) == ["the", "here"]
+
+    def test_keeps_a_partial_run(self) -> None:
+        # Only ``op`` present, not the full ``op engineering`` run, so nothing
+        # is consumed.
+        toks = term_match.tokens("op then engineering later")
+        assert term_match._strip_allowlisted_tokens(toks, ("op-engineering",)) == toks
+
+    def test_empty_allowlist_is_identity(self) -> None:
+        toks = term_match.tokens("op-engineering")
+        assert term_match._strip_allowlisted_tokens(toks, ()) == toks
+
+
 class TestContainsRun:
     """The contiguous-sublist primitive directly (incl. the empty-needle guard)."""
 
