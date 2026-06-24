@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -25,9 +26,9 @@ _PASSING_CALL = (EvalToolCall(name="Bash", input={"command": "git worktree add .
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_sdk() -> "Iterator[None]":
+def _hermetic_api() -> "Iterator[None]":
     with (
-        patch("teatree.eval.backends.ensure_oauth_token", return_value="t"),
+        patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
         yield

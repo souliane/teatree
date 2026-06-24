@@ -26,20 +26,23 @@ from teatree.eval.skill_command_validity import CommandValidityReport, CommandVi
 from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
 @pytest.fixture(autouse=True)
-def _stub_oauth_token() -> "Iterator[None]":
-    """Stop ``make_runner("api")`` from shelling ``pass``/``gpg`` for the token.
+def _stub_api_key() -> "Iterator[None]":
+    """Stop ``make_runner("api")`` from shelling ``pass``/``gpg`` for the API key.
 
     Every ``--backend api`` CLI test builds the runner through
-    ``teatree.eval.backends.make_runner``, which calls ``ensure_oauth_token()``
-    → ``read_pass("anthropic/oauth-token")`` → a ``pass`` subprocess that blocks
-    on ``gpg`` on a dev machine without ``CLAUDE_CODE_OAUTH_TOKEN`` set. The stub
-    keeps the suite hermetic — it never touches the host's secret store.
+    ``teatree.eval.backends.make_runner``, which calls
+    ``AnthropicApiKeyCredential().export()`` → ``read_pass("anthropic/api-key")``
+    → a ``pass`` subprocess that blocks on ``gpg`` on a dev machine without
+    ``ANTHROPIC_API_KEY`` set (and would raise ``CredentialError`` when the key is
+    absent). The stub keeps the suite hermetic — it never touches the host's
+    secret store.
 
     It also sets ``T3_EVAL_IN_CONTAINER=1`` so the metered ``--backend api`` /
     ``--trials`` / ``--models`` runs execute IN-PROCESS (Docker is the default for
@@ -49,7 +52,7 @@ def _stub_oauth_token() -> "Iterator[None]":
     override the env explicitly.
     """
     with (
-        patch("teatree.eval.backends.ensure_oauth_token", return_value="t"),
+        patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
         yield
