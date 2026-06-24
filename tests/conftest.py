@@ -224,13 +224,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ``$HOME`` alone is not enough: ``teatree.config.CONFIG_PATH`` is bound to
     ``Path.home() / ".teatree.toml"`` ONCE at import (before any fixture runs),
     so a later ``$HOME`` redirect leaves the suite reading the developer's real
-    ``~/.teatree.toml``. That host config leaked in two ways the previously
-    default ``--exitfirst`` masked under ``-n auto``: ``[loops.review] enabled =
-    false`` made ``filter_review_intent_signals`` drop every review-intent
-    signal, and a real ``check_updates`` flag let the ``[update] …`` banner
-    prepend non-JSON to a CLI's stdout. Redirecting the facade ``CONFIG_PATH``
-    at a hermetic per-test file (``check_updates = false``, no other keys → all
-    other settings default) closes both, deterministically and host-independent.
+    ``~/.teatree.toml``. A real ``check_updates`` flag in that host config let
+    the ``[update] …`` banner prepend non-JSON to a CLI's stdout under the
+    previously default ``--exitfirst`` masked by ``-n auto``. Redirecting the
+    facade ``CONFIG_PATH`` at a hermetic per-test file (``check_updates =
+    false``, no other keys → all other settings default) closes it,
+    deterministically and host-independent. (The former host ``[loops.review]
+    enabled = false`` leak is moot since #2702 removed the ``[loops]`` toml
+    read; the ``T3_LOOPS_DISABLED`` env leak below is still cleared per test.)
     """
     home = tmp_path / "home"
     workspace = home / "workspace"
@@ -266,7 +267,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # drop every broadcast review-intent signal, failing the discovery-time
     # scanner tests under a full-suite collection order while they pass in
     # isolation (souliane/teatree#2359 Class B). Clearing it here makes the
-    # review-loop env state hermetic per test, the same way the host
-    # ``[loops.review] enabled = false`` config leak is closed by redirecting
-    # ``CONFIG_PATH`` above.
+    # review-loop env state hermetic per test; since #2702 this env var is the
+    # ONLY loop-disabled source ``loop_enabled_by_name`` reads (the ``[loops]``
+    # toml fallback is gone), so this delenv is the whole isolation it needs.
     monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)

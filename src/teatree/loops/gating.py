@@ -7,10 +7,11 @@ enable/cadence logic — the two-sources-of-truth drift the issue calls
 out. :func:`elapsed_and_enabled` is the single decision both call so the
 live tick and the orchestrator stay in lockstep.
 
-The gate resolves enable/disable via :class:`LoopsConfig` (env
-kill-switch, per-loop table, global, always-on) then consults the
-cadence ledger: ``None`` elapsed (no marker) fires immediately so a
-fresh install does not wait one window before its first dispatch.
+The gate resolves enable/disable via :meth:`LoopsConfig.is_enabled`
+(env kill-switch → DB ``LoopState`` → default, always-on aware; #2702)
+then consults the cadence ledger: ``None`` elapsed (no marker) fires
+immediately so a fresh install does not wait one window before its first
+dispatch.
 """
 
 import datetime as dt

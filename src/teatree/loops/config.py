@@ -1,18 +1,21 @@
-"""Read ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml`` (#1432, #1434).
+"""Read ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml`` (#1432, #1434, #2702).
 
-The orchestrator gates every tick through :class:`LoopsConfig`. Three
-layers, first match wins per setting: env override
-(``T3_LOOPS_DISABLED=name1,name2`` or ``all`` — hard kill-switch
-ignored only by :attr:`MiniLoop.always_on` loops), per-loop table
-(``[loops.<name>]`` with ``enabled`` / ``cadence`` keys overriding the
-globals), and global table (``[loops]`` with ``enabled`` /
-``default_cadence`` / ``parallel`` / ``summary_dm`` keys).
+The orchestrator gates every tick through :class:`LoopsConfig`. The
+``[loops]`` global table carries ``default_cadence`` / ``parallel`` /
+``summary_dm``; the per-loop ``[loops.<name>]`` table carries a
+``cadence`` override. Cadence values accept the suffix shorthand
+(``"30s"``, ``"5m"``, ``"1h"``) or a bare int. Floor 60 seconds —
+sub-minute cadences turn the tick into a fetch storm. Bad values
+silently fall back to the default + one ERROR log; never raise (a
+broken cadence string must not take down the loop).
 
-Cadence values accept the suffix shorthand (``"30s"``, ``"5m"``,
-``"1h"``) or a bare int. Floor 60 seconds — sub-minute cadences turn
-the tick into a fetch storm. Bad values silently fall back to the
-default + one ERROR log; never raise (a broken cadence string must not
-take down the loop).
+Loop-disabled state (#2702 — the last #2697 config-toml→DB audit bypass
+reader, B6) is resolved by :meth:`LoopsConfig.is_enabled` as **env → DB
+``LoopState`` → default**, with NO ``[loops]`` toml fallback. The env
+``T3_LOOPS_DISABLED`` kill-switch (settled by #2359) and the durable DB
+``LoopState`` control tier (#1913) are the only disable sources; the
+former ``[loops] enabled`` / ``[loops.<name>] enabled`` toml keys are no
+longer read for the disabled decision.
 """
 
 import dataclasses
@@ -66,21 +69,20 @@ def _parse_cadence_str(raw: str, *, default: int) -> int:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LoopOverride:
-    """Per-loop overrides under ``[loops.<name>]``.
+    """Per-loop cadence override under ``[loops.<name>]``.
 
-    ``None`` on a field means "no override; fall back to the global
-    default for that field". An explicit bool/int overrides.
+    ``None`` means "no override; fall back to the loop's own default
+    cadence". The disabled decision is NOT a per-loop toml override
+    anymore (#2702): it resolves env → DB ``LoopState`` → default.
     """
 
-    enabled: bool | None = None
     cadence_seconds: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LoopsConfig:
-    """Loop-orchestration config — defaults + per-loop overrides."""
+    """Loop-orchestration config — cadence/parallel/summary defaults + per-loop cadence overrides."""
 
-    enabled: bool = True
     default_cadence: int = _DEFAULT_CADENCE
     parallel: bool = True
     summary_dm: str = "errors"  # never | errors | always
@@ -91,7 +93,9 @@ class LoopsConfig:
         """Read ``[loops]`` / ``[loops.<name>]`` from ``~/.teatree.toml``.
 
         *path* override is for tests. Missing file, missing tables, or
-        unreadable toml all degrade to defaults — never raise.
+        unreadable toml all degrade to defaults — never raise. Only
+        cadence/parallel/summary settings are read; loop-disabled state
+        is resolved by :meth:`is_enabled` (env → DB → default), not here.
         """
         toml_path = path if path is not None else Path.home() / ".teatree.toml"
         try:
@@ -110,7 +114,6 @@ class LoopsConfig:
 
     @classmethod
     def _from_table(cls, table: dict[str, Any]) -> "LoopsConfig":
-        enabled = bool(table.get("enabled", True))
         parallel = bool(table.get("parallel", True))
         summary_dm = str(table.get("summary_dm", "errors"))
         default_cadence = parse_cadence(table.get("default_cadence"), default=_DEFAULT_CADENCE)
@@ -118,48 +121,39 @@ class LoopsConfig:
         for key, value in table.items():
             if not isinstance(value, dict):
                 continue
-            per_loop[key] = LoopOverride(
-                enabled=value.get("enabled") if isinstance(value.get("enabled"), bool) else None,
-                cadence_seconds=_parse_per_loop_cadence(value.get("cadence")),
-            )
+            per_loop[key] = LoopOverride(cadence_seconds=_parse_per_loop_cadence(value.get("cadence")))
         return cls(
-            enabled=enabled,
             default_cadence=default_cadence,
             parallel=parallel,
             summary_dm=summary_dm,
             per_loop=per_loop,
         )
 
-    def is_enabled(self, loop: MiniLoop) -> bool:
-        """Resolve enable/disable for *loop* across DB state, env, per-loop, global, always-on.
+    @staticmethod
+    def is_enabled(loop: MiniLoop) -> bool:
+        """Resolve enable/disable for *loop* as **env → DB ``LoopState`` → default** (#2702).
 
         The DB-backed ``LoopState`` control tier (#1913) is consulted FIRST: an
         explicit ``PAUSED`` / ``DISABLED`` row forces a skip, even for an
         ``always_on`` loop (the 2026-06-03 'pause everything' incident — the
-        toml/env layer below cannot stop an always-on loop). No row / an
-        ``ENABLED`` row defers to the layers below, so an empty table is a
-        provable no-op.
+        env layer below cannot stop an always-on loop). No row / an ``ENABLED``
+        row defers to the env layer, so an empty table is a provable no-op.
 
-        Below that, the env kill-switch is resolved against the shared
-        :func:`teatree.loop_enabled.loop_enabled_by_name`-style env parsing here
-        (``_env_disabled_names`` keeps the case-insensitive ``all`` sentinel);
-        the per-loop / global layers read from this already-parsed config so a
-        ``LoopsConfig`` built from an explicit ``path`` (tests) stays
-        authoritative.
+        Below that, the env kill-switch is resolved against the same
+        ``T3_LOOPS_DISABLED`` parsing the platform-leaf
+        :func:`teatree.loop_enabled.loop_enabled_by_name` uses
+        (``_env_disabled_names`` keeps the case-insensitive ``all`` sentinel),
+        ignored only by an ``always_on`` loop. With neither a DB hold nor an env
+        match, the loop defaults to enabled — the former ``[loops]`` toml
+        disabled-state fallback was removed in #2702 (it is no longer read). The
+        decision reads no config field, so it is a static method: disabled-state
+        is env + DB only, never the cadence/parallel/summary config instance.
         """
         if loop_held_in_db(loop.name):
             return False
         env_disabled = _env_disabled_names()
-        if env_disabled == _ENV_DISABLE_ALL and not loop.always_on:
-            return False
-        if loop.name in env_disabled and not loop.always_on:
-            return False
-        if loop.always_on:
-            return True
-        override = self.per_loop.get(loop.name)
-        if override is not None and override.enabled is not None:
-            return override.enabled
-        return self.enabled
+        env_kills = env_disabled == _ENV_DISABLE_ALL or loop.name in env_disabled
+        return not (env_kills and not loop.always_on)
 
     def cadence_for(self, loop: MiniLoop) -> int:
         """Resolve effective cadence (seconds) for *loop*."""
