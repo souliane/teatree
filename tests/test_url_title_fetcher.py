@@ -1,12 +1,15 @@
 """Tests for teatree.url_title_fetcher."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree import url_title_fetcher as utf
+from teatree.core.models import ConfigSetting
 
 
 @pytest.fixture
@@ -103,6 +106,28 @@ class TestFetchTitles:
         with patch("teatree.url_title_fetcher.shutil.which", return_value=None):
             titles = utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/1")
         assert titles == []
+
+
+class TestFetchTitlesDbHome(TestCase):
+    """``hook_fetch_titles`` is DB-home (#2697) — the DB row governs the fetch."""
+
+    @pytest.fixture(autouse=True)
+    def _stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.cache_path = tmp_path / "url-titles.json"
+        monkeypatch.setattr(utf, "CACHE_FILE", self.cache_path)
+        monkeypatch.delenv("T3_HOOK_FETCH_TITLES", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_disabled_via_db_setting(self) -> None:
+        # Anti-vacuous: a cached title WOULD be returned when enabled; the DB
+        # off-row must short-circuit to [] before the cache is even consulted.
+        ConfigSetting.objects.set_value("hook_fetch_titles", value=False)
+        self.cache_path.write_text(json.dumps({"gitlab:g/r:merge_requests:1": "Cached title"}))
+        assert utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/1") == []
+
+    def test_enabled_by_default_with_no_db_row(self) -> None:
+        self.cache_path.write_text(json.dumps({"gitlab:g/r:merge_requests:1": "Cached title"}))
+        assert utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/1") == ["Cached title"]
 
 
 class TestEnrichPrompt:

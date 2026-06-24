@@ -73,13 +73,14 @@ def _launch_claude(
 
     from teatree.config import get_effective_settings  # noqa: PLC0415
 
+    settings = get_effective_settings()
     context = "\n".join(context_lines)
     cmd = [claude_bin]
-    if get_effective_settings().claude_chrome:
+    if settings.claude_chrome:
         cmd.append("--chrome")
     cmd.extend(["--append-system-prompt", context])
 
-    if os.environ.get("T3_CONTRIBUTE", "").lower() == "true":
+    if settings.contribute_plugin_dir:
         from teatree import find_project_root  # noqa: PLC0415
 
         teatree_root = find_project_root()

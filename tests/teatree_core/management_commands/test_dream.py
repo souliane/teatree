@@ -116,14 +116,31 @@ class DreamProposeEvalsFlagTestCase(TestCase):
             call_command("dream", "run", "--propose-evals", stdout=StringIO())
         assert seen["eval_proposals"] is not None
 
-    def test_env_enables_the_phase_for_the_cadence_tick(self) -> None:
+    def test_db_setting_enables_the_phase_for_the_run_path(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("dream_propose_evals", value=True)
         seen: dict[str, object] = {}
         with (
             patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
-            patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "1"}),
+            patch.dict("os.environ", {}, clear=False) as env,
         ):
+            env.pop("T3_DREAM_PROPOSE_EVALS", None)
             call_command("dream", "run", stdout=StringIO())
         assert seen["eval_proposals"] is not None
+
+    def test_db_setting_off_keeps_the_run_path_disabled(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("dream_propose_evals", value=False)
+        seen: dict[str, object] = {}
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", side_effect=self._capture(seen)),
+            patch.dict("os.environ", {}, clear=False) as env,
+        ):
+            env.pop("T3_DREAM_PROPOSE_EVALS", None)
+            call_command("dream", "run", stdout=StringIO())
+        assert seen["eval_proposals"] is None
 
 
 class DreamNightlyTickRequestsProposalsTestCase(TestCase):

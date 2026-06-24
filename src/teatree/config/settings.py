@@ -95,6 +95,13 @@ def _parse_env_bool(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# A default-ON ``T3_*`` env flag: present-and-off-value disables, anything else
+# enables. Mirrors the legacy ``T3_HOOK_FETCH_TITLES`` semantics so a typo never
+# silently disables the feature (the resolver only invokes this when the var is set).
+def _parse_env_bool_default_on(raw: str) -> bool:
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _parse_env_positive_int(default: int) -> Callable[[str], int]:
     """A ``T3_*`` env coercer that fails SAFE to *default* on a bad value.
 
@@ -380,6 +387,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "ban_close_trailers_on_namespaces": _parse_str_list,
     "billing_cycle_anchor_day": _parse_strict_int,
     "sdk_monthly_credit_usd": _parse_strict_float,
+    # #2697 — bypass readers migrated from bespoke ``os.environ`` reads to DB-home.
+    "gitlab_approval_scanner_enabled": _parse_strict_bool,
+    "contribute_plugin_dir": _parse_strict_bool,
+    "dream_propose_evals": _parse_strict_bool,
+    "hook_fetch_titles": _parse_strict_bool,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
@@ -411,6 +423,8 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
     "T3_TEAMS_DISPLAY": ("teams_display", _parse_env_teams_display),
+    "T3_CONTRIBUTE": ("contribute_plugin_dir", _parse_env_bool),
+    "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
 }
 
 
@@ -933,8 +947,9 @@ class UserSettings:
     # ``namespace/repo``: when an MR/PR target repo matches one of these
     # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
     # the trailer line is silently stripped before publishing. Default
-    # empty preserves legacy behaviour. Parsed from
-    # ``[teatree.publish_gates] ban_close_trailers_on_namespaces``.
+    # empty preserves legacy behaviour. DB-home (#1775); set via
+    # ``t3 <overlay> config_setting set ban_close_trailers_on_namespaces``;
+    # the TOML value is ignored on read.
     ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
     # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
     # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
@@ -1035,6 +1050,26 @@ class UserSettings:
     # the cycle-to-date spend is shown against ($200 = Max 20x).
     billing_cycle_anchor_day: int = 0
     sdk_monthly_credit_usd: float = 200.0
+    # #2697 — formerly env-only bypass readers, now DB-home (#1775): each resolves
+    # from the ``ConfigSetting`` store + its ``T3_*`` env layer where one is
+    # registered in ``ENV_SETTING_OVERRIDES``, never from a bespoke
+    # ``os.environ.get`` read. Set via ``t3 <overlay> config_setting set <key>``.
+    #
+    # GitLab-approval poll scanner (formerly ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED``).
+    # Default off — poll-driven and overlapping with the webhook path.
+    gitlab_approval_scanner_enabled: bool = False
+    # Pass ``--plugin-dir`` to the launched Claude Code agent so retro may edit
+    # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
+    contribute_plugin_dir: bool = False
+    # Enable the dream command's eval-proposal phase on the manual ``run`` path
+    # (formerly ``T3_DREAM_PROPOSE_EVALS``). The cadence-driven ``tick`` path has
+    # its own seam and does not route through this field.
+    dream_propose_evals: bool = False
+    # Fetch PR/issue titles to enrich a prompt before trigger matching (formerly
+    # ``T3_HOOK_FETCH_TITLES``). Default on. ``T3_HOOK_FETCH_TITLES`` env wins;
+    # the UserPromptSubmit hook runs pre-Django, so there the DB tier is skipped
+    # (fail-safe) and env + this default govern — identical to legacy behaviour.
+    hook_fetch_titles: bool = True
 
 
 @dataclass
