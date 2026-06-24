@@ -21,6 +21,7 @@ from teatree.core.management.commands._plan_gate_commands import (
     record_trivial_skip_and_advance,
 )
 from teatree.core.management.commands._rubric_commands import RubricCommands
+from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_refusals import review_context_refusal
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
@@ -116,7 +117,7 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-class Command(RubricCommands, TyperCommand):
+class Command(RubricCommands, TicketShowCommands, TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -191,9 +192,7 @@ class Command(RubricCommands, TyperCommand):
             raise SystemExit(1)
         ticket = self._resolve_ticket(ticket_id)
         recorded_at = timezone.now().isoformat()
-        ticket.merge_extra(
-            set_keys={"dod_e2e_override": DodE2EOverride(reason=cleaned, by=by.strip(), at=recorded_at)},
-        )
+        ticket.merge_extra(set_keys={"dod_e2e_override": DodE2EOverride(reason=cleaned, by=by.strip(), at=recorded_at)})
         self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
         return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
 

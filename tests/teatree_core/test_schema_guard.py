@@ -20,6 +20,7 @@ heal).
 
 import io
 from contextlib import redirect_stdout
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -38,10 +39,10 @@ from teatree.core.gates.schema_guard import (
 )
 from teatree.core.models import MergeClear
 
-# Since the #2652 squash, ``core`` has a single ``0001_initial`` migration that
-# creates the ``teatree_merge_clear`` table; the only "behind" state a real
-# migrate can reach is the pre-initial one (``zero``).
-_INITIAL_MIGRATION = "0001_initial"
+# ``0001_initial`` (post the #2652 squash) creates the ``teatree_merge_clear``
+# table; later migrations extend the graph. A real backward ``migrate`` can only
+# reach the pre-initial state (``zero``) since the squash.
+_CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core" / "migrations"
 
 
 def _unmigrate_core_to_zero() -> None:
@@ -66,41 +67,49 @@ def _migrate_core_forward() -> None:
 
 
 def _unapply_initial_migration() -> None:
-    """Reproduce the #869 self-DB symptom against the squashed graph.
+    """Reproduce the #869 self-DB symptom against the core graph.
 
-    Drop the ``teatree_merge_clear`` table and un-record ``0001_initial`` from
-    the ledger so the table is absent *and* the ``django_migrations`` ledger
-    has no record of the migration that creates it — precisely what
-    ``MigrationExecutor`` inspects to report a pending migration. The other
-    core tables are left in place: this is the cheap symptom for the read-only
-    / doctor surfaces that never call ``migrate`` (a real ``migrate`` cannot
-    heal a half-dropped schema — :class:`BehindSelfDbSelfHealsTest` covers the
-    real backward-migrate heal).
+    Drop the ``teatree_merge_clear`` table and un-record EVERY ``core`` migration
+    from the ledger so the table is absent *and* the ``django_migrations`` ledger
+    has no record of the migrations — precisely what ``MigrationExecutor``
+    inspects to report a pending migration. Un-recording only ``0001_initial``
+    would not surface a pending migration once a later leaf (``0002…``) is still
+    recorded applied: ``migration_plan`` to that recorded leaf is empty. Clearing
+    the whole core ledger makes the plan report the unapplied chain (``0001_initial``
+    first). The other core tables are left in place: this is the cheap symptom for
+    the read-only / doctor surfaces that never call ``migrate`` (a real ``migrate``
+    cannot heal a half-dropped schema — :class:`BehindSelfDbSelfHealsTest` covers
+    the real backward-migrate heal).
     """
     with connection.schema_editor() as editor:
         editor.delete_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.execute(
-            "DELETE FROM django_migrations WHERE app = 'core' AND name = %s",
-            [_INITIAL_MIGRATION],
-        )
+        cursor.execute("DELETE FROM django_migrations WHERE app = 'core'")
 
 
 def _reapply_initial_migration() -> None:
     """Restore the table + ledger so ``TransactionTestCase`` teardown flushes.
 
-    Idempotent: a #2006 self-heal may already have re-created the table and
-    re-recorded the ledger row before this cleanup runs, so it tolerates an
+    Re-records every on-disk ``core`` migration the symptom-reproduction cleared
+    (not just ``0001_initial``) so ``migration_plan`` sees the graph current
+    again. Idempotent: a #2006 self-heal may already have re-created the table and
+    re-recorded the ledger rows before this cleanup runs, so it tolerates an
     already-current schema rather than colliding on a duplicate table/row.
     """
     if not _table_exists(MergeClear._meta.db_table):
         with connection.schema_editor() as editor:
             editor.create_model(MergeClear)
     with connection.cursor() as cursor:
-        cursor.execute(
-            "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
-            [_INITIAL_MIGRATION],
-        )
+        for name in _core_migration_names():
+            cursor.execute(
+                "INSERT OR IGNORE INTO django_migrations (app, name, applied) VALUES ('core', %s, CURRENT_TIMESTAMP)",
+                [name],
+            )
+
+
+def _core_migration_names() -> list[str]:
+    """Every on-disk ``core`` migration name, oldest first."""
+    return sorted(p.stem for p in _CORE_MIGRATIONS_DIR.glob("[0-9]*.py"))
 
 
 def _table_exists(table: str) -> bool:

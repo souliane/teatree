@@ -310,12 +310,29 @@ class TaskQuerySet(models.QuerySet):
         #786 B1 lesson): exactly one of N concurrent ticks updates the row
         and the losers update 0 rows. Runs *before* ``reap_stale_claims``
         in the tick so a recoverable orphan is taken over, not failed.
+
+        #2009: the re-queue is the repair-loop's retry chokepoint, so the
+        per-phase iteration budget and stall detector are enforced here. A row
+        whose ticket-phase has hit the configured iteration cap, or has stalled
+        on two consecutive identical failures (which also escalates to the user),
+        is dropped from the re-queue set and held CLAIMED — so a doomed phase
+        neither re-runs nor burns more attempts on the identical failure.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
         with transaction.atomic():
-            return self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).update(
+            candidate_pks = list(
+                self.filter(status=task_model.Status.CLAIMED, lease_expires_at__lt=now).values_list("pk", flat=True)
+            )
+            requeueable = self._requeueable_within_budget(candidate_pks)
+            if not requeueable:
+                return 0
+            return self.filter(
+                pk__in=requeueable,
+                status=task_model.Status.CLAIMED,
+                lease_expires_at__lt=now,
+            ).update(
                 status=task_model.Status.PENDING,
                 claimed_at=None,
                 claimed_by="",
@@ -323,6 +340,28 @@ class TaskQuerySet(models.QuerySet):
                 lease_expires_at=None,
                 heartbeat_at=None,
             )
+
+    def _requeueable_within_budget(self, candidate_pks: list[int]) -> list[int]:
+        """Filter *candidate_pks* to those whose ticket-phase may still re-queue (#2009).
+
+        Consults the repair-loop budget per row: a phase at its iteration cap
+        (:class:`~teatree.core.repair_loop.MaxIterationsExceeded`) or stalled on
+        two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`,
+        which also escalates to the user) is dropped from the re-queue set.
+        """
+        from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded  # noqa: PLC0415
+
+        allowed: list[int] = []
+        for task in self.filter(pk__in=candidate_pks).select_related("ticket", "session"):
+            try:
+                task.check_requeue_allowed()
+            except (MaxIterationsExceeded, IterationStalled) as exc:
+                logger.warning(
+                    "reclaim skip task=%s ticket=%s %s: %s", task.pk, task.ticket_id, type(exc).__name__, exc
+                )
+                continue
+            allowed.append(task.pk)
+        return allowed
 
     def replay_orphaned_transitions(self) -> int:
         """Replay FSM transitions a mid-transition crash dropped. Returns the count (#883).
