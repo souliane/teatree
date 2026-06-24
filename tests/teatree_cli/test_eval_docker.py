@@ -14,6 +14,7 @@ from teatree.cli.eval.docker import (
     _repo_root,
     run_eval_in_docker,
 )
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 _MODULE = "teatree.cli.eval.docker"
 
@@ -80,9 +81,12 @@ class TestRunEvalInDocker:
     def test_sets_in_container_marker_so_the_re_invoked_command_runs_in_process(self) -> None:
         # The in-container `t3 eval` re-invocation must run DIRECTLY in-process, not
         # re-route to docker again (an infinite loop). The marker breaks the loop.
+        # benchmark is an always-metered lane, so the credential pre-export fires; the
+        # host has no key, so stub it (its own coverage is in the metered-lane class).
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
             patch(f"{_MODULE}._image_present", return_value=True),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
             run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
@@ -196,7 +200,7 @@ class TestAuthPassthroughIntoContainer:
             patch(f"{_MODULE}.os.environ", env),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
-            run_eval_in_docker(["run", "--backend", "sdk", "--require-executed"])
+            run_eval_in_docker(["run", "--backend", "api", "--require-executed"])
         return streamed.call_args.args[0]
 
     def test_forwards_api_key_as_passthrough_when_set(self) -> None:
@@ -215,7 +219,7 @@ class TestAuthPassthroughIntoContainer:
         assert "sub-token" not in command
 
     def test_metered_lane_fails_loud_when_no_api_key_is_resolvable(self) -> None:
-        # A metered sdk --docker run with no env key AND an empty pass store must
+        # A metered api --docker run with no env key AND an empty pass store must
         # fail loud (CredentialError) rather than dispatch a flagless container
         # that would authenticate as nothing — the docker dispatcher resolves the
         # API key BEFORE computing the passthrough flags.
@@ -229,7 +233,7 @@ class TestAuthPassthroughIntoContainer:
             patch(f"{_MODULE}.run_streamed", return_value=0),
             pytest.raises(CredentialError),
         ):
-            run_eval_in_docker(["run", "--backend", "sdk", "--require-executed"])
+            run_eval_in_docker(["run", "--backend", "api", "--require-executed"])
 
     @staticmethod
     def _passthrough_pair(command: list[str], var: str) -> list[str]:
@@ -237,14 +241,56 @@ class TestAuthPassthroughIntoContainer:
         return command[index - 1 : index + 1]
 
 
+class TestMeteredBenchmarkLaneFailsLoudBeforeDocker:
+    """``t3 eval benchmark`` is always api-metered, so the Docker pre-export fires for it too.
+
+    The benchmark argv starts ``benchmark`` and carries no literal ``api`` token,
+    yet the lane is always metered. The pre-export must therefore key on the
+    metered SUBCOMMAND, not only the ``api`` backend token — a missing key must
+    fail loud with :class:`~teatree.llm.credentials.CredentialError` BEFORE the
+    container is built or run, never dispatch a keyless container that authenticates
+    as nothing in-container. Narrowing the detector back to the ``api`` token alone
+    turns these RED.
+    """
+
+    def test_keyless_benchmark_raises_before_any_docker_call(self) -> None:
+        from teatree.llm.credentials import CredentialError  # noqa: PLC0415
+
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True) as image_present,
+            patch(f"{_MODULE}.os.environ", {}),
+            patch("teatree.llm.credentials.read_pass", return_value=""),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+            pytest.raises(CredentialError),
+        ):
+            run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
+        # Fail loud BEFORE doing any work: neither the image probe nor a build/run ran.
+        image_present.assert_not_called()
+        streamed.assert_not_called()
+
+    def test_benchmark_forwards_resolved_api_key_into_the_container(self) -> None:
+        with (
+            patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
+            patch(f"{_MODULE}._image_present", return_value=True),
+            patch(f"{_MODULE}.os.environ", {}),
+            patch("teatree.llm.credentials.read_pass", return_value="sk-pass-key"),
+            patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
+        ):
+            run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
+        command = streamed.call_args.args[0]
+        index = command.index("ANTHROPIC_API_KEY")
+        assert command[index - 1 : index + 1] == ["-e", "ANTHROPIC_API_KEY"]
+
+
 class TestDockerResolvesKeyFromPassForSdkLane:
-    """Local ``--backend sdk --docker`` auto-resolves the API key from pass.
+    """Local ``--backend api --docker`` auto-resolves the API key from pass.
 
     The container authenticates from the host's ``ANTHROPIC_API_KEY`` via the
     ``-e`` pass-through. When the operator has NOT exported it, the docker
     dispatcher resolves it from the ``pass`` store and exports it into the parent
     env BEFORE ``_auth_passthrough_flags()`` is computed, so the ``-e`` flag is
-    emitted and the key reaches the container — ``--backend sdk --docker`` just
+    emitted and the key reaches the container — ``--backend api --docker`` just
     works. The free / transcript lane must not read the secret store.
     """
 
@@ -260,8 +306,8 @@ class TestDockerResolvesKeyFromPassForSdkLane:
             self.read_pass = read_pass
         return streamed.call_args.args[0]
 
-    def test_sdk_lane_exports_pass_key_so_it_is_forwarded(self) -> None:
-        command = self._run(["run", "--backend", "sdk", "--require-executed"], env={}, pass_key="sk-pass-key")
+    def test_api_lane_exports_pass_key_so_it_is_forwarded(self) -> None:
+        command = self._run(["run", "--backend", "api", "--require-executed"], env={}, pass_key="sk-pass-key")
         index = command.index("ANTHROPIC_API_KEY")
         assert command[index - 1 : index + 1] == ["-e", "ANTHROPIC_API_KEY"]
 

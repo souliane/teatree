@@ -142,7 +142,7 @@
               task state updated. No self-retro (orchestrator-only synthesis later).
     14:25:18  orchestrator: unrelated note carried from an earlier session — the
               subscription eval backend grades on-disk transcripts only, never shells
-              the metered runner; the sdk backend is the explicit metered opt-in.
+              the metered runner; the api backend is the explicit metered opt-in.
     14:25:44  orchestrator: housekeeping — the keystone merge is the only sanctioned
               merge path (ticket clear by the orchestrator, ticket merge by the loop).
               raw gh pr merge / glab mr merge are mechanically blocked in both modes.

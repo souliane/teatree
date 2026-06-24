@@ -1,7 +1,7 @@
 """Forward a ``t3 eval run`` invocation into the CI image for the metered lane.
 
 Split out of :mod:`teatree.cli.eval.app` so the command module stays under the
-module-health LOC cap. The metered ``sdk`` lane runs in-container, never on the
+module-health LOC cap. The metered ``api`` lane runs in-container, never on the
 host; the container is ephemeral (``--rm``), so the durable-history flags
 (``--baseline`` / ``--gate-regressions``) are unsupported and the in-container run
 is forced ``--no-persist``.

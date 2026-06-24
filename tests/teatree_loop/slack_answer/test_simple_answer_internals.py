@@ -7,7 +7,7 @@ Stage-A no-keyword early return.
 
 Stage B runs the haiku model in-process via ``claude_agent_sdk.query`` —
 the SAME subscription-authenticated path (``CLAUDE_CODE_OAUTH_TOKEN``) the
-eval ``sdk`` backend uses. It never shells ``claude -p`` and never bills an
+eval ``api`` backend uses. It never shells ``claude -p`` and never bills an
 API key; it spends subscription-covered model time for one stateless turn.
 """
 

@@ -129,7 +129,7 @@ to spend subscription tokens. Use `/t3:running-evals`, which chains
 To RUN the model fresh yourself (metered, opt-in — the same path CI runs weekly):
 
 ```bash
-t3 eval run --backend sdk --require-executed
+t3 eval run --backend api --require-executed
 ```
 
 `--require-executed` makes an all-skipped run exit non-zero, so it can never pass

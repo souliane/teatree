@@ -43,7 +43,7 @@ variables:
   before_script:
     - pip install --no-cache-dir uv
     - uv sync
-    # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+    # Install the Claude CLI the metered api backend shells out to, then ASSERT
     # it. A missing binary must FAIL the job (the runner would otherwise skip
     # every scenario and report a decorative green). `claude --version` is the
     # post-install assertion that turns an install failure into a red job.
@@ -61,7 +61,7 @@ variables:
   script:
     # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
-    # `--backend sdk` keeps CI on the metered Agent-SDK path explicitly (auth via
+    # `--backend api` keeps CI on the metered Agent-SDK path explicitly (auth via
     # the metered ANTHROPIC_API_KEY, never the subscription OAuth token #2707);
     # LOCAL `t3 eval run` defaults to the transcript backend (no API spend).
     # Mirrors the GitHub eval workflow's fresh lane.
@@ -81,7 +81,7 @@ variables:
     # — clean_room and under_load alike — must be GREEN. A failing under_load
     # behavioural-drift scenario reds the run outright, exactly like any clean_room
     # failure; `run --trials k` exits non-zero on ANY red scenario.
-    - uv run t3 eval run --trials 3 --require any --backend sdk --local --require-executed --gate-cost-bounds
+    - uv run t3 eval run --trials 3 --require any --backend api --local --require-executed --gate-cost-bounds
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.

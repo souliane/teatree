@@ -30,12 +30,12 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import discover_specs
 from teatree.eval.matcher_vacuity import negative_only_specs
 from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
 from teatree.eval.report import evaluate
-from teatree.eval.sdk_runner import load_agent_definition
 
 FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 

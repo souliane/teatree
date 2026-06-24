@@ -1,6 +1,6 @@
 """The core eval harness must run ``claude`` in a virgin environment.
 
-Both entry points that drive the Agent SDK — ``SdkInProcessRunner`` (produces a
+Both entry points that drive the Agent SDK — ``ApiInProcessRunner`` (produces a
 run) and ``ClaudeJudge`` (grades one) — must isolate the child process from the
 developer's personal context: ``~/.claude/CLAUDE.md``, auto-memory, and the
 project ``CLAUDE.md`` discovered from the parent cwd. A leak biases every real
@@ -27,11 +27,12 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import ResultMessage
 
+from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.eval.sdk_runner import SdkInProcessRunner
 from teatree.eval.system_prompt_file import resolve_system_prompt
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -165,10 +166,10 @@ class TestRunnerIsolation:
     def _run(self, spec: EvalSpec, tmp_path: Path) -> dict[str, Any]:
         query, captured = _capturing_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         return captured
 
     def test_options_carry_empty_setting_sources(self, tmp_path: Path) -> None:
@@ -208,6 +209,9 @@ class TestJudgeIsolation:
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
+            # The billed judge call routes through the credential chokepoint; stub
+            # the export so the isolation assertions (not auth) are what is tested.
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         ):
             ClaudeJudge().grade(_judge_spec(), _judge_run())
         return captured
@@ -270,10 +274,10 @@ class TestCanaryNeverReachesChild:
         spec = _runner_spec(tmp_path)
         query, captured = _capturing_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=project).run(spec)
+            ApiInProcessRunner(workspace=project).run(spec)
 
         options = captured["options"]
         assert options.setting_sources == []
@@ -315,6 +319,6 @@ class TestCanaryNeverReachesChild:
             max_turns=1,
             tools=(),
         )
-        result = SdkInProcessRunner(workspace=project).run(spec)
+        result = ApiInProcessRunner(workspace=project).run(spec)
         assert CANARY not in result.raw_stdout
         assert CANARY not in result.raw_stderr

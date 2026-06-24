@@ -20,7 +20,7 @@ CAP_TERMINAL_REASONS: frozenset[str] = frozenset(
 #: sub-agent-spawning scenarios (delegate/spawn trajectories need many turns), so
 #: a truncated run measured the cap, not behaviour. Raised generously; a scenario
 #: still declares its own lower value, and the lane reads an optional global
-#: override (:func:`teatree.eval.sdk_runner.resolve_max_turns_override`,
+#: override (:func:`teatree.eval.api_runner.resolve_max_turns_override`,
 #: ``T3_EVAL_MAX_TURNS``) that otherwise defers to this per-scenario budget.
 DEFAULT_MAX_TURNS = 30
 
@@ -115,7 +115,7 @@ ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
 #: Case aliases mapping a tool name's lowercase form to its canonical name. The
 #: single source of truth so the grader (``report._canonicalize_tool``) and the
-#: metered runner's toolset restriction (``sdk_runner.compute_disallowed_tools``)
+#: metered runner's toolset restriction (``api_runner.compute_disallowed_tools``)
 #: canonicalize identically.
 #:
 #: ``task`` -> ``Agent`` because the bundled ``claude`` CLI names the SUB-AGENT

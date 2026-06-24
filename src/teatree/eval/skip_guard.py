@@ -5,16 +5,16 @@ Two distinct failure shapes, two guards:
 *   *All-skipped*: specs collected, zero executed. A scenario skips (not fails)
     when its run never happened — most often because ``claude`` is not on PATH.
     Every skipped scenario reports as passed, so a suite that collects specs but
-    executes none exits green with zero behavioral coverage. The fresh-run (sdk)
+    executes none exits green with zero behavioral coverage. The fresh-run (api)
     path forces this guard on; the LOCAL transcript backend legitimately
     all-skips before any transcript exists, so for it the guard is opt-in.
 
-*   *Unmetered sdk*: the sdk backend executed scenarios but recorded $0 of model
+*   *Unmetered api*: the api backend executed scenarios but recorded $0 of model
     cost. That is the exact ``$0.00 (no metered calls)`` state the ``--bare``
     OAuth-auth bug produced — the model "ran" but authenticated as nothing,
     made zero tool calls, and recorded nothing. A fresh run that records nothing
     never actually executed and must FAIL LOUD, never pass. This guard is
-    unconditional for the sdk backend (it is the fresh-run path's reason to exist).
+    unconditional for the api backend (it is the fresh-run path's reason to exist).
 """
 
 
@@ -22,8 +22,8 @@ class AllSkippedError(RuntimeError):
     """Raised when a required run collected specs but executed none."""
 
 
-class UnmeteredSdkRunError(RuntimeError):
-    """Raised when the sdk backend ran scenarios but metered $0 — it never executed."""
+class UnmeteredApiRunError(RuntimeError):
+    """Raised when the api backend ran scenarios but metered $0 — it never executed."""
 
 
 class UnmeteredJudgeError(RuntimeError):
@@ -49,31 +49,31 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
     raise AllSkippedError(msg)
 
 
-def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
-    """Fail when the sdk backend executed scenarios but metered $0 of API cost.
+def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
+    """Fail when the api backend executed scenarios but metered $0 of API cost.
 
-    Only the ``sdk`` backend is checked — the transcript backend runs no model
+    Only the ``api`` backend is checked — the transcript backend runs no model
     by design. ``executed == 0`` is the all-skipped guard's job, not this one;
     this fires only when scenarios ran (``executed > 0``) yet recorded nothing,
     which means the model never actually authenticated/executed.
     """
-    if backend != "sdk" or executed == 0 or total_cost_usd > 0.0:
+    if backend != "api" or executed == 0 or total_cost_usd > 0.0:
         return
     msg = (
-        f"sdk eval run executed {executed} scenario(s) but metered $0.00 (no metered "
+        f"api eval run executed {executed} scenario(s) but metered $0.00 (no metered "
         "calls). A metered run that bills nothing never actually executed — the SDK made "
         "zero billable tool calls. The common cause is an auth failure "
         "(ANTHROPIC_API_KEY not reaching the CLI). This fails loud rather than reporting a "
         "vacuous green."
     )
-    raise UnmeteredSdkRunError(msg)
+    raise UnmeteredApiRunError(msg)
 
 
 def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judge_calls: int) -> None:
     """Fail when ``--judge`` ran judge-oracle scenarios but every judge call skipped.
 
     Judge spend flows through a separate ``claude_agent_sdk.query`` that is never
-    folded into ``run.cost_usd``, so :func:`assert_sdk_run_was_metered` cannot see
+    folded into ``run.cost_usd``, so :func:`assert_api_run_was_metered` cannot see
     it: a ``--judge`` run whose judge-oracle scenarios all skipped (most often
     ``claude`` absent) would report green having graded nothing with the judge.
 

@@ -1,6 +1,6 @@
 """Docker-by-default routing for the metered eval + benchmark lanes (#2192).
 
-The metered ``sdk`` lane and ``t3 eval benchmark`` default to running IN the CI
+The metered ``api`` lane and ``t3 eval benchmark`` default to running IN the CI
 container — the reproducible gate must never accidentally bill the host. The
 ``T3_EVAL_IN_CONTAINER=1`` marker (set by the docker runner) and the explicit
 ``--local`` escape are the two ways the command runs DIRECTLY in-process; any
@@ -51,7 +51,7 @@ class TestShouldRouteToDocker:
 
 
 class TestLocalMeteredWarning:
-    def test_warns_for_sdk_backend(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_warns_for_api_backend(self, capsys: pytest.CaptureFixture[str]) -> None:
         warn_local_metered(metered=True)
         err = capsys.readouterr().err
         assert "WARNING" in err

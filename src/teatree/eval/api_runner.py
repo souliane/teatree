@@ -31,7 +31,7 @@ contributors), unless ``require_executed`` arms the all-skipped enforcement
 gate — then a missing binary raises :class:`ClaudeCliMissingError` on the FIRST
 scenario, the earliest fail-loud point.
 
-The async ``query`` is bridged to the sync :meth:`SdkInProcessRunner.run` via
+The async ``query`` is bridged to the sync :meth:`ApiInProcessRunner.run` via
 :func:`asyncio.run`, with a per-scenario wall-clock watchdog (:func:`asyncio.wait_for`).
 """
 
@@ -101,7 +101,7 @@ CLAUDE_RESOLVE_BACKOFF_SECONDS = 0.5
 #: elsewhere; this constant scopes strictly to the eval lane.
 DEFAULT_WATCHDOG_SECONDS = 900
 
-#: GENEROUS default per-run budget for the metered ``t3 eval run --backend sdk``
+#: GENEROUS default per-run budget for the metered ``t3 eval run --backend api``
 #: lane — distinct from the cheap-lane :data:`MAX_BUDGET_USD` runner floor (0.10),
 #: which truncated finishing scenarios (a truncated run measures the cap, not
 #: behaviour). ~10x the cheap floor, below the benchmark's 2.0; override via
@@ -177,7 +177,7 @@ def resolve_metered_effort() -> EffortLevel:
 #: keeps working; the env override is read here once, generous by default.
 WATCHDOG_SECONDS = resolve_watchdog_seconds()
 #: Per-run budget for the cheap lane (``t3 eval run`` internal/runner default). Only
-#: the DEFAULT — the metered ``t3 eval run --backend sdk`` lane and the benchmark
+#: the DEFAULT — the metered ``t3 eval run --backend api`` lane and the benchmark
 #: thread a generous cap so a finishing scenario is measured, not truncated. See
 #: :data:`CleanRoomConfig.max_budget_usd` and ``METERED_DEFAULT_BUDGET_USD``.
 MAX_BUDGET_USD = "0.10"
@@ -297,7 +297,7 @@ class _SuccessMislabelResultError(Exception):
     trajectory as-is would force a finished, all-matchers-pass run to FAIL on the
     flag alone. Carries the captured trajectory so the runner can grade the REAL
     messages and clear ``is_error`` — the same correction
-    :meth:`SdkInProcessRunner._terminal_capped_run` applies to a capped run.
+    :meth:`ApiInProcessRunner._terminal_capped_run` applies to a capped run.
     """
 
     def __init__(self, *, messages: list[Message], cause: Exception) -> None:
@@ -455,7 +455,7 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
     return text
 
 
-class SdkInProcessRunner:
+class ApiInProcessRunner:
     """Run an :class:`EvalSpec` via the in-process Agent SDK and capture tool calls."""
 
     def __init__(
@@ -488,7 +488,7 @@ class SdkInProcessRunner:
             if self._require_executed:
                 msg = (
                     "claude binary not on PATH (after bounded re-resolve) but --require-executed "
-                    "is armed: the metered sdk backend can execute no scenario, so the suite would "
+                    "is armed: the metered api backend can execute no scenario, so the suite would "
                     "report an all-skipped green. Provision the Claude CLI (and "
                     "ANTHROPIC_API_KEY) on the runner — sdk + require-executed must never "
                     "decoratively skip."

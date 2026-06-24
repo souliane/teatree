@@ -17,6 +17,20 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
+from teatree.eval.api_runner import (
+    CLAUDE_RESOLVE_MAX_ATTEMPTS,
+    DEFAULT_WATCHDOG_SECONDS,
+    MAX_BUDGET_USD,
+    WATCHDOG_SECONDS,
+    ApiInProcessRunner,
+    BudgetExceededError,
+    ClaudeCliMissingError,
+    CleanRoomConfig,
+    build_sdk_options,
+    classify_terminal_error,
+    is_success_result_error,
+    resolve_claude_path,
+)
 from teatree.eval.models import (
     DEFAULT_MAX_TURNS,
     AnyOf,
@@ -26,20 +40,6 @@ from teatree.eval.models import (
     Matcher,
     TokenUsage,
     canonicalize_tool,
-)
-from teatree.eval.sdk_runner import (
-    CLAUDE_RESOLVE_MAX_ATTEMPTS,
-    DEFAULT_WATCHDOG_SECONDS,
-    MAX_BUDGET_USD,
-    WATCHDOG_SECONDS,
-    BudgetExceededError,
-    ClaudeCliMissingError,
-    CleanRoomConfig,
-    SdkInProcessRunner,
-    build_sdk_options,
-    classify_terminal_error,
-    is_success_result_error,
-    resolve_claude_path,
 )
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
 from teatree.eval.toolset import (
@@ -133,11 +133,11 @@ def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Re
     )
 
 
-class TestSdkInProcessRunnerSkip:
+class TestApiInProcessRunnerSkip:
     def test_returns_skip_run_when_claude_missing(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
-        with patch("teatree.eval.sdk_runner.shutil.which", return_value=None):
-            result = SdkInProcessRunner().run(spec)
+        with patch("teatree.eval.api_runner.shutil.which", return_value=None):
+            result = ApiInProcessRunner().run(spec)
         assert result.terminal_reason.startswith("skipped:")
         assert result.is_error is False
         assert result.tool_calls == ()
@@ -145,20 +145,20 @@ class TestSdkInProcessRunnerSkip:
     def test_require_executed_hard_errors_when_claude_missing(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value=None),
+            patch("teatree.eval.api_runner.shutil.which", return_value=None),
             pytest.raises(ClaudeCliMissingError),
         ):
-            SdkInProcessRunner(require_executed=True).run(spec)
+            ApiInProcessRunner(require_executed=True).run(spec)
 
 
-class TestSdkInProcessRunnerCapture:
+class TestApiInProcessRunnerCapture:
     def _run(self, spec: EvalSpec, messages: list[Any], **kwargs: Any):
         query, captured = _fake_query(messages)
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            run = SdkInProcessRunner(**kwargs).run(spec)
+            run = ApiInProcessRunner(**kwargs).run(spec)
         return run, captured
 
     def test_captures_tool_calls_text_terminal_cost(self, tmp_path: Path) -> None:
@@ -281,7 +281,7 @@ class TestSdkInProcessRunnerCapture:
         assert run.is_error is True
 
     def test_zero_cost_metered_run_records_zero(self, tmp_path: Path) -> None:
-        # The unmetered-sdk guard relies on cost_usd==0.0 surfacing here.
+        # The unmetered-api guard relies on cost_usd==0.0 surfacing here.
         spec = _spec(tmp_path)
         messages = [_result(total_cost_usd=None)]
         run, _ = self._run(spec, messages)
@@ -353,12 +353,12 @@ class TestSdkInProcessRunnerCapture:
 
         query, _ = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
-            patch("teatree.eval.sdk_runner.WATCHDOG_SECONDS", 12.5),
-            patch("teatree.eval.sdk_runner.asyncio.wait_for", _spy),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+            patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 12.5),
+            patch("teatree.eval.api_runner.asyncio.wait_for", _spy),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         return captured.get("timeout")
 
     def test_per_scenario_watchdog_overrides_the_lane_default(self, tmp_path: Path) -> None:
@@ -419,11 +419,11 @@ class TestSdkInProcessRunnerCapture:
             yield  # pragma: no cover
 
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", _slow_query),
-            patch("teatree.eval.sdk_runner.WATCHDOG_SECONDS", 0.01),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", _slow_query),
+            patch("teatree.eval.api_runner.WATCHDOG_SECONDS", 0.01),
         ):
-            run = SdkInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert run.terminal_reason == "timeout"
         assert run.is_error is True
 
@@ -453,21 +453,21 @@ class TestUsageSchemaConformance:
         messages = [_result(usage=usage, model_usage={"claude-opus-4-8": usage})]
         query, _ = _fake_query(messages)
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            run = SdkInProcessRunner().run(spec)
+            run = ApiInProcessRunner().run(spec)
         assert run.usage == TokenUsage(input=1, cache_creation=2, cache_read=3, output=4)
 
 
-class TestSdkInProcessRunnerAgentDefinition:
+class TestApiInProcessRunnerAgentDefinition:
     def _run(self, spec: EvalSpec, **kwargs: Any):
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(**kwargs).run(spec)
+            ApiInProcessRunner(**kwargs).run(spec)
         return captured
 
     def test_raises_when_agent_definition_missing(self, tmp_path: Path) -> None:
@@ -480,10 +480,10 @@ class TestSdkInProcessRunnerAgentDefinition:
             source_path=tmp_path / "spec.yaml",
         )
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(FileNotFoundError),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
 
     def test_raises_when_agent_definition_empty(self, tmp_path: Path) -> None:
         agent = tmp_path / "empty.md"
@@ -497,10 +497,10 @@ class TestSdkInProcessRunnerAgentDefinition:
             source_path=tmp_path / "spec.yaml",
         )
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(ValueError, match="empty"),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
 
     def test_agent_sections_send_only_named_section_as_system_prompt(self, tmp_path: Path) -> None:
         agent = tmp_path / "rules.md"
@@ -564,7 +564,7 @@ class TestSdkInProcessRunnerAgentDefinition:
         assert "never print the command as text" in system_prompt
 
 
-class TestSdkInProcessRunnerMessageMapping:
+class TestApiInProcessRunnerMessageMapping:
     def test_unknown_block_and_non_content_message_are_handled(self, tmp_path: Path) -> None:
         from claude_agent_sdk import SystemMessage, ThinkingBlock  # noqa: PLC0415
 
@@ -582,10 +582,10 @@ class TestSdkInProcessRunnerMessageMapping:
         ]
         query, _ = _fake_query(messages)
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            run = SdkInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
         # The thinking block is dropped, the tool_use is captured, the system message ignored.
         assert [c.name for c in run.tool_calls] == ["Bash"]
         assert run.text_blocks == ()
@@ -593,7 +593,7 @@ class TestSdkInProcessRunnerMessageMapping:
     def test_relative_agent_path_resolves_against_teatree_root(self, tmp_path: Path, monkeypatch) -> None:
         # cwd is a temp dir (first candidate misses), so resolution falls through
         # to the teatree-root candidate (exercises the continue + found branch).
-        from teatree.eval.sdk_runner import _teatree_root  # noqa: PLC0415
+        from teatree.eval.api_runner import _teatree_root  # noqa: PLC0415
 
         monkeypatch.chdir(tmp_path)
         rel = "skills/code/SKILL.md"
@@ -608,10 +608,10 @@ class TestSdkInProcessRunnerMessageMapping:
         )
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["system_prompt_text"].strip()
 
     def test_relative_agent_path_not_found_raises(self, tmp_path: Path, monkeypatch) -> None:
@@ -627,10 +627,10 @@ class TestSdkInProcessRunnerMessageMapping:
             source_path=tmp_path / "spec.yaml",
         )
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
             pytest.raises(FileNotFoundError),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
 
 
 def _config(tmp_path: Path, *, max_budget_usd: float) -> CleanRoomConfig:
@@ -696,10 +696,10 @@ class TestCalibratedCaps:
         )
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["options"].max_turns == DEFAULT_MAX_TURNS
 
     def test_clean_room_below_floor_turn_budget_is_lifted_to_the_floor(self, tmp_path: Path) -> None:
@@ -711,10 +711,10 @@ class TestCalibratedCaps:
         spec = _spec(tmp_path, max_turns=3, lane="clean_room")
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["options"].max_turns == CLEAN_ROOM_MIN_TURNS
 
     def test_under_load_below_floor_turn_budget_is_kept_unchanged(self, tmp_path: Path) -> None:
@@ -723,10 +723,10 @@ class TestCalibratedCaps:
         spec = _spec(tmp_path, max_turns=3, lane="under_load")
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path).run(spec)
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert captured["options"].max_turns == 3
 
     def test_explicit_override_wins_over_the_clean_room_floor(self, tmp_path: Path) -> None:
@@ -735,10 +735,10 @@ class TestCalibratedCaps:
         spec = _spec(tmp_path, max_turns=3, lane="clean_room")
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=tmp_path, max_turns_override=2).run(spec)
+            ApiInProcessRunner(workspace=tmp_path, max_turns_override=2).run(spec)
         assert captured["options"].max_turns == 2
 
 
@@ -746,37 +746,37 @@ class TestCapsAreEnvConfigurable:
     """Each generous default is overridable via a ``T3_EVAL_*`` env var."""
 
     def test_watchdog_resolves_the_env_override(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_watchdog_seconds  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_watchdog_seconds  # noqa: PLC0415
 
         monkeypatch.setenv("T3_EVAL_WATCHDOG_SECONDS", "450")
         assert resolve_watchdog_seconds() == pytest.approx(450.0)
 
     def test_watchdog_falls_back_to_the_generous_default(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_watchdog_seconds  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_watchdog_seconds  # noqa: PLC0415
 
         monkeypatch.delenv("T3_EVAL_WATCHDOG_SECONDS", raising=False)
         assert resolve_watchdog_seconds() == pytest.approx(float(DEFAULT_WATCHDOG_SECONDS))
 
     def test_max_turns_override_resolves_the_env_value(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.setenv("T3_EVAL_MAX_TURNS", "50")
         assert resolve_max_turns_override() == 50
 
     def test_max_turns_override_defers_to_per_scenario_when_unset(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.delenv("T3_EVAL_MAX_TURNS", raising=False)
         assert resolve_max_turns_override() is None
 
     def test_max_turns_override_ignores_a_non_positive_value(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.setenv("T3_EVAL_MAX_TURNS", "0")
         assert resolve_max_turns_override() is None
 
     def test_max_turns_override_prefers_an_explicit_value_over_the_env(self, monkeypatch) -> None:
-        from teatree.eval.sdk_runner import resolve_max_turns_override  # noqa: PLC0415
+        from teatree.eval.api_runner import resolve_max_turns_override  # noqa: PLC0415
 
         monkeypatch.setenv("T3_EVAL_MAX_TURNS", "9")
         assert resolve_max_turns_override(explicit=4) == 4
@@ -793,13 +793,13 @@ def _budget_raising_query(message: str):
     return _query
 
 
-class TestSdkInProcessRunnerBudgetExceeded:
+class TestApiInProcessRunnerBudgetExceeded:
     def _run_with_raising_query(self, spec: EvalSpec, query, **kwargs: Any):
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
 
     def test_budget_exceeded_is_a_recorded_run_not_a_crash(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
@@ -980,10 +980,10 @@ class TestLargeSystemPromptDoesNotBlowArgMax:
         )
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            run = SdkInProcessRunner(workspace=tmp_path).run(spec)
+            run = ApiInProcessRunner(workspace=tmp_path).run(spec)
         assert run.terminal_reason == "success"
         assert run.is_error is False
         assert _HUGE_SYSTEM_PROMPT in captured["system_prompt_text"]
@@ -1001,10 +1001,10 @@ class TestSuccessResultIsNotAnError:
 
     def _run_with_query(self, spec: EvalSpec, query, **kwargs: Any):
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
 
     def test_is_success_result_error_recognizes_the_marker(self) -> None:
         assert is_success_result_error("Claude Code returned an error result: success") is True
@@ -1061,13 +1061,13 @@ class TestSuccessResultIsNotAnError:
             self._run_with_query(spec, query)
 
 
-class TestSdkInProcessRunnerMaxTurnsCapturesTrajectory:
+class TestApiInProcessRunnerMaxTurnsCapturesTrajectory:
     def _run_with_query(self, spec: EvalSpec, query, **kwargs: Any):
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            return SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            return ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
 
     def test_max_turns_cap_keeps_the_tool_call_emitted_before_the_cap(self, tmp_path: Path) -> None:
         # The agent DID the expected tool call before turn 3, then hit the cap.
@@ -1524,10 +1524,10 @@ class TestDisallowedToolsFlowToOptions:
     def _run(self, spec: EvalSpec, **kwargs: Any):
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
         return captured
 
     def test_build_sdk_options_forwards_disallowed_tools(self, tmp_path: Path) -> None:
@@ -1750,10 +1750,10 @@ class TestDelegationScenarioGetsEmptyDenylist:
         )
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=spec.source_path.parent).run(spec)
+            ApiInProcessRunner(workspace=spec.source_path.parent).run(spec)
         options = captured["options"]
         assert "Agent" in options.tools
         assert list(options.disallowed_tools) == []
@@ -1775,10 +1775,10 @@ class TestDelegationAgentsProvisioning:
     def _run(self, spec: EvalSpec, **kwargs: Any):
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
         return captured
 
     def test_spawn_tool_constant_is_agent(self) -> None:
@@ -1875,10 +1875,10 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
     def _run(self, spec: EvalSpec, **kwargs: Any):
         query, captured = _fake_query([_result()])
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            SdkInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
+            ApiInProcessRunner(workspace=spec.source_path.parent, **kwargs).run(spec)
         return captured
 
     def _spawning_spec(self, spec_dir: Path) -> EvalSpec:
@@ -1907,7 +1907,7 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
             yield ephemeral
 
         spec = self._spawning_spec(real_workspace)
-        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _fake_provision):
+        with patch("teatree.eval.api_runner.provision_ephemeral_checkout", _fake_provision):
             captured = self._run(spec)
 
         options = captured["options"]
@@ -1926,7 +1926,7 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
             yield ephemeral
 
         spec = self._spawning_spec(tmp_path / "spec-dir")
-        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _fake_provision):
+        with patch("teatree.eval.api_runner.provision_ephemeral_checkout", _fake_provision):
             captured = self._run(spec)
 
         env = captured["options"].env
@@ -1942,7 +1942,7 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
             called["n"] += 1
             yield tmp_path / "should-not-be-used"
 
-        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _tracking_provision):
+        with patch("teatree.eval.api_runner.provision_ephemeral_checkout", _tracking_provision):
             captured = self._run(spec)
 
         assert called["n"] == 0, "a non-spawning scenario must NOT provision an ephemeral checkout"
@@ -1964,7 +1964,7 @@ class TestSpawningScenarioRunsAgainstEphemeralCheckout:
                 entered["open"] = False
 
         spec = self._spawning_spec(tmp_path / "spec-dir")
-        with patch("teatree.eval.sdk_runner.provision_ephemeral_checkout", _tracking_provision):
+        with patch("teatree.eval.api_runner.provision_ephemeral_checkout", _tracking_provision):
             self._run(spec)
 
         assert entered["open"] is False, "the ephemeral checkout context must be exited (cleaned up)"
@@ -1982,7 +1982,7 @@ class TestResolveClaudePath:
 
     def test_returns_path_on_first_success_without_sleeping(self) -> None:
         sleeps: list[float] = []
-        with patch("teatree.eval.sdk_runner.shutil.which", return_value="/usr/local/bin/claude"):
+        with patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"):
             path = resolve_claude_path(sleep=sleeps.append)
         assert path == "/usr/local/bin/claude"
         assert sleeps == [], "a first-attempt hit must not sleep"
@@ -1991,14 +1991,14 @@ class TestResolveClaudePath:
         # None (mid-update) then a valid path: the resolver rides out the swap.
         sleeps: list[float] = []
         results = iter([None, None, "/usr/local/bin/claude"])
-        with patch("teatree.eval.sdk_runner.shutil.which", side_effect=lambda _name: next(results)):
+        with patch("teatree.eval.api_runner.shutil.which", side_effect=lambda _name: next(results)):
             path = resolve_claude_path(sleep=sleeps.append)
         assert path == "/usr/local/bin/claude"
         assert len(sleeps) == 2, "two transient misses should back off twice, then succeed"
 
     def test_returns_none_after_bounded_attempts_when_genuinely_absent(self) -> None:
         sleeps: list[float] = []
-        with patch("teatree.eval.sdk_runner.shutil.which", return_value=None):
+        with patch("teatree.eval.api_runner.shutil.which", return_value=None):
             path = resolve_claude_path(max_attempts=3, sleep=sleeps.append)
         assert path is None
         # Bounded: max_attempts probes, max_attempts-1 backoffs — never an infinite loop.
@@ -2010,7 +2010,7 @@ class TestResolveClaudePath:
         def _always_missing(_name: str) -> None:
             calls["n"] += 1
 
-        with patch("teatree.eval.sdk_runner.shutil.which", side_effect=_always_missing):
+        with patch("teatree.eval.api_runner.shutil.which", side_effect=_always_missing):
             assert resolve_claude_path(sleep=lambda _s: None) is None
         assert calls["n"] == CLAUDE_RESOLVE_MAX_ATTEMPTS
 
@@ -2024,20 +2024,20 @@ class TestRunnerRetriesTransientMissingClaude:
         results = iter([None, "/usr/local/bin/claude", "/usr/local/bin/claude"])
         with (
             patch(
-                "teatree.eval.sdk_runner.shutil.which", side_effect=lambda _name: next(results, "/usr/local/bin/claude")
+                "teatree.eval.api_runner.shutil.which", side_effect=lambda _name: next(results, "/usr/local/bin/claude")
             ),
-            patch("teatree.eval.sdk_runner.time.sleep", lambda _s: None),
-            patch("teatree.eval.sdk_runner.query", query),
+            patch("teatree.eval.api_runner.time.sleep", lambda _s: None),
+            patch("teatree.eval.api_runner.query", query),
         ):
-            run = SdkInProcessRunner().run(spec)
+            run = ApiInProcessRunner().run(spec)
         assert run.terminal_reason == "success", "a transient claude miss must not skip the scenario"
         assert run.is_error is False
 
     def test_require_executed_still_hard_errors_when_persistently_absent(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
         with (
-            patch("teatree.eval.sdk_runner.shutil.which", return_value=None),
-            patch("teatree.eval.sdk_runner.time.sleep", lambda _s: None),
+            patch("teatree.eval.api_runner.shutil.which", return_value=None),
+            patch("teatree.eval.api_runner.time.sleep", lambda _s: None),
             pytest.raises(ClaudeCliMissingError),
         ):
-            SdkInProcessRunner(require_executed=True).run(spec)
+            ApiInProcessRunner(require_executed=True).run(spec)

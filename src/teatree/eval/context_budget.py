@@ -1,6 +1,6 @@
 """Section-scoped system-prompt extraction — the eval token-cost lever.
 
-The metered ``sdk`` lane drives one in-process Agent-SDK query per scenario and resends the
+The metered ``api`` lane drives one in-process Agent-SDK query per scenario and resends the
 WHOLE ``agent_path`` SKILL.md as ``--system-prompt`` every time, with no
 cross-scenario cache. The dominant input-token cost of a suite run is therefore
 the sum of those whole-file prompts: ~1.6 M input tokens across the catalog,

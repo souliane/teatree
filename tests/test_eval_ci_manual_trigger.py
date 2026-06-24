@@ -58,7 +58,7 @@ class TestGitHubEvalTriggers:
             f"The metered eval must run weekly (a pinned day-of-week), not daily; got {crons}."
         )
 
-    def test_backend_is_fixed_to_sdk_for_trials(self) -> None:
+    def test_backend_is_fixed_to_api_for_trials(self) -> None:
         inputs = cast("dict[str, Any]", _gh_on()["workflow_dispatch"]["inputs"])
         assert "backend" not in inputs, "`--trials 3` is always a fresh metered SDK run."
 
@@ -66,7 +66,7 @@ class TestGitHubEvalTriggers:
             step.get("with", {}).get("command", "") for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"])
         )
         assert "--trials 3" in commands
-        assert "--backend sdk" in commands
+        assert "--backend api" in commands
 
     def test_eval_job_runs_the_suite(self) -> None:
         for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"]):

@@ -40,8 +40,8 @@ def _run(
     is_error: bool = False,
     cost_usd: float = 0.01,
 ) -> EvalRun:
-    # cost_usd defaults to a non-zero value: sdk runs bill something by
-    # definition; the sdk_metered guard fires when total_cost_usd == 0, which
+    # cost_usd defaults to a non-zero value: api runs bill something by
+    # definition; the api_metered guard fires when total_cost_usd == 0, which
     # would prevent persistence from running.  Stubs represent a metered call.
     return EvalRun(
         spec_name=spec_name,
@@ -74,16 +74,16 @@ class TestRunPersists(TestCase):
 
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _stub_runner(outcomes)),
+            patch("teatree.eval.backends.ApiInProcessRunner", _stub_runner(outcomes)),
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         ):
-            # The sdk runner is what these persistence tests stub; the default
-            # backend is now subscription, so name sdk explicitly. The metered sdk
+            # The api runner is what these persistence tests stub; the default
+            # backend is now subscription, so name api explicitly. The metered api
             # lane defaults to Docker — T3_EVAL_IN_CONTAINER=1 makes it run
             # in-process (the in-container path), so these persistence tests grade
             # the stub runner directly instead of re-routing to a container.
             result = CliRunner().invoke(
-                app, ["eval", "run", "--backend", "sdk", *args], env={"T3_EVAL_IN_CONTAINER": "1"}
+                app, ["eval", "run", "--backend", "api", *args], env={"T3_EVAL_IN_CONTAINER": "1"}
             )
         assert "Traceback" not in result.output, result.output
 

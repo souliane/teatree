@@ -2,7 +2,7 @@
 # METERED BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
 # ============================================================
 #
-# The behavioral-eval suite (`t3 eval run --backend sdk`) runs the metered
+# The behavioral-eval suite (`t3 eval run --backend api`) runs the metered
 # in-process Agent-SDK suite (the SDK spawns the `claude` CLI child internally,
 # so `shutil.which("claude")` is still the provisioning gate) — it is metered
 # (API cost), reaches the network, and varies by
@@ -14,7 +14,7 @@
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
 #     lookback window since the last run — nothing new to test, no API spend.
-#   * workflow_dispatch — manual, on-demand, always on the sdk backend
+#   * workflow_dispatch — manual, on-demand, always on the api backend
 #     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
 #     bypassed for a manual run.
 #
@@ -53,7 +53,7 @@
 #   PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), where the ledger
 #   lives on the runner via `--local` — keeping the cost gate weekly/manual and
 #   off the per-PR path. A maintainer can also run it on the host against the
-#   accumulated ledger: `t3 eval run --backend sdk --local --gate-cost-bounds`.
+#   accumulated ledger: `t3 eval run --backend api --local --gate-cost-bounds`.
 #
 # AUTH — ANTHROPIC_API_KEY (metered, EXCLUSIVE — never the subscription token)
 #   The metered backend authenticates EXCLUSIVELY from `ANTHROPIC_API_KEY`, the
@@ -214,7 +214,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it. A missing binary must FAIL the job (the runner would otherwise skip
       # every scenario and report a decorative green). `claude --version` is the
       # post-install assertion that turns an install failure into a red job.
@@ -229,7 +229,7 @@ jobs:
       # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
       # ANTHROPIC_API_KEY is forwarded in via docker's `-e` pass-through.
-      # `--backend sdk` keeps CI on the metered in-process Agent-SDK path explicitly.
+      # `--backend api` keeps CI on the metered in-process Agent-SDK path explicitly.
       # This workflow always runs `--trials 3`, which cannot be served by the
       # transcript backend, so there is intentionally no backend input. Auth is
       # the metered API key (`ANTHROPIC_API_KEY`) EXCLUSIVELY — never the
@@ -283,7 +283,7 @@ jobs:
           # the file is simply overwritten with the last attempt's results — no
           # staleness.
           command: |
-            uv run t3 eval run --trials 3 --require any --backend sdk \
+            uv run t3 eval run --trials 3 --require any --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html"

@@ -1,7 +1,7 @@
 """Virgin-environment isolation for the in-process Agent-SDK eval runs.
 
 The core harness drives ``claude`` (via ``claude-agent-sdk``) to both produce a
-run (:class:`~teatree.eval.sdk_runner.SdkInProcessRunner`) and grade one
+run (:class:`~teatree.eval.api_runner.ApiInProcessRunner`) and grade one
 (:class:`~teatree.eval.judge.ClaudeJudge`). Without isolation the child
 auto-discovers the developer's personal context — ``~/.claude/CLAUDE.md``,
 auto-memory, and the project ``CLAUDE.md`` reachable from the parent cwd — and a

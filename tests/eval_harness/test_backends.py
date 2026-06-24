@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner
+from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 from teatree.llm.credentials import AnthropicApiKeyCredential
 
 API_KEY_ENV = AnthropicApiKeyCredential().spec.env_var
@@ -35,20 +35,20 @@ def _spec(
 
 
 class TestMakeRunner:
-    def test_sdk_backend_builds_in_process_sdk_runner(self) -> None:
+    def test_api_backend_builds_in_process_api_runner(self) -> None:
         with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
-            assert isinstance(make_runner(SDK_BACKEND), SdkInProcessRunner)
+            assert isinstance(make_runner(API_BACKEND), ApiInProcessRunner)
 
-    def test_sdk_backend_default_budget_is_the_cheap_cap(self) -> None:
+    def test_api_backend_default_budget_is_the_cheap_cap(self) -> None:
         with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
-            runner = make_runner(SDK_BACKEND)
-        assert isinstance(runner, SdkInProcessRunner)
+            runner = make_runner(API_BACKEND)
+        assert isinstance(runner, ApiInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
 
-    def test_sdk_backend_threads_the_budget_override(self) -> None:
+    def test_api_backend_threads_the_budget_override(self) -> None:
         with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
-            runner = make_runner(SDK_BACKEND, max_budget_usd=2.0)
-        assert isinstance(runner, SdkInProcessRunner)
+            runner = make_runner(API_BACKEND, max_budget_usd=2.0)
+        assert isinstance(runner, ApiInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(2.0)
 
     def test_transcript_backend_builds_transcript_runner(self, tmp_path: Path) -> None:
@@ -59,8 +59,8 @@ class TestMakeRunner:
         with pytest.raises(UnknownBackendError):
             make_runner("magic")
 
-    def test_sdk_backend_resolves_api_key_from_pass_when_env_absent(self) -> None:
-        # The host sdk runner authenticates from ANTHROPIC_API_KEY via the isolated
+    def test_api_backend_resolves_api_key_from_pass_when_env_absent(self) -> None:
+        # The host api runner authenticates from ANTHROPIC_API_KEY via the isolated
         # env copy; make_runner must export it from pass so the operator need not.
         # (Local default: just works.)
         with (
@@ -68,7 +68,7 @@ class TestMakeRunner:
             patch("teatree.llm.credentials.read_pass", return_value="sk-pass-key"),
         ):
             os.environ.pop(API_KEY_ENV, None)
-            make_runner(SDK_BACKEND)
+            make_runner(API_BACKEND)
             assert os.environ.get(API_KEY_ENV) == "sk-pass-key"
 
     def test_transcript_backend_does_not_touch_pass(self) -> None:

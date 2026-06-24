@@ -5,7 +5,7 @@ The single-trial ``t3 eval run`` lane builds its metered runner through
 metered ``ANTHROPIC_API_KEY`` via ``AnthropicApiKeyCredential().export()`` (env
 wins, else exported from the ``pass`` store). The ``t3 eval benchmark`` and
 ``t3 eval run --trials k`` lanes must do the SAME — on a host ``--local`` run the
-key lives only in ``pass``, so a lane that builds ``SdkInProcessRunner`` directly
+key lives only in ``pass``, so a lane that builds ``ApiInProcessRunner`` directly
 leaves the isolated ``claude`` child unauthenticated and the run reports a
 zero-cost auth failure.
 
@@ -59,7 +59,7 @@ class TestPassAtKLaneResolvesApiKey:
     def test_pass_at_k_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_pass_at_k_lane(
                 [_spec()],
@@ -75,7 +75,7 @@ class TestMatrixLaneResolvesApiKey:
     def test_matrix_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_model_matrix_lane(
                 [_spec()],
@@ -95,7 +95,7 @@ class TestBenchmarkLaneResolvesApiKey:
     def test_benchmark_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
             patch("teatree.cli.eval.benchmark.discover_specs", return_value=[_spec("alpha")]),
             patch("teatree.cli.eval.benchmark.should_route_to_docker", return_value=False),
             patch("teatree.cli.eval.benchmark.persist_matrix_run"),

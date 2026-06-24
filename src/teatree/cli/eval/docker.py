@@ -2,7 +2,7 @@
 
 Reuses ``dev/Dockerfile.test`` (the image the CI test job builds) so a containerized
 run reproduces CI's environment exactly. The fresh-run AI lane (``t3 eval run
---backend sdk``) and ``t3 eval benchmark`` default to running IN the container —
+--backend api``) and ``t3 eval benchmark`` default to running IN the container —
 the reproducible gate must never accidentally run a model on the host. The free /
 deterministic lanes stay host-default; ``--local`` is the explicit host escape
 hatch for durable-history gates or quick checks. No PyPI — the image installs
@@ -28,7 +28,7 @@ import os
 import shutil
 from pathlib import Path
 
-from teatree.eval.backends import SDK_BACKEND
+from teatree.eval.backends import API_BACKEND
 from teatree.llm.credentials import AnthropicApiKeyCredential
 from teatree.utils.run import run_allowed_to_fail, run_streamed
 
@@ -41,6 +41,11 @@ _AUTH_ENV_VARS = (AnthropicApiKeyCredential().spec.env_var,)
 #: Env marker set on the container so the in-container ``t3 eval`` re-invocation
 #: runs the metered/benchmark command in-process instead of re-routing to docker.
 IN_CONTAINER_ENV_VAR = "T3_EVAL_IN_CONTAINER"
+#: The eval subcommands that are ALWAYS metered (bill ``ANTHROPIC_API_KEY``)
+#: regardless of an explicit ``--backend`` flag. ``benchmark`` never passes a
+#: backend — it is sdk-metered by construction — so the credential pre-export must
+#: fire for it the same as for an explicit ``--backend api`` run.
+_ALWAYS_METERED_SUBCOMMANDS = ("benchmark",)
 #: Fixed container mount point for the WRITABLE artifacts directory. The repo is
 #: mounted ``:ro`` (a metered run must never mutate the working tree), so a run
 #: that emits an artifact (the per-trial transcript report) writes it here, on a
@@ -52,8 +57,18 @@ def _auth_passthrough_flags() -> list[str]:
     return [flag for var in _AUTH_ENV_VARS if os.environ.get(var) for flag in ("-e", var)]
 
 
-def _requests_sdk_lane(eval_args: list[str]) -> bool:
-    return SDK_BACKEND in eval_args
+def _requests_api_lane(eval_args: list[str]) -> bool:
+    """Whether *eval_args* drives the metered/api lane, so the credential pre-export must fire.
+
+    True for an explicit ``--backend api`` run AND for an always-metered
+    subcommand (``benchmark``) that bills the API by construction without ever
+    passing ``--backend``. Keying on :data:`API_BACKEND` plus the metered
+    subcommand — never a stray literal token — means the credential resolves (and
+    fails loud when absent) BEFORE any Docker build/run on every metered path.
+    """
+    if API_BACKEND in eval_args:
+        return True
+    return bool(eval_args) and eval_args[0] in _ALWAYS_METERED_SUBCOMMANDS
 
 
 class DockerUnavailableError(RuntimeError):
@@ -124,7 +139,7 @@ def _run_in_image(root: Path, eval_args: list[str], *, artifacts_dir: Path | Non
 def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = None) -> int:
     """Build (if needed) and run the eval gate inside the CI image; return its exit code.
 
-    For the metered ``sdk`` lane, resolve ``ANTHROPIC_API_KEY`` first via the
+    For the metered ``api`` lane, resolve ``ANTHROPIC_API_KEY`` first via the
     canonical credential layer (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`;
     env wins, else exported from the ``pass`` store; a missing key fails loud with
     :class:`~teatree.llm.credentials.CredentialError`) so
@@ -141,7 +156,7 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     """
     if shutil.which("docker") is None:
         raise DockerUnavailableError
-    if _requests_sdk_lane(eval_args):
+    if _requests_api_lane(eval_args):
         AnthropicApiKeyCredential().export()
     root = _repo_root()
     if not _image_present():

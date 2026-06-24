@@ -52,7 +52,7 @@
 #   7. Security & supply chain — uv-audit, sbom, uv-audit-advisory
 #
 # THE METERED AI EVAL DOES NOT RUN HERE
-#   The metered behavioral-eval suite (`t3 eval run --backend sdk`, which shells
+#   The metered behavioral-eval suite (`t3 eval run --backend api`, which shells
 #   out to `claude -p` — cost, network, model variance) is NOT part of this PR
 #   pipeline. It lives in a standalone workflow, `.github/workflows/eval.yml`,
 #   on a weekly schedule + manual `workflow_dispatch`. A PR run neither runs nor
@@ -826,7 +826,7 @@ jobs:
         continue-on-error: true
         run: uv audit --frozen --no-default-groups --output-format text || true
 
-  # The metered behavioral-eval suite (`t3 eval run --backend sdk`, `claude -p`)
+  # The metered behavioral-eval suite (`t3 eval run --backend api`, `claude -p`)
   # is NOT a job here. It runs in the standalone `.github/workflows/eval.yml`
   # (weekly schedule + manual workflow_dispatch) so a PR pipeline neither runs
   # nor displays a metered-eval check. See that workflow for the install +

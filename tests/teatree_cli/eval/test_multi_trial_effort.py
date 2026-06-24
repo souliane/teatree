@@ -34,7 +34,7 @@ def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
 
 
 class _RecordingRunner:
-    """Stand-in for ``SdkInProcessRunner`` that records its constructor effort."""
+    """Stand-in for ``ApiInProcessRunner`` that records its constructor effort."""
 
     last_effort: str | None = None
 
@@ -59,7 +59,7 @@ def recording_runner() -> Iterator[type[_RecordingRunner]]:
     _RecordingRunner.last_effort = None
     with (
         patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
-        patch("teatree.eval.backends.SdkInProcessRunner", _RecordingRunner),
+        patch("teatree.eval.backends.ApiInProcessRunner", _RecordingRunner),
     ):
         yield _RecordingRunner
 
