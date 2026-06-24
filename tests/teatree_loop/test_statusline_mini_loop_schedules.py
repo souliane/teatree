@@ -142,4 +142,5 @@ class TestMiniLoopCadenceMatchesGate(django.test.TestCase):
 def test_config_loader_degrades_to_defaults_on_missing_file(tmp_path: Path) -> None:
     """Sanity guard: the config loader degrades to defaults on a missing file."""
     cfg = LoopsConfig.load(path=tmp_path / "absent.toml")
-    assert cfg.enabled is True
+    assert cfg.default_cadence == 300
+    assert cfg.parallel is True

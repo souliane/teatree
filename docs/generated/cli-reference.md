@@ -1360,7 +1360,7 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --backend               TEXT     AI-lane backend for the bare-`t3 eval` full │
 │                                  suite: 'transcript' (default — REUSE        │
 │                                  already-recorded in-session transcripts, $0 │
-│                                  extra) or 'sdk' (RUN the model fresh        │
+│                                  extra) or 'api' (RUN the model fresh        │
 │                                  in-process via the Agent SDK,               │
 │                                  subscription-covered, the explicit opt-in). │
 │                                  [default: transcript]                       │
@@ -1442,7 +1442,7 @@ Usage: t3 eval benchmark [OPTIONS]
  Benchmark cost AND pass-rate of model@effort variants against the eval suite.
 
  Runs the scenario suite once per variant on the metered in-process
- Agent-SDK runner (``--backend sdk`` semantics; the all-skipped gate is
+ Agent-SDK runner (``--backend api`` semantics; the all-skipped gate is
  always armed) and renders one comparison line per variant: scenarios
  passed/executed, pass-rate, total metered cost, mean cost per scenario,
  and cost per pass. A failing scenario is the measurement, not an error —
@@ -1717,11 +1717,13 @@ Usage: t3 eval run [OPTIONS] [NAME]
  ``--backend transcript`` (default) REUSES an already-recorded run by grading
  its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
  in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
- paths). ``--backend sdk`` RUNS the model fresh in-process via the Agent SDK
- (which spawns the ``claude`` CLI as its child), authed by the subscription's
- ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
- explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
- require the fresh-run ``sdk`` runner and reject the transcript backend.
+ paths). ``--backend api`` RUNS the model fresh in-process via the Agent SDK
+ (which spawns the ``claude`` CLI as its child), metered EXCLUSIVELY on
+ ``ANTHROPIC_API_KEY`` — never the subscription OAuth token (#2707), whose
+ usage
+ window a full run would throttle; CI passes ``--backend api`` explicitly via
+ the standalone ``eval.yml`` job. ``--trials``/``--models`` require the
+ fresh-run ``api`` runner and reject the transcript backend.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -1729,12 +1731,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
  arms it always; local runs leave it off so the transcript backend's
  legitimate pre-transcript all-skip stays green.
 
- ``--docker`` runs the suite inside the CI image. The fresh-run ``sdk`` lane is
+ ``--docker`` runs the suite inside the CI image. The fresh-run ``api`` lane is
  meant to run in-container, never on the host — the runner forwards the host's
- ``CLAUDE_CODE_OAUTH_TOKEN`` in via docker's ``-e VARNAME`` pass-through, so
- the
- token authenticates the SDK's ``claude`` child inside a clean container and
- never lands on the command line.
+ ``ANTHROPIC_API_KEY`` in via docker's ``-e VARNAME`` pass-through, so the
+ metered key authenticates the SDK's ``claude`` child inside a clean container
+ and never lands on the command line (the subscription OAuth token is never
+ forwarded — #2707).
 
  ``--local`` is the explicit host escape for durable-history gates that must
  persist/read the runner DB, or for a quick host check.
@@ -1797,7 +1799,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     safety net.              │
 │ --max-budget-usd                           FLOAT    Per-run USD budget       │
 │                                                     circuit breaker for the  │
-│                                                     metered sdk runner.      │
+│                                                     metered api runner.      │
 │                                                     Defaults GENEROUS        │
 │                                                     (env-configurable via    │
 │                                                     T3_EVAL_MAX_BUDGET_USD)  │
@@ -1815,7 +1817,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     [default: 1.0]           │
 │ --effort                                   TEXT     Representative reasoning │
 │                                                     effort for the metered   │
-│                                                     sdk lane (low, medium,   │
+│                                                     api lane (low, medium,   │
 │                                                     high, xhigh, max;        │
 │                                                     default 'high',          │
 │                                                     env-configurable via     │
@@ -1920,17 +1922,18 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     transcript, $0 extra;    │
 │                                                     see `t3 eval             │
 │                                                     prepare-transcript`) or  │
-│                                                     'sdk' (RUN the model     │
+│                                                     'api' (RUN the model     │
 │                                                     fresh in-process via the │
-│                                                     Agent SDK,               │
-│                                                     subscription-covered     │
-│                                                     (CLAUDE_CODE_OAUTH_TOKE… │
-│                                                     NOT API-billed; runs     │
+│                                                     Agent SDK, metered       │
+│                                                     EXCLUSIVELY on           │
+│                                                     ANTHROPIC_API_KEY —      │
+│                                                     never the subscription   │
+│                                                     OAuth token; runs        │
 │                                                     in-container by default  │
 │                                                     or directly on the host  │
 │                                                     with --local). --trials  │
 │                                                     and --models require     │
-│                                                     --backend sdk.           │
+│                                                     --backend api.           │
 │                                                     [default: transcript]    │
 │ --transcript-dir                           PATH     Directory of             │
 │                                                     <scenario>.jsonl         │
@@ -1941,7 +1944,7 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     collected scenarios but  │
 │                                                     executed none (all       │
 │                                                     skipped). AUTO-ON for    │
-│                                                     the sdk backend and      │
+│                                                     the api backend and      │
 │                                                     --trials/--models (a     │
 │                                                     fresh-run lane that      │
 │                                                     executes nothing always  │
@@ -1953,12 +1956,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │ --docker                                            Force running inside the │
 │                                                     CI image                 │
 │                                                     (dev/Dockerfile.test)    │
-│                                                     for ANY backend. The sdk │
+│                                                     for ANY backend. The api │
 │                                                     lane ALREADY defaults to │
 │                                                     the container; this      │
 │                                                     forces it for the        │
 │                                                     transcript lane too.     │
-│ --local                                             Run the fresh sdk lane   │
+│ --local                                             Run the fresh api lane   │
 │                                                     directly on the host     │
 │                                                     instead of Docker. Use   │
 │                                                     for durable-history      │

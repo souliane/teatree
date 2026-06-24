@@ -1,6 +1,6 @@
 """A throwaway, isolated teatree checkout for sub-agent-spawning eval scenarios.
 
-The metered ``sdk`` lane runs some scenarios (``orchestrator_delegates_*``,
+The metered ``api`` lane runs some scenarios (``orchestrator_delegates_*``,
 ``full_speed_*``, ``team_mate_*``, ``delegates_under_load_*``) that SPAWN a
 sub-agent and instruct it to do real, destructive git work — create files, switch
 branches, commit. The :class:`~teatree.eval.isolation.isolated_claude_env`

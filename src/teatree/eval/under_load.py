@@ -15,7 +15,7 @@ and every small canonical-source skill (smallest-first fill); only the largest
 peripheral skills shed. The realistic-overload condition is preserved — the bundle
 still dwarfs the preamble.
 
-Two seams keep :mod:`teatree.eval.sdk_runner` thin (it is at its module-LOC
+Two seams keep :mod:`teatree.eval.api_runner` thin (it is at its module-LOC
 cap): :func:`build_system_prompt` resolves the lane-correct system prompt
 (one skill + live-env framing, or the budgeted bundle + bundle framing), and
 :func:`build_user_prompt` prepends the polluted preamble to the scenario prompt.

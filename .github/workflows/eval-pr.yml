@@ -17,10 +17,11 @@
 #   changed) the `eval` job is skipped entirely — a PR that touches no scenario
 #   spends zero API budget here.
 #
-# AUTH — CLAUDE_CODE_OAUTH_TOKEN (the everywhere-portable path, same as eval.yml)
-#   The metered backend authenticates from the `CLAUDE_CODE_OAUTH_TOKEN` repo
-#   secret (the OAuth token from `claude setup-token`) — NOT an `sk-ant-api03`
-#   API key. Until that secret is set the eval job correctly fails RED.
+# AUTH — ANTHROPIC_API_KEY (metered, EXCLUSIVE — same as eval.yml, #2707)
+#   The metered backend authenticates EXCLUSIVELY from the `ANTHROPIC_API_KEY`
+#   repo secret (the metered API key, `sk-ant-api03…`) — never the subscription
+#   OAuth token, whose depleting usage window a real run would throttle. Until
+#   that secret is set the eval job correctly fails RED.
 #
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
@@ -135,7 +136,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it — a missing binary must FAIL the job, not skip every scenario green.
       - name: Install and assert the Claude CLI
         run: |
@@ -153,14 +154,14 @@ jobs:
       - name: Metered behavioral eval — only the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_ONLY: ${{ needs.detect.outputs.names }}
         with:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
           command: |
-            uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend sdk \
+            uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend api \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary.md"

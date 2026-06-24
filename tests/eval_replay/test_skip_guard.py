@@ -4,11 +4,11 @@ import pytest
 
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    UnmeteredApiRunError,
     UnmeteredJudgeError,
-    UnmeteredSdkRunError,
+    assert_api_run_was_metered,
     assert_executed_when_required,
     assert_judge_was_metered,
-    assert_sdk_run_was_metered,
 )
 
 
@@ -40,7 +40,7 @@ class TestAssertExecutedWhenRequired:
 
 
 class TestAssertSdkRunWasMetered:
-    """A metered (sdk) run that produced $0 of API cost never actually executed.
+    """A metered (api) run that produced $0 of API cost never actually executed.
 
     This is the exact ``$0.00 (no metered calls)`` state the --bare auth bug
     produced: claude -p 'ran' but authenticated as nothing, so it made zero tool
@@ -48,38 +48,40 @@ class TestAssertSdkRunWasMetered:
     'fail loud, never skip-as-pass' rule for the metered path.
     """
 
-    def test_zero_cost_executed_sdk_run_raises(self) -> None:
-        with pytest.raises(UnmeteredSdkRunError) as exc:
-            assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
+    def test_zero_cost_executed_api_run_raises(self) -> None:
+        with pytest.raises(UnmeteredApiRunError) as exc:
+            assert_api_run_was_metered(backend="api", executed=10, total_cost_usd=0.0)
         assert "metered" in str(exc.value).lower() or "$0" in str(exc.value)
 
-    def test_unmetered_message_names_both_auth_and_usage_limit_causes(self) -> None:
-        # The message must name the usage/weekly-limit cause too, not only the
-        # auth failure — dogfooding surfaced quota exhaustion as the same $0 shape.
-        with pytest.raises(UnmeteredSdkRunError) as exc:
-            assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
+    def test_unmetered_message_names_the_api_key_auth_failure_cause(self) -> None:
+        # The metered API bills per token with NO depleting usage window, so the
+        # only $0-with-execution cause is an auth failure — the message names the
+        # ANTHROPIC_API_KEY not reaching the CLI (the subscription-quota cause is
+        # gone with the OAuth token, #2707).
+        with pytest.raises(UnmeteredApiRunError) as exc:
+            assert_api_run_was_metered(backend="api", executed=10, total_cost_usd=0.0)
         message = str(exc.value).lower()
         assert "auth failure" in message
-        assert "usage" in message or "weekly limit" in message
+        assert "anthropic_api_key" in message
 
-    def test_metered_sdk_run_does_not_raise(self) -> None:
-        assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0556)
+    def test_metered_api_run_does_not_raise(self) -> None:
+        assert_api_run_was_metered(backend="api", executed=10, total_cost_usd=0.0556)
 
     def test_transcript_backend_is_never_checked(self) -> None:
         # The transcript lane runs no model by design ($0 is correct).
-        assert_sdk_run_was_metered(backend="transcript", executed=10, total_cost_usd=0.0)
+        assert_api_run_was_metered(backend="transcript", executed=10, total_cost_usd=0.0)
 
-    def test_zero_executed_sdk_run_is_left_to_the_all_skipped_guard(self) -> None:
+    def test_zero_executed_api_run_is_left_to_the_all_skipped_guard(self) -> None:
         # executed==0 is the all-skipped guard's job; this guard only fires when
         # scenarios ran (executed>0) yet metered nothing — a different signal.
-        assert_sdk_run_was_metered(backend="sdk", executed=0, total_cost_usd=0.0)
+        assert_api_run_was_metered(backend="api", executed=0, total_cost_usd=0.0)
 
 
 class TestAssertJudgeWasMetered:
     """A judge oracle whose every judge call skipped never actually graded.
 
     Judge spend flows through a separate ``claude_agent_sdk.query`` that is never
-    folded into ``run.cost_usd``, so the sdk-metered guard cannot see it. A
+    folded into ``run.cost_usd``, so the api-metered guard cannot see it. A
     ``--judge`` run whose judge-oracle scenarios all skipped (claude absent)
     exits GREEN having judged nothing — a fake-green this guard turns RED.
     """

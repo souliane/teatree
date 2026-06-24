@@ -1,6 +1,6 @@
 """Throwaway isolated checkout for sub-agent-spawning eval scenarios.
 
-The metered ``sdk`` lane's spawning scenarios make the SDK sub-agent do real git
+The metered ``api`` lane's spawning scenarios make the SDK sub-agent do real git
 work; without isolation the sub-agent locates the developer's REAL clone (via the
 editable install and the shared ``.git``) and corrupts it. These tests exercise
 the isolation MECHANISM against a REAL git repo under ``tmp_path`` — no live SDK

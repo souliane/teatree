@@ -36,12 +36,14 @@ def review_loop_enabled() -> bool:
     Two tiers, both read here so this chokepoint reaches the identical verdict
     the tick does. First the DB ``LoopState`` control tier (#1913) via
     :func:`teatree.loop.loop_state_db.loop_held_in_db` — a ``PAUSED`` /
-    ``DISABLED`` row durably stops review claims across a restart. Then the
-    env/toml doctrine via :func:`teatree.loop_enabled.loop_enabled_by_name` — the
-    same env-kill-switch → per-loop → global layers the orchestrator and the
-    live-tick fan-out apply via :class:`LoopsConfig`, factored into the config
-    layer so this :mod:`teatree.loop` module reaches an identical verdict without
-    importing :mod:`teatree.loops` (a forbidden up-stack dependency).
+    ``DISABLED`` row durably stops review claims across a restart. Then the env
+    kill-switch via :func:`teatree.loop_enabled.loop_enabled_by_name` — the same
+    ``T3_LOOPS_DISABLED`` layer the orchestrator and the live-tick fan-out apply
+    via :class:`LoopsConfig`, factored into the platform leaf so this
+    :mod:`teatree.loop` module reaches an identical verdict without importing
+    :mod:`teatree.loops` (a forbidden up-stack dependency). The combined order is
+    env → DB ``LoopState`` → default; the ``[loops]`` toml fallback was removed
+    in #2702.
 
     Fail-safe: any read error resolves to enabled so an unreadable source never
     silently suppresses every review — the discovery-time claim removal is what

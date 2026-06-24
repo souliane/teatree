@@ -3,7 +3,7 @@
 The metered AI lane loads ONLY the scenario's ``agent_path`` SKILL.md as the
 system prompt (the clean-room lane sets empty ``setting_sources`` — CLAUDE.md /
 auto-memory auto-discovery finds nothing, see
-``teatree.eval.sdk_runner`` module docstring). So a behaviour the grader checks
+``teatree.eval.api_runner`` module docstring). So a behaviour the grader checks
 must be driven by prose **in that skill file**: if the rule lives only in the
 root ``CLAUDE.md`` the model never sees it and the scenario fails on every model.
 

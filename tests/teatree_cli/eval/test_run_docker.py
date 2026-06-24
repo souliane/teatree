@@ -29,7 +29,7 @@ def _args(**overrides: object) -> RunDockerArgs:
         "trials": 3,
         "require": "any",
         "models": None,
-        "backend": "sdk",
+        "backend": "api",
         "require_executed": True,
         "parallel": 1,
     }

@@ -10,7 +10,7 @@ Stage B (only if A yields nothing): exactly ONE in-process
 :data:`_HAIKU_SYSTEM_PROMPT` as the whole system prompt and a <1 KB compact
 state digest (the same statusline content), NO skills / tools / loop
 context. It runs the model in-process via the same Agent SDK the eval
-``sdk`` backend uses, authenticated by the subscription
+``api`` backend uses, authenticated by the subscription
 (``CLAUDE_CODE_OAUTH_TOKEN``) — it never shells ``claude -p`` and never
 bills an API key; it spends subscription-covered model time for one
 stateless turn. It is hard-gated by ``T3_SLACK_ANSWER_TOKEN_BUDGET``
@@ -109,7 +109,7 @@ _HAIKU_MODEL = "haiku"
 def _haiku_options() -> ClaudeAgentOptions:
     """Clean-room options for the single haiku turn: no tools, one turn, no bias.
 
-    Mirrors the eval ``sdk`` runner's virgin configuration in miniature:
+    Mirrors the eval ``api`` runner's virgin configuration in miniature:
     ``setting_sources=[]`` (the developer's personal context never biases the
     answer), an empty tool allowlist, and a single ``max_turns`` so the model
     answers from the supplied digest alone and cannot run a tool / read code.

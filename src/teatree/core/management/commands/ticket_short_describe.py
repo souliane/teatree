@@ -11,7 +11,7 @@ rollout, before the loop has scanned each ticket).
 
 The actual LLM call is intentionally minimal — a single in-process
 ``claude_agent_sdk.query`` turn through the shared clean-room SDK builder
-(the same :func:`teatree.eval.sdk_runner.build_sdk_options` the eval
+(the same :func:`teatree.eval.api_runner.build_sdk_options` the eval
 runner and judge use), on a cheap model with no tools. No ``claude -p``
 subprocess — the SDK is the one runner post the #2204 cutover. When
 ``claude`` is unavailable (missing binary, sandboxed environment) or the
@@ -101,8 +101,8 @@ def _claude_summarize(title: str) -> str:
 
 async def _describe(prompt: str) -> str:
     """One clean-room SDK turn for *prompt*; returns the final text, watchdog-bounded."""
+    from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options  # noqa: PLC0415
     from teatree.eval.isolation import isolated_claude_env  # noqa: PLC0415
-    from teatree.eval.sdk_runner import CleanRoomConfig, build_sdk_options  # noqa: PLC0415
 
     with isolated_claude_env() as (env, cwd):
         options = build_sdk_options(

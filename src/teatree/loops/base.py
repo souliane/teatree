@@ -56,9 +56,12 @@ class MiniLoop:
     subset of the orchestrator's per-tick context (backends, host,
     messaging, notion_client, ready_labels) they need.
 
-    ``always_on`` keeps a loop enabled even when the user sets
-    ``[loops] enabled = false`` — reserved for the core ``dispatch``
-    mini-loop which has no graceful-degradation path.
+    ``always_on`` keeps a loop enabled even when the env kill-switch
+    ``T3_LOOPS_DISABLED`` would otherwise disable it — reserved for the
+    core ``dispatch`` mini-loop which has no graceful-degradation path.
+    Only an explicit DB ``LoopState`` pause/disable can stop an
+    ``always_on`` loop (the env layer cannot; #2702 removed the former
+    ``[loops] enabled`` toml fallback).
 
     ``off_live_tick`` excludes the loop from the live 12-minute work loop's
     scanner fan-out (and the orchestrator's normal dispatch) — it is driven

@@ -4,7 +4,7 @@ The selective-PR workflow runs ``t3 eval run --only "<names>" --summary-md
 "$GITHUB_STEP_SUMMARY"``: ``--only`` restricts the catalog to exactly the named
 scenarios (an unknown name fails loud, never silently drops), and ``--summary-md``
 writes the SANITIZED aggregate dashboard markdown (no transcript) to the path.
-These exercise the single-trial path through the real CLI with a stubbed sdk
+These exercise the single-trial path through the real CLI with a stubbed api
 runner, so no live model call happens.
 """
 
@@ -73,10 +73,10 @@ class TestOnlyFlag:
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.cli.eval.only_filter.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             result = CliRunner().invoke(
-                app, ["eval", "run", "--backend", "sdk", "--no-persist", "--only", "alpha,gamma"]
+                app, ["eval", "run", "--backend", "api", "--no-persist", "--only", "alpha,gamma"]
             )
         assert result.exit_code == 0, result.output
         assert "alpha" in result.output
@@ -88,10 +88,10 @@ class TestOnlyFlag:
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.cli.eval.only_filter.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             result = CliRunner().invoke(
-                app, ["eval", "run", "--backend", "sdk", "--no-persist", "--only", "alpha,ghost"]
+                app, ["eval", "run", "--backend", "api", "--no-persist", "--only", "alpha,ghost"]
             )
         assert result.exit_code != 0
         assert "ghost" in result.output
@@ -103,10 +103,10 @@ class TestSummaryMd:
         out = tmp_path / "summary.md"
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             result = CliRunner().invoke(
-                app, ["eval", "run", "--backend", "sdk", "--no-persist", "--summary-md", str(out)]
+                app, ["eval", "run", "--backend", "api", "--no-persist", "--summary-md", str(out)]
             )
         assert result.exit_code == 0, result.output
         body = out.read_text(encoding="utf-8")
@@ -120,8 +120,8 @@ class TestSummaryMd:
         out = tmp_path / "summary.md"
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "api", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert not out.exists()

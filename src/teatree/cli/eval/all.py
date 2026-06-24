@@ -9,7 +9,7 @@ skill-command-validity (#550 Tier-1) FAILs on a backticked ``t3 …`` in a SKILL
 longer resolves against the live CLI registry (the "no stale references" rule). The
 AI/trajectory lane grades already-recorded transcripts when they exist on disk ($0 extra);
 with none it emits the transcript manifest plus the in-session recipe and NEVER silently
-runs a model. ``--backend sdk`` is the explicit fresh-run opt-in. The fresh-run path also
+runs a model. ``--backend api`` is the explicit fresh-run opt-in. The fresh-run path also
 runs the ADVISORY skill-prose-judge lane (#550 Tier-3) — it scores each SKILL.md's prose via
 the existing ``ClaudeJudge`` seam and nominates the weakest skill but NEVER fails the suite
 (judge-only is advisory; matcher/structural lanes gate CI).
@@ -42,7 +42,7 @@ from teatree.eval.negative_control import NegativeControlOutcome, run_negative_c
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.skip_guard import UnmeteredSdkRunError, assert_sdk_run_was_metered
+from teatree.eval.skip_guard import UnmeteredApiRunError, assert_api_run_was_metered
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerQAReport, run_trigger_qa
 from teatree.utils.django_bootstrap import ensure_django
@@ -144,9 +144,9 @@ class AiLaneOutcome:
     """The AI lane's summary plus the graded per-scenario results.
 
     ``results`` is threaded out so the suite chokepoint can sum each run's
-    ``cost_usd`` and run the unmetered-$0 guard (:func:`assert_sdk_run_was_metered`)
-    on the fresh-run (``--backend sdk``) path — the same vacuous-green guard the
-    ``eval run`` boundary applies via ``RunGuards.sdk_metered``. It is empty when
+    ``cost_usd`` and run the unmetered-$0 guard (:func:`assert_api_run_was_metered`)
+    on the fresh-run (``--backend api``) path — the same vacuous-green guard the
+    ``eval run`` boundary applies via ``RunGuards.api_metered``. It is empty when
     the lane did not grade (no transcripts on the transcript path).
     """
 
@@ -187,7 +187,7 @@ def _emit_transcript_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
 #: One-line, plain-language instruction for enabling the AI behavioural lane.
 AI_LANE_SETUP_HINT = (
     "no in-session transcripts; run `t3 eval capture-subagent` "
-    "(see /t3:running-evals) or use `--backend sdk` (subscription-covered)"
+    "(see /t3:running-evals) or use `--backend api` (subscription-covered)"
 )
 
 
@@ -203,7 +203,7 @@ def _ai_lane_result(results: list[ScenarioResult], *, backend: str, graded: bool
         )
     executed = [r for r in results if not r.skipped]
     failed = sum(1 for r in executed if not r.passed)
-    cost = "sdk (fresh run)" if backend != TRANSCRIPT_BACKEND else "transcript ($0)"
+    cost = "api (fresh run)" if backend != TRANSCRIPT_BACKEND else "transcript ($0)"
     return LaneResult(
         name="ai-eval",
         cost=cost,
@@ -303,7 +303,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     the ground-truth corpus deterministically (judge entries skip), and
     skill-command-validity FAILs on a stale ``t3 …`` reference in a SKILL.md. The
     AI lane grades already-recorded transcripts when present ($0 extra) and NEVER
-    silently runs a model; ``--backend sdk`` is the explicit fresh-run opt-in. The
+    silently runs a model; ``--backend api`` is the explicit fresh-run opt-in. The
     fresh-run path also runs the ADVISORY skill-prose-judge lane (never fails the
     suite). ``parallel`` runs that many AI-lane scenarios concurrently (wall-clock
     only).
@@ -317,7 +317,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     ``--strict`` to make a setup-skipped lane exit non-zero for CI use.
     """
     # The fresh-run SDK AI lane + the live prose-judge run a model, so the whole
-    # suite defaults to the CI container when they are in scope (`--backend sdk`,
+    # suite defaults to the CI container when they are in scope (`--backend api`,
     # not `--free-only`) — exactly like `eval run` / `eval benchmark`. `--docker`
     # forces the container for any backend; `--free-only` runs only the host-safe
     # deterministic lanes, so it never runs a model.
@@ -353,7 +353,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         lanes.append(dataclasses.replace(ai_outcome.lane, duration_s=time.monotonic() - started))
     if metered:
         # The ADVISORY Tier-3 prose-judge fires the LIVE ClaudeJudge, so it is gated
-        # on the explicit fresh-run opt-in (`--backend sdk`), NOT merely on
+        # on the explicit fresh-run opt-in (`--backend api`), NOT merely on
         # `not --free-only` — bare `t3 eval` (default transcript, $0 extra) must
         # never silently run a model, and `--free-only` drops it.
         # skill_prose_judge_lane always returns passed=True, so a low prose score
@@ -361,13 +361,13 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
     Console().print(build_summary_table(lanes))
     print_verdict(lanes)
-    # The fresh-run (`--backend sdk`) AI lane: an sdk run that executed scenarios
+    # The fresh-run (`--backend api`) AI lane: an api run that executed scenarios
     # but recorded $0 never actually executed (the `--bare` OAuth bug — the model
     # authenticated as nothing, made zero tool calls, recorded nothing). Mirror the
-    # `eval run` boundary's RunGuards.sdk_metered: fail loud rather than read the
+    # `eval run` boundary's RunGuards.api_metered: fail loud rather than read the
     # green AI lane as validated. The transcript backend runs no model by design,
-    # so the guard short-circuits there (`backend != "sdk"`).
-    _assert_metered_sdk_ai_lane(backend=backend, results=ai_results)
+    # so the guard short-circuits there (`backend != "api"`).
+    _assert_metered_api_ai_lane(backend=backend, results=ai_results)
     if _suite_should_fail(lanes, strict=strict, metered=metered):
         sys.exit(1)
 
@@ -375,7 +375,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
 def _suite_should_fail(lanes: list[LaneResult], *, strict: bool, metered: bool) -> bool:
     """Decide the suite exit: a real lane failure, or a setup-skip under strict.
 
-    A metered suite (``--backend sdk``) IMPLIES strict: a needs-setup (skipped)
+    A metered suite (``--backend api``) IMPLIES strict: a needs-setup (skipped)
     lane under an explicit metered backend is a fail-loud, not a silent green —
     a metered run that could not set a lane up has no business reporting green
     (§4c). Without a metered backend, only ``--strict`` escalates a setup-skip.
@@ -385,15 +385,15 @@ def _suite_should_fail(lanes: list[LaneResult], *, strict: bool, metered: bool) 
     return real_failure or strict_failure
 
 
-def _assert_metered_sdk_ai_lane(*, backend: str, results: list[ScenarioResult]) -> None:
-    """Turn an executed-but-$0 sdk AI lane RED — the suite mirror of ``RunGuards.sdk_metered``."""
+def _assert_metered_api_ai_lane(*, backend: str, results: list[ScenarioResult]) -> None:
+    """Turn an executed-but-$0 api AI lane RED — the suite mirror of ``RunGuards.api_metered``."""
     executed = sum(1 for r in results if not r.skipped)
     try:
-        assert_sdk_run_was_metered(
+        assert_api_run_was_metered(
             backend=backend,
             executed=executed,
             total_cost_usd=sum(r.run.cost_usd for r in results),
         )
-    except UnmeteredSdkRunError as exc:
+    except UnmeteredApiRunError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)

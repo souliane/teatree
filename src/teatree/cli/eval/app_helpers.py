@@ -11,7 +11,7 @@ from typing import cast
 import typer
 from claude_agent_sdk.types import EffortLevel
 
-from teatree.eval.backends import SDK_BACKEND
+from teatree.eval.backends import API_BACKEND
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
@@ -37,14 +37,14 @@ def require_effort(effort: str) -> EffortLevel:
     return cast("EffortLevel", effort)
 
 
-def require_sdk_backend_for_fresh_run(*, backend: str, trials: int, models: str | None) -> None:
-    """Reject fresh-run-only shapes unless the caller explicitly opts into sdk."""
+def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str | None) -> None:
+    """Reject fresh-run-only shapes unless the caller explicitly opts into api."""
     if trials == 1 and models is None:
         return
-    if backend == SDK_BACKEND:
+    if backend == API_BACKEND:
         return
     typer.echo(
-        f"--trials/--models require a fresh metered run; pass --backend sdk instead of --backend {backend!r}.",
+        f"--trials/--models require a fresh metered run; pass --backend api instead of --backend {backend!r}.",
         err=True,
     )
     raise typer.Exit(code=2)

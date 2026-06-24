@@ -1,6 +1,6 @@
 """Live-environment framing for the SDK eval runner's per-scenario system prompt.
 
-The clean-room runner (:mod:`teatree.eval.sdk_runner`) uses ONLY the scenario's
+The clean-room runner (:mod:`teatree.eval.api_runner`) uses ONLY the scenario's
 skill as the system prompt to isolate the skill's effect, so it lacks the "you
 are in a live environment, use your tools" framing real Claude Code usage
 supplies. Without it the model narrates the correct action as TEXT instead of

@@ -148,6 +148,32 @@ class TestClaudeSummarizer:
         assert spawn_calls == []
 
 
+class TestDescribeBody:
+    """Exercise the real ``_describe`` body (clean-room SDK turn), mocking only the SDK boundary.
+
+    The other tests stub ``_describe`` whole; this one drives its real body — the
+    clean-room options build from :func:`teatree.eval.api_runner.build_sdk_options`
+    inside :func:`teatree.eval.isolation.isolated_claude_env`, and the streamed
+    ``query`` — so the import + option-build path is covered. Only ``query`` (the
+    billed model turn) is faked.
+    """
+
+    def test_returns_concatenated_assistant_text(self) -> None:
+        import asyncio  # noqa: PLC0415
+        from collections.abc import AsyncIterator  # noqa: PLC0415
+        from typing import Any  # noqa: PLC0415
+
+        from claude_agent_sdk import AssistantMessage, TextBlock  # noqa: PLC0415
+
+        async def _fake_query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            yield AssistantMessage(content=[TextBlock(text="A concise summary")], model="haiku")
+
+        with patch.object(describe_mod, "query", _fake_query):
+            result = asyncio.run(describe_mod._describe("summarize this ticket"))
+        assert result == "A concise summary"
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestDescribeOne(TestCase):

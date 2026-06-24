@@ -82,7 +82,7 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     executed = sum(1 for r in results if not r.skipped)
     RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
-    RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
+    RunGuards.api_metered(backend=backend, executed=executed, results=results)
     RunGuards.judge_metered(judge_requested=judge, results=results)
     if finalize_single_run(
         results,

@@ -1,6 +1,6 @@
 """Bounded concurrent driver over the per-scenario eval runner.
 
-The metered ``sdk`` lane drives one in-process Agent-SDK query per scenario and the
+The metered ``api`` lane drives one in-process Agent-SDK query per scenario and the
 suite runs them SEQUENTIALLY — so wall-clock is N x per-scenario latency (~82s
 each x ~166 scenarios = hours). Each subprocess is almost entirely I/O-bound
 (network round-trips to the model), so running several at once is a near-linear

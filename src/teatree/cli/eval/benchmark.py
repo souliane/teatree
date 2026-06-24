@@ -2,7 +2,7 @@
 
 A thin command over the model-matrix machinery (`teatree.cli.eval.multi_trial`):
 it runs the suite once per variant on the metered in-process Agent-SDK runner
-(``--backend sdk`` semantics, all-skipped gate always armed), persists the
+(``--backend api`` semantics, all-skipped gate always armed), persists the
 matrix record, and folds the rows into the per-variant comparison table in
 :mod:`teatree.eval.benchmark` — the deliverable for "how does opus@xhigh
 compare to fable@medium on pass-rate and cost".
@@ -20,7 +20,7 @@ from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.multi_trial import collect_matrix_rows, parse_model_tags
 from teatree.cli.eval.run_modes import RunGuards, persist_matrix_run
-from teatree.eval.backends import SDK_BACKEND, make_runner
+from teatree.eval.backends import API_BACKEND, make_runner
 from teatree.eval.benchmark import render_benchmark_json, render_benchmark_text, summarize_benchmark
 from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
@@ -84,7 +84,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     """Benchmark cost AND pass-rate of model@effort variants against the eval suite.
 
     Runs the scenario suite once per variant on the metered in-process
-    Agent-SDK runner (``--backend sdk`` semantics; the all-skipped gate is
+    Agent-SDK runner (``--backend api`` semantics; the all-skipped gate is
     always armed) and renders one comparison line per variant: scenarios
     passed/executed, pass-rate, total metered cost, mean cost per scenario,
     and cost per pass. A failing scenario is the measurement, not an error —
@@ -113,19 +113,19 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
     tags = parse_model_tags(models)
     specs = _select_specs(scenarios)
     runner = make_runner(
-        SDK_BACKEND, max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd
+        API_BACKEND, max_turns_override=max_turns, require_executed=True, max_budget_usd=max_budget_usd
     )
     rows = collect_matrix_rows(specs, tags, runner=runner, trials=trials, require="any")
     RunGuards.executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=True)
-    # The benchmark is always sdk-metered, yet (unlike the single-run lane and the
+    # The benchmark is always api-metered, yet (unlike the single-run lane and the
     # suite) it lacked the unmetered-$0 guard: an executed-but-$0 run (auth ok but
     # billing nothing, or mid-run quota exhaustion) would report a fake-green $0
     # across every variant. Count only genuinely-graded cells (skipped = not
     # provisioned, errored = $0 by construction); if any of those ran yet the lane
-    # metered nothing, fail loud like skip_guard.assert_sdk_run_was_metered.
+    # metered nothing, fail loud like skip_guard.assert_api_run_was_metered.
     graded = [row for row in rows if not row.skipped and not row.errored]
-    RunGuards.sdk_metered_total(
-        backend=SDK_BACKEND,
+    RunGuards.api_metered_total(
+        backend=API_BACKEND,
         executed=len(graded),
         total_cost_usd=sum(row.cost_usd for row in graded),
     )

@@ -13,18 +13,19 @@ one umbrella CLI (`t3 eval …`):
 
 - **evals** — running the definitions against a **live model + grader**, on a
   **cadence** (weekly cron + manual dispatch), fail-loud via `--require-executed`
-  / judge-metered / count-floor. This is the `--backend sdk` AI lane, the
+  / judge-metered / count-floor. This is the `--backend api` AI lane, the
   `--judge` / `judge:` oracles, `benchmark`, and the advisory `skill-prose-judge`.
 - **tests** — deterministic, no live model, free, run **every commit** (pytest +
   prek): skill-triggers, pinned-regressions, skill-command-validity, coverage,
   negative-control, transcript-replay, corpus-grade, plus the **replay** of the
   committed `evals/scenarios/*.yaml` against their `_{pass,fail,noop}` fixtures.
 
-**Cost framing.** Neither AI backend bills an API key. The `sdk` backend RUNS the
-model fresh in-process (spends model time, subscription-covered via
-`CLAUDE_CODE_OAUTH_TOKEN`); the `transcript` backend (the default) REUSES an
-already-recorded run by grading its on-disk transcript ($0 extra, no model run).
-The matcher tier runs no model at all.
+**Cost framing.** The `sdk` backend RUNS the model fresh in-process, metered
+EXCLUSIVELY on the `ANTHROPIC_API_KEY` (never the subscription
+`CLAUDE_CODE_OAUTH_TOKEN`, whose depleting usage window a full run would throttle
+— [#2707](https://github.com/souliane/teatree/issues/2707)); the `transcript`
+backend (the default) REUSES an already-recorded run by grading its on-disk
+transcript ($0 extra, no model run). The matcher tier runs no model at all.
 
 The harness is intentionally tiny — a YAML loader, a stream-json parser, and an
 in-process wrapper around the Claude Agent SDK. The runner returns an `EvalRun`
@@ -35,7 +36,7 @@ dataclass and the matchers operate on plain captured tool calls.
 The **eval definitions** (data) live here, in the top-level `evals/`:
 
 - `evals/scenarios/*.yaml` — the flat catalog (data: read by the deterministic
-  replay test AND the live sdk runner).
+  replay test AND the live api runner).
 - `evals/fixtures/*.stream.jsonl` — the `_{pass,fail,noop}` replay fixtures
   (data), siblings to the scenarios they pin.
 - `evals/cost_bounds.yaml` — the checked-in per-scenario metered-cost ceilings
@@ -47,7 +48,7 @@ The **tests over those definitions** live under `tests/`:
 - `tests/eval_replay/*.py` — token-free pytest graders that replay the committed
   fixtures, regenerate the corpus, and check matchers + lane wiring. Run every
   commit/PR.
-- `tests/eval_harness/*.py` — pytest for the metered-lane machinery (sdk runner,
+- `tests/eval_harness/*.py` — pytest for the metered-lane machinery (api runner,
   model matrix, pass@k, judge, isolation). The model seam is patched — these
   never call a live model.
 
@@ -92,22 +93,22 @@ installed editable from a clone; the eval harness ships inside it.
   sdk` and `t3 eval benchmark` run IN the CI image (`dev/Dockerfile.test`, the
   exact image the CI test job builds, which ships the `claude` CLI) **by
   default** — the reproducible gate must never accidentally run a model on the
-  host. The docker runner forwards the host's `CLAUDE_CODE_OAUTH_TOKEN` (the
-  subscription credential) into the container with docker's `-e VARNAME`
-  pass-through, so the fresh run authenticates inside a clean container without
-  touching the host's login state; the token value travels through the container
-  env, never the command line. To break the
+  host. The docker runner forwards the host's `ANTHROPIC_API_KEY` (the metered
+  key, never the subscription OAuth token — #2707) into the container with
+  docker's `-e VARNAME` pass-through, so the fresh run authenticates inside a
+  clean container without touching the host's login state; the key value travels
+  through the container env, never the command line. To break the
   re-route loop, the docker runner sets `T3_EVAL_IN_CONTAINER=1` on the
   container — the metered command runs in-process when that marker is present.
   Run the metered lane through the default container with:
 
   ```bash
-  CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --require-executed
+  ANTHROPIC_API_KEY=… t3 eval run --backend api --require-executed
   ```
 
   (no `--docker` needed — it is the default; `--docker` is still accepted to
   force the container for the transcript lane too).
-- **`--local` — the explicit host escape.** `t3 eval run --backend sdk --local`
+- **`--local` — the explicit host escape.** `t3 eval run --backend api --local`
   and `t3 eval benchmark --local` run the fresh-run lane on the host. Use it for
   durable-history gates that must persist/read the runner DB (for example the
   GitLab weekly cost-bounds gate), or for a fast host check. It prints a loud
@@ -156,7 +157,7 @@ t3 eval                                      # THE DEFAULT: run the WHOLE suite 
 t3 eval list                                # show available scenarios as a rich table
 t3 eval --free-only                           # the free deterministic lanes only (no AI lane)
 t3 eval --docker                              # run the gate inside the CI image (dev/Dockerfile.test) for parity
-t3 eval run --backend sdk                       # fresh-run Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), auth via CLAUDE_CODE_OAUTH_TOKEN (subscription, NOT API-billed)
+t3 eval run --backend api                       # fresh-run Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), metered EXCLUSIVELY on ANTHROPIC_API_KEY (never the subscription OAuth token — #2707)
 t3 eval benchmark --models claude-opus-4-8@xhigh,claude-fable-5@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
 t3 eval run                                 # run all (DEFAULT backend = transcript, $0 extra — reuses a recorded run)
 t3 eval run worktree_first                  # run one
@@ -164,9 +165,9 @@ t3 eval run --format json                   # JSON output
 t3 eval run --format html > report.html     # self-contained HTML report (single-trial; inline CSS, no external assets)
 t3 eval run worktree_first --max-turns 5    # override max_turns
 t3 eval run --no-persist                     # run without recording to the ledger
-t3 eval run --backend sdk --trials 3          # pass@k: 3 trials, pass if any passes
-t3 eval run --backend sdk --trials 3 --require all  # pass^k: regression gate, all must pass
-t3 eval run --backend sdk --models opus,sonnet,haiku  # model-regression matrix (per-model columns)
+t3 eval run --backend api --trials 3          # pass@k: 3 trials, pass if any passes
+t3 eval run --backend api --trials 3 --require all  # pass^k: regression gate, all must pass
+t3 eval run --backend api --models opus,sonnet,haiku  # model-regression matrix (per-model columns)
 t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge
 t3 eval run --baseline                        # persist + mark this run as its model's baseline
 t3 eval run --gate-regressions               # persist + fail on a drop vs each model's baseline
@@ -212,13 +213,14 @@ prek run --hook-stage push eval-pinned-regressions
 ### Execution backends and the cost split (default = transcript)
 
 A single-trial `t3 eval run` picks one of two backends; **the default is
-`transcript`**. Neither bills an API key — both ride the subscription
-(`CLAUDE_CODE_OAUTH_TOKEN`).
+`transcript`**. The `transcript` backend runs no model (authenticates nothing);
+the `sdk` backend is metered EXCLUSIVELY on `ANTHROPIC_API_KEY` (never the
+subscription OAuth token, which a full run would throttle — #2707).
 
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `transcript` (default) | $0 extra (reuses a recorded run) | local / manual | grades an already-recorded `<scenario>.jsonl` transcript off disk — runs no model |
-| `sdk` | subscription-covered (NOT API-billed) | CI (standalone `eval.yml`) + local `--backend sdk` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for durable-history gates / host checks) |
+| `sdk` | subscription-covered (NOT API-billed) | CI (standalone `eval.yml`) + local `--backend api` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for durable-history gates / host checks) |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -421,7 +423,7 @@ wall-clock lever only — it does not change token cost.
 **Bare `t3 eval` (no subcommand, no args) runs the ENTIRE suite in one go** and
 prints a single aggregated summary table — the command to reach for by default.
 Arguments and subcommands are the *targeted/special* path: `run` (a single AI
-scenario, the fresh-run `--backend sdk` path — Docker-default), `pinned-regressions` /
+scenario, the fresh-run `--backend api` path — Docker-default), `pinned-regressions` /
 `negative-control` / `skill-triggers` / `coverage` (one free lane in isolation),
 `history` / `list` / `prepare-transcript` (introspection). The bare default
 accepts `--free-only`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
@@ -432,25 +434,25 @@ It runs every lane in one summary table: the seven free deterministic lanes
 (`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
 `skill-coverage` is warn-first (reports a gap, exit 0). The AI lane never runs a
-model silently — `--backend sdk` opts into a fresh run. The ADVISORY
+model silently — `--backend api` opts into a fresh run. The ADVISORY
 `skill-prose-judge` lane fires the LIVE judge, so it runs ONLY under the fresh-run
-opt-in (`--backend sdk`) — never on the default `transcript` path. A missing real
+opt-in (`--backend api`) — never on the default `transcript` path. A missing real
 transcript SKIPs (never FAILs) the transcript-replay lane. Driver:
 `/t3:running-evals`.
 
-A fresh-run suite (`--backend sdk`, the AI lane + the live prose-judge) runs a
+A fresh-run suite (`--backend api`, the AI lane + the live prose-judge) runs a
 model, so it DEFAULTS to running inside the CI container (`dev/Dockerfile.test`) —
 exactly like `t3 eval run` / `t3 eval benchmark`. `--free-only` runs only the
 host-safe deterministic lanes (no model) and stays on the host.
 
 `--trials`/`--models` require the fresh-run `sdk` runner (a multi-trial / matrix
 run cannot be served from a single saved transcript). Combining them with the
-`transcript` default is an explicit usage error; pass `--backend sdk`.
+`transcript` default is an explicit usage error; pass `--backend api`.
 
 **CI stays on the fresh-run path explicitly.** The standalone eval jobs in
-`.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
+`.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend api` so CI runs
 the budgeted Agent-SDK path while LOCAL defaults to `transcript`. CI also passes
-`--trials 3`, so the explicit `--backend sdk` is required and debuggable.
+`--trials 3`, so the explicit `--backend api` is required and debuggable.
 `--require-executed` is passed
 unconditionally so a missing CLI/key fails the job loud — never an all-skipped
 green.
@@ -501,7 +503,7 @@ copies it to the grader's path. Capture and grade read on-disk files only — th
 transcript lane runs no model. The `/t3:running-evals` skill drives the full
 chain: prepare → dispatch sub-agent → capture-subagent → grade.
 
-#### sdk backend (in-process Agent SDK)
+#### api backend (in-process Agent SDK)
 
 Each scenario invocation drives `claude_agent_sdk.query` in-process, mapping the
 typed messages to the same `--output-format stream-json` mode under a
@@ -520,7 +522,7 @@ per-invocation flag still overrides:
 |---|---|---|---|
 | wall-clock watchdog | `900s` (`DEFAULT_WATCHDOG_SECONDS`) — a generous, FINITE hang-backstop, NOT a latency gate (#2615) | `T3_EVAL_WATCHDOG_SECONDS` | a scenario's own `watchdog_seconds:` (e.g. `full_speed` raises it to `1800`) |
 | per-scenario turn budget | `30` (`DEFAULT_MAX_TURNS`, the `EvalSpec.max_turns` default) | `T3_EVAL_MAX_TURNS` | a scenario's own `max_turns:`; `--max-turns` |
-| `t3 eval run --backend sdk` budget | `1.0` USD (`METERED_DEFAULT_BUDGET_USD`) | `T3_EVAL_MAX_BUDGET_USD` | `--max-budget-usd` |
+| `t3 eval run --backend api` budget | `1.0` USD (`METERED_DEFAULT_BUDGET_USD`) | `T3_EVAL_MAX_BUDGET_USD` | `--max-budget-usd` |
 
 The old `120s` / `4`-turn / `0.10`-USD floors were the cheap-lane values; they
 truncated legit multi-turn and sub-agent-spawning scenarios (an orchestrator
@@ -536,14 +538,20 @@ is **high** effort — so a default-effort pass-rate is pessimistic. `t3 eval ru
 representative effort into `CleanRoomConfig.effort`. A scenario's own
 `model@effort` is authoritative and still wins over this lane default.
 
-The Agent-SDK child authenticates from `CLAUDE_CODE_OAUTH_TOKEN` — the OAuth token
-from `claude setup-token`, the SUBSCRIPTION credential — which works in every
-environment without seeded login state: a clean container or CI runner with the
-token as a pure env var (no `~/.claude.json`, no keychain, no `/login`)
-authenticates. This rides the subscription, NOT a billed `ANTHROPIC_API_KEY`. The
-fresh-run lane runs **in a container** (`--docker` locally, the CI image in
-`eval.yml`), never on the host; `isolated_claude_env` copies the credential env
-var through untouched while redirecting only the personal-context discovery roots.
+The Agent-SDK child authenticates EXCLUSIVELY from `ANTHROPIC_API_KEY` — the
+metered key, never the subscription `CLAUDE_CODE_OAUTH_TOKEN`
+([#2707](https://github.com/souliane/teatree/issues/2707)): the subscription's
+depleting usage window would throttle a full run and mislabel the throttled
+cells, so the metered API is the only auth source. It works in every environment
+without seeded login state: a clean container or CI runner with the key as a pure
+env var (no `~/.claude.json`, no keychain, no `/login`) authenticates. `make_runner`
+resolves it through the canonical credential layer
+(`teatree.llm.credentials.AnthropicApiKeyCredential().export()`: env wins, else
+`pass anthropic/api-key`, else a loud `CredentialError`). The fresh-run lane runs
+**in a container** (`--docker` locally, the CI image in `eval.yml`), never on the
+host; `isolated_claude_env` carries `ANTHROPIC_API_KEY` through untouched and
+**strips** any inherited `CLAUDE_CODE_OAUTH_TOKEN` (so the SDK can never bill the
+subscription), redirecting only the personal-context discovery roots.
 
 ### pass@k (multi-trial)
 
@@ -638,7 +646,7 @@ boundary (the ephemeral container is `--no-persist`) and with explicit
 `--no-persist`. It is wired into the PERSISTED metered path in `.gitlab-ci.yml`
 with `--local`, keeping the cost gate weekly/manual and off the per-PR path. Run
 it on the host against the accumulated ledger with
-`t3 eval run --backend sdk --local --gate-cost-bounds`.
+`t3 eval run --backend api --local --gate-cost-bounds`.
 
 ### Model matrix
 
@@ -716,7 +724,7 @@ total can carry rounding / per-call fees the per-model split doesn't), so billed
 total stays the headline and the split is observability around it. The split is
 persisted per scenario (`main_cost_usd`/`aux_cost_usd` on `EvalScenarioResult`).
 
-Each `ResultMessage.usage` is captured (`sdk_runner` → `transcript.extract_usage`
+Each `ResultMessage.usage` is captured (`api_runner` → `transcript.extract_usage`
 → `TokenUsage`, all-zero on a non-metered/subscription run, never raised) and
 summed per variant. The added columns:
 
@@ -866,7 +874,7 @@ judge-only signal is too soft to gate CI deterministically — the
 matcher/structural lanes do that. `skill_prose_judge_lane` always returns
 `passed=True`, so the lane never fails the suite; it SKIPs cleanly when `claude`
 is not on PATH. The live judge runs a model, so the lane is gated on the explicit
-fresh-run opt-in (`--backend sdk`) — it does NOT fire on the default `transcript`
+fresh-run opt-in (`--backend api`) — it does NOT fire on the default `transcript`
 `t3 eval` path ($0 extra). The unit tests mock the judge boundary; the fresh-run
 path drives it for real.
 
@@ -913,8 +921,8 @@ This table is the single source of truth for which lanes exist, how they run, an
 | corpus-grade | **test** | free | host | `t3 eval corpus grade` (`--no-judge` default; judge-oracle entries skip) | pytest (`tests/teatree_cli/eval/test_corpus.py`) | every bare-`t3 eval` run + on demand |
 | skill-command-validity | **test** | free | host | `t3 eval skill-command-validity` | pytest (`tests/teatree_cli/eval/test_skill_command_lane.py`, `tests/test_skill_t3_invocations.py`) | every bare-`t3 eval` run + on demand |
 | ai-eval transcript | **test** (replay) | $0 extra (reuses a recorded run) | host | `t3 eval run` (default backend) | — (grades a saved transcript off disk; the in-session capture that produces it is the live step) | manual / on demand |
-| ai-eval sdk | **eval** | subscription-covered (NOT API-billed) | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
-| `--judge` / `judge:` oracle | **eval** | subscription-covered (judge) | host/docker (with the sdk lane) | `t3 eval run --judge` / `corpus grade --judge` | metered path only (fail-loud: judge-metered guard) | metered path + on demand |
+| ai-eval sdk | **eval** | metered on `ANTHROPIC_API_KEY` (never the subscription token — #2707) | **docker** (the DEFAULT locally; CI image in `eval.yml`) | `ANTHROPIC_API_KEY=… t3 eval run --backend api` | `.github/workflows/eval.yml` (`ANTHROPIC_API_KEY` secret, `--docker`) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+| `--judge` / `judge:` oracle | **eval** | subscription-covered (judge) | host/docker (with the api lane) | `t3 eval run --judge` / `corpus grade --judge` | metered path only (fail-loud: judge-metered guard) | metered path + on demand |
 | benchmark | **eval** | subscription-covered (Agent SDK) | **docker** (DEFAULT; `--local` for a host check) | `t3 eval benchmark --models …` | — (manual cost/pass-rate comparison) | on demand |
 | skill-prose-judge | **eval** (advisory) | subscription-covered (judge), **advisory** | host (judge via `ClaudeJudge`) | `t3 eval skill-prose-judge` | — (advisory — never gates CI) | bare-`t3 eval` fresh-run path + on demand |
 

@@ -22,19 +22,19 @@ def loop_held_in_db(name: str) -> bool:
     Returns ``True`` when a ``PAUSED`` / ``DISABLED`` row forces a skip — even
     for an ``always_on`` loop (the restart-surviving 'pause everything') — and
     ``False`` when no DB hold applies (no row, or an ``ENABLED`` row) so the
-    caller falls through to the env/toml ``[loops]`` config and an empty table
-    is a provable no-op.
+    caller falls through to the ``T3_LOOPS_DISABLED`` env kill-switch and an
+    empty table is a provable no-op (#2702 removed the ``[loops]`` toml tier).
 
     FAIL SAFE: any error (DB unavailable, Django not configured, model
     unimportable) resolves to ``False`` (no hold) so an unreadable database can
-    never silently disable a loop — the env/toml tiers then decide.
+    never silently disable a loop — the env tier then decides.
     """
     try:
         from teatree.core.models import LoopState  # noqa: PLC0415
 
         return not LoopState.objects.is_runnable(name)
     except Exception:
-        logger.debug("LoopState read failed for %r — falling through to env/config", name, exc_info=True)
+        logger.debug("LoopState read failed for %r — falling through to env kill-switch", name, exc_info=True)
         return False
 
 
