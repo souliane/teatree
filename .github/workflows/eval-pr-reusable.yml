@@ -1,0 +1,245 @@
+# ============================================================
+# REUSABLE SELECTIVE-PR BEHAVIORAL-EVAL WORKFLOW (workflow_call)
+# ============================================================
+#
+# The selective-PR eval — run ONLY the scenarios a PR's diff defines, never the
+# whole catalog, so the metered cost is bounded by what changed — is the SAME
+# logic for the teatree host and for every overlay. This reusable workflow owns
+# that logic once; the host's `eval-pr.yml` and an overlay's thin caller both
+# `uses:` it so neither re-implements the selection, the no-silent-green
+# enforcement, or the Docker summary handling.
+#
+# HOW THE SELECTION WORKS
+#   The `detect` job diffs the PR against its base and pipes the changed paths to
+#   `t3 eval changed-scenarios` (the reusable CLI around the same selector the
+#   host's `scripts/eval/scenarios_for_changed.py` shim uses). It prints the
+#   `name` of every spec whose source file the PR touched. Empty → the `eval` job
+#   is skipped entirely (a PR touching no scenario spends zero API budget).
+#
+# OVERLAY SUPPORT (`teatree-repo` / `teatree-path`)
+#   An overlay's scenarios are discovered by the CORE teatree harness via its
+#   `get_eval_scenarios_dir()` hook, so an overlay caller must check out the
+#   teatree HOST and symlink it where `[tool.uv.sources]` resolves it before
+#   `uv sync`. Pass `teatree-repo` (e.g. `souliane/teatree`) to turn that on; the
+#   host itself omits it (it IS the package — no upstream checkout). When set, the
+#   caller may also pass `assert-scenarios` (newline-separated names) — the job
+#   asserts `t3 eval list` discovers each before spending API budget, so broken
+#   overlay wiring fails RED instead of running an empty suite.
+#
+# AUTH (`anthropic-api-key` secret, EXCLUSIVE)
+#   The metered backend authenticates EXCLUSIVELY from the `anthropic-api-key`
+#   secret (the metered API key, `sk-ant-api03…`) — never the subscription OAuth
+#   token, whose depleting usage window a real run would throttle. Until that
+#   secret is set the eval job correctly fails RED.
+#
+# NO-SILENT-GREEN
+#   `--require-executed` is passed unconditionally and `claude --version` is
+#   asserted before the eval, so a missing binary / all-skipped run fails RED.
+# ============================================================
+
+on:
+  workflow_call:
+    inputs:
+      teatree-repo:
+        description: "Teatree host repo to check out + symlink for an overlay caller (e.g. souliane/teatree). Omit when the caller IS the host."
+        required: false
+        default: ""
+        type: string
+      teatree-ref:
+        description: "Ref of the teatree host repo to check out (default: the host's default branch)."
+        required: false
+        default: ""
+        type: string
+      assert-scenarios:
+        description: "Newline-separated scenario names that `t3 eval list` MUST discover before the eval runs (overlay-wiring guard). Omit to skip the assertion."
+        required: false
+        default: ""
+        type: string
+      python-version:
+        description: "Python version for the runner."
+        required: false
+        default: "3.13"
+        type: string
+    secrets:
+      anthropic-api-key:
+        description: "The metered API key (sk-ant-api03…) the eval authenticates with, EXCLUSIVELY."
+        required: true
+
+concurrency:
+  group: eval-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # DETECT: diff the PR against its base and resolve the scenarios it changed.
+  # Outputs `names` (comma-joined scenario names) and `run` (true iff non-empty).
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.select.outputs.names }}
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
+          fetch-depth: 0
+      # An overlay caller checks out the teatree HOST and symlinks it where
+      # `[tool.uv.sources]` (`../../souliane/teatree`) resolves it, so `uv sync`
+      # installs the editable host AND registers the overlay entry point — only
+      # then does discovery resolve the overlay scenarios. The host caller omits
+      # `teatree-repo`, so this step is a no-op for it.
+      - name: Check out and symlink the teatree host (overlay callers only)
+        if: inputs.teatree-repo != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          repository: ${{ inputs.teatree-repo }}
+          ref: ${{ inputs.teatree-ref }}
+          path: teatree-upstream
+      - name: Symlink the teatree host where uv.sources resolves it
+        if: inputs.teatree-repo != ''
+        run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Diff the PR against its base and resolve the changed scenario files to
+      # scenario names via the reusable `t3 eval changed-scenarios` CLI. A bare
+      # `|| true` would swallow a REAL failure (bad git ref, import error,
+      # malformed YAML) and silently skip the eval — indistinguishable from a
+      # clean no-change PR. skip-code 3 disambiguates "no scenario changed" from
+      # Python's uncaught-exception exit 1 and argparse's exit 2. The git diff is
+      # its own command so a bad ref fails loud (bash `-e`).
+      - name: Select the scenarios this PR changed
+        id: select
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          rc=0
+          uv run t3 eval changed-scenarios --skip-code 3 < changed-files.txt > names.txt || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "t3 eval changed-scenarios failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
+            exit "$rc"
+          fi
+          NAMES="$(paste -sd, names.txt)"
+          echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          if [ -n "$NAMES" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Changed scenarios → running: $NAMES"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No scenario file changed → skipping the metered PR eval."
+          fi
+
+  # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
+  # Skipped entirely when no scenario changed.
+  eval:
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # A single-trial bounded subset finishes well inside this cap; the cap exists
+    # so a hang (a wedged scenario, a stuck docker daemon) fails loud as a red,
+    # diagnosable run instead of stalling to the 6h default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - name: Check out and symlink the teatree host (overlay callers only)
+        if: inputs.teatree-repo != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          repository: ${{ inputs.teatree-repo }}
+          ref: ${{ inputs.teatree-ref }}
+          path: teatree-upstream
+      - name: Symlink the teatree host where uv.sources resolves it
+        if: inputs.teatree-repo != ''
+        run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
+      # it — a missing binary must FAIL the job, not skip every scenario green.
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Assert the caller's scenarios are actually discovered before spending any
+      # API budget. An overlay ships its scenarios via the overlay hook; if the
+      # host install / overlay registration is broken, `t3 eval list` would not
+      # show them and the eval would run an empty suite. Fail RED on that instead.
+      # Skipped when `assert-scenarios` is empty (the host has nothing extra to
+      # assert here — `eval-pr.yml` runs only the changed subset anyway).
+      - name: Assert the caller's scenarios are discovered
+        if: inputs.assert-scenarios != ''
+        env:
+          ASSERT_SCENARIOS: ${{ inputs.assert-scenarios }}
+        run: |
+          uv run t3 eval list | tee eval-list.txt
+          echo "$ASSERT_SCENARIOS" | while IFS= read -r scenario; do
+            [ -z "$scenario" ] && continue
+            if ! grep -q "$scenario" eval-list.txt; then
+              echo "::error::t3 eval list did not discover the scenario '$scenario' — overlay wiring is broken."
+              exit 1
+            fi
+          done
+          echo "All asserted scenarios are discovered."
+      # Run ONLY the changed scenarios. `--only` is the comma-joined name list
+      # from the detect job; `--trials 1` is the fast PR-lane single trial;
+      # `--require-executed` and the asserted CLI keep a no-coverage run from
+      # passing green; `--docker` routes through the CI image (auth forwarded via
+      # docker `-e`). `--transcript-html` is the PRIVATE per-trial transcript;
+      # `--summary-md` is the SANITIZED publish-safe summary — both land in
+      # $RUNNER_TEMP (the writable artifacts bind-mount), never the :ro repo mount.
+      - name: Metered behavioral eval — only the changed scenarios (in Docker)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          EVAL_ONLY: ${{ needs.detect.outputs.names }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend api \
+              --require-executed --docker \
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary.md"
+      # Append the sanitized summary to the PR's step summary (the in-container run
+      # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
+      # publish-safe dashboard; the transcript stays private.
+      - name: Publish the sanitized summary to the PR step summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
+            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
+      # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
+      # red run still publishes it.
+      - name: Upload the per-trial transcript report (private)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-pr-transcripts
+          path: ${{ runner.temp }}/eval-transcripts.html
+          if-no-files-found: warn

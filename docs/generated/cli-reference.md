@@ -1407,14 +1407,20 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         via the LLM judge (ADVISORY).                        │
 │ audit                   Audit captured sessions into the durable ledger and  │
 │                         print per-session verdicts.                          │
-│ list                    List discovered eval scenarios as a table (Name,     │
-│                         Scenario, Agent, File, Asserts).                     │
-│ run                     Run one scenario by name, or all scenarios when no   │
-│                         name is given.                                       │
+│ changed-scenarios       Print the scenario names a PR's STDIN diff touched;  │
+│                         exit --skip-code when none.                          │
+│ merged-prs-since        Exit 0 if any PR merged in the last --days, else     │
+│                         --skip-code (non-list payload exits 2).              │
+│ merge-summaries         Merge per-shard summary markdown into one dashboard  │
+│                         (to --out or stdout).                                │
 │ prepare-transcript      Emit the per-scenario prompts for a LOCAL            │
 │                         transcript-backend eval run.                         │
 │ history                 Show recent eval runs and per-scenario pass-rate     │
 │                         over time.                                           │
+│ list                    List discovered eval scenarios as a table (Name,     │
+│                         Scenario, Agent, File, Asserts).                     │
+│ run                     Run one scenario by name, or all scenarios when no   │
+│                         name is given.                                       │
 │ corpus                  Ground-truth corpus curation: list, inspect, and     │
 │                         grade captured sessions.                             │
 │ label                   Corpus-label curation: list nominations, scaffold a  │
@@ -1683,6 +1689,116 @@ Usage: t3 eval audit [OPTIONS]
 │ --json                      With --confusion: render the matrix as JSON      │
 │                             instead of text.                                 │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval changed-scenarios`
+
+```
+Usage: t3 eval changed-scenarios [OPTIONS]
+
+ Print the scenario names a PR's STDIN diff touched; exit --skip-code when
+ none.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --skip-code        INTEGER  Exit code when no scenario file changed.         │
+│                             [default: 1]                                     │
+│ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval merged-prs-since`
+
+```
+Usage: t3 eval merged-prs-since [OPTIONS]
+
+ Exit 0 if any PR merged in the last --days, else --skip-code (non-list payload
+ exits 2).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --prs-file         PATH     JSON file: list of {number, merged_at} PR     │
+│                                records.                                      │
+│                                [required]                                    │
+│    --days             INTEGER  Lookback window in days (default: 7).         │
+│                                [default: 7]                                  │
+│    --skip-code        INTEGER  Exit code when the eval should be skipped.    │
+│                                [default: 1]                                  │
+│    --now              TEXT     Override 'now' (ISO-8601); for testing.       │
+│    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval merge-summaries`
+
+```
+Usage: t3 eval merge-summaries [OPTIONS] INPUTS...
+
+ Merge per-shard summary markdown into one dashboard (to --out or stdout).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    inputs      INPUTS...  Per-shard summary .md files, or a directory of   │
+│                             them.                                            │
+│                             [required]                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --run-url             TEXT  The workflow run URL (injected by the         │
+│                                workflow).                                    │
+│                                [required]                                    │
+│ *  --sha                 TEXT  The commit SHA the run measured (injected).   │
+│                                [required]                                    │
+│ *  --generated-at        TEXT  ISO-8601 timestamp (injected; never computed  │
+│                                here).                                        │
+│                                [required]                                    │
+│    --out                 PATH  Write the dashboard to this path instead of   │
+│                                stdout.                                       │
+│    --help                      Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval prepare-transcript`
+
+```
+Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
+
+ Emit the per-scenario prompts for a LOCAL transcript-backend eval run.
+
+ The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+ cannot itself drive a subscription-covered turn. This command prints, per
+ scenario, the agent definition, prompt, and the transcript path the
+ ``transcript`` backend will read.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
+│                               <scenario>.jsonl transcript (default: cwd).    │
+│ --format                TEXT  Manifest format: text or json. [default: text] │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ Show recent eval runs and per-scenario pass-rate over time.
+
+ The data substrate the model-regression diff reads. ``--baseline`` shows the
+ current reference run per model; ``--mark-baseline <id>`` promotes a run to
+ baseline (demoting the prior baseline for that model).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2041,53 +2157,6 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     scenarios it changed.    │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval prepare-transcript`
-
-```
-Usage: t3 eval prepare-transcript [OPTIONS] [NAME]
-
- Emit the per-scenario prompts for a LOCAL transcript-backend eval run.
-
- The eval CLI is a plain process with no in-session ``Agent`` tool, so it
- cannot itself drive a subscription-covered turn. This command prints, per
- scenario, the agent definition, prompt, and the transcript path the
- ``transcript`` backend will read.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
-│                               <scenario>.jsonl transcript (default: cwd).    │
-│ --format                TEXT  Manifest format: text or json. [default: text] │
-│ --help                        Show this message and exit.                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval history`
-
-```
-Usage: t3 eval history [OPTIONS]
-
- Show recent eval runs and per-scenario pass-rate over time.
-
- The data substrate the model-regression diff reads. ``--baseline`` shows the
- current reference run per model; ``--mark-baseline <id>`` promotes a run to
- baseline (demoting the prior baseline for that model).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --limit                INTEGER  Maximum number of recent runs to show.       │
-│                                 [default: 20]                                │
-│ --model                TEXT     Filter to one model's runs.                  │
-│ --format               TEXT     Report format: text or json. [default: text] │
-│ --baseline                      Show only the current baseline run(s) and    │
-│                                 their per-scenario pass-rate.                │
-│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
-│                                 for its model, then show history.            │
-│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

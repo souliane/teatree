@@ -1,0 +1,350 @@
+# ============================================================
+# REUSABLE WEEKLY METERED BEHAVIORAL-EVAL WORKFLOW (workflow_call)
+# ============================================================
+#
+# The weekly metered behavioral-eval suite — guarded "is there anything new to
+# test", a lane+shard fan-out, and a merged public dashboard — is the SAME logic
+# for the teatree host and for every overlay. This reusable workflow owns it once
+# so an overlay's weekly eval becomes a thin caller (its own scenarios + its own
+# assertion list) instead of duplicating the guard (`merged_prs_since.py`), the
+# fan-out, and the dashboard merge.
+#
+# CADENCE — driven by the CALLER (a `schedule:` cron and/or `workflow_dispatch`).
+#   * `force` input true (a manual run) → ALWAYS runs (the no-PR guard is
+#     bypassed).
+#   * `force` false (a scheduled run) → guarded: SKIPS CLEANLY (exit 0, clear log
+#     line) when NO PR merged in the lookback window since the last run — nothing
+#     new to test, no API spend. This is a PRE-CHECK that decides whether to
+#     invoke the eval at all; it is NOT a skip-as-pass inside the eval
+#     (`--require-executed` still fails the invoked eval loud).
+#
+# OVERLAY SUPPORT (`teatree-repo` / `teatree-path` / `assert-scenarios`)
+#   Same as the PR-eval reusable: an overlay caller passes `teatree-repo` to check
+#   out + symlink the host so `uv sync` registers the overlay entry point and
+#   discovery resolves the overlay scenarios; `assert-scenarios` lists the names
+#   `t3 eval list` MUST discover before any API spend (broken wiring fails RED).
+#
+# AUTH (`anthropic-api-key` secret, EXCLUSIVE — never the subscription token)
+#   The metered backend authenticates EXCLUSIVELY from `anthropic-api-key`. A full
+#   run on the subscription OAuth token would throttle on its depleting usage
+#   window and mislabel the throttled cells; the metered API has no such window.
+#
+# PUBLISH — the `publish` job merges every shard's SANITIZED summary (counts + a
+#   scenario|lane|verdict|trials|cost table, NO transcript) via `t3 eval
+#   merge-summaries` into the caller's `dashboard-path` and pushes it to the
+#   caller's default branch when it changed. The private per-trial transcripts
+#   stay in the `eval-report-*` artifacts. A red weekly run is surfaced by
+#   GitHub's NATIVE failed-run email (no extra secret, no bot).
+# ============================================================
+
+on:
+  workflow_call:
+    inputs:
+      force:
+        description: "Run the eval unconditionally (a manual run); false runs the no-PR-merged guard first (a scheduled run)."
+        required: false
+        default: false
+        type: boolean
+      lane:
+        description: "Eval lane subset (clean_room | under_load); empty = every lane."
+        required: false
+        default: ""
+        type: string
+      lookback-days:
+        description: "No-PR-merged guard lookback window in days."
+        required: false
+        default: 7
+        type: number
+      teatree-repo:
+        description: "Teatree host repo to check out + symlink for an overlay caller (e.g. souliane/teatree). Omit when the caller IS the host."
+        required: false
+        default: ""
+        type: string
+      teatree-ref:
+        description: "Ref of the teatree host repo to check out (default: the host's default branch)."
+        required: false
+        default: ""
+        type: string
+      assert-scenarios:
+        description: "Newline-separated scenario names that `t3 eval list` MUST discover before the eval runs (overlay-wiring guard). Omit to skip the assertion."
+        required: false
+        default: ""
+        type: string
+      dashboard-path:
+        description: "Repo-relative path the merged public dashboard is written to and committed (e.g. docs/evals/index.md)."
+        required: false
+        default: "docs/evals/index.md"
+        type: string
+      python-version:
+        description: "Python version for the runner."
+        required: false
+        default: "3.13"
+        type: string
+    secrets:
+      anthropic-api-key:
+        description: "The metered API key (sk-ant-api03…) the eval authenticates with, EXCLUSIVELY."
+        required: true
+
+jobs:
+  # PREPARE: ONE place that (a) decides whether the eval runs at all (the no-PR
+  # guard / the caller's force) and (b) computes the per-leg {lane, shard} matrix.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      run_eval: ${{ steps.gate.outputs.run_eval }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - name: Check out and symlink the teatree host (overlay callers only)
+        if: inputs.teatree-repo != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          repository: ${{ inputs.teatree-repo }}
+          ref: ${{ inputs.teatree-ref }}
+          path: teatree-upstream
+      - name: Symlink the teatree host where uv.sources resolves it
+        if: inputs.teatree-repo != ''
+        run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Decide whether to invoke the eval at all. `force` (a manual run) ALWAYS
+      # runs. Otherwise the scheduled guard skips cleanly when NO PR merged in the
+      # lookback window since the last run — nothing new to test, no API spend. The
+      # guard uses the reusable `t3 eval merged-prs-since` CLI (the same decision
+      # the host's `scripts/eval/merged_prs_since.py` shim runs).
+      - name: Decide whether the scheduled eval runs (force always runs)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+          LOOKBACK_DAYS: ${{ inputs.lookback-days }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            echo "Force run → running the eval (no-PR guard bypassed)."
+          else
+            # Merged PRs, most-recent-first; the CLI answers "any merged in the window".
+            gh api "repos/$REPO/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+              --jq '[.[] | {number: .number, merged_at: .merged_at}]' > prs.json || echo "[]" > prs.json
+            if uv run t3 eval merged-prs-since --prs-file prs.json --days "$LOOKBACK_DAYS" --skip-code 1; then
+              echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_eval=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      # Compute the {lane, shard} matrix the eval job fans out over. Empty `lane`
+      # = every permitted lane, sharded into budget-safe legs on the lane-aware
+      # ceiling. An unknown lane fails loud here rather than producing an empty
+      # matrix. The lane input is routed through an `env:` var (never inlined).
+      - name: Compute the lane+shard matrix
+        id: matrix
+        if: steps.gate.outputs.run_eval == 'true'
+        env:
+          EVAL_LANE: ${{ inputs.lane }}
+        run: |
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Lane+shard matrix: $MATRIX"
+
+  # GATE: the metered AI behavioral-eval suite, fanned out ONE {lane, shard} per
+  # matrix leg. The Claude CLI install is asserted and `--require-executed` is
+  # passed unconditionally, so a missing binary / all-skipped run fails RED.
+  eval:
+    needs: prepare
+    if: needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      # A red shard does not cancel the others — each leg's verdict is independent.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    # FAIL LOUD on a hang. The eval step is bounded to 80min x 2 attempts; 180min
+    # caps the whole job just above that (plus the report/upload steps) so a real
+    # hang is killed and surfaced as a red, diagnosable run instead of stalling.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - name: Check out and symlink the teatree host (overlay callers only)
+        if: inputs.teatree-repo != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          repository: ${{ inputs.teatree-repo }}
+          ref: ${{ inputs.teatree-ref }}
+          path: teatree-upstream
+      - name: Symlink the teatree host where uv.sources resolves it
+        if: inputs.teatree-repo != ''
+        run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
+      # it — a missing binary must FAIL the job, not skip every scenario green.
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Assert the caller's scenarios are actually discovered before spending any
+      # API budget. Skipped when `assert-scenarios` is empty.
+      - name: Assert the caller's scenarios are discovered
+        if: inputs.assert-scenarios != ''
+        env:
+          ASSERT_SCENARIOS: ${{ inputs.assert-scenarios }}
+        run: |
+          uv run t3 eval list | tee eval-list.txt
+          echo "$ASSERT_SCENARIOS" | while IFS= read -r scenario; do
+            [ -z "$scenario" ] && continue
+            if ! grep -q "$scenario" eval-list.txt; then
+              echo "::error::t3 eval list did not discover the scenario '$scenario' — overlay wiring is broken."
+              exit 1
+            fi
+          done
+          echo "All asserted scenarios are discovered."
+      # A filesystem-safe per-lane-and-shard suffix, computed BEFORE the eval run
+      # so each shard's summary file is uniquely named (a shared basename would
+      # collide under `merge-multiple` and drop all but one shard's results).
+      - name: Compute a filesystem-safe artifact suffix
+        id: artifact
+        env:
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
+        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+      # `--docker` routes the metered lane THROUGH the CI container; the host's
+      # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--backend api` pins
+      # the metered in-process Agent-SDK path; `--trials 3` is the flake-resistant
+      # weekly sweep. `--require-executed` is UNCONDITIONAL so an all-skipped run
+      # exits non-zero. `--lane`/`--shard` scope the leg to its one shard.
+      - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
+          SUMMARY_SUFFIX: ${{ steps.artifact.outputs.suffix }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            uv run t3 eval run --trials 3 --require any --backend api \
+              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
+              --require-executed --docker \
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary-$SUMMARY_SUFFIX.md"
+      # Publish the per-trial transcript report THIS leg emitted (private). The
+      # name is per-lane-and-shard so parallel matrix legs never collide.
+      - name: Upload the per-trial transcript report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-report-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-transcripts.html
+          if-no-files-found: warn
+      # The SANITIZED publish-safe summary (no transcript) — a SEPARATE artifact
+      # the `publish` job downloads and merges into the public dashboard.
+      - name: Upload the sanitized summary (publish-safe)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-summary-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
+          if-no-files-found: warn
+
+  # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
+  # commit it to the caller's default branch. `if: always() && run_eval == 'true'`
+  # so it still runs when a shard went red (a red dashboard is worth publishing)
+  # but is SKIPPED when prepare gated the eval out (else it would commit a
+  # zero-row dashboard over the real one). Only the `eval-summary-*` artifacts are
+  # downloaded (NEVER the private transcripts).
+  publish:
+    needs: [prepare, eval]
+    if: always() && needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - name: Check out and symlink the teatree host (overlay callers only)
+        if: inputs.teatree-repo != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          repository: ${{ inputs.teatree-repo }}
+          ref: ${{ inputs.teatree-ref }}
+          path: teatree-upstream
+      - name: Symlink the teatree host where uv.sources resolves it
+        if: inputs.teatree-repo != ''
+        run: mkdir -p ../../souliane && ln -s "$GITHUB_WORKSPACE/teatree-upstream" ../../souliane/teatree
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Pull every shard's sanitized summary into one dir (merge-multiple flattens
+      # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts.
+      - name: Download every shard's sanitized summary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: ${{ runner.temp }}/summaries
+          pattern: eval-summary-*
+          merge-multiple: true
+      # Merge into the caller's public dashboard via the reusable `t3 eval
+      # merge-summaries` CLI. The run-url / sha / generated-at are INJECTED here
+      # (the CLI never calls datetime.now()), so the merge is deterministic.
+      - name: Merge the shard summaries into the public dashboard
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          DASHBOARD_PATH: ${{ inputs.dashboard-path }}
+        run: |
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p "$(dirname "$DASHBOARD_PATH")"
+          uv run t3 eval merge-summaries "$RUNNER_TEMP/summaries" \
+            --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
+            --out "$DASHBOARD_PATH"
+          cat "$DASHBOARD_PATH" >> "$GITHUB_STEP_SUMMARY"
+      # Commit + push the dashboard ONLY when it changed (an unchanged file is a
+      # clean no-op — no empty commit).
+      - name: Commit and push the dashboard when it changed
+        env:
+          DASHBOARD_PATH: ${{ inputs.dashboard-path }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- "$DASHBOARD_PATH"; then
+            echo "Dashboard unchanged — nothing to commit."
+          else
+            git add "$DASHBOARD_PATH"
+            git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
+            git push
+          fi

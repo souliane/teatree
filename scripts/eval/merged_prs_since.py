@@ -2,17 +2,14 @@ r"""Decide whether ANY PR merged in the lookback window (the scheduled-eval pre-
 
 The metered behavioral-eval suite runs on a weekly cron. There is no point
 spending API budget when nothing new merged since the last run, so the scheduled
-path runs this pre-check first: given the repo's merged PRs (their ``merged_at``
-timestamps) and a lookback window in days, it answers whether ANY PR merged
-inside the window.
+path runs this pre-check first. This script is the host-workflow shim around that
+decision: it reads the repo's merged PRs from a JSON file and delegates to
+:func:`teatree.eval.merged_prs.any_merged_since`, the shared core also exposed as
+``t3 eval merged-prs-since`` for overlays to reuse (a downstream overlay
+previously had to DUPLICATE this whole module).
 
 * Exit 0  → at least one PR merged in the window → run the eval (new work to test).
 * Exit ``--skip-code`` (default 1) → nothing merged in the window → skip cleanly.
-
-This is decoupled from PRs/ISO-weeks: it is a pure "is there anything new since
-the last weekly run" check, the simplest honest mechanism for the cron path. The
-manual ``workflow_dispatch`` path does NOT use this guard — a maintainer forcing
-a run always runs.
 
 CRITICAL: this is a PRE-CHECK that decides whether to invoke the eval at all. It
 is NOT a skip-as-pass inside the eval. Once the eval is invoked,
@@ -27,43 +24,13 @@ an unmerged PR (``merged_at`` null/absent) is ignored.
 """
 
 import argparse
-import datetime as dt
 import json
 import sys
-from collections.abc import Iterable
 from pathlib import Path
 
-DEFAULT_DAYS = 7
+from teatree.eval.merged_prs import DEFAULT_DAYS, any_merged_since, parse_ts
 
-
-def _parse_ts(raw: str) -> dt.datetime:
-    text = raw.strip().replace("Z", "+00:00")
-    parsed = dt.datetime.fromisoformat(text)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.UTC)
-    return parsed.astimezone(dt.UTC)
-
-
-def any_merged_since(
-    prs: Iterable[dict],
-    *,
-    now: dt.datetime | None = None,
-    days: int = DEFAULT_DAYS,
-) -> bool:
-    """True iff at least one PR has a ``merged_at`` within ``days`` before ``now``."""
-    now = (now or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
-    cutoff = now - dt.timedelta(days=days)
-    for pr in prs:
-        merged = pr.get("merged_at")
-        if not merged:
-            continue
-        try:
-            merged_at = _parse_ts(str(merged))
-        except ValueError:
-            continue
-        if merged_at >= cutoff:
-            return True
-    return False
+__all__ = ["any_merged_since", "main"]
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -81,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(prs, list):
         print("--prs-file must contain a JSON list", file=sys.stderr)
         return 2
-    now = _parse_ts(args.now) if args.now else None
+    now = parse_ts(args.now) if args.now else None
     if any_merged_since(prs, now=now, days=args.days):
         print(f"a PR merged in the last {args.days} day(s) → run the weekly eval")
         return 0
