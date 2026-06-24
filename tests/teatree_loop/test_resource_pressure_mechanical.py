@@ -12,15 +12,20 @@ fires nothing below 2 consecutive ticks; and best-effort throughout (a
 subprocess failure never crashes the tick).
 
 Real filesystem + real ``git`` under ``tmp_path`` for the worktree cases;
-``docker``/``ps``/``os.kill`` (third-party + irreversible externals) are
-mocked. The marker, allow-list logic, and plan persistence are exercised
-against the real ORM + real handler code.
+``docker``/``ps``/``os.kill``/``uv cache prune`` (third-party + irreversible
+externals) are mocked. ``uv cache prune`` in particular MUST be mocked on every
+disk-path test: it reaches a real subprocess that walks the populated uv cache,
+which is fast on a fresh dev machine but exceeds the pytest-timeout when CI has
+warmed the cache (``setup-uv enable-cache``) — the real-subprocess timeouts that
+red'd the ``test-shuffle`` lane. The marker, allow-list logic, and plan
+persistence are exercised against the real ORM + real handler code.
 """
 
 import os
 import signal
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -68,12 +73,14 @@ class DiskCachePurgeTests(TestCase):
 
         self.tmp = Path(tempfile.mkdtemp(prefix="rp_disk_"))
         self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.uv_prune = _patch_uv_cache_prune(self)
 
     def test_allowlisted_dir_is_removed(self) -> None:
         cache = self.tmp / "pre-commit"
         _write_file(cache / "blob", 1024)
         free_resources({"resource": "disk", "disk_cache_allowlist": [str(cache)]})
         assert not cache.exists()
+        self.uv_prune.assert_called_once()
 
     def test_non_allowlisted_dir_is_untouched(self) -> None:
         listed = self.tmp / "puppeteer"
@@ -111,6 +118,7 @@ class DryRunFirstTests(TestCase):
 
         self.tmp = Path(tempfile.mkdtemp(prefix="rp_dryrun_"))
         self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.uv_prune = _patch_uv_cache_prune(self)
 
     def test_worktree_gc_off_records_skip_in_plan(self) -> None:
         free_resources({"resource": "disk", "disk_cache_allowlist": [], "allow_destructive_disk": False})
@@ -119,8 +127,6 @@ class DryRunFirstTests(TestCase):
 
     def test_plan_persisted_before_execution(self) -> None:
         """Even if execution fails midway, the pre-execution plan is on the marker."""
-        from unittest.mock import patch  # noqa: PLC0415
-
         cache = self.tmp / "pre-commit"
         _write_file(cache / "blob", 1024)
         with patch.object(mechanical_resources, "_run_uv_cache_prune", side_effect=RuntimeError("boom")):
@@ -138,6 +144,7 @@ class WorktreeGcSafetyTests(TestCase):
 
         self.tmp = Path(tempfile.mkdtemp(prefix="rp_wt_"))
         self.addCleanup(_rmtree_safe, str(self.tmp))
+        self.uv_prune = _patch_uv_cache_prune(self)
         self.origin = self.tmp / "origin.git"
         self._seed_origin()
 
@@ -709,6 +716,22 @@ class HelperTests(TestCase):
         ):
             reclaimed = mechanical_resources._gc_worktrees({})
         assert reclaimed == pytest.approx(0.0), "a failed removal must not count toward reclaimed bytes"
+
+
+def _patch_uv_cache_prune(case: TestCase) -> MagicMock:
+    """No-op the real ``uv cache prune`` sink for a disk-path TestCase.
+
+    ``free_resources({"resource": "disk", ...})`` reaches ``_run_uv_cache_prune``,
+    which shells out to a real ``uv cache prune``. That walk over a warmed uv
+    cache (``setup-uv enable-cache`` in CI) exceeds the pytest-timeout — the
+    real-subprocess timeouts that red the ``test-shuffle`` lane. The real
+    function returns ``None``, so the patch mirrors that. Returns the mock so a
+    test can ``assert_called_once()`` that the sink was invoked.
+    """
+    patcher = patch.object(mechanical_resources, "_run_uv_cache_prune", return_value=None)
+    mock = patcher.start()
+    case.addCleanup(patcher.stop)
+    return mock
 
 
 def _rmtree_safe(path: str) -> None:
