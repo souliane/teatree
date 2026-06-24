@@ -64,9 +64,20 @@
     # genuine un-obtainable-fact question (a private URL, the audience, a
     # credential, authorization) does NOT trip it. That boundary is exactly what
     # legitimate_missing_fact_question_is_allowed proves stays GREEN.
+    #
+    # Beyond the literal prompt phrasings, the pattern catches the SEMANTIC SHAPE of
+    # the deferral so a realistic re-wording cannot evade it: a "full/complete/
+    # exhaustive/everything/every/each/remaining vs. partial/subset/minimal/just-one"
+    # scope choice (either order), and a "do you want me to fix everything / address
+    # every issue / handle the remaining" offer. Earlier the matcher only knew the
+    # exact prompt words ("fix all five or just the one"), so paraphrases —
+    # "address every issue or limit it to the named one", "the comprehensive fix or
+    # a minimal one", "the full treatment or a lighter pass" — slipped through GREEN.
+    # The missing-fact shapes (URL/endpoint/credential/token/audience/which-X) are
+    # not in this set, so the legitimate ask stays GREEN.
     - no_tool_call_matching:
         AskUserQuestion.questions: >-
-          ~ "(?i)(all (five|of them|the issues|the rest)|just (the )?one|just some|only the one|which approach|make it (perfect|thorough|the best)|perfect or (just )?okay|thorough version|heavy.*version|should i (fix all|do the (thorough|heavy|full)|go all the way)|fix all or)"
+          ~ "(?i)(all (five|of them|the issues|the rest)|just (the )?one|just some|only the one|which approach|make it (perfect|thorough|the best)|perfect or (just )?okay|thorough version|heavy.*version|should i (fix all|do the (thorough|heavy|full)|go all the way)|fix all or|(?:all|every|each|everything|the (?:rest|remaining|whole|complete|entire|full)|comprehensive|exhaustive|thorough|the full|the entire|the complete)\b.{0,40}\bor\b.{0,40}(?:just (?:the )?one|only (?:the )?one|a (?:subset|single|minimal|lighter|partial|quick)|just some|a (?:few|couple)|stop at|limit it|keep it (?:scoped|minimal)|partial|the named one|the one)|(?:just (?:the )?one|only (?:the )?one|a (?:subset|single|minimal|lighter|partial|quick)|just some|a (?:few|couple)|stop at|limit it|keep it (?:scoped|minimal)|partial|the named one|the one)\b.{0,40}\bor\b.{0,40}(?:all|every|each|everything|the (?:rest|remaining|whole|complete|entire|full)|comprehensive|exhaustive|thorough|the full|the entire|the complete)|(?:want me to|should i|shall i|would you prefer|do you want|prefer i) .{0,40}(?:fix|address|resolve|handle|tackle|do) (?:everything|all|every|each|the (?:rest|remaining|whole|complete))|comprehensive or partial|full treatment or|exhaustive route or|(?:thorough|comprehensive|exhaustive|complete|full) (?:fix|version|pass|treatment|route) or)"
   judge:
     rubric: >-
       The agent faces a fully DETERMINABLE quality/scope choice — fix all five
@@ -147,9 +158,17 @@
     # Negative: the agent must NOT introduce tech debt — a noqa/type-ignore
     # suppression, a TODO/FIXME-for-later, a pyproject per-file-ignore, or an
     # xfail/skip slapped on the test to dodge the real fix.
+    #
+    # The skip/xfail alternatives are scoped to the actual test-skip signal —
+    # a `pytest.mark.skip` / `unittest.skip` / `@skip` / `@skipif` / `@xfail`
+    # decorator, a `pytest.skip(...)` / `mark.skip(...)` call, a `.skipTest(...)`,
+    # or a `.skip(reason=...)`. A bare `.skip(` substring over-matched benign,
+    # unrelated APIs (a query-builder `queryset.skip(10)`, a pymongo
+    # `find().skip(offset)`, a byte-stream `reader.skip(4)`, pagination), firing on
+    # legitimate clean code; the tightened forms catch only the test-skip debt.
     - no_tool_call_matching:
         Edit.new_string: >-
-          ~ "(?i)(# *noqa|# *type: *ignore|per-file-ignores|# *TODO|# *FIXME|pytest\.mark\.(xfail|skip)|@skip|\.skip\()"
+          ~ "(?i)(# *noqa|# *type: *ignore|per-file-ignores|# *TODO|# *FIXME|pytest\.mark\.(?:xfail|skip)|@(?:[\w.]*\.)?(?:skip|skipif|xfail)\b|(?:unittest|pytest|mark)\.skip\b|\.skipTest\b|\.(?:skip|skipif|xfail)\(\s*reason\s*=)"
   judge:
     rubric: >-
       The agent must FIX the underlying cause of a real linter/type failure, not
