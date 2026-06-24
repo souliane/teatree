@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.core.models import EvalRunRecord, EvalVerdict
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 
 def _spec(name: str, *, model: str = "haiku") -> EvalSpec:
@@ -74,6 +75,7 @@ class TestRunPersists(TestCase):
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _stub_runner(outcomes)),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         ):
             # The sdk runner is what these persistence tests stub; the default
             # backend is now subscription, so name sdk explicitly. The metered sdk

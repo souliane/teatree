@@ -126,6 +126,24 @@ class TestIsolatedClaudeEnv:
                 assert env.get(var) == os.environ.get(var)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-sentinel"
 
+    def test_metered_child_env_carries_the_api_key(self) -> None:
+        # The metered child authenticates via ANTHROPIC_API_KEY; the env-building
+        # function must carry it through to the SDK/bundled CLI child.
+        sentinel = {"ANTHROPIC_API_KEY": "sk-metered", "PATH": os.environ.get("PATH", "/usr/bin")}
+        with patch.dict(os.environ, sentinel, clear=False), isolated_claude_env() as (env, _cwd):
+            assert env["ANTHROPIC_API_KEY"] == "sk-metered"
+
+    def test_metered_child_env_strips_the_subscription_oauth_token(self) -> None:
+        # The bundled CLI prefers ANTHROPIC_API_KEY only when the OAuth token is
+        # NOT also present, so the metered child env must NOT carry
+        # CLAUDE_CODE_OAUTH_TOKEN — otherwise the SDK bills the subscription.
+        sentinel = {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-sub-token", "ANTHROPIC_API_KEY": "sk-metered"}
+        with patch.dict(os.environ, sentinel, clear=False), isolated_claude_env() as (env, _cwd):
+            assert "CLAUDE_CODE_OAUTH_TOKEN" not in env, (
+                "the metered child env must strip the subscription OAuth token so the SDK can't bill it"
+            )
+            assert env["ANTHROPIC_API_KEY"] == "sk-metered"
+
     def test_does_not_inherit_parent_home(self) -> None:
         with patch.dict(os.environ, {"HOME": "/parent/home"}, clear=False), isolated_claude_env() as (env, _cwd):
             assert env["HOME"] != "/parent/home"

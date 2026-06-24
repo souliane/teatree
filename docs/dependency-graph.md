@@ -3,6 +3,7 @@
 ```mermaid
 graph TD
     teatree.project --> teatree.paths
+    teatree.llm --> teatree.utils
     teatree.teams --> teatree.core
     teatree.teams --> teatree.core.models
     teatree.teams --> teatree.core.loop_lease_manager
@@ -137,12 +138,14 @@ graph TD
     teatree.cli.eval --> teatree.eval
     teatree.cli.eval --> teatree.utils
     teatree.cli.eval --> teatree.claude_sessions
+    teatree.cli.eval --> teatree.llm
     teatree.eval --> teatree.core
     teatree.eval --> teatree.hooks
     teatree.eval --> teatree.pricing
     teatree.eval --> teatree.utils
     teatree.eval --> teatree.trigger_parser
     teatree.eval --> teatree.claude_sessions
+    teatree.eval --> teatree.llm
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.core.modelkit
     teatree.core.management --> teatree.agents

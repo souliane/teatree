@@ -218,9 +218,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "Execution backend for a single-trial run: 'transcript' (default — REUSE an "
             "already-recorded run by grading its on-disk transcript, $0 extra; see "
             "`t3 eval prepare-transcript`) or 'sdk' (RUN the model fresh in-process via the "
-            "Agent SDK, subscription-covered (CLAUDE_CODE_OAUTH_TOKEN), NOT API-billed; runs "
-            "in-container by default or directly on the host with --local). --trials and "
-            "--models require --backend sdk."
+            "Agent SDK, metered EXCLUSIVELY on ANTHROPIC_API_KEY — never the subscription "
+            "OAuth token; runs in-container by default or directly on the host with --local). "
+            "--trials and --models require --backend sdk."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -290,10 +290,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     its on-disk transcript — ``$0`` extra, no model run (produce the transcripts
     in-session via ``t3 eval prepare-transcript`` first for the prompts + expected
     paths). ``--backend sdk`` RUNS the model fresh in-process via the Agent SDK
-    (which spawns the ``claude`` CLI as its child), authed by the subscription's
-    ``CLAUDE_CODE_OAUTH_TOKEN`` (NOT an API key); CI passes ``--backend sdk``
-    explicitly via the standalone ``eval.yml`` job. ``--trials``/``--models``
-    require the fresh-run ``sdk`` runner and reject the transcript backend.
+    (which spawns the ``claude`` CLI as its child), metered EXCLUSIVELY on
+    ``ANTHROPIC_API_KEY`` — never the subscription OAuth token (#2707), whose usage
+    window a full run would throttle; CI passes ``--backend sdk`` explicitly via
+    the standalone ``eval.yml`` job. ``--trials``/``--models`` require the
+    fresh-run ``sdk`` runner and reject the transcript backend.
 
     ``--require-executed`` fails the run when the suite collected scenarios but
     executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -303,9 +304,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
 
     ``--docker`` runs the suite inside the CI image. The fresh-run ``sdk`` lane is
     meant to run in-container, never on the host — the runner forwards the host's
-    ``CLAUDE_CODE_OAUTH_TOKEN`` in via docker's ``-e VARNAME`` pass-through, so the
-    token authenticates the SDK's ``claude`` child inside a clean container and
-    never lands on the command line.
+    ``ANTHROPIC_API_KEY`` in via docker's ``-e VARNAME`` pass-through, so the
+    metered key authenticates the SDK's ``claude`` child inside a clean container
+    and never lands on the command line (the subscription OAuth token is never
+    forwarded — #2707).
 
     ``--local`` is the explicit host escape for durable-history gates that must
     persist/read the runner DB, or for a quick host check.

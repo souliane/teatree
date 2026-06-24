@@ -4,15 +4,17 @@ The eval harness grades an :class:`~teatree.eval.models.EvalRun` regardless of
 HOW the run was produced — the matchers only see captured tool calls and text
 blocks. That makes the *execution* swappable.
 
-Two backends, one ``EvalRunner`` protocol. Neither bills an API key: both ride
-the subscription (``CLAUDE_CODE_OAUTH_TOKEN``), never a billed
-``ANTHROPIC_API_KEY``.
+Two backends, one ``EvalRunner`` protocol. The metered ``sdk`` backend bills the
+metered ``ANTHROPIC_API_KEY`` — EXCLUSIVELY, never the subscription
+``CLAUDE_CODE_OAUTH_TOKEN`` (a full run would throttle the subscription's usage
+window and mislabel the throttled cells). The ``transcript`` backend runs no
+model, so it authenticates nothing.
 
 :class:`~teatree.eval.sdk_runner.SdkInProcessRunner` (``backend="sdk"``) RUNS the
 model fresh in-process via ``claude-agent-sdk`` (the SDK spawns the ``claude``
-CLI child). It spends subscription-covered model time; the per-invocation
-``max_budget_usd`` circuit breaker bounds that spend. This is the automated path
-the CI eval job uses.
+CLI child). It spends metered API time; the per-invocation ``max_budget_usd``
+circuit breaker bounds that spend. This is the automated path the CI eval job
+uses.
 
 :class:`TranscriptRunner` (``backend="transcript"``) REUSES an already-recorded
 run — it grades an on-disk transcript that a previous subscription-covered turn
@@ -39,11 +41,11 @@ from typing import Protocol
 
 from claude_agent_sdk.types import EffortLevel
 
-from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 SDK_BACKEND = "sdk"
 TRANSCRIPT_BACKEND = "transcript"
@@ -72,13 +74,17 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
-    ``"sdk"`` → the in-process Agent-SDK runner that RUNS the model fresh
-    (subscription-covered, not API-billed). Resolves ``CLAUDE_CODE_OAUTH_TOKEN``
-    first (env wins for CI, else exports it from the ``pass`` store for local) so
-    the runner's isolated-env copy and the docker pass-through both carry it
-    without a manual ``export``.
+    ``"sdk"`` → the in-process Agent-SDK runner that RUNS the model fresh, billed
+    on the metered ``ANTHROPIC_API_KEY`` (never the subscription OAuth token).
+    Resolves ``ANTHROPIC_API_KEY`` first (env wins for CI, else exports it from the
+    ``pass`` store for local) via the canonical credential layer
+    (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`) so the runner's
+    isolated-env copy and the docker pass-through both carry it without a manual
+    ``export``; a missing key fails loud with
+    :class:`~teatree.llm.credentials.CredentialError` rather than throttling the
+    subscription.
     ``"transcript"`` → the transcript-ingest runner that REUSES an
-    already-recorded run; it runs no model, so it does not resolve the token.
+    already-recorded run; it runs no model, so it resolves no credential.
 
     ``require_executed`` only affects the sdk runner: it arms the hard-error on a
     missing ``claude`` binary so the all-skipped gate cannot be silently disarmed
@@ -95,7 +101,12 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
     ignores it.
     """
     if backend == SDK_BACKEND:
-        ensure_oauth_token()
+        # Fail loud (CredentialError) before building the metered runner if no
+        # ANTHROPIC_API_KEY is resolvable, and export it so the isolated child env
+        # and docker pass-through carry it — the metered lane never falls back to
+        # the subscription. isolated_claude_env then strips the conflicting OAuth
+        # token from the child env using the same credential's spec.
+        AnthropicApiKeyCredential().export()
         return SdkInProcessRunner(
             max_turns_override=max_turns_override,
             require_executed=require_executed,

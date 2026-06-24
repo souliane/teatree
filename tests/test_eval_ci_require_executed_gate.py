@@ -9,15 +9,15 @@ the guard only when a credential was set, i.e. gated on the exact condition it
 exists to catch) and installs + asserts the Claude CLI so a missing binary FAILS
 the job.
 
-Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` OAuth token (``claude setup-token``) —
-the everywhere-portable, June-15-safe path that authenticates ``claude -p`` on a
-clean runner with no ``sk-ant-api03`` API key.
+Auth is the metered ``ANTHROPIC_API_KEY`` EXCLUSIVELY (#2707) — never the
+subscription ``CLAUDE_CODE_OAUTH_TOKEN``, which a full run would throttle.
 
 These are the recurrence-proof fitness tests: they parse the workflow YAML and
 assert the metered eval invocation always carries ``--require-executed`` and is
-NOT key-conditional, that auth is wired via the OAuth token (not the api03 key),
-and that ``ci.yml`` no longer carries a metered eval job on the PR path. They go
-RED if ``--require-executed`` is removed or auth regresses to the api key.
+NOT key-conditional, that auth is wired via the metered API key (not the
+subscription OAuth token), and that ``ci.yml`` no longer carries a metered eval
+job on the PR path. They go RED if ``--require-executed`` is removed or auth
+regresses to the subscription OAuth token.
 """
 
 from pathlib import Path
@@ -80,12 +80,12 @@ class TestGitHubRequireExecutedUnconditional:
             "${{ steps.*.outputs.require_executed }} interpolation."
         )
         # The flag must not sit behind any credential conditional anywhere in the
-        # eval workflow (no `if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]` arming step).
+        # eval workflow (no `if [ -n "$ANTHROPIC_API_KEY" ]` arming step).
         text = _gh_eval_workflow_text()
-        assert 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]' not in text, (
-            "The eval workflow must not gate --require-executed on the OAuth token."
-        )
         assert 'if [ -n "$ANTHROPIC_API_KEY" ]' not in text, (
+            "The eval workflow must not gate --require-executed on the API key."
+        )
+        assert 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]' not in text, (
             "The eval workflow must not gate --require-executed on a credential."
         )
 
@@ -105,15 +105,15 @@ class TestGitHubRequireExecutedUnconditional:
         assert "--docker" in command, "The CI metered eval must run IN the container (--docker)."
         assert "--local" not in command, "The CI metered eval must never use --local (a host run)."
 
-    def test_oauth_token_secret_is_wired_not_the_api_key(self) -> None:
+    def test_api_key_secret_is_wired_not_the_oauth_token(self) -> None:
         env = _gh_eval_step_env()
-        assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
-            "The eval step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the "
-            "everywhere-portable OAuth-token auth that works once the secret is set."
+        assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
+            "The eval step must wire ANTHROPIC_API_KEY from the repo secret — the metered "
+            "eval lane authenticates EXCLUSIVELY via the metered API key (#2707)."
         )
-        assert "ANTHROPIC_API_KEY" not in env, (
-            "No eval step env may set ANTHROPIC_API_KEY — auth is the OAuth token, the "
-            "June-15-safe path that does not depend on an sk-ant-api03 key."
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env, (
+            "No eval step env may set CLAUDE_CODE_OAUTH_TOKEN — the metered lane never runs "
+            "on the subscription OAuth token, which a full run would throttle."
         )
 
 

@@ -1,13 +1,13 @@
 """Metered-runner construction chokepoint fitness function (souliane/teatree#2328).
 
 The metered ``SdkInProcessRunner`` must be built ONLY through
-``teatree.eval.backends.make_runner`` — the single non-Docker path that calls
-``ensure_oauth_token()`` before a metered runner exists. A lane that constructs
-``SdkInProcessRunner(...)`` directly bypasses that resolver, so on a host
-``--local`` run (token only in ``pass``, not the env) the isolated ``claude``
-child authenticates as nothing and the run reports a zero-cost auth failure. That
-is exactly the bypass the ``t3 eval benchmark`` and ``t3 eval run --trials k``
-lanes had.
+``teatree.eval.backends.make_runner`` — the single non-Docker path that resolves
+the metered ``ANTHROPIC_API_KEY`` (via ``AnthropicApiKeyCredential().export()``)
+before a metered runner exists. A lane that constructs ``SdkInProcessRunner(...)``
+directly bypasses that resolver, so on a host ``--local`` run (key only in
+``pass``, not the env) the isolated ``claude`` child authenticates as nothing and
+the run reports a zero-cost auth failure. That is exactly the bypass the
+``t3 eval benchmark`` and ``t3 eval run --trials k`` lanes had.
 
 This AST gate walks the eval source tree and turns RED if any module OTHER than
 the allowed chokepoint constructs ``SdkInProcessRunner`` by name — so the bypass
@@ -32,7 +32,7 @@ _SCANNED_ROOTS = (
 _RUNNER_SYMBOL = "SdkInProcessRunner"
 
 #: The ONLY module allowed to construct the metered runner — the ``make_runner``
-#: factory that resolves the OAuth token first.
+#: factory that resolves the API key first.
 _ALLOWED_MODULES = frozenset({"teatree.eval.backends"})
 
 
@@ -84,7 +84,7 @@ class TestMeteredRunnerChokepoint:
                 offenders[module] = lines
         assert not offenders, (
             f"{_RUNNER_SYMBOL} is constructed directly outside teatree.eval.backends — "
-            "the OAuth-token resolution in make_runner is bypassed, so a host --local "
+            "the API-key resolution in make_runner is bypassed, so a host --local "
             f"metered run authenticates as nothing (souliane/teatree#2328): {offenders}"
         )
 

@@ -3,7 +3,7 @@
 The single-trial path threads the resolved ``--effort`` / ``METERED_DEFAULT_EFFORT``
 into ``make_runner(... effort=...)``; the always-metered pass@k (``--trials k>1``,
 the CI gate) and model-matrix lanes must do the SAME. They now build through that
-same ``make_runner`` chokepoint (so OAuth-token resolution can never be bypassed),
+same ``make_runner`` chokepoint (so API-key resolution can never be bypassed),
 and so must pass the lane effort, or the calibration never reaches the metered gate.
 A scenario's own ``model@effort`` still wins at the runner's per-scenario seam; the
 lane effort is the default for scenarios that declare none.
@@ -18,6 +18,7 @@ import pytest
 
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 
 def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
@@ -57,7 +58,7 @@ class _RecordingRunner:
 def recording_runner() -> Iterator[type[_RecordingRunner]]:
     _RecordingRunner.last_effort = None
     with (
-        patch("teatree.eval.backends.ensure_oauth_token", return_value="tok"),
+        patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         patch("teatree.eval.backends.SdkInProcessRunner", _RecordingRunner),
     ):
         yield _RecordingRunner

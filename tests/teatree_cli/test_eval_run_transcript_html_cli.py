@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 
 def _spec(name: str) -> EvalSpec:
@@ -54,6 +55,7 @@ class TestRunEmitsTranscriptArtifact(TestCase):
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=[_spec("alpha")]),
             patch("teatree.eval.backends.SdkInProcessRunner", _stub_runner_class()),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         ):
             result = CliRunner().invoke(
                 app,

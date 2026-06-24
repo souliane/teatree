@@ -100,11 +100,17 @@ negative; only `_pass` is GREEN.
 |------|-------------|------|------|
 | **matchers** | GRADE a transcript, no model | free | every PR |
 | **transcript** (default) | REUSE an already-recorded RUN, then GRADE | $0 extra | in-session via `/t3:running-evals` |
-| **sdk** | RUN the model fresh, then GRADE | subscription-covered, **not** API-billed | weekly CI + explicit `t3 eval run` |
+| **sdk** | RUN the model fresh, then GRADE | metered on `ANTHROPIC_API_KEY` | weekly CI + explicit `t3 eval run` |
 
-Neither AI backend bills an `ANTHROPIC_API_KEY` — both authenticate via the
-subscription (`CLAUDE_CODE_OAUTH_TOKEN`). The `sdk` lane never runs silently;
-it runs only when passed explicitly.
+The metered `sdk` lane authenticates **EXCLUSIVELY** via the metered
+`ANTHROPIC_API_KEY` — never the subscription `CLAUDE_CODE_OAUTH_TOKEN`
+([#2707](https://github.com/souliane/teatree/issues/2707)): the subscription's
+depleting usage window would throttle a full ~211-scenario run and the throttled
+cells get mislabeled, so the metered API is the only auth source. With no key
+available the lane fails loud (`CredentialError`) rather than running on the
+subscription. The `transcript`/`matchers` lanes run no model, so they
+authenticate nothing. The `sdk` lane never runs silently; it runs only when
+passed explicitly.
 
 ## How to run
 
@@ -138,5 +144,5 @@ green with zero coverage.
   manual dispatch. It skips cleanly (exit 0, logged) when no PR merged in the
   lookback window, asserts `claude --version`, and passes `--require-executed`
   unconditionally, so a missing binary or all-skipped run fails RED. It
-  authenticates from the `CLAUDE_CODE_OAUTH_TOKEN` secret and publishes a
-  per-trial transcript report as an artifact.
+  authenticates from the `ANTHROPIC_API_KEY` secret (the metered key, never the
+  subscription token) and publishes a per-trial transcript report as an artifact.

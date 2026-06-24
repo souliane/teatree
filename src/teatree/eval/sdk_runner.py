@@ -490,7 +490,7 @@ class SdkInProcessRunner:
                     "claude binary not on PATH (after bounded re-resolve) but --require-executed "
                     "is armed: the metered sdk backend can execute no scenario, so the suite would "
                     "report an all-skipped green. Provision the Claude CLI (and "
-                    "CLAUDE_CODE_OAUTH_TOKEN) on the runner — sdk + require-executed must never "
+                    "ANTHROPIC_API_KEY) on the runner — sdk + require-executed must never "
                     "decoratively skip."
                 )
                 raise ClaudeCliMissingError(msg)

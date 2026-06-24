@@ -43,7 +43,7 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
     msg = (
         f"eval suite collected {collected} scenario(s) but executed 0 — every scenario "
         "skipped. The suite produced zero behavioral coverage yet would report green. "
-        "Most likely `claude` is not on PATH (no CLAUDE_CODE_OAUTH_TOKEN / CLI provisioned "
+        "Most likely `claude` is not on PATH (no ANTHROPIC_API_KEY / CLI provisioned "
         "where the eval job runs). Provision the runner."
     )
     raise AllSkippedError(msg)
@@ -62,10 +62,9 @@ def assert_sdk_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
     msg = (
         f"sdk eval run executed {executed} scenario(s) but metered $0.00 (no metered "
         "calls). A metered run that bills nothing never actually executed — the SDK made "
-        "zero billable tool calls. The two common causes: an auth failure "
-        "(CLAUDE_CODE_OAUTH_TOKEN not reaching the CLI), or a subscription usage/weekly "
-        "limit so every scenario short-circuited before doing real work. This fails loud "
-        "rather than reporting a vacuous green."
+        "zero billable tool calls. The common cause is an auth failure "
+        "(ANTHROPIC_API_KEY not reaching the CLI). This fails loud rather than reporting a "
+        "vacuous green."
     )
     raise UnmeteredSdkRunError(msg)
 
@@ -91,6 +90,6 @@ def assert_judge_was_metered(*, judge_requested: bool, judge_eligible: int, judg
         f"--judge requested and {judge_eligible} judge-oracle scenario(s) ran, but the judge "
         "graded 0 of them — every judge call skipped (most likely `claude` is not on PATH where "
         "the judge runs). A judge oracle that never grades reports a vacuous green; this fails "
-        "loud instead. Provision `claude` / CLAUDE_CODE_OAUTH_TOKEN, or drop --judge."
+        "loud instead. Provision `claude` / ANTHROPIC_API_KEY, or drop --judge."
     )
     raise UnmeteredJudgeError(msg)

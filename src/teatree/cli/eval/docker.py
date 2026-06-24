@@ -6,14 +6,16 @@ run reproduces CI's environment exactly. The fresh-run AI lane (``t3 eval run
 the reproducible gate must never accidentally run a model on the host. The free /
 deterministic lanes stay host-default; ``--local`` is the explicit host escape
 hatch for durable-history gates or quick checks. No PyPI — the image installs
-the working tree via the mounted repo and ``uv``.
+the working tree via the mounted repo and ``uv``. The metered lane authenticates
+EXCLUSIVELY via the metered ``ANTHROPIC_API_KEY``, never the subscription token.
 
 The fresh-run AI lane drives the in-process ``claude-agent-sdk`` (NOT ``claude -p``)
-inside the container, authenticated by the subscription's ``CLAUDE_CODE_OAUTH_TOKEN``
-(headless OAuth, no login state needed). :func:`_auth_passthrough_flags` forwards
-the host's token via ``docker run -e VARNAME`` — the value travels through the
-container env, never argv, so it never lands in the process list or logs.
-``HOME=/tmp`` keeps the virgin isolation (issue #1805).
+inside the container, authenticated by the metered ``ANTHROPIC_API_KEY`` — the
+metered eval lane never rides the subscription OAuth token (a full run would
+throttle it). :func:`_auth_passthrough_flags` forwards the host's key via
+``docker run -e VARNAME`` — the value travels through the container env, never
+argv, so it never lands in the process list or logs. ``HOME=/tmp`` keeps the
+virgin isolation (issue #1805).
 
 To break the re-route loop, :func:`_run_in_image` sets ``T3_EVAL_IN_CONTAINER=1``
 on the container env. The fresh-run/benchmark command runs DIRECTLY in-process when
@@ -26,13 +28,16 @@ import os
 import shutil
 from pathlib import Path
 
-from teatree.eval.auth import ensure_oauth_token
 from teatree.eval.backends import SDK_BACKEND
+from teatree.llm.credentials import AnthropicApiKeyCredential
 from teatree.utils.run import run_allowed_to_fail, run_streamed
 
 DOCKER_IMAGE = "teatree-test"
 _DOCKERFILE = "dev/Dockerfile.test"
-_AUTH_ENV_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+#: The metered eval lane authenticates EXCLUSIVELY via ``ANTHROPIC_API_KEY``; the
+#: subscription OAuth token is deliberately NOT forwarded into the container, so
+#: the in-container SDK can never bill the subscription (a full run throttles it).
+_AUTH_ENV_VARS = (AnthropicApiKeyCredential().spec.env_var,)
 #: Env marker set on the container so the in-container ``t3 eval`` re-invocation
 #: runs the metered/benchmark command in-process instead of re-routing to docker.
 IN_CONTAINER_ENV_VAR = "T3_EVAL_IN_CONTAINER"
@@ -119,11 +124,14 @@ def _run_in_image(root: Path, eval_args: list[str], *, artifacts_dir: Path | Non
 def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = None) -> int:
     """Build (if needed) and run the eval gate inside the CI image; return its exit code.
 
-    For the metered ``sdk`` lane, resolve ``CLAUDE_CODE_OAUTH_TOKEN`` first (env
-    wins, else exported from the ``pass`` store) so :func:`_auth_passthrough_flags`
-    forwards it with ``-e`` and the in-process Agent SDK's ``claude`` child
-    authenticates in-container — the metered run just works without a manual
-    ``export``. The free / subscription lanes never authenticate ``claude``, so the
+    For the metered ``sdk`` lane, resolve ``ANTHROPIC_API_KEY`` first via the
+    canonical credential layer (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`;
+    env wins, else exported from the ``pass`` store; a missing key fails loud with
+    :class:`~teatree.llm.credentials.CredentialError`) so
+    :func:`_auth_passthrough_flags` forwards it with ``-e`` and the in-process
+    Agent SDK's ``claude`` child authenticates in-container on the metered API —
+    the metered run just works without a manual ``export`` and never bills the
+    subscription. The free / transcript lanes never authenticate ``claude``, so the
     secret store is not touched for them.
 
     ``artifacts_dir`` (when set) is bind-mounted WRITABLE at
@@ -134,7 +142,7 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     if shutil.which("docker") is None:
         raise DockerUnavailableError
     if _requests_sdk_lane(eval_args):
-        ensure_oauth_token()
+        AnthropicApiKeyCredential().export()
     root = _repo_root()
     if not _image_present():
         build_code = _build_image(root)

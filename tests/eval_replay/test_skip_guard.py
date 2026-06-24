@@ -53,14 +53,16 @@ class TestAssertSdkRunWasMetered:
             assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
         assert "metered" in str(exc.value).lower() or "$0" in str(exc.value)
 
-    def test_unmetered_message_names_both_auth_and_usage_limit_causes(self) -> None:
-        # The message must name the usage/weekly-limit cause too, not only the
-        # auth failure — dogfooding surfaced quota exhaustion as the same $0 shape.
+    def test_unmetered_message_names_the_api_key_auth_failure_cause(self) -> None:
+        # The metered API bills per token with NO depleting usage window, so the
+        # only $0-with-execution cause is an auth failure — the message names the
+        # ANTHROPIC_API_KEY not reaching the CLI (the subscription-quota cause is
+        # gone with the OAuth token, #2707).
         with pytest.raises(UnmeteredSdkRunError) as exc:
             assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0)
         message = str(exc.value).lower()
         assert "auth failure" in message
-        assert "usage" in message or "weekly limit" in message
+        assert "anthropic_api_key" in message
 
     def test_metered_sdk_run_does_not_raise(self) -> None:
         assert_sdk_run_was_metered(backend="sdk", executed=10, total_cost_usd=0.0556)
