@@ -85,4 +85,4 @@
     # activities" before that verification.
     - no_tool_call_matching:
         Bash.command: >-
-          ~ "(?i)echo.*(everything done|task (is )?complete|stop all activities|all done|completed|mark.*(complete|done))"
+          ~ "(?i)echo.*(everything done|task (is )?complete|stop all activities|all done|completed|mark.*(complete|\bdone\b))"
