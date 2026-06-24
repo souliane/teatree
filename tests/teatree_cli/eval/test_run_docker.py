@@ -53,6 +53,37 @@ class TestTranscriptHtmlPassthrough:
         assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
 
 
+class TestSummaryMdPassthrough:
+    def test_translates_host_path_to_the_artifacts_mount(self) -> None:
+        args = _args(summary_md=Path("/home/runner/_temp/step-summary.md"))
+        passthrough = args.passthrough()
+        index = passthrough.index("--summary-md")
+        assert passthrough[index + 1] == f"{ARTIFACTS_MOUNT}/step-summary.md"
+
+    def test_omits_the_flag_when_no_summary_requested(self) -> None:
+        assert "--summary-md" not in _args(summary_md=None).passthrough()
+
+    def test_container_summary_path_is_empty_when_no_summary_requested(self) -> None:
+        # The in-container redirect resolves to "" when no --summary-md was asked
+        # for — the no-artifact branch of the path translation.
+        assert _args(summary_md=None)._container_summary_path() == ""
+
+    def test_container_summary_path_redirects_to_the_mount_when_requested(self) -> None:
+        translated = _args(summary_md=Path("/runner/_temp/dash.md"))._container_summary_path()
+        assert translated == f"{ARTIFACTS_MOUNT}/dash.md"
+
+    def test_summary_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
+        # The summary-md path's PARENT is the writable bind-mount even when no
+        # transcript-html is requested — the summary-only lane must still mount it.
+        host = tmp_path / "step-summary.md"
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
+            pytest.raises(typer.Exit),
+        ):
+            _args(transcript_html=None, summary_md=host).dispatch()
+        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+
+
 class TestDispatchMountsHostParentDir:
     def test_dispatch_passes_the_host_parent_dir_as_artifacts_dir(self, tmp_path: Path) -> None:
         host = tmp_path / "eval-transcripts.html"
@@ -68,5 +99,5 @@ class TestDispatchMountsHostParentDir:
             patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
             pytest.raises(typer.Exit),
         ):
-            _args(transcript_html=None).dispatch()
+            _args(transcript_html=None, summary_md=None).dispatch()
         assert run_in_docker.call_args.kwargs["artifacts_dir"] is None

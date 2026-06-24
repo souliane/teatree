@@ -1320,6 +1320,52 @@ class TestEvalModelVariantMatrix:
         assert result.exit_code == 2
         assert "only supported for a single-trial run" in result.output
 
+    def test_summary_md_is_rejected_for_a_matrix_run(self, tmp_path: Path) -> None:
+        # A --models matrix has no single-trial aggregate, so --summary-md is a
+        # usage error there (rejected before any run, naming the fix).
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "run",
+                    "--backend",
+                    "sdk",
+                    "--models",
+                    "opus",
+                    "--summary-md",
+                    str(tmp_path / "s.md"),
+                    "--no-persist",
+                ],
+            )
+        assert result.exit_code == 2
+        assert "--summary-md" in result.output
+        assert "matrix" in result.output
+
+    def test_transcript_html_is_rejected_for_a_matrix_run(self, tmp_path: Path) -> None:
+        # A --models matrix has no per-trial transcript, so --transcript-html is a
+        # usage error there too.
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                [
+                    "eval",
+                    "run",
+                    "--backend",
+                    "sdk",
+                    "--models",
+                    "opus",
+                    "--transcript-html",
+                    str(tmp_path / "t.html"),
+                    "--no-persist",
+                ],
+            )
+        assert result.exit_code == 2
+        assert "--transcript-html" in result.output
+        assert "matrix" in result.output
+
 
 class _BenchmarkRunner:
     """Passes everything on `@xhigh` variants; fails `beta` elsewhere; costed per call."""
