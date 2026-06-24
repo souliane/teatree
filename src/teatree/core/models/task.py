@@ -10,6 +10,7 @@ from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
+from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
     from teatree.core.cost import AttemptUsage, CostBreakdown
@@ -573,8 +574,6 @@ class TaskAttempt(models.Model):
         recorder, and the operator out-of-band paths. Each is stamped only when
         unset, so an explicit value (a backfill or a test) is never clobbered.
         """
-        from teatree.core.repair_loop import terminal_reason_fingerprint  # noqa: PLC0415
-
         if not self.error_fingerprint:
             self.error_fingerprint = terminal_reason_fingerprint(self.error)
         if not self.iteration and self.task_id:  # ty: ignore[unresolved-attribute]

@@ -16,6 +16,7 @@ from teatree.core.loop_lease_manager import (
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
+from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
 if TYPE_CHECKING:
@@ -349,8 +350,6 @@ class TaskQuerySet(models.QuerySet):
         two identical failures (:class:`~teatree.core.repair_loop.IterationStalled`,
         which also escalates to the user) is dropped from the re-queue set.
         """
-        from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded  # noqa: PLC0415
-
         allowed: list[int] = []
         for task in self.filter(pk__in=candidate_pks).select_related("ticket", "session"):
             try:
