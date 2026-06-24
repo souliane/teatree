@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-slack-permalink-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Posted in #the-review-crew at ts=1716234567.123456."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
