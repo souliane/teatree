@@ -145,6 +145,24 @@ def derive_evals_enabled(*, config_path: Path | None = None) -> bool:
     return _toml_phase_disabled_by_default(_DERIVE_EVALS[0], config_path)
 
 
+#: Phase 3c — the instruction-compliance accountant (#2663) — FILES enforcement
+#: tickets for recurrences, so it is default OFF and ``--full``-gated, mirroring the
+#: Pass-2 memory-promotion posture. Opt in with ``T3_DREAM_COMPLIANCE=1`` /
+#: ``[loops.dream] compliance = true``; absent, the dream pass never escalates or
+#: persists a compliance snapshot (no behaviour change).
+_COMPLIANCE = ("compliance", "T3_DREAM_COMPLIANCE")
+
+
+def compliance_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase-3c instruction-compliance accounting runs (default OFF, #2663)."""
+    raw_env = os.environ.get(_COMPLIANCE[1], "").strip().lower()
+    if raw_env in _TRUTHY:
+        return True
+    if raw_env in _FALSY:
+        return False
+    return _toml_phase_disabled_by_default(_COMPLIANCE[0], config_path)
+
+
 def _toml_phase_disabled_by_default(toml_key: str, config_path: Path | None) -> bool:
     """Read ``[loops.dream] <toml_key>`` from the toml; default OFF, never raise."""
     path = config_path if config_path is not None else Path.home() / ".teatree.toml"

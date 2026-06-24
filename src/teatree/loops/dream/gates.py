@@ -1,11 +1,11 @@
-"""§4 acceptance gates (a)-(f) for the dream consolidation pass (#2545, #1933 § 4).
+"""§4 acceptance gates (a)-(g) for the dream consolidation pass (#2545, #1933 § 4, #2663).
 
 The gates are what make a consolidation pass ANTI-VACUOUS. Phases 1-6 cluster,
 distil, cross-link, re-index, and decay; the gates assert the pass actually
 PRESERVED the lessons and ACTUALLY consolidated — so a do-nothing, delete-only,
 or over-compressing pass is CAUGHT rather than silently stamped success.
 
-The six gates (#1933 § 4):
+The seven gates (#1933 § 4; gate (g) added by #2663):
 
 *   (a) **retention** — every QA pair answerable BEFORE the pass is still
     answerable AFTER it. A delete-only pass that drops an answer fails.
@@ -22,6 +22,9 @@ The six gates (#1933 § 4):
 *   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
     source + a durable destination, and the archived artifact actually exists
     (restorable).
+*   (g) **compliance-non-regression** (#2663) — a recurrence (a rule that already
+    had a durable memory, violated again) remediated with ANOTHER memory instead
+    of a gate/eval FAILS the pass; a pass that escalated every recurrence passes.
 
 The probe corpus is SEEDED from the memory set: one :class:`QaProbe` per memory
 file, whose ``expected_answer`` is a signature line lifted from the file. A probe
@@ -148,8 +151,22 @@ class GateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ComplianceRemediationView:
+    """One compliance violation's remediation, as the §4 gate (g) reads it (#2663).
+
+    ``is_recurrence`` is True when the violated rule already had a durable memory;
+    ``remediated_with_memory`` is True when the recorded remediation was ANOTHER
+    memory — the forbidden non-fix for a recurrence that gate (g) FAILS on.
+    """
+
+    rule_identity: str
+    is_recurrence: bool
+    remediated_with_memory: bool
+
+
+@dataclass(frozen=True, slots=True)
 class DreamQaReport:
-    """The aggregate of all six gates — passes iff every gate passes."""
+    """The aggregate of all seven §4 gates — passes iff every gate passes."""
 
     gate_results: tuple[GateResult, ...] = field(default_factory=tuple)
 
@@ -358,6 +375,26 @@ class Gate:
         detail = "all archived entries restorable" if passed else f"{len(broken)} archived entry(ies) not restorable"
         return GateResult(name="no_loss_audit", passed=passed, detail=detail, regressions=tuple(broken))
 
+    @staticmethod
+    def compliance_non_regression(remediations: Sequence[ComplianceRemediationView]) -> GateResult:
+        """(g) A recurrence remediated with a memory (instead of a gate/eval) FAILS the pass.
+
+        The root-KPI rule (#2663): a rule that already has a durable memory and is
+        violated AGAIN must escalate to a gate or an eval — writing another memory is
+        itself an instruction that will not be followed. So a pass that OBSERVED a
+        recurrence and recorded a MEMORY remediation for it regresses and fails; a
+        pass with no recurrence, or one that escalated every recurrence, passes. A
+        first-occurrence violation kept as a memory is legitimate and does not fail.
+        """
+        regressed = sorted(r.rule_identity for r in remediations if r.is_recurrence and r.remediated_with_memory)
+        passed = not regressed
+        detail = (
+            "no recurrence remediated with a memory"
+            if passed
+            else f"{len(regressed)} recurrence(s) remediated with a memory instead of a gate/eval"
+        )
+        return GateResult(name="compliance_non_regression", passed=passed, detail=detail, regressions=tuple(regressed))
+
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate input, kwargs-only.
@@ -376,12 +413,15 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
     probes: Sequence[QaProbe] | None = None,
     prior_probes: Sequence[QaProbe] | None = None,
     answerer: ProbeAnswerer | None = None,
+    compliance_remediations: Sequence[ComplianceRemediationView] = (),
 ) -> DreamQaReport:
-    """Run all six §4 gates and aggregate them into a :class:`DreamQaReport`.
+    """Run all seven §4 gates and aggregate them into a :class:`DreamQaReport`.
 
     When *probes* / *prior_probes* are not supplied they are derived from the
     BEFORE snapshot (retention) and the prior corpus is taken as the same set —
     the caller wires the persisted prior-session corpus when one exists.
+    *compliance_remediations* feeds gate (g): empty (the default) is a clean pass —
+    no recurrence was remediated with a memory.
     """
     derived = probes if probes is not None else derive_probes(snapshot_before)
     prior = prior_probes if prior_probes is not None else derived
@@ -401,6 +441,7 @@ def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate i
             Gate.index_budget(snapshot_after),
             Gate.monotonicity(pass_rate_first=pass_rate_first, pass_rate_second=pass_rate_second),
             Gate.no_loss_audit(archived),
+            Gate.compliance_non_regression(compliance_remediations),
         )
     )
 
@@ -470,6 +511,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     clusters_recorded: int = 0,
     maintenance_performed: bool = False,
     persist: bool = True,
+    compliance_remediations: Sequence[ComplianceRemediationView] | None = None,
 ) -> DreamQaReport:
     """Run the §4 acceptance gates for one memory dir and persist the probe corpus.
 
@@ -480,15 +522,20 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     snapshot (transfer-before-prune), threads the caller's *maintenance_performed*
     signal (file-side phases did real cross-link / re-index / decay work) into the
     consolidation gate so a quiet 0-cluster maintenance pass still counts as
-    consolidation, runs all six gates, and — unless *persist* is
+    consolidation, runs all seven gates, and — unless *persist* is
     off (dry-run) — records each probe's outcome to :class:`DreamQaProbe` (so the
     formerly-dead model is populated and the next pass has a prior baseline).
+
+    *compliance_remediations* feeds gate (g); when not supplied it is read from the
+    persisted instruction-compliance records for *overlay* (#2663) so a recurrence
+    remediated with a memory FAILS the pass.
     """
     probes = derive_probes(snapshot_before)
     prior_rate, had_prior = _prior_pass_rate(overlay)
     now_rate = _pass_rate(probes, snapshot_after, None)
     pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
     homed_index_lines = {line for line in pruned_lines if snapshot_after.contains(line)}
+    remediations = compliance_remediations if compliance_remediations is not None else _compliance_remediations(overlay)
     report = evaluate_gates(
         snapshot_before=snapshot_before,
         snapshot_after=snapshot_after,
@@ -502,15 +549,43 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
         clusters_recorded=clusters_recorded,
         maintenance_performed=maintenance_performed,
         probes=probes,
+        compliance_remediations=remediations,
     )
     if persist:
         persist_probe_results(probes, snapshot_after, overlay=overlay)
     return report
 
 
+def _compliance_remediations(overlay: str) -> list[ComplianceRemediationView]:
+    """Build gate-(g) views from the latest persisted instruction-compliance records.
+
+    Reads the most recent :class:`InstructionComplianceSnapshot` for *overlay* and
+    maps each of its records to a :class:`ComplianceRemediationView`. A pass with no
+    snapshot yet returns no views — gate (g) then cleanly passes (nothing observed).
+    """
+    from teatree.core.models import (  # noqa: PLC0415
+        InstructionComplianceRecord,
+        InstructionComplianceSnapshot,
+        RemediationKind,
+    )
+
+    snapshot = InstructionComplianceSnapshot.objects.latest_for(overlay)
+    if snapshot is None:
+        return []
+    return [
+        ComplianceRemediationView(
+            rule_identity=record.rule_identity,
+            is_recurrence=record.is_recurrence,
+            remediated_with_memory=record.remediation == RemediationKind.MEMORY,
+        )
+        for record in InstructionComplianceRecord.objects.filter(snapshot=snapshot)
+    ]
+
+
 __all__ = [
     "INDEX_BYTE_BUDGET",
     "INDEX_LINE_BUDGET",
+    "ComplianceRemediationView",
     "DreamQaReport",
     "Gate",
     "GateResult",

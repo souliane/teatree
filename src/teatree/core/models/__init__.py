@@ -3,6 +3,12 @@ from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.core.models.compliance_snapshot import (
+    InstructionComplianceRecord,
+    InstructionComplianceSnapshot,
+    RemediationKind,
+    RuleSource,
+)
 from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
@@ -119,6 +125,8 @@ __all__ = [
     "HonestyEscalation",
     "ImplementedIssueMarker",
     "IncomingEvent",
+    "InstructionComplianceRecord",
+    "InstructionComplianceSnapshot",
     "IntentClassification",
     "InvalidTransitionError",
     "InvariantOutcome",
@@ -160,6 +168,7 @@ __all__ = [
     "RedCardIntent",
     "RedCardSignal",
     "RedMrFixAttempt",
+    "RemediationKind",
     "ReplyDispatch",
     "ResourcePressureMarker",
     "ReviewAssignment",
@@ -172,6 +181,7 @@ __all__ = [
     "Rubric",
     "RubricCriterion",
     "RubricError",
+    "RuleSource",
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "ScenarioPassRate",
