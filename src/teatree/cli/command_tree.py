@@ -18,17 +18,29 @@ See: souliane/teatree#67, souliane/teatree#550.
 import contextlib
 import importlib
 import io
+import os
+import re
+from collections.abc import Iterator
 
 import click
 import typer
+import typer.rich_utils
 from typer.main import get_command
 
 from teatree.cli.overlay import OVERLAY_PROXY_COMMANDS
 
+# The render must be byte-identical regardless of the environment it runs in
+# (#2599): a fixed console width so the rich help boxes wrap identically on a
+# narrow CI runner and a wide local terminal, and no inherited tty / COLUMNS.
+_RENDER_WIDTH = 80
+
 
 def build_cli_reference_from_app(app: typer.Typer, *, base_name: str = "t3") -> str:
     """Walk *app* and return a CLI reference in markdown."""
-    click_app = get_command(app)
+    return _build_cli_reference_from_command(get_command(app), base_name=base_name)
+
+
+def _build_cli_reference_from_command(click_app: click.Command, *, base_name: str = "t3") -> str:
     lines = [
         "# CLI Reference",
         "",
@@ -37,6 +49,114 @@ def build_cli_reference_from_app(app: typer.Typer, *, base_name: str = "t3") -> 
     ]
     _walk(click_app, [base_name], lines, depth=0, parent_ctx=None)
     return "\n".join(lines) + "\n"
+
+
+@contextlib.contextmanager
+def _pinned_render_environment() -> Iterator[None]:
+    """Force a fixed render width and strip env-derived sizing for the duration.
+
+    rich resolves the console width from ``os.get_terminal_size`` (a tty),
+    then ``$COLUMNS``, then a fallback. typer's rich help console honours the
+    module-level ``MAX_WIDTH``/``FORCE_TERMINAL`` knobs. Pinning all of these
+    makes the help boxes wrap deterministically; the originals are restored on
+    exit so this never leaks into the surrounding process.
+    """
+    saved_max_width = typer.rich_utils.MAX_WIDTH
+    saved_force_terminal = typer.rich_utils.FORCE_TERMINAL
+    saved_columns = os.environ.get("COLUMNS")
+    saved_lines = os.environ.get("LINES")
+    typer.rich_utils.MAX_WIDTH = _RENDER_WIDTH
+    typer.rich_utils.FORCE_TERMINAL = False
+    os.environ["COLUMNS"] = str(_RENDER_WIDTH)
+    os.environ.pop("LINES", None)
+    try:
+        yield
+    finally:
+        typer.rich_utils.MAX_WIDTH = saved_max_width
+        typer.rich_utils.FORCE_TERMINAL = saved_force_terminal
+        for key, value in (("COLUMNS", saved_columns), ("LINES", saved_lines)):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+_HOME_ROOTED_PATH = re.compile(r"^(?:/[^/]+)+/(\.[^/]+)$")
+_ABS_HOME_PATH = re.compile(r"/(?:Users|home|root|private|var|tmp)/[^\s\]│]*/(\.[A-Za-z0-9._-]+)")
+
+
+def _tilde_display(value: object) -> str | None:
+    """Return the ``~/<name>`` display for a home-rooted dotfile default, else ``None``.
+
+    Only a path of the shape ``<abs-home-dir>/.<name>`` qualifies — e.g.
+    ``Path.home() / ".teatree.toml"``. Folding it to a short ``~/<name>`` string
+    BEFORE rich renders it keeps the help box from wrapping/truncating on the
+    absolute path's length (which varies by host), so the bytes are stable.
+    """
+    if not isinstance(value, os.PathLike):
+        return None
+    match = _HOME_ROOTED_PATH.match(str(value))
+    return f"~/{match.group(1)}" if match else None
+
+
+@contextlib.contextmanager
+def _tilde_path_defaults(root: click.Command) -> Iterator[None]:
+    """Temporarily render home-rooted dotfile param defaults as ``~/<name>``.
+
+    rich wraps and truncates the ``[default: …]`` cell to the (pinned) box width,
+    so an absolute home path that is short on one host but long on another
+    produces different bytes — the truncation is baked in at render time, too
+    late for a post-render string fold. Rewriting the click param default to a
+    short ``~``-prefixed string before rendering makes the cell identical
+    everywhere. Originals are restored on exit.
+    """
+    patched: list[tuple[click.Parameter, object]] = []
+
+    def _visit(cmd: click.Command, ctx: click.Context | None) -> None:
+        real = _resolve_proxy_leaf(cmd)
+        target = real if real is not None else cmd
+        for param in target.params:
+            display = _tilde_display(getattr(param, "default", None))
+            if display is not None:
+                patched.append((param, param.default))
+                param.default = display
+        if isinstance(target, click.Group):
+            sub_ctx = click.Context(target, info_name="t3", parent=ctx)
+            for name in target.list_commands(sub_ctx):
+                sub = target.get_command(sub_ctx, name)
+                if sub is not None:
+                    _visit(sub, sub_ctx)
+
+    _visit(root, None)
+    try:
+        yield
+    finally:
+        for param, original in patched:
+            param.default = original
+
+
+def _normalize_home_paths(markdown: str) -> str:
+    """Backstop fold of any residual absolute home path to ``~`` (#2599).
+
+    ``_tilde_path_defaults`` handles the known home-rooted Option defaults before
+    rich can wrap them; this catches any home-rooted dotfile path that slips into
+    free-form help prose, so an absolute home path never reaches the public doc.
+    """
+    return _ABS_HOME_PATH.sub(r"~/\1", markdown)
+
+
+def render_cli_reference_deterministic(app: typer.Typer, *, base_name: str = "t3") -> str:
+    """Render the CLI reference so the bytes are identical across environments.
+
+    The single seam every generator path uses (#2599): pin the render width,
+    drop env-derived sizing, fold home-rooted defaults to ``~`` before rich wraps
+    them, and backstop-normalize any residual absolute home path.
+    """
+    click_app = get_command(app)
+    with _pinned_render_environment(), _tilde_path_defaults(click_app):
+        markdown = _build_cli_reference_from_command(click_app, base_name=base_name)
+    markdown = _normalize_home_paths(markdown)
+    return "\n".join(line.rstrip() for line in markdown.splitlines()).rstrip("\n") + "\n"
 
 
 def command_paths(app: typer.Typer, *, base_name: str = "t3") -> set[str]:

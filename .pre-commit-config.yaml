@@ -253,6 +253,13 @@ repos:
         entry: uv run python scripts/hooks/generate_cli_reference.py
         pass_filenames: false
         files: ^src/teatree/cli/
+      - id: cli-reference-sync
+        name: CLI reference doc in sync with the command tree
+        language: system
+        entry: uv run python scripts/hooks/check_cli_reference_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
       - id: generate-management-commands-doc
         name: Generate management-commands reference doc
         language: system

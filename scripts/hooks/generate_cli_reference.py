@@ -1,9 +1,13 @@
 """Pre-commit hook: regenerate CLI reference when CLI source files change.
 
 Walks the Typer app in-process (no subprocess spawning) and writes
-``docs/generated/cli-reference.md``.  Auto-stages the file on change.
+``docs/generated/cli-reference.md``. The render is byte-deterministic across
+environments (pinned width, no inherited tty/COLUMNS, home dir folded to ``~``).
+Auto-stages the file on change unless ``CLI_REFERENCE_NO_STAGE`` is set — CI sets
+it for the docs-drift step so ``git diff`` (no ``--cached``) actually catches a
+stale committed reference instead of seeing an empty working-tree-vs-index diff.
 
-See: souliane/teatree#67
+See: souliane/teatree#67, souliane/teatree#2599
 """
 
 import os
@@ -26,16 +30,15 @@ def main(argv: list[str] | None = None) -> int:
     django.setup()
 
     from teatree.cli import app, register_overlay_commands
-    from teatree.cli_reference import build_cli_reference_from_app
+    from teatree.cli_reference import render_cli_reference_deterministic
 
     register_overlay_commands(allowlist={"t3-teatree"})
-    markdown = build_cli_reference_from_app(app)
-    markdown = "\n".join(line.rstrip() for line in markdown.splitlines()).rstrip("\n") + "\n"
+    markdown = render_cli_reference_deterministic(app)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(markdown, encoding="utf-8")
 
-    if markdown != old and output == _DEFAULT_OUTPUT:
+    if markdown != old and output == _DEFAULT_OUTPUT and not os.environ.get("CLI_REFERENCE_NO_STAGE"):
         subprocess.run(["git", "add", str(output)], check=False)
         print(f"Updated {output}")
 

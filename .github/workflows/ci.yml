@@ -321,7 +321,15 @@ jobs:
       # fail if the committed output is stale so the docs site never
       # drifts from the code. See souliane/teatree#890.
       - run: uv run python manage.py generate_all_docs
+      # Regenerate the CLI reference. CLI_REFERENCE_NO_STAGE stops the generator
+      # from git-add-ing its output — a staged rewrite would match the index and
+      # hide the drift from `git diff` below (no --cached). The render is
+      # byte-deterministic across environments (pinned width, no tty/COLUMNS,
+      # home dir folded to `~`) so the gate catches genuine drift, not env skew.
+      # See souliane/teatree#2599.
       - run: uv run python scripts/hooks/generate_cli_reference.py
+        env:
+          CLI_REFERENCE_NO_STAGE: "1"
       # Regenerate the antipattern catalog from antipatterns.yaml so the
       # docs/generated diff gate below can catch any skew. ANTIPATTERN_CATALOG_NO_STAGE
       # stops the generator from git-add-ing its output — a staged rewrite would
