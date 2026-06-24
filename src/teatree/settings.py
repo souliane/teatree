@@ -161,3 +161,9 @@ TASKS = {
 # agent and records a ``routing_error`` instead. Flip to ``True`` only to
 # deliberately re-enable metered headless dispatch for loop-dispatched phases.
 LOOP_ALLOW_HEADLESS_DISPATCH = False
+
+# Repair-loop per-phase iteration budget (#2009). A ticket-phase may re-queue at
+# most this many attempts before the re-queue chokepoint
+# (``reclaim_orphaned_claims``) refuses with ``MaxIterationsExceeded`` — a
+# visible budget replacing the time-only 24h stale-task expiry. Floored at 1.
+MAX_PHASE_ITERATIONS = 5

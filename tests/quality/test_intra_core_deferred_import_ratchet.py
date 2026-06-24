@@ -44,7 +44,10 @@ _TACH = _REPO_ROOT / "tach.toml"
 # declared tach sub-node edges; never raise it. Dropped 187→186 when both
 # `tasks.py` deferred `current_session_id` imports were hoisted to a single
 # module-scope import (session_identity is a stdlib-only leaf; tach stays green).
-_FROZEN_INTRA_CORE_DEFERRED = 186
+# Rose 186→188 (#2009): the two task_repair-cycle-breaking deferrals stay
+# deferred (a genuine task.py↔task_repair module-level cycle); the two zero-dep
+# `repair_loop` deferrals were hoisted to module scope.
+_FROZEN_INTRA_CORE_DEFERRED = 188
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

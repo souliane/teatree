@@ -706,6 +706,10 @@
       "name": "ticket",
       "subcommands": [
         {
+          "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
+          "name": "show"
+        },
+        {
           "help": "Transition a ticket to a new state",
           "name": "transition"
         },

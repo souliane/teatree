@@ -53,10 +53,12 @@ graph TD
     teatree.core.managers --> teatree.core.modelkit
     teatree.core.managers --> teatree.core.models.errors
     teatree.core.managers --> teatree.core.loop_lease_manager
+    teatree.core.managers --> teatree.core.repair_loop
     teatree.core.managers --> teatree.core.session_handover_manager
     teatree.core.models --> teatree.core.modelkit
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
+    teatree.core.models --> teatree.core.repair_loop
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
@@ -316,6 +318,7 @@ graph TD
     teatree.core.models.errors
     teatree.core.session_identity
     teatree.core.session_handover_manager
+    teatree.core.repair_loop
     teatree.backends.errors
     teatree.backends.types
     teatree.cli._format_opts
