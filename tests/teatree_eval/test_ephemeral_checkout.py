@@ -166,6 +166,15 @@ class TestProvisionEphemeralCheckout:
         with pytest.raises(EphemeralCheckoutError, match="REFUSES to run"), provision_ephemeral_checkout():
             pass
 
+    def test_refuses_when_the_source_is_not_clonable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A resolvable path that is NOT a git repo makes `git clone` fail; provisioning
+        # must REFUSE (raise) rather than yield a half-built checkout or fall back.
+        not_a_repo = tmp_path / "not-a-repo"
+        not_a_repo.mkdir()
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: not_a_repo)
+        with pytest.raises(EphemeralCheckoutError, match="git clone failed"), provision_ephemeral_checkout():
+            pass
+
 
 class TestEphemeralCheckoutEnv:
     def test_prepends_ephemeral_src_to_pythonpath(self) -> None:
