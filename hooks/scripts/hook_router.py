@@ -48,6 +48,7 @@ if "hook_router" not in sys.modules:
 
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
 from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
+from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
@@ -57,6 +58,7 @@ from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
 STATE_DIR = Path(
@@ -7884,38 +7886,6 @@ def handle_speak_all_on_stop(data: dict) -> None:
 # is the thin transcript-reading wrapper, fail-safe-to-silent on any error.
 
 
-def _current_turn_tool_commands(transcript_path: str) -> list[str]:
-    """Flattened text of every tool_use input in the most recent turn.
-
-    Walks the transcript newest→oldest to the most recent ``user`` boundary
-    and collects, for each ``tool_use`` block after it, the strings that can
-    carry an id + state-read verb: ``Bash`` ``command`` and ``Agent`` / ``Task``
-    ``prompt`` + ``description``. These feed the same-turn-verification check
-    so a ``gh pr view <id>`` in the turn clears the warning for that id.
-    """
-    entries = _read_transcript_entries(transcript_path)
-    if not entries:
-        return []
-    commands: list[str] = []
-    for entry in reversed(entries):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            tool_input = block.get("input")
-            if not isinstance(tool_input, dict):
-                continue
-            for field in ("command", "prompt", "description"):
-                value = tool_input.get(field)
-                if isinstance(value, str) and value:
-                    commands.append(value)
-    return commands
-
-
 def handle_closure_reverify_stop(data: dict) -> bool | None:
     """WARN when the final turn claims a closure with no same-turn state check.
 
@@ -7950,7 +7920,7 @@ def _run_closure_reverify_stop(data: dict) -> bool | None:
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
         return None
-    tool_commands = _current_turn_tool_commands(data.get("transcript_path", ""))
+    tool_commands = current_turn_tool_commands(data.get("transcript_path", ""))
     unverified = closure_reverify_scanner.find_unverified_closures(turn[0], tool_commands)
     if not unverified:
         return None
@@ -8385,6 +8355,7 @@ _HANDLERS: dict[str, list] = {
     "Stop": [
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
+        handle_completion_claim_gate,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,
         handle_consideration_gate,

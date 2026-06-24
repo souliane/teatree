@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-ccg-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Thinking about how to write the completion report, no tool call yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

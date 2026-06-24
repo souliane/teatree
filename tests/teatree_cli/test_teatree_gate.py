@@ -17,8 +17,10 @@ from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.teatree_gate import (
+    COMPLETION_CLAIM_GATE_KEY,
     CONFIG_OVERWRITE_GATE_KEY,
     GATE_KEY,
+    completion_claim_gate_is_enabled,
     config_overwrite_gate_is_enabled,
     gate_is_enabled,
 )
@@ -104,6 +106,27 @@ class TestConfigOverwriteGate:
         assert config_overwrite_gate_is_enabled() is False
         assert runner.invoke(app, ["gate", "config-overwrite", "enable"]).exit_code == 0
         assert config_overwrite_gate_is_enabled() is True
+
+
+class TestCompletionClaimGate:
+    """``t3 <overlay> gate completion-claim disable|enable`` — the #2665 self-rescue."""
+
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+        result = CliRunner().invoke(app, ["gate", "completion-claim", "disable"])
+        assert result.exit_code == 0, result.output
+        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
+        assert document["teatree"][COMPLETION_CLAIM_GATE_KEY] is False
+        assert completion_claim_gate_is_enabled() is False
+
+    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+        assert completion_claim_gate_is_enabled() is True
+
+    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert runner.invoke(app, ["gate", "completion-claim", "disable"]).exit_code == 0
+        assert completion_claim_gate_is_enabled() is False
+        assert runner.invoke(app, ["gate", "completion-claim", "enable"]).exit_code == 0
+        assert completion_claim_gate_is_enabled() is True
 
 
 class TestTomlPreservation:
