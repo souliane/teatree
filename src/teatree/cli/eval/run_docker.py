@@ -36,6 +36,8 @@ class RunDockerArgs:
     require_executed: bool
     parallel: int
     transcript_html: Path | None = None
+    summary_md: Path | None = None
+    only: str | None = None
 
     def _container_transcript_path(self) -> str:
         """The in-container path the transcript artifact is written to.
@@ -49,12 +51,33 @@ class RunDockerArgs:
             return ""
         return f"{ARTIFACTS_MOUNT}/{self.transcript_html.name}"
 
+    def _container_summary_path(self) -> str:
+        """The in-container path the sanitized summary markdown is written to.
+
+        Like the transcript artifact, the host ``--summary-md`` file lands in the
+        single writable bind-mount, so it is redirected to ``/artifacts/<filename>``
+        in-container and lands back on the host. The artifacts dir is the shared
+        parent of the transcript and summary (the workflows put both in
+        ``$RUNNER_TEMP``), so the one bind-mount carries both.
+        """
+        if self.summary_md is None:
+            return ""
+        return f"{ARTIFACTS_MOUNT}/{self.summary_md.name}"
+
+    def _artifacts_dir(self) -> Path | None:
+        if self.transcript_html is not None:
+            return self.transcript_html.parent
+        if self.summary_md is not None:
+            return self.summary_md.parent
+        return None
+
     def _leading_optionals(self) -> list[list[str]]:
         """Non-default flag groups that precede the always-present budget/effort flags."""
         return [
             [self.name] if self.name is not None else [],
             ["--lane", self.lane] if self.lane is not None else [],
             ["--shard", self.shard] if self.shard is not None else [],
+            ["--only", self.only] if self.only is not None else [],
             ["--format", self.output_format] if self.output_format != "text" else [],
             ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
         ]
@@ -68,6 +91,7 @@ class RunDockerArgs:
             ["--require-executed"] if self.require_executed else [],
             ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
+            ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
         ]
 
     def passthrough(self) -> list[str]:
@@ -79,7 +103,7 @@ class RunDockerArgs:
         return ["run", *(arg for group in groups for arg in group), "--no-persist"]
 
     def dispatch(self) -> None:
-        artifacts_dir = self.transcript_html.parent if self.transcript_html is not None else None
+        artifacts_dir = self._artifacts_dir()
         try:
             raise typer.Exit(code=run_eval_in_docker(self.passthrough(), artifacts_dir=artifacts_dir))
         except DockerUnavailableError as exc:

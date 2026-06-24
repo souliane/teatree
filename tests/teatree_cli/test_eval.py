@@ -278,7 +278,7 @@ class TestEvalRun:
         with (
             patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
-            patch("teatree.cli.eval.app.run_specs", side_effect=_fake_run_specs),
+            patch("teatree.cli.eval.single_trial.run_specs", side_effect=_fake_run_specs),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist", "--parallel", "8"])
         assert result.exit_code == 0, result.output

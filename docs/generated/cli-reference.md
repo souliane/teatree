@@ -1995,6 +1995,44 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     path. Supported on a     │
 │                                                     --trials run (the        │
 │                                                     metered CI shape).       │
+│ --summary-md                               PATH     Write a SANITIZED        │
+│                                                     aggregate markdown       │
+│                                                     dashboard (overall       │
+│                                                     counts + total cost +    │
+│                                                     model + a `scenario |    │
+│                                                     lane | verdict | trials` │
+│                                                     table) to this path.     │
+│                                                     Unlike --transcript-html │
+│                                                     it carries NO transcript │
+│                                                     (no reasoning, tool      │
+│                                                     calls, or judge          │
+│                                                     rationale), so it is the │
+│                                                     PUBLISH-safe artifact    │
+│                                                     for a PR's               │
+│                                                     $GITHUB_STEP_SUMMARY and │
+│                                                     the weekly public        │
+│                                                     dashboard. Written from  │
+│                                                     THIS run's results       │
+│                                                     (single-trial AND        │
+│                                                     --trials).               │
+│ --only                                     TEXT     Restrict the run to      │
+│                                                     exactly these            │
+│                                                     comma-separated scenario │
+│                                                     names (e.g.              │
+│                                                     'worktree_first,never_e… │
+│                                                     Composes with            │
+│                                                     --lane/--shard (those    │
+│                                                     slice the catalog first, │
+│                                                     then --only further      │
+│                                                     restricts). An unknown   │
+│                                                     name fails loud — it is  │
+│                                                     never silently dropped.  │
+│                                                     The selective-PR eval    │
+│                                                     workflow passes the      │
+│                                                     scenarios a PR's diff    │
+│                                                     touched here, so a PR    │
+│                                                     meters only the          │
+│                                                     scenarios it changed.    │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯

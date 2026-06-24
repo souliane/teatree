@@ -1,13 +1,12 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
-import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
-from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, hint_missing_transcripts, run_full_suite
+from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, run_full_suite
 from teatree.cli.eval.app_helpers import (
     reject_unsupported_run_output,
     require_effort,
@@ -25,24 +24,19 @@ from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.negative_control import negative_control
+from teatree.cli.eval.only_filter import filter_specs_by_only
 from teatree.cli.eval.prepare_transcript import prepare_transcript
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
-from teatree.cli.eval.run_modes import (
-    DEFAULT_COST_REGRESSION_TOLERANCE,
-    RunGuards,
-    finalize_single_run,
-    make_grader,
-    require_persist_for_history_gates,
-)
+from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
+from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
 from teatree.cli.eval.skill_command_lane import skill_command_validity
 from teatree.cli.eval.skill_prose_lane import skill_prose_judge
 from teatree.cli.eval.transcript_replay import transcript_replay
-from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.lane_shard import ShardSpecError, filter_specs_by_shard
 from teatree.eval.model_variant import EFFORT_LEVELS
-from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
-from teatree.eval.report import evaluate, render_html, render_json, render_text
+from teatree.eval.parallel import DEFAULT_PARALLEL
 from teatree.eval.sdk_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -273,6 +267,28 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "ephemeral-container CI path. Supported on a --trials run (the metered CI shape)."
         ),
     ),
+    summary_md: Path | None = typer.Option(
+        None,
+        "--summary-md",
+        help=(
+            "Write a SANITIZED aggregate markdown dashboard (overall counts + total cost + "
+            "model + a `scenario | lane | verdict | trials` table) to this path. Unlike "
+            "--transcript-html it carries NO transcript (no reasoning, tool calls, or judge "
+            "rationale), so it is the PUBLISH-safe artifact for a PR's $GITHUB_STEP_SUMMARY and "
+            "the weekly public dashboard. Written from THIS run's results (single-trial AND --trials)."
+        ),
+    ),
+    only: str | None = typer.Option(
+        None,
+        "--only",
+        help=(
+            "Restrict the run to exactly these comma-separated scenario names (e.g. "
+            "'worktree_first,never_edit_main_clone'). Composes with --lane/--shard (those slice "
+            "the catalog first, then --only further restricts). An unknown name fails loud — it "
+            "is never silently dropped. The selective-PR eval workflow passes the scenarios a PR's "
+            "diff touched here, so a PR meters only the scenarios it changed."
+        ),
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -346,6 +362,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             require_executed=require_executed,
             parallel=parallel,
             transcript_html=transcript_html,
+            summary_md=summary_md,
+            only=only,
         ),
         docker=docker,
         local=local,
@@ -360,7 +378,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ensure_django()
     require_valid_format(output_format, _RUN_FORMATS)
     reject_unsupported_run_output(
-        output_format=output_format, transcript_html=transcript_html, trials=trials, models=models
+        output_format=output_format,
+        transcript_html=transcript_html,
+        summary_md=summary_md,
+        trials=trials,
+        models=models,
     )
     if name is None:
         specs = filter_specs_by_lane(discover_specs(), lane)
@@ -371,6 +393,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             raise typer.Exit(code=2) from None
     else:
         specs = [require_spec(name)]
+    specs = filter_specs_by_only(specs, only)
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the fresh-run lane, of course we want it executed." The sdk
     # backend (and the always-fresh-run --trials/--models lanes) arm the
@@ -417,48 +440,32 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             max_budget_usd=max_budget_usd,
             effort=effort_level,
             transcript_html=transcript_html,
+            summary_md=summary_md,
         )
         return
-    try:
-        runner = make_runner(
-            backend,
-            max_turns_override=max_turns,
-            transcript_dir=transcript_dir,
-            require_executed=require_executed,
-            max_budget_usd=max_budget_usd,
-            effort=effort_level,
-        )
-    except UnknownBackendError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from None
-    runs = run_specs(runner, specs, parallel=parallel)
-    results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
-    renderers = {"json": render_json, "html": render_html}
-    typer.echo(renderers.get(output_format, render_text)(results))
-    # The per-trial transcript artifact for the single-trial path: one trial, so
-    # the existing per-scenario render_html (verdict + transcript + failed
-    # matchers) IS the report. Written from THIS run's results — no re-run — and
-    # BEFORE any guard/gate can exit, so a red run still drops the artifact.
-    if transcript_html is not None:
-        transcript_html.write_text(render_html(results), encoding="utf-8")
-    if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
-        hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
-    executed = sum(1 for r in results if not r.skipped)
-    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
-    RunGuards.sdk_metered(backend=backend, executed=executed, results=results)
-    RunGuards.judge_metered(judge_requested=judge, results=results)
-    if finalize_single_run(
-        results,
-        specs=specs,
+    run_single_trial(
+        specs,
+        backend=backend,
         max_turns=max_turns,
-        persist=persist,
-        baseline=baseline,
-        gate_regressions=gate_regressions,
-        gate_cost_regression=gate_cost_regression,
-        cost_regression_tolerance=cost_regression_tolerance,
-        gate_cost_bounds=gate_cost_bounds,
-    ):
-        sys.exit(1)
+        transcript_dir=transcript_dir,
+        require_executed=require_executed,
+        max_budget_usd=max_budget_usd,
+        effort=effort_level,
+        parallel=parallel,
+        output_format=output_format,
+        grader=grader,
+        judge=judge,
+        transcript_html=transcript_html,
+        summary_md=summary_md,
+        gates=SingleTrialGates(
+            persist=persist,
+            baseline=baseline,
+            gate_regressions=gate_regressions,
+            gate_cost_regression=gate_cost_regression,
+            cost_regression_tolerance=cost_regression_tolerance,
+            gate_cost_bounds=gate_cost_bounds,
+        ),
+    )
 
 
 eval_app.command("prepare-transcript")(prepare_transcript)

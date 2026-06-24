@@ -77,6 +77,16 @@
 #   job correctly fails RED (the metered backend can authenticate nothing) —
 #   that loud failure is intended, not a regression.
 #
+# PUBLISH + FAILURE NOTIFICATION (souliane/teatree#2704)
+#   After the shard fan-out, the `publish` job merges every shard's SANITIZED
+#   summary (`eval-summary-*` — counts + a scenario|lane|verdict|trials table, NO
+#   transcript) into the public dashboard `docs/evals/index.md` and pushes it to
+#   main; that push triggers `docs.yml`, which serves the dashboard on Pages. The
+#   private per-trial transcripts stay in the `eval-report-*` artifacts.
+#   A red weekly run needs no extra alerting plumbing: GitHub's NATIVE
+#   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
+#   no extra secret and no bot — that is the failure-notification mechanism here.
+#
 # The FREE deterministic TESTS (eval-skill-triggers commit-stage,
 # eval-pinned-regressions push-stage) are unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
@@ -280,11 +290,17 @@ jobs:
           # red shard is still captured). The retry re-runs the whole `command`, so
           # the file is simply overwritten with the last attempt's results — no
           # staleness.
+          # `--summary-md` writes the SANITIZED publish-safe dashboard (counts +
+          # a scenario|lane|verdict|trials table, NO transcript) alongside the
+          # private transcript — both land in $RUNNER_TEMP (the writable artifacts
+          # mount). The `publish` job merges every shard's summary into the public
+          # dashboard; the transcript stays in the private `eval-report-*` artifact.
           command: |
             uv run t3 eval run --trials 3 --require any --backend sdk \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary.md"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
@@ -304,3 +320,79 @@ jobs:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
+      # The SANITIZED publish-safe summary (counts + a scenario|lane|verdict|trials
+      # table, NO transcript) — a SEPARATE artifact from the private transcript so
+      # the `publish` job can download just these and merge them into the public
+      # dashboard. `if: always()` so a red shard still publishes its summary.
+      - name: Upload the sanitized summary (publish-safe)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-summary-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-summary.md
+          if-no-files-found: warn
+
+  # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
+  # commit it to main. `needs: eval` + `if: always()` so it runs even when some
+  # shard went red (a red dashboard is still worth publishing). It downloads only
+  # the `eval-summary-*` artifacts (NEVER the private transcripts), merges them via
+  # scripts/eval/merge_summaries.py into docs/evals/index.md, writes the same
+  # content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits + pushes
+  # to main as github-actions[bot]. The push triggers docs.yml, which builds the
+  # site and serves the dashboard on GitHub Pages. The unchanged-file guard makes a
+  # no-diff run a clean no-op (no empty commit).
+  #
+  # FAILURE NOTIFICATION: a red weekly run is surfaced by GitHub's NATIVE failed-run
+  # email to the maintainer (no extra secret, no bot) — see the top-of-file note.
+  publish:
+    needs: eval
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: main
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # Pull every shard's sanitized summary into one dir (merge-multiple flattens
+      # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts
+      # — the private transcripts are never downloaded here.
+      - name: Download every shard's sanitized summary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: ${{ runner.temp }}/summaries
+          pattern: eval-summary-*
+          merge-multiple: true
+      # Merge into the public dashboard. The run-url / sha / generated-at are
+      # INJECTED here (the script never calls datetime.now()), so the merge is
+      # deterministic. `date -u` supplies the UTC timestamp.
+      - name: Merge the shard summaries into the public dashboard
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
+            --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
+            --out docs/evals/index.md
+          cat docs/evals/index.md >> "$GITHUB_STEP_SUMMARY"
+      # Commit + push the dashboard ONLY when it changed (an unchanged file is a
+      # clean no-op — no empty commit). The push to main triggers docs.yml, which
+      # serves the dashboard on Pages.
+      - name: Commit and push the dashboard when it changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- docs/evals/index.md; then
+            echo "Dashboard unchanged — nothing to commit."
+          else
+            git add docs/evals/index.md
+            git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
+            git push origin main
+          fi

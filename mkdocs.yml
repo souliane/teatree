@@ -61,6 +61,7 @@ nav:
       - Management Commands: generated/management-commands.md
       - Skill Triggers: skill-triggers.md
       - Testing Skill Evals: testing-skill-evals.md
+      - Evals: evals/index.md
       - Security: security.md
       - Claude Code Internals: claude-code-internals.md
   - Reference:

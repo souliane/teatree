@@ -30,7 +30,7 @@ from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
-from teatree.eval.report import ScenarioResult, evaluate
+from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
 from teatree.eval.sdk_runner import MAX_BUDGET_USD
 
 #: How many extra attempts a single matrix/benchmark cell gets after its first
@@ -91,6 +91,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     max_budget_usd: float = float(MAX_BUDGET_USD),
     effort: EffortLevel | None = None,
     transcript_html: Path | None = None,
+    summary_md: Path | None = None,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed.
 
@@ -104,6 +105,11 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     diagnose a red lane. It is written from THIS run's in-memory results (no suite
     re-run, no ledger), so it survives the ``--no-persist`` ephemeral-container
     CI path where nothing reaches the host run-history.
+
+    ``summary_md`` is a writable path to drop the SANITIZED aggregate dashboard
+    markdown at (counts + cost + a ``scenario | lane | verdict | trials`` table,
+    NO transcript) — the publish-safe sibling of ``transcript_html`` the weekly
+    dashboard and the PR step-summary consume.
     """
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
@@ -165,6 +171,10 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     # the run is about to exit non-zero.
     if transcript_html is not None:
         transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
+    # The SANITIZED publish-safe dashboard, also written BEFORE any guard/gate can
+    # exit so a red lane still drops the summary the workflow merges + publishes.
+    if summary_md is not None:
+        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )

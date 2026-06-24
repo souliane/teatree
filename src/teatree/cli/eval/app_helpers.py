@@ -15,6 +15,7 @@ from teatree.eval.backends import SDK_BACKEND
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
+from teatree.eval.report import ScenarioResult, render_html, render_summary_markdown
 
 
 def require_spec(name: str) -> EvalSpec:
@@ -50,15 +51,15 @@ def require_sdk_backend_for_fresh_run(*, backend: str, trials: int, models: str 
 
 
 def reject_unsupported_run_output(
-    *, output_format: str, transcript_html: Path | None, trials: int, models: str | None
+    *, output_format: str, transcript_html: Path | None, summary_md: Path | None, trials: int, models: str | None
 ) -> None:
-    """Reject ``--format html`` and ``--transcript-html`` on the multi-trial/matrix shapes they don't support.
+    """Reject the report flags on the multi-trial/matrix shapes they don't support.
 
     ``--format html`` renders a SINGLE-trial ``list[ScenarioResult]`` and
-    ``--transcript-html`` renders the per-TRIAL ``list[PassAtKResult]``; a
-    ``--models`` matrix has neither, so both are usage errors there (and
-    ``--format html`` is likewise rejected for ``--trials``). Exits 2 naming the
-    fix rather than failing obscurely deeper in the run.
+    ``--transcript-html`` / ``--summary-md`` render the single-trial or per-TRIAL
+    results; a ``--models`` matrix has neither, so all three are usage errors
+    there (and ``--format html`` is likewise rejected for ``--trials``). Exits 2
+    naming the fix rather than failing obscurely deeper in the run.
     """
     if output_format == "html" and (trials > 1 or models is not None):
         typer.echo("--format html is only supported for a single-trial run (not --trials/--models)", err=True)
@@ -70,3 +71,26 @@ def reject_unsupported_run_output(
             err=True,
         )
         raise typer.Exit(code=2)
+    if summary_md is not None and models is not None:
+        typer.echo(
+            "--summary-md is the single-trial / --trials aggregate dashboard; a --models matrix "
+            "has no such summary to render. Drop --models or drop --summary-md.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+
+def write_single_trial_reports(
+    results: list[ScenarioResult], *, transcript_html: Path | None, summary_md: Path | None
+) -> None:
+    """Write the single-trial transcript HTML and/or sanitized summary markdown.
+
+    Both are written from THIS run's results (no re-run) and BEFORE any guard/gate
+    can exit, so a red run still drops both artifacts. ``transcript_html`` is the
+    full per-scenario transcript (private); ``summary_md`` is the sanitized,
+    publish-safe dashboard (no transcript). Either path being ``None`` is a no-op.
+    """
+    if transcript_html is not None:
+        transcript_html.write_text(render_html(results), encoding="utf-8")
+    if summary_md is not None:
+        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
