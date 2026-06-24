@@ -9,7 +9,11 @@ from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
 from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
-from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
+from tests.teatree_core._provision_timebox_stub import (
+    BROKEN_DEPENDENCY_NAME,
+    provision_timebox_internally_broken,
+    provision_timebox_unimportable,
+)
 
 
 class TestStepResult(TestCase):
@@ -158,6 +162,20 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
 
         assert result.success is False
         assert "timed out" in result.error
+
+    def test_run_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        """A present ``provision_timebox`` failing on its OWN broken import must NOT be swallowed.
+
+        The catch is narrowed to the module's own absence (``ModuleNotFoundError.name`` ==
+        ``teatree.core.provision_timebox``). A present-but-internally-broken module raises a
+        ``ModuleNotFoundError`` whose ``.name`` is the missing DEPENDENCY, so ``run_step`` must
+        re-raise it rather than silently degrading to a plain run — which would disable the
+        timeout/heartbeat/alert for every healthy install and mask the real bug.
+        """
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_step("probe", ["true"], check=False)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
 class TestRunCallableStep(TestCase):
