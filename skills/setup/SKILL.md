@@ -79,7 +79,7 @@ Useful optional values:
 | `T3_CONTRIBUTE` | Allow self-improvement commits in the teatree repo | `false` |
 | `T3_PUSH` | Allow pushing retro commits (safety gate for privacy review) | `false` |
 | `T3_AUTO_PUSH_FORK` | Auto-push retro commits to the user's fork without prompting (requires `T3_PUSH=true` and origin ≠ `T3_UPSTREAM`) | `false` |
-| `T3_AUTO_SHIP` | Create shipping tasks as headless instead of interactive. When `false`, the pipeline pauses at shipping for user approval before push. | `false` |
+| `T3_MODE` | Effective publishing mode. `auto` opts the pipeline into pushing without pausing for shipping approval; `interactive` (default) gates at shipping. Equivalent DB-home setting: `t3 <overlay> config_setting set mode auto`. (Supersedes the retired `T3_AUTO_SHIP` env var, #2697.) | `interactive` |
 | `T3_UPSTREAM` | Upstream repo for PRs (empty = PR on origin, set = PR on upstream) | empty |
 | `T3_PRIVATE_TESTS` | Private QA repo path | empty |
 | `T3_BRANCH_PREFIX` | Branch prefix for generated worktrees | derived from git user |
@@ -98,7 +98,6 @@ T3_ISSUE_TRACKER="gitlab"
 T3_CONTRIBUTE=false
 T3_PUSH=false
 T3_AUTO_PUSH_FORK=false
-T3_AUTO_SHIP=false
 T3_UPSTREAM=""
 T3_PRIVATE_TESTS=""
 T3_BRANCH_PREFIX="ac"
