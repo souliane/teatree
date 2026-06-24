@@ -24,6 +24,7 @@ from teatree.core.models import DreamQaProbe
 from teatree.loops.dream import gates, reindex
 from teatree.loops.dream.decay import ArchivedMemory
 from teatree.loops.dream.gates import (
+    ComplianceRemediationView,
     DreamQaReport,
     Gate,
     MemorySnapshot,
@@ -310,6 +311,38 @@ class TestGateF(SimpleTestCase):
 
     def test_empty_archive_is_a_clean_pass(self) -> None:
         assert Gate.no_loss_audit([]).passed
+
+
+class TestGateG(SimpleTestCase):
+    """(g) compliance-non-regression: a recurrence remediated with a memory FAILS the pass."""
+
+    def test_passes_when_no_recurrence_was_observed(self) -> None:
+        result = Gate.compliance_non_regression([])
+        assert result.passed
+
+    def test_passes_when_a_recurrence_was_escalated(self) -> None:
+        # A recurrence remediated correctly (a gate/eval was filed) is the right move.
+        escalated = ComplianceRemediationView(
+            rule_identity="feedback_x", is_recurrence=True, remediated_with_memory=False
+        )
+        result = Gate.compliance_non_regression([escalated])
+        assert result.passed
+
+    def test_fails_when_a_recurrence_was_remediated_with_a_memory(self) -> None:
+        # The forbidden non-fix: a recurrence got ANOTHER memory instead of a gate/eval.
+        memory_remediated = ComplianceRemediationView(
+            rule_identity="feedback_x", is_recurrence=True, remediated_with_memory=True
+        )
+        result = Gate.compliance_non_regression([memory_remediated])
+        assert not result.passed
+        assert "feedback_x" in result.regressions
+
+    def test_a_first_occurrence_memory_is_not_a_regression(self) -> None:
+        # A first-occurrence violation legitimately stays a memory; only a RECURRENCE
+        # remediated with a memory regresses.
+        first = ComplianceRemediationView(rule_identity="directive_y", is_recurrence=False, remediated_with_memory=True)
+        result = Gate.compliance_non_regression([first])
+        assert result.passed
 
 
 class TestEvaluateGates(SimpleTestCase):

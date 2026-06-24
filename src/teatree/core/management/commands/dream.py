@@ -120,6 +120,14 @@ class Command(TyperCommand):
 
         self._run_pass(since=None, dry_run=False, enforce_cadence=True, propose_evals=propose_evals_enabled())
 
+    @command(name="compliance")
+    def compliance(self) -> None:
+        """Print the latest instruction-compliance snapshot — read-only (#2663)."""
+        from teatree.loops.dream.compliance import render_compliance_show  # noqa: PLC0415
+
+        for line in render_compliance_show():
+            self.stdout.write(line)
+
     def _run_pass(
         self,
         *,
@@ -223,6 +231,9 @@ class Command(TyperCommand):
             force_all_phases=mode.force_all_phases,
             validate_live=mode.validate_live,
         )
+        # Phase 3c (#2663) runs BEFORE the gates so gate (g) reads the just-persisted
+        # compliance records (a recurrence remediated with a memory FAILS the pass).
+        compliance = self._run_compliance_phase(since=since, dry_run=dry_run, force_all_phases=mode.force_all_phases)
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
@@ -235,7 +246,7 @@ class Command(TyperCommand):
             DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
+                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{memory_phases}"
                 f"{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped succeeded.",
             )
             return False
@@ -243,10 +254,31 @@ class Command(TyperCommand):
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{memory_phases}"
             f"{memory_promote}{gates_summary}.",
         )
         return True
+
+    def _run_compliance_phase(self, *, since: "dt.datetime | None", dry_run: bool, force_all_phases: bool) -> str:
+        """Phase 3c — the instruction-compliance accountant (#2663; never raises).
+
+        Runs only when the default-OFF ``compliance`` toggle is on (env / toml) AND
+        the ``--full`` pipeline is requested — it FILES enforcement tickets, mirroring
+        the Pass-2 memory-promotion posture. The detect → persist → escalate work
+        lives in :func:`teatree.loops.dream.compliance.run_compliance_phase`; this
+        wires the gating + the resolved backlog host and fault-isolates the phase.
+        """
+        from teatree.loops.dream.loop import compliance_enabled  # noqa: PLC0415
+
+        if not force_all_phases or not compliance_enabled():
+            return ""
+        try:
+            from teatree.loops.dream import compliance  # noqa: PLC0415
+
+            host, repo = self._teatree_backlog_host()
+            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host, repo=repo)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
 
     def _promote_candidates(
         self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False, validate_live: bool = False

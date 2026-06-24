@@ -50,3 +50,12 @@ class TestDreamCliDelegation:
             result = runner.invoke(dream_app, ["tick"])
         assert result.exit_code == 0
         call_mock.assert_called_once_with("dream", "tick")
+
+    def test_compliance_show_delegates_to_management_command(self) -> None:
+        with (
+            patch("teatree.cli.dream.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(dream_app, ["compliance", "show"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("dream", "compliance")

@@ -81,3 +81,21 @@ def tick_command() -> None:
     from django.core.management import call_command  # noqa: PLC0415
 
     call_command("dream", "tick")
+
+
+compliance_app = typer.Typer(
+    name="compliance",
+    help="Inspect the instruction-compliance accountant (#2663) — the root-KPI metric.",
+    no_args_is_help=True,
+)
+dream_app.add_typer(compliance_app)
+
+
+@compliance_app.command("show")
+def compliance_show_command() -> None:
+    """Print the latest compliance snapshot — rate, recurrence count, open escalations."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    call_command("dream", "compliance")

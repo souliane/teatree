@@ -336,9 +336,17 @@ def write_clusters(
     re-run that re-clusters the same members updates the row in place instead of
     duplicating it. A BINDING row's ``rule`` is never destructively overwritten.
 
+    Before the reject guard, any MEMORY_ONLY cluster whose rule already shows a
+    recurrence is reclassified off its memory destination (#2663): the root-KPI
+    rule forbids re-promoting another memory for a recurrence, so it is sent to a
+    teatree-core destination and Pass-2 triage tickets it as a core gap instead.
+
     Returns the count of clusters that passed the reject guard. Under *dry_run*
     the count is computed but nothing is written.
     """
+    from teatree.loops.dream.compliance import reclassify_recurring_memory_clusters  # noqa: PLC0415
+
+    clusters = reclassify_recurring_memory_clusters(clusters)
     snippet_texts = {str(snippet.path): normalize_ws(snippet.text) for snippet in extract.snippets}
     snippet_weights = {str(snippet.path): snippet.weight for snippet in extract.snippets}
     written = 0

@@ -118,6 +118,10 @@
         {
           "help": "Run one consolidation pass IF the dream cadence has elapsed (cron entry)",
           "name": "tick"
+        },
+        {
+          "help": "Print the latest instruction-compliance snapshot \u2014 read-only (#2663)",
+          "name": "compliance"
         }
       ]
     },

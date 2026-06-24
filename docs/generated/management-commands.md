@@ -64,6 +64,7 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | --- | --- |
 | `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
 | `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
+| `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
 
 ## `e2e`
 

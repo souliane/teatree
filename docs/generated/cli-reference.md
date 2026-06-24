@@ -3957,9 +3957,11 @@ Usage: t3 dream [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run   Run one consolidation pass NOW (ignores cadence).                      │
-│ tick  Run one consolidation pass IF the dream cadence has elapsed (cron      │
-│       entry).                                                                │
+│ run         Run one consolidation pass NOW (ignores cadence).                │
+│ tick        Run one consolidation pass IF the dream cadence has elapsed      │
+│             (cron entry).                                                    │
+│ compliance  Inspect the instruction-compliance accountant (#2663) — the      │
+│             root-KPI metric.                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3989,6 +3991,35 @@ Usage: t3 dream run [OPTIONS]
 Usage: t3 dream tick [OPTIONS]
 
  Run one consolidation pass IF the dream cadence has elapsed (cron entry).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 dream compliance`
+
+```
+Usage: t3 dream compliance [OPTIONS] COMMAND [ARGS]...
+
+ Inspect the instruction-compliance accountant (#2663) — the root-KPI metric.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Print the latest compliance snapshot — rate, recurrence count, open    │
+│       escalations.                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 dream compliance show`
+
+```
+Usage: t3 dream compliance show [OPTIONS]
+
+ Print the latest compliance snapshot — rate, recurrence count, open
+ escalations.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
