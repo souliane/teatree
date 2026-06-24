@@ -371,6 +371,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 
 | Subcommand | Description |
 | --- | --- |
+| `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `transition` | Transition a ticket to a new state |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
 | `context` | Durable per-ticket knowledge store (#627) |

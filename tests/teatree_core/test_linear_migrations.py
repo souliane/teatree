@@ -20,11 +20,10 @@ _CORE_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" /
 _MAX_MIGRATION_TXT = _CORE_MIGRATIONS_DIR / "max_migration.txt"
 _SIBLING_LEAF = _CORE_MIGRATIONS_DIR / "0001_sibling_leaf_fork.py"
 # A transient linear child of the real leaf — used to manufacture an
-# existing-but-stale ``max_migration.txt`` (dlm.E004). Since the #2652 squash
-# ``core`` has a single ``0001_initial`` and no other on-disk migration to name
-# as stale, so this test fixture adds one child whose presence makes
-# ``0001_initial`` a non-leaf.
-_LINEAR_CHILD = _CORE_MIGRATIONS_DIR / "0002_linear_child.py"
+# existing-but-stale ``max_migration.txt`` (dlm.E004): it depends on the real
+# leaf so the chain stays linear (one leaf), making any earlier name a stale
+# entry rather than a fork.
+_LINEAR_CHILD = _CORE_MIGRATIONS_DIR / "9999_linear_child.py"
 
 
 def _real_latest_migration() -> str:
@@ -92,12 +91,13 @@ class LinearMigrationsCheckTest(SimpleTestCase):
         )
 
     def test_stale_max_migration_txt_raises_e004(self) -> None:
-        # A single squashed ``0001_initial`` has no other on-disk migration to
-        # name as stale, so add a transient linear child: the leaf becomes
-        # ``0002_linear_child`` and ``0001_initial`` is now an existing — but
-        # stale — name in ``max_migration.txt`` (dlm.E004, not E003).
-        _LINEAR_CHILD.write_text(_migration_source([("core", "0001_initial")]))
-        _MAX_MIGRATION_TXT.write_text("0001_initial\n")
+        # Add a transient linear child of the REAL leaf so the chain stays
+        # linear (one leaf, ``9999_linear_child``); naming the prior real leaf
+        # in ``max_migration.txt`` is then an existing — but stale — entry
+        # (dlm.E004, not E003), without forking the graph (which would be E005).
+        latest = _real_latest_migration()
+        _LINEAR_CHILD.write_text(_migration_source([("core", latest)]))
+        _MAX_MIGRATION_TXT.write_text(f"{latest}\n")
         errors = self._dlm_errors()
         assert "dlm.E004" in errors, f"stale max_migration.txt must yield dlm.E004; got {errors}"
 

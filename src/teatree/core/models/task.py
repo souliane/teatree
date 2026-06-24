@@ -10,6 +10,7 @@ from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
+from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
     from teatree.core.cost import AttemptUsage, CostBreakdown
@@ -443,6 +444,24 @@ class Task(models.Model):
             return True
         return not children.exclude(status__in={self.Status.COMPLETED, self.Status.FAILED}).exists()
 
+    def phase_iteration_count(self) -> int:
+        """How many attempts this ticket-phase has already recorded (#2009)."""
+        from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415
+
+        return len(phase_attempts(self))
+
+    def check_requeue_allowed(self) -> None:
+        """Raise if this ticket-phase may NOT be re-queued; escalate on a stall (#2009).
+
+        Delegates to :func:`teatree.core.models.task_repair.check_requeue_allowed`
+        (split out for the module-health cap): a phase at the iteration cap raises
+        ``MaxIterationsExceeded``; two consecutive identical failure fingerprints
+        raise ``IterationStalled`` and record a user-facing ``DeferredQuestion``.
+        """
+        from teatree.core.models.task_repair import check_requeue_allowed  # noqa: PLC0415
+
+        check_requeue_allowed(self)
+
     def _route(self, target: ExecutionTarget, reason: str) -> None:
         self.execution_target = target
         self.execution_reason = reason
@@ -525,6 +544,14 @@ class TaskAttempt(models.Model):
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
+    # #2009 repair-loop budget: 1-based attempt number for this attempt's
+    # (ticket, normalized-phase), spanning re-queued Task rows. Auto-stamped on
+    # insert; 0 only on a transient unsaved instance.
+    iteration = models.PositiveIntegerField(default=0)
+    # #2009 stall detection: stable hash of this attempt's terminal reason
+    # (its ``error``), normalized so transient noise does not defeat the
+    # identical-failure check. Empty for a clean (non-failing) attempt.
+    error_fingerprint = models.CharField(max_length=64, blank=True, default="")
 
     objects = TaskAttemptQuerySet.as_manager()
 
@@ -533,3 +560,21 @@ class TaskAttempt(models.Model):
 
     def __str__(self) -> str:
         return f"attempt-{self.pk or 'new'!s}"
+
+    def save(self, *args: object, **kwargs: object) -> None:
+        if self._state.adding:
+            self._stamp_repair_loop_fields()
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    def _stamp_repair_loop_fields(self) -> None:
+        """Stamp the iteration counter + error fingerprint on insert (#2009).
+
+        The single chokepoint every attempt-creation site funnels through, so the
+        budget fields cannot drift between the headless recorder, the in-session
+        recorder, and the operator out-of-band paths. Each is stamped only when
+        unset, so an explicit value (a backfill or a test) is never clobbered.
+        """
+        if not self.error_fingerprint:
+            self.error_fingerprint = terminal_reason_fingerprint(self.error)
+        if not self.iteration and self.task_id:  # ty: ignore[unresolved-attribute]
+            self.iteration = self.task.phase_iteration_count() + 1

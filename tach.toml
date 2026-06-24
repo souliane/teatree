@@ -181,6 +181,11 @@ layer = "domain"
 depends_on = ["teatree.utils"]
 
 [[modules]]
+path = "teatree.core.repair_loop"
+layer = "domain"
+depends_on = []
+
+[[modules]]
 path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
@@ -189,6 +194,7 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
+  "teatree.core.repair_loop",
   "teatree.core.session_handover_manager"
 ]
 
@@ -198,7 +204,8 @@ layer = "domain"
 depends_on = [
   "teatree.core.modelkit",
   "teatree.core.managers",
-  "teatree.core.models.errors"
+  "teatree.core.models.errors",
+  "teatree.core.repair_loop"
 ]
 
 [[modules]]
