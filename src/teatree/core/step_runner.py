@@ -11,7 +11,19 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.utils.run import run_allowed_to_fail
+
 logger = logging.getLogger(__name__)
+
+_PROVISION_TIMEBOX_MODULE = "teatree.core.provision_timebox"
+
+# Fallback hard ceiling (seconds) for the degraded plain-subprocess path, which
+# runs only when ``provision_timebox`` is ABSENT and so cannot consult its
+# configurable ``resolve_step_timeout_seconds()``. Matches that module's
+# ``DEFAULT_STEP_TIMEOUT_SECONDS`` so a ``timeout=None`` step still aborts on a
+# ceiling instead of hanging forever — the "never hang" invariant the time-box
+# exists for (souliane/teatree#2220) holds on the degraded path too.
+_PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS = 1800
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,10 +102,17 @@ def run_step(  # noqa: PLR0913
     silently (souliane/teatree#2220). With ``check=False`` a non-zero exit
     stays benign (the historical contract), while a timeout / command-not-found
     is still surfaced as a failure.
-    """
-    from teatree.core.provision_timebox import run_timeboxed_step  # noqa: PLC0415
 
-    result = run_timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+    The time-box enhancement is *optional*. ``worktree teardown`` runs the
+    worktree's OWN checkout (``uv --directory <worktree> run``), whose base may
+    predate ``provision_timebox`` (#2220); the lazy import then raised
+    ``ModuleNotFoundError`` and aborted the whole teardown, skipping the steps
+    ordered after it — orphaning the DB, the ``Worktree`` row, and containers
+    (souliane/teatree#2664). When the module is absent, degrade to a plain
+    time-box-free subprocess run that keeps the same ``StepResult`` contract,
+    never abort the caller.
+    """
+    result = _timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
     if result.success or check:
         return result
     if result.error.startswith(("timed out", "command not found")):
@@ -105,6 +124,76 @@ def run_step(  # noqa: PLR0913
         stdout=result.stdout,
         stderr=result.stderr,
     )
+
+
+def _timeboxed_step(
+    name: str,
+    cmd: list[str],
+    *,
+    cwd: str | Path | None,
+    env: dict[str, str] | None,
+    timeout: int | None,
+) -> StepResult:
+    """Run via the time-box enhancement, falling back to a plain subprocess.
+
+    The enhancement (timeout ceiling + heartbeat + forked-migration alert) is
+    layered on plain subprocess execution; when the ``provision_timebox`` module
+    itself is absent on a stale base it is simply not there, so the plain run is
+    the correct degradation (souliane/teatree#2664).
+
+    The catch is narrowed to the module's OWN absence — keyed on
+    ``ModuleNotFoundError.name`` — so a *present* ``provision_timebox`` that
+    fails to import because of a real internal/transitive-import bug (its
+    ``.name`` is the missing DEPENDENCY, not this module) re-raises and surfaces
+    via the normal failure path, instead of silently disabling the time-box for
+    every healthy install.
+    """
+    try:
+        from teatree.core.provision_timebox import run_timeboxed_step  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        logger.warning("provision_timebox unavailable for step %r — plain subprocess run", name)
+        return _plain_subprocess_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+    return run_timeboxed_step(name, cmd, cwd=cwd, env=env, timeout=timeout)
+
+
+def _plain_subprocess_step(
+    name: str,
+    cmd: list[str],
+    *,
+    cwd: str | Path | None,
+    env: dict[str, str] | None,
+    timeout: int | None,
+) -> StepResult:
+    """Time-box-free subprocess run with the same :class:`StepResult` contract.
+
+    Mirrors :func:`teatree.core.provision_timebox.run_timeboxed_step`'s outcomes
+    minus the heartbeat / migration alert: a timeout surfaces a ``"timed out"``
+    error, a missing binary a ``"command not found"`` error, and a non-zero exit
+    a captured failure — so every ``run_step`` consumer classifies the result
+    identically whether or not the enhancement is present. A ``None`` timeout
+    resolves to :data:`_PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS` (never an unbounded
+    ``subprocess.run``) so the "never hang" invariant holds on this path too.
+    """
+    ceiling = timeout if timeout is not None else _PLAIN_STEP_TIMEOUT_FALLBACK_SECONDS
+    start = time.monotonic()
+    try:
+        proc = run_allowed_to_fail(cmd, cwd=cwd, env=env, expected_codes=None, timeout=ceiling)
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - start
+        return StepResult(name=name, success=False, duration=duration, error=f"timed out after {ceiling}s")
+    except OSError as exc:
+        duration = time.monotonic() - start
+        target = getattr(exc, "filename", None) or (cmd[0] if cmd else str(exc))
+        return StepResult(name=name, success=False, duration=duration, error=f"command not found: {target}")
+    duration = time.monotonic() - start
+    if proc.returncode != 0:
+        error = proc.stderr.strip()[:500] if proc.stderr else f"exit code {proc.returncode}"
+        return StepResult(
+            name=name, success=False, duration=duration, stdout=proc.stdout, stderr=proc.stderr, error=error
+        )
+    return StepResult(name=name, success=True, duration=duration, stdout=proc.stdout, stderr=proc.stderr)
 
 
 def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
@@ -196,9 +285,19 @@ def _alert_on_migration_conflict(result: StepResult) -> None:
     :func:`run_step`'s subprocess time-box. A forked migration graph hit by
     such a step is diagnosed by its symptom — "rebase/renumber needed" — and
     surfaced out-of-band, instead of leaving the agent to discover the grind
-    (souliane/teatree#2220). Best-effort: the alert never breaks provisioning.
+    (souliane/teatree#2220). Best-effort: the alert never breaks provisioning —
+    including when the executing base predates ``provision_timebox`` itself
+    (souliane/teatree#2664), in which case there is no alert path and the call is
+    a no-op. The catch is narrowed to the module's OWN absence (keyed on
+    ``ModuleNotFoundError.name``) so a *present* module with a real internal
+    import bug re-raises rather than silently suppressing the alert.
     """
-    from teatree.core.provision_timebox import alert_provision_user, detect_migration_conflict  # noqa: PLC0415
+    try:
+        from teatree.core.provision_timebox import alert_provision_user, detect_migration_conflict  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        return
 
     conflict = detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
     if conflict is not None:
