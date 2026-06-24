@@ -65,6 +65,14 @@ _FORCE_GENERAL_HELP = (
     "ONLY for a genuinely MR-wide note (a verdict-only summary with no per-line findings)."
 )
 
+_ALLOW_BLOAT_HELP = (
+    "Escape the comment-bloat gate (souliane/teatree#2663) for ONE post — the documented "
+    "over-deny escape (#126). A note longer than a small sentence cap, or one that "
+    "references project chatter (a ticket/PR id like #1234/!567, an @handle, or a Slack "
+    "timestamp) is refused by default — a review comment is about the diff, not the "
+    "tracker. Use ONLY for a genuinely justified long nit or a load-bearing reference."
+)
+
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
@@ -109,6 +117,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
     force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
+    allow_bloat: bool = typer.Option(False, "--allow-bloat", help=_ALLOW_BLOAT_HELP),
 ) -> None:
     """Post a draft note on a GitLab MR (inline or general).
 
@@ -151,6 +160,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
         force_general=force_general,
+        allow_bloat=allow_bloat,
     )
     typer.echo(msg)
     if code:
@@ -199,6 +209,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
     allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
     force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
+    allow_bloat: bool = typer.Option(False, "--allow-bloat", help=_ALLOW_BLOAT_HELP),
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
@@ -244,6 +255,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
         allow_long_review=allow_long_review,
         allow_todo_blocker=allow_todo_blocker,
         force_general=force_general,
+        allow_bloat=allow_bloat,
     )
     typer.echo(msg)
     if code:

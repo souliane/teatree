@@ -46,11 +46,15 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _disable_other_gates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Disable the colleague-MR shape and TODO-anchor gates so refusals come from the evidence gate only."""
-    from teatree.cli.review import service as review_mod  # noqa: PLC0415
+    """Disable the colleague-MR shape and TODO-anchor gates so refusals come from the evidence gate only.
 
-    monkeypatch.setattr(review_mod, "check_review_shape", lambda **_kw: "")
-    monkeypatch.setattr(review_mod, "check_todo_anchor", lambda **_kw: "")
+    The gate chain lives in :mod:`teatree.cli.review.pre_publish_gates`, so
+    the sibling gates are patched where the chain looks them up.
+    """
+    from teatree.cli.review import pre_publish_gates as gates_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(gates_mod, "check_review_shape", lambda **_kw: "")
+    monkeypatch.setattr(gates_mod, "check_todo_anchor", lambda **_kw: "")
 
 
 def _build_diff_with_added_line(target_line: int) -> str:

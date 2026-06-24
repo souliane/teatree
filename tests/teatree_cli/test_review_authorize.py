@@ -183,9 +183,9 @@ class TestPostCommentLiveOneStep:
         # Neutralize the colleague-MR shape + evidence sibling gates so the
         # test isolates the on-behalf/live-post collapse.
         self.monkeypatch.setattr(ReviewService, "_post_comment_impl", _fake_impl)
-        self.monkeypatch.setattr("teatree.cli.review.service.check_review_shape", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.service.check_todo_anchor", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.service.check_finding_evidence", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_review_shape", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_todo_anchor", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_finding_evidence", lambda **kwargs: "")
         self.monkeypatch.setattr(ReviewService, "_get_api", lambda self: object())
 
         authorize = _runner.invoke(
@@ -201,9 +201,9 @@ class TestPostCommentLiveOneStep:
         assert published == [("org/repo", 7, "LGTM, nice work")]
 
     def test_post_comment_live_blocked_without_authorize(self) -> None:
-        self.monkeypatch.setattr("teatree.cli.review.service.check_review_shape", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.service.check_todo_anchor", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.service.check_finding_evidence", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_review_shape", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_todo_anchor", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.pre_publish_gates.check_finding_evidence", lambda **kwargs: "")
         self.monkeypatch.setattr(ReviewService, "_get_api", lambda self: object())
 
         service = ReviewService(token="t")

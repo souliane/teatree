@@ -35,8 +35,7 @@ import typer
 from teatree.cli.review.approval import identity_has_reviewed
 from teatree.cli.review.diff import find_added_line, resolve_inline_position
 from teatree.cli.review.drafts import register as _register_drafts
-from teatree.cli.review.evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review.general_inline_gate import check_general_inline_findings
+from teatree.cli.review.evidence_gate import FindingEvidence
 from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
@@ -46,7 +45,6 @@ from teatree.cli.review.on_behalf import (
 )
 from teatree.cli.review.on_behalf import register as _register_on_behalf
 from teatree.cli.review.shape_gate import check_review_shape
-from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -180,6 +178,7 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code).
 
@@ -194,11 +193,9 @@ class ReviewService:
         it never needs approval. Under ASK / DRAFT_OR_ASK the gate resolves
         to AUTO_DRAFT (publish + DM the user the publish/delete commands);
         under IMMEDIATE it publishes with no DM. The remaining pre-publish
-        gates in :meth:`_run_pre_publish_gates` still apply: colleague-MR
-        shape (#1114), multi-finding general-note (#72), TODO-anchor
-        (#1186), and structured-evidence (#1280). ``allow_long_review`` /
-        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
-        escapes for the shape, TODO-anchor, and general-note gates.
+        gates in :meth:`_run_pre_publish_gates` still apply (shape, bloat,
+        general-note, TODO-anchor, evidence); the ``allow_*`` / ``force_*``
+        kwargs are the #126 per-call escapes documented there.
         """
         refusal = self._run_pre_publish_gates(
             repo=repo,
@@ -211,6 +208,7 @@ class ReviewService:
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
             force_general=force_general,
+            allow_bloat=allow_bloat,
         )
         if refusal:
             return refusal, 1
@@ -232,40 +230,31 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> str:
         """Run the pre-publish gate chain; return the first refusal or ``""``.
 
-        Order: on-behalf (#960) → shape (#1114) → general-inline (#72) →
-        TODO-anchor (#1186) → evidence (#1280). ``allow_long_review`` /
-        ``allow_todo_blocker`` / ``force_general`` are the #126 per-call
-        escapes for the shape, TODO-anchor, and multi-finding general-note
-        gates respectively; none relaxes the on-behalf or evidence gates.
+        Thin delegator to :func:`teatree.cli.review.pre_publish_gates.run_pre_publish_gates`
+        — that module owns the chain order (on-behalf → shape → bloat →
+        general-inline → TODO-anchor → evidence) and the per-call escape
+        semantics; service.py stays under the module-health LOC ceiling.
         """
-        blocked = check_on_behalf(repo, mr, action)
-        if blocked:
-            return blocked
-        encoded = repo.replace("/", "%2F")
-        api = self._get_api()
-        inline = bool(file and line)
-        shape_error = check_review_shape(
-            api=api, encoded_repo=encoded, mr=mr, body=note, inline=inline, allow_long_review=allow_long_review
-        )
-        if shape_error:
-            return shape_error
-        general_inline_error = check_general_inline_findings(body=note, inline=inline, force_general=force_general)
-        if general_inline_error:
-            return general_inline_error
-        todo_error = check_todo_anchor(
-            api=api,
-            encoded_repo=encoded,
+        from teatree.cli.review.pre_publish_gates import run_pre_publish_gates  # noqa: PLC0415
+
+        return run_pre_publish_gates(
+            self,
+            repo=repo,
             mr=mr,
-            body=note,
-            anchor=InlineAnchor(file=file, line=line),
+            note=note,
+            file=file,
+            line=line,
+            action=action,
+            evidence=evidence,
+            allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
+            force_general=force_general,
+            allow_bloat=allow_bloat,
         )
-        if todo_error:
-            return todo_error
-        return check_finding_evidence(body=note, evidence=evidence)
 
     def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
         """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
@@ -287,6 +276,7 @@ class ReviewService:
         allow_long_review: bool = False,
         allow_todo_blocker: bool = False,
         force_general: bool = False,
+        allow_bloat: bool = False,
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
@@ -302,9 +292,9 @@ class ReviewService:
         ``evidence`` kwarg must carry a verified
         :class:`~teatree.cli.review.evidence_gate.FindingEvidence` record.
 
-        ``allow_long_review`` / ``allow_todo_blocker`` / ``force_general``
-        are the #126 per-call escapes for the colleague-MR shape, the
-        TODO-anchor, and the multi-finding general-note (#72) gates.
+        The ``allow_*`` / ``force_*`` kwargs are the #126 per-call escapes
+        for the shape, TODO-anchor, general-note, and comment-bloat gates,
+        documented in :meth:`_run_pre_publish_gates`.
         """
         from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
         from teatree.cli.review.default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
@@ -320,6 +310,7 @@ class ReviewService:
                 allow_long_review=allow_long_review,
                 allow_todo_blocker=allow_todo_blocker,
                 force_general=force_general,
+                allow_bloat=allow_bloat,
             )
             if code == 0:
                 notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
@@ -342,6 +333,7 @@ class ReviewService:
             allow_long_review=allow_long_review,
             allow_todo_blocker=allow_todo_blocker,
             force_general=force_general,
+            allow_bloat=allow_bloat,
         )
         if refusal:
             return refusal, 1
