@@ -11,8 +11,10 @@ class Mode(StrEnum):
     stop and ask. ``auto`` grants full autonomy: the agent ships end-to-end
     without confirmation, falling back to interactive only for the non-
     negotiable always-gated list (force-push to default branches, destructive
-    shared-state ops). Opt in via ``[teatree] mode = "auto"`` in
-    ``~/.teatree.toml`` or the ``T3_MODE`` environment variable.
+    shared-state ops). ``mode`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set mode auto`` (per-overlay overridable with ``--overlay
+    <name>``) or the ``T3_MODE`` environment variable — a ``[teatree] mode`` TOML
+    value is ignored on read.
     """
 
     INTERACTIVE = "interactive"
@@ -68,8 +70,10 @@ class Speed(StrEnum):
 
     A no-arg ``/t3:speed`` invocation means "go full" regardless of the
     persisted baseline; the persisted value is the resting dial the loop
-    reads. Opt in via ``[teatree] speed = "full"`` in ``~/.teatree.toml``,
-    the ``T3_SPEED`` environment variable, or ``t3 teatree speed set <level>``.
+    reads. ``speed`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set speed full`` (the ``t3 <overlay> speed set <level>``
+    wrapper does this), or the ``T3_SPEED`` environment variable — a
+    ``[teatree] speed`` TOML value is ignored on read.
     """
 
     SLOW = "slow"
@@ -298,9 +302,12 @@ class MissingIssuePolicy(StrEnum):
 
     ``create`` and ``dummy`` are opt-in only; the default is OFF for
     colleague-facing repos (it never auto-creates and never uses a dummy there).
-    Read from ``[teatree] missing_issue_ref_policy``; per-overlay overridable
-    via ``[overlays.<name>].missing_issue_ref_policy``; the
-    ``T3_MISSING_ISSUE_POLICY`` env var wins over both. Resolved by
+    ``missing_issue_ref_policy`` is a DB-home setting: read from the
+    ``ConfigSetting`` store (``t3 <overlay> config_setting set
+    missing_issue_ref_policy <value>``), per-overlay overridable with
+    ``--overlay <name>``; the ``T3_MISSING_ISSUE_POLICY`` env var wins over
+    both. A ``[teatree]`` / ``[overlays.<name>]`` TOML value is ignored on
+    read. Resolved by
     :func:`teatree.missing_issue_policy.resolve_missing_issue_verdict`, and the
     agent-facing prose lives in ``skills/ship/SKILL.md`` § "Missing Issue
     Reference Policy".

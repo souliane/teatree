@@ -174,8 +174,10 @@ def repo_mode(
     """Report whether the repo is solo (fix proactively) or collaborative (flag, don't fix).
 
     One heuristic for every skill: ``git shortlog`` over the last 90 days on
-    the default branch. A ``[teatree] repo_mode`` config value overrides the
-    detection. Result is cached 7 days per repo.
+    the default branch. The DB-home ``repo_mode`` setting (``t3 <overlay>
+    config_setting set repo_mode <solo|collaborative>``) overrides the
+    detection; a ``[teatree] repo_mode`` TOML value is ignored on read. Result
+    is cached 7 days per repo.
     """
     from teatree.repo_mode import resolve_repo_mode  # noqa: PLC0415
 

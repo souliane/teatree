@@ -11,9 +11,11 @@ from teatree.url_classify import find_pr_urls
 def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
     """Post a Slack webhook message on the user's behalf.
 
-    `signature` is appended only when `[teatree] agent_signature = true` in
-    `~/.teatree.toml`. Default config keeps the message indistinguishable
-    from one the user typed themselves — see `teatree.identity` and
+    `signature` is appended only when the DB-home `agent_signature` setting is
+    `true` (`t3 <overlay> config_setting set agent_signature true`); a
+    `[teatree] agent_signature` TOML value is ignored on read. Default config
+    keeps the message indistinguishable from one the user typed themselves —
+    see `teatree.identity` and
     `skills/rules/SKILL.md` § "No AI Signature on Posts Made on the User's
     Behalf".
     """

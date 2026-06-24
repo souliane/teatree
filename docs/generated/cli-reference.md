@@ -2347,8 +2347,10 @@ Usage: t3 tool repo-mode [OPTIONS] [REPO]
  don't fix).
 
  One heuristic for every skill: ``git shortlog`` over the last 90 days on
- the default branch. A `` repo_mode`` config value overrides the
- detection. Result is cached 7 days per repo.
+ the default branch. The DB-home ``repo_mode`` setting (``t3 <overlay>
+ config_setting set repo_mode <solo|collaborative>``) overrides the
+ detection; a `` repo_mode`` TOML value is ignored on read. Result
+ is cached 7 days per repo.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   repo      [REPO]  Repo path (default: current directory) [default: .]      │

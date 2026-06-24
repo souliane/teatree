@@ -639,10 +639,11 @@ class UserSettings:
     # retires the per-session memory `notify-user-on-every-post-on-behalf`.
     # Distinct from the `on_behalf_post_mode` pre-gate (which decides
     # *whether* a post may publish): this fires *after* a successful
-    # publish and never blocks or rolls back the post. Flip off via
-    # `[teatree] notify_on_post_on_behalf = false`; per-overlay
-    # overridable; intentionally NO env var (notify_user_via_bot, its
-    # sibling, has none — a copied-by-analogy env layer would be a lie).
+    # publish and never blocks or rolls back the post. DB-home: flip off via
+    # `t3 <overlay> config_setting set notify_on_post_on_behalf false`
+    # (a `[teatree] notify_on_post_on_behalf` TOML value is ignored on read);
+    # per-overlay overridable; intentionally NO env var (notify_user_via_bot,
+    # its sibling, has none — a copied-by-analogy env layer would be a lie).
     # Out of scope: internal orchestration writes (bot→user DMs, the
     # loop's own bookkeeping) — only colleague-visible on-behalf posts.
     notify_on_post_on_behalf: bool = True

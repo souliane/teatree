@@ -45,7 +45,7 @@ The dial, lowest to highest throughput (default **`medium`**):
 - **`/t3:speed <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> speed set <level>` (never hand-edit `~/.teatree.toml`). Then act on the level per the table below.
 - **`/t3:speed show`** → report the effective dial via `t3 <overlay> speed show` and stop.
 
-The persisted value (`[teatree] speed`, per-overlay overridable, `T3_SPEED` env) is the resting dial the loop reads each tick. Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
+The persisted value (the DB-home `speed` setting in the `ConfigSetting` store, per-overlay overridable, `T3_SPEED` env) is the resting dial the loop reads each tick. A `[teatree] speed` TOML value is ignored on read; persist it with `t3 <overlay> config_setting set speed <level>` (the `t3 <overlay> speed set` wrapper does this for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
 
 ## `slow` — single-worker
 
