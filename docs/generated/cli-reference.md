@@ -1361,8 +1361,10 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                                  suite: 'transcript' (default — REUSE        │
 │                                  already-recorded in-session transcripts, $0 │
 │                                  extra) or 'api' (RUN the model fresh        │
-│                                  in-process via the Agent SDK,               │
-│                                  subscription-covered, the explicit opt-in). │
+│                                  in-process via the Agent SDK, metered       │
+│                                  EXCLUSIVELY on ANTHROPIC_API_KEY — never    │
+│                                  the subscription OAuth token; the explicit  │
+│                                  opt-in).                                    │
 │                                  [default: transcript]                       │
 │ --transcript-dir        PATH     Directory of <scenario>.jsonl transcripts   │
 │                                  for the AI lane (default: cwd).             │

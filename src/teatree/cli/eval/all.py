@@ -187,7 +187,7 @@ def _emit_transcript_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
 #: One-line, plain-language instruction for enabling the AI behavioural lane.
 AI_LANE_SETUP_HINT = (
     "no in-session transcripts; run `t3 eval capture-subagent` "
-    "(see /t3:running-evals) or use `--backend api` (subscription-covered)"
+    "(see /t3:running-evals) or use `--backend api` (metered on ANTHROPIC_API_KEY)"
 )
 
 

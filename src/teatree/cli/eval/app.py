@@ -484,7 +484,8 @@ def default(  # noqa: PLR0913, PLR0917 — typer callback: each param maps 1:1 t
         help=(
             "AI-lane backend for the bare-`t3 eval` full suite: 'transcript' (default — REUSE "
             "already-recorded in-session transcripts, $0 extra) or 'api' (RUN the model fresh "
-            "in-process via the Agent SDK, subscription-covered, the explicit opt-in)."
+            "in-process via the Agent SDK, metered EXCLUSIVELY on ANTHROPIC_API_KEY — never the "
+            "subscription OAuth token; the explicit opt-in)."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
