@@ -18,7 +18,7 @@ Cost controls, by construction:
     so a large suite cannot silently fan out into an unbounded bill.
 
 Like the runner, the judge runs in a virgin configuration via the shared
-:func:`~teatree.eval.sdk_runner.build_sdk_options` clean-room builder
+:func:`~teatree.eval.api_runner.build_sdk_options` clean-room builder
 (``setting_sources=[]`` + a plain-string ``system_prompt`` + empty ``settings``)
 so the developer's personal context never reaches the grader. When ``claude`` is
 not on PATH the judge skips (mirrors the runner's skip path) so CI and
@@ -33,15 +33,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
-from teatree.eval.isolation import isolated_claude_env
-from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.sdk_runner import (
+from teatree.eval.api_runner import (
     CleanRoomConfig,
     build_sdk_options,
     classify_terminal_error,
     env_float,
     is_success_result_error,
 )
+from teatree.eval.isolation import isolated_claude_env
+from teatree.eval.models import EvalRun, EvalSpec
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -154,6 +155,17 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="run skipped")
         if shutil.which("claude") is None:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
+        # The judge is itself a billed Claude call, so route it through the SAME
+        # credential chokepoint as make_runner: export the metered ANTHROPIC_API_KEY
+        # (env wins, else the pass store) and FAIL LOUD with CredentialError when no
+        # key is resolvable. This runs only past the skip guards above — a
+        # transcript-grade-only / keyless SKIP path (no judge block, skipped run, no
+        # claude binary) grades no model, so it never reaches here and is never
+        # forced to require a key. isolated_claude_env then strips the conflicting
+        # OAuth token from the judge child's env using the same credential's spec,
+        # so the judge authenticates on the metered API exclusively — never the
+        # subscription.
+        AnthropicApiKeyCredential().export()
         if self._budget is not None:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)

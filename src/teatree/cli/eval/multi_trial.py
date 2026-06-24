@@ -1,7 +1,7 @@
 """``t3 eval run`` multi-trial (pass@k) and model-matrix execution paths.
 
 Held apart from the single-trial ``run`` body in :mod:`teatree.cli.eval.app`: a
-multi-trial / matrix run always drives the metered in-process sdk runner and
+multi-trial / matrix run always drives the metered in-process api runner and
 aggregates across trials/models, a distinct concern from the default
 single-pass grade.
 """
@@ -24,14 +24,14 @@ from teatree.cli.eval.run_modes import (
     require_persist_for_history_gates,
     with_model,
 )
-from teatree.eval.backends import SDK_BACKEND, EvalRunner, make_runner
+from teatree.eval.api_runner import MAX_BUDGET_USD
+from teatree.eval.backends import API_BACKEND, EvalRunner, make_runner
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
-from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.sdk_runner import MAX_BUDGET_USD
+from teatree.eval.report import ScenarioResult, evaluate, render_summary_markdown
 
 #: How many extra attempts a single matrix/benchmark cell gets after its first
 #: failure. A clean-room scenario is idempotent (re-running costs only extra
@@ -91,6 +91,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     max_budget_usd: float = float(MAX_BUDGET_USD),
     effort: EffortLevel | None = None,
     transcript_html: Path | None = None,
+    summary_md: Path | None = None,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed.
 
@@ -104,6 +105,11 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     diagnose a red lane. It is written from THIS run's in-memory results (no suite
     re-run, no ledger), so it survives the ``--no-persist`` ephemeral-container
     CI path where nothing reaches the host run-history.
+
+    ``summary_md`` is a writable path to drop the SANITIZED aggregate dashboard
+    markdown at (counts + cost + a ``scenario | lane | verdict | trials | cost`` table,
+    NO transcript) — the publish-safe sibling of ``transcript_html`` the weekly
+    dashboard and the PR step-summary consume.
     """
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
@@ -116,7 +122,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         gate_cost_bounds=gate_cost_bounds,
     )
     runner = make_runner(
-        SDK_BACKEND,
+        API_BACKEND,
         max_turns_override=max_turns,
         require_executed=require_executed,
         max_budget_usd=max_budget_usd,
@@ -165,11 +171,15 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     # the run is about to exit non-zero.
     if transcript_html is not None:
         transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
+    # The SANITIZED publish-safe dashboard, also written BEFORE any guard/gate can
+    # exit so a red lane still drops the summary the workflow merges + publishes.
+    if summary_md is not None:
+        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
     RunGuards.executed(
         executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed
     )
-    RunGuards.sdk_metered_total(
-        backend=SDK_BACKEND,
+    RunGuards.api_metered_total(
+        backend=API_BACKEND,
         executed=sum(1 for r in results if not r.skipped),
         total_cost_usd=sum(r.cost_usd for r in results),
     )
@@ -230,7 +240,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         gate_cost_bounds=gate_cost_bounds,
     )
     runner = make_runner(
-        SDK_BACKEND,
+        API_BACKEND,
         max_turns_override=max_turns,
         require_executed=require_executed,
         max_budget_usd=max_budget_usd,

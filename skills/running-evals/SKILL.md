@@ -31,9 +31,9 @@ Two buckets under one umbrella. The free deterministic lanes are **tests** — t
 |------|------|-----------------|------|
 | **test** (deterministic, no model) | skill-triggers (trigger test) | `t3 eval skill-triggers` | free |
 | **test** (deterministic, no model) | pinned-regressions (regression corpus) | `t3 eval pinned-regressions` | free |
-| **eval** (fresh model run) | AI/trajectory (sdk, CI cadence) | `t3 eval run --backend sdk` | subscription-covered (`CLAUDE_CODE_OAUTH_TOKEN`), NOT API-billed |
+| **eval** (fresh model run) | AI/trajectory (api, CI cadence) | `t3 eval run --backend api` | metered on `ANTHROPIC_API_KEY` (never the subscription OAuth token — #2707) |
 
-The default backend is `transcript` — it REUSES an already-recorded run by grading its on-disk transcript ($0 extra, no model run); the in-session step this skill drives produces that transcript (`prepare-transcript` → dispatch sub-agent → `capture-subagent` → `run --backend transcript`). The `--backend sdk` path RUNS the model fresh (subscription-covered, not API-billed) and is **never** a silent fallback — it runs only when passed explicitly (CI's cadence). Neither backend bills an API key.
+The default backend is `transcript` — it REUSES an already-recorded run by grading its on-disk transcript ($0 extra, no model run); the in-session step this skill drives produces that transcript (`prepare-transcript` → dispatch sub-agent → `capture-subagent` → `run --backend transcript`). The `--backend api` path RUNS the model fresh, metered EXCLUSIVELY on the `ANTHROPIC_API_KEY` (never the subscription OAuth token, whose usage window a full run would throttle — #2707), and is **never** a silent fallback — it runs only when passed explicitly (CI's cadence). The `transcript` backend runs no model, so it authenticates nothing.
 
 ## What this skill auto-drives
 
@@ -59,8 +59,8 @@ The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, 
 t3 eval
 t3 eval --transcript-dir ./transcripts
 
-# Explicit fresh-run opt-in (CI; subscription-covered, NOT API-billed).
-t3 eval --backend sdk
+# Explicit fresh-run opt-in (CI; metered EXCLUSIVELY on ANTHROPIC_API_KEY).
+t3 eval --backend api
 ```
 
 Bare `t3 eval` runs the FREE lanes, then for the AI lane grades recorded transcripts when they exist ($0 extra), otherwise emits the transcript manifest plus the "produce transcripts in-session — see /t3:running-evals" guidance. It NEVER silently falls back to running a model. This skill is the in-session entrypoint that produces the transcripts the suite then grades; subcommands (`run`, a single lane, `history`, `list`) stay the targeted path and are unchanged.

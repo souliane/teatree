@@ -4,7 +4,7 @@ Drives ``claude-agent-sdk`` in-process: builds a real-environment
 :class:`~claude_agent_sdk.ClaudeAgentOptions`, runs the agent via
 :class:`~claude_agent_sdk.ClaudeSDKClient`, captures the typed messages it
 yields, and stores the result in ``TaskAttempt.result``. Unlike the clean-room
-eval runner (``teatree.eval.sdk_runner``), this path runs a REAL task: it keeps
+eval runner (``teatree.eval.api_runner``), this path runs a REAL task: it keeps
 the developer's environment, skills, and context — no isolation, no
 ``setting_sources=[]``.
 

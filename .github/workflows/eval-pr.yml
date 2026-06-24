@@ -1,0 +1,186 @@
+# ============================================================
+# SELECTIVE-PR BEHAVIORAL-EVAL WORKFLOW — runs only the scenarios a PR changed
+# ============================================================
+#
+# The metered behavioral-eval suite is expensive (real `claude` SDK trials) and
+# the full catalog runs weekly off the PR path (`.github/workflows/eval.yml`). But
+# when a PR EDITS a scenario file (`evals/scenarios/*.yaml` or an overlay's
+# `eval/scenarios/*.yaml`), waiting a week to learn the new/changed scenario's
+# behavior is too slow. This workflow closes that gap: on every PR it runs ONLY
+# the scenarios that PR's diff defines — never the whole catalog — so the cost is
+# bounded by what changed.
+#
+# HOW THE SELECTION WORKS
+#   The `detect` job diffs the PR against its base, pipes the changed paths to
+#   `scripts/eval/scenarios_for_changed.py`, and gets the `name` of every spec
+#   whose source file the PR touched. If that list is empty (no scenario file
+#   changed) the `eval` job is skipped entirely — a PR that touches no scenario
+#   spends zero API budget here.
+#
+# AUTH — ANTHROPIC_API_KEY (metered, EXCLUSIVE — same as eval.yml, #2707)
+#   The metered backend authenticates EXCLUSIVELY from the `ANTHROPIC_API_KEY`
+#   repo secret (the metered API key, `sk-ant-api03…`) — never the subscription
+#   OAuth token, whose depleting usage window a real run would throttle. Until
+#   that secret is set the eval job correctly fails RED.
+#
+# NO-SILENT-GREEN
+#   `--require-executed` is passed unconditionally and `claude --version` is
+#   asserted before the eval, so a missing binary / all-skipped run fails RED
+#   rather than passing green with zero coverage (mirrors eval.yml).
+#
+# TRIALS
+#   This PR lane runs `--trials 1` (a single trial) — fast signal that the changed
+#   scenario behaves, not the weekly lane's full `--trials 3` flake-resistance
+#   sweep. The PRIVATE per-trial transcript is uploaded as `eval-pr-transcripts`;
+#   the SANITIZED summary (no transcript) is appended to the PR's step summary.
+#
+# WHY --summary-md GOES TO $RUNNER_TEMP, NOT $GITHUB_STEP_SUMMARY DIRECTLY
+#   The eval runs in `--docker`, whose writable artifacts bind-mount is the
+#   transcript path's parent (`$RUNNER_TEMP`). `$GITHUB_STEP_SUMMARY` is a host
+#   path NOT mounted into the container, so an in-container write to it would be
+#   lost. So the run writes the sanitized summary to `$RUNNER_TEMP/eval-summary.md`
+#   (which DOES land back on the host via the artifacts mount) and a following
+#   step appends that file to `$GITHUB_STEP_SUMMARY`.
+# ============================================================
+
+name: Selective PR eval
+
+on:
+  pull_request:
+
+concurrency:
+  group: eval-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # DETECT: diff the PR against its base and resolve the scenarios it changed.
+  # Outputs `names` (comma-joined scenario names) and `run` (true iff non-empty).
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      names: ${{ steps.select.outputs.names }}
+      run: ${{ steps.select.outputs.run }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          # fetch-depth: 0 so the PR-vs-base `git diff` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Diff the PR against its base (same diff source as ci.yml's preflight job) and
+      # resolve the changed scenario files to scenario names. Distinguish "no scenario
+      # changed" (the resolver's `--skip-code`) from a REAL failure (bad git ref, import
+      # error, malformed YAML): a bare `|| true` would swallow both and silently skip
+      # the eval on a broken resolver — indistinguishable from a clean no-change PR.
+      # skip-code 3 is disambiguated from Python's uncaught-exception exit 1 and
+      # argparse's exit 2. The git diff is its own command so a bad ref fails loud
+      # (default bash `-e`) rather than being masked by the resolver's skip exit.
+      - name: Select the scenarios this PR changed
+        id: select
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > changed-files.txt
+          rc=0
+          uv run python scripts/eval/scenarios_for_changed.py --skip-code 3 \
+            < changed-files.txt > names.txt || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            echo "scenarios_for_changed.py failed (exit $rc) — failing the check rather than silently skipping the eval." >&2
+            exit "$rc"
+          fi
+          NAMES="$(paste -sd, names.txt)"
+          echo "names=$NAMES" >> "$GITHUB_OUTPUT"
+          if [ -n "$NAMES" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Changed scenarios → running: $NAMES"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No scenario file changed → skipping the metered PR eval."
+          fi
+
+  # EVAL: run ONLY the changed scenarios (single trial), in the CI container.
+  # Mirrors eval.yml's setup. Skipped entirely when no scenario changed.
+  eval:
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    # The PR lane runs a bounded subset at a SINGLE trial, so it finishes far
+    # inside this cap; the cap exists so a hang (a wedged scenario, a stuck docker
+    # daemon) fails loud as a red, diagnosable run instead of stalling to the 6h
+    # default. Sized like eval.yml's per-attempt budget with headroom.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
+      # it — a missing binary must FAIL the job, not skip every scenario green.
+      - name: Install and assert the Claude CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        run: uv run python -m teatree migrate --no-input
+      # Run ONLY the changed scenarios. `--only` is the comma-joined name list from
+      # the detect job; `--trials 1` is the fast PR-lane single trial;
+      # `--require-executed` and the asserted CLI keep a no-coverage run from
+      # passing green; `--docker` routes through the CI image (auth forwarded via
+      # docker `-e`). `--transcript-html` is the PRIVATE per-trial transcript;
+      # `--summary-md` is the SANITIZED publish-safe summary — both land in
+      # $RUNNER_TEMP (the writable artifacts bind-mount), never the :ro repo mount.
+      - name: Metered behavioral eval — only the changed scenarios (in Docker)
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_ONLY: ${{ needs.detect.outputs.names }}
+        with:
+          timeout_minutes: 80
+          max_attempts: 2
+          retry_wait_seconds: 60
+          command: |
+            uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend api \
+              --require-executed --docker \
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary.md"
+      # Append the sanitized summary to the PR's step summary (the in-container run
+      # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
+      # summary is the publish-safe dashboard; the transcript stays private.
+      - name: Publish the sanitized summary to the PR step summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
+            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
+      # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
+      # red run still publishes it.
+      - name: Upload the per-trial transcript report (private)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-pr-transcripts
+          path: ${{ runner.temp }}/eval-transcripts.html
+          if-no-files-found: warn

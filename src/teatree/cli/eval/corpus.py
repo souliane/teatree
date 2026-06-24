@@ -173,7 +173,7 @@ def grade_entries(
             typer.echo(
                 f"--judge requested and {len(eligible)} judge-oracle entr(y/ies) ran, but the judge graded "
                 "0 of them — every judge call skipped (likely `claude` not on PATH). This fails loud rather "
-                "than reporting a vacuous green; provision claude/CLAUDE_CODE_OAUTH_TOKEN or drop --judge.",
+                "than reporting a vacuous green; provision claude/ANTHROPIC_API_KEY or drop --judge.",
                 err=True,
             )
             sys.exit(1)

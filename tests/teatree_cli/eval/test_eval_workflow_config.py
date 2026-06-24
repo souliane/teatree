@@ -12,7 +12,7 @@ class TestMeteredEvalWorkflow:
         assert "inputs.backend" not in text
         assert "EVAL_BACKEND" not in text
 
-    def test_metered_command_pins_sdk_backend(self) -> None:
+    def test_metered_command_pins_api_backend(self) -> None:
         text = _WORKFLOW.read_text(encoding="utf-8")
         assert '--backend "$EVAL_BACKEND"' not in text
-        assert "--backend sdk" in text
+        assert "--backend api" in text

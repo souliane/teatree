@@ -59,6 +59,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.llm"
+layer = "foundation"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.teams"
 layer = "domain"
 depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
@@ -336,7 +341,8 @@ depends_on = [
   "teatree.core",
   "teatree.eval",
   "teatree.utils",
-  "teatree.claude_sessions"
+  "teatree.claude_sessions",
+  "teatree.llm"
 ]
 
 [[modules]]
@@ -347,7 +353,7 @@ depends_on = []
 [[modules]]
 path = "teatree.eval"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions"]
+depends_on = ["teatree.core", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions", "teatree.llm"]
 
 [[modules]]
 path = "teatree.core.management"

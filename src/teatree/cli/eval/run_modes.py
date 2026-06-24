@@ -21,11 +21,11 @@ from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
     AllSkippedError,
+    UnmeteredApiRunError,
     UnmeteredJudgeError,
-    UnmeteredSdkRunError,
+    assert_api_run_was_metered,
     assert_executed_when_required,
     assert_judge_was_metered,
-    assert_sdk_run_was_metered,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class RunGuards:
     """Translate the no-coverage :mod:`teatree.eval.skip_guard` assertions into a CLI exit.
 
     Both guards turn a vacuous-green run RED at the ``t3 eval run`` boundary: an
-    all-skipped required run, and an sdk run that executed scenarios but metered $0.
+    all-skipped required run, and an api run that executed scenarios but metered $0.
     """
 
     @staticmethod
@@ -48,8 +48,8 @@ class RunGuards:
             raise typer.Exit(code=1) from None
 
     @staticmethod
-    def sdk_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
-        RunGuards.sdk_metered_total(
+    def api_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        RunGuards.api_metered_total(
             backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
         )
 
@@ -71,17 +71,17 @@ class RunGuards:
             raise typer.Exit(code=1) from None
 
     @staticmethod
-    def sdk_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
+    def api_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
         """Fail-loud the unmetered-$0 guard from a precomputed cost total.
 
         The single-run lane sums ``ScenarioResult.run.cost_usd``; the benchmark /
         matrix lane works in ``MatrixRow`` and sums ``cost_usd`` itself. Both share
-        this one ``UnmeteredSdkRunError`` → ``typer.Exit`` translation so a
+        this one ``UnmeteredApiRunError`` → ``typer.Exit`` translation so a
         fake-green $0 metered run turns RED identically wherever it is detected.
         """
         try:
-            assert_sdk_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
-        except UnmeteredSdkRunError as exc:
+            assert_api_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
+        except UnmeteredApiRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
 

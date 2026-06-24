@@ -1,16 +1,17 @@
-"""The metered benchmark + multi-trial lanes resolve the OAuth token themselves.
+"""The metered benchmark + multi-trial lanes resolve the API key themselves.
 
 The single-trial ``t3 eval run`` lane builds its metered runner through
-``teatree.eval.backends.make_runner``, the only non-Docker path that calls
-``ensure_oauth_token()`` (env wins, else exported from the ``pass`` store). The
-``t3 eval benchmark`` and ``t3 eval run --trials k`` lanes must do the SAME — on
-a host ``--local`` run the token lives only in ``pass``, so a lane that builds
-``SdkInProcessRunner`` directly leaves the isolated ``claude`` child
-unauthenticated and the run reports a zero-cost auth failure.
+``teatree.eval.backends.make_runner``, the only non-Docker path that resolves the
+metered ``ANTHROPIC_API_KEY`` via ``AnthropicApiKeyCredential().export()`` (env
+wins, else exported from the ``pass`` store). The ``t3 eval benchmark`` and
+``t3 eval run --trials k`` lanes must do the SAME — on a host ``--local`` run the
+key lives only in ``pass``, so a lane that builds ``ApiInProcessRunner`` directly
+leaves the isolated ``claude`` child unauthenticated and the run reports a
+zero-cost auth failure.
 
-These tests pin that each metered lane calls ``ensure_oauth_token`` exactly where
-its runner is constructed. RED on the pre-fix direct construction (never resolves
-the token), GREEN once the lanes route through ``make_runner``.
+These tests pin that each metered lane resolves the API key exactly where its
+runner is constructed. RED on the pre-fix direct construction (never resolves the
+key), GREEN once the lanes route through ``make_runner``.
 """
 
 from pathlib import Path
@@ -20,6 +21,7 @@ from unittest.mock import patch
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 
 def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
@@ -53,11 +55,11 @@ class _StubRunner:
         )
 
 
-class TestPassAtKLaneResolvesOAuth:
-    def test_pass_at_k_lane_resolves_the_oauth_token_before_metering(self) -> None:
+class TestPassAtKLaneResolvesApiKey:
+    def test_pass_at_k_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
-            patch("teatree.eval.backends.ensure_oauth_token", return_value="tok") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_pass_at_k_lane(
                 [_spec()],
@@ -69,11 +71,11 @@ class TestPassAtKLaneResolvesOAuth:
         ensure.assert_called_once_with()
 
 
-class TestMatrixLaneResolvesOAuth:
-    def test_matrix_lane_resolves_the_oauth_token_before_metering(self) -> None:
+class TestMatrixLaneResolvesApiKey:
+    def test_matrix_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
-            patch("teatree.eval.backends.ensure_oauth_token", return_value="tok") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_model_matrix_lane(
                 [_spec()],
@@ -89,11 +91,11 @@ class TestMatrixLaneResolvesOAuth:
         ensure.assert_called_once_with()
 
 
-class TestBenchmarkLaneResolvesOAuth:
-    def test_benchmark_lane_resolves_the_oauth_token_before_metering(self) -> None:
+class TestBenchmarkLaneResolvesApiKey:
+    def test_benchmark_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
-            patch("teatree.eval.backends.ensure_oauth_token", return_value="tok") as ensure,
-            patch("teatree.eval.backends.SdkInProcessRunner", _StubRunner),
+            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
             patch("teatree.cli.eval.benchmark.discover_specs", return_value=[_spec("alpha")]),
             patch("teatree.cli.eval.benchmark.should_route_to_docker", return_value=False),
             patch("teatree.cli.eval.benchmark.persist_matrix_run"),

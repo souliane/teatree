@@ -54,7 +54,7 @@ _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 #: GENERATION BUMP: these full ids are the current model generation and will
 #: stale on the next generation. They are the same ids the sibling eval-layer
 #: defaults carry — ``eval.loader.DEFAULT_MODEL`` / ``DEFAULT_JUDGE_MODEL``,
-#: ``eval.sdk_runner.FALLBACK_MODEL``, and ``eval.models.EvalSpec.model`` /
+#: ``eval.api_runner.FALLBACK_MODEL``, and ``eval.models.EvalSpec.model`` /
 #: ``JudgeSpec.model``. Bump all of those together; ``core.cost.PRICE_TABLE``
 #: keys on the short tier name (``opus``), so it prices a dated bump correctly
 #: without a new entry and is NOT part of this set.

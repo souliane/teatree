@@ -1,6 +1,6 @@
 """Map the typed Agent-SDK messages onto the shared transcript extraction path.
 
-The in-process SDK runner (:mod:`teatree.eval.sdk_runner`) yields the SDK's typed
+The in-process SDK runner (:mod:`teatree.eval.api_runner`) yields the SDK's typed
 :class:`~claude_agent_sdk.Message` objects. The grader, however, consumes the
 stream-json event dicts the :mod:`teatree.eval.transcript` extractors parse — the
 SAME path the subscription transcript runner feeds. This module is the single seam

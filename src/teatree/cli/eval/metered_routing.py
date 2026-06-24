@@ -1,6 +1,6 @@
 """Docker-by-default routing decision for the metered eval + benchmark lanes.
 
-The metered ``sdk`` lane and ``t3 eval benchmark`` default to running IN the CI
+The metered ``api`` lane and ``t3 eval benchmark`` default to running IN the CI
 container (``dev/Dockerfile.test``): a metered run bills the API, so it must
 never accidentally run on the host. The free / deterministic / subscription
 lanes spawn no agent and stay host-default.

@@ -19,7 +19,8 @@ The short version of the split:
   pinned-regressions, skill-command-validity, coverage, negative-control,
   transcript-replay, corpus-grade, and the fixture replay of `scenarios/*.yaml`).
 - **evals** — a live model + grader, run on a cadence and fail-loud (the
-  `--backend sdk` AI lane, `--judge`/`judge:` oracles, `benchmark`,
-  `skill-prose-judge`). The `sdk` backend RUNS the model fresh and the
-  `transcript` backend REUSES a recorded run; both ride the subscription
-  (`CLAUDE_CODE_OAUTH_TOKEN`), NOT a billed API key.
+  `--backend api` AI lane, `--judge`/`judge:` oracles, `benchmark`,
+  `skill-prose-judge`). The `sdk` backend RUNS the model fresh, metered
+  EXCLUSIVELY on `ANTHROPIC_API_KEY` (never the subscription OAuth token, which a
+  full run would throttle — #2707); the `transcript` backend REUSES a recorded
+  run and authenticates nothing.

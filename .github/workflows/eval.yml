@@ -2,7 +2,7 @@
 # METERED BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
 # ============================================================
 #
-# The behavioral-eval suite (`t3 eval run --backend sdk`) runs the metered
+# The behavioral-eval suite (`t3 eval run --backend api`) runs the metered
 # in-process Agent-SDK suite (the SDK spawns the `claude` CLI child internally,
 # so `shutil.which("claude")` is still the provisioning gate) — it is metered
 # (API cost), reaches the network, and varies by
@@ -14,7 +14,7 @@
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
 #     lookback window since the last run — nothing new to test, no API spend.
-#   * workflow_dispatch — manual, on-demand, always on the sdk backend
+#   * workflow_dispatch — manual, on-demand, always on the api backend
 #     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
 #     bypassed for a manual run.
 #
@@ -53,17 +53,18 @@
 #   PERSISTED metered path in `.gitlab-ci.yml` (no `--docker`), where the ledger
 #   lives on the runner via `--local` — keeping the cost gate weekly/manual and
 #   off the per-PR path. A maintainer can also run it on the host against the
-#   accumulated ledger: `t3 eval run --backend sdk --local --gate-cost-bounds`.
+#   accumulated ledger: `t3 eval run --backend api --local --gate-cost-bounds`.
 #
-# AUTH — CLAUDE_CODE_OAUTH_TOKEN (the everywhere-portable path)
-#   The metered backend authenticates from `CLAUDE_CODE_OAUTH_TOKEN`, the
-#   OAuth token from `claude setup-token`. This is the auth that works in every
-#   environment — a clean Linux runner with the token as a pure env var (no
-#   `~/.claude.json`, no keychain, no `/login`) authenticates the in-process
-#   Agent-SDK's `claude` child. It is
-#   the June-15-safe path: it does NOT depend on an `sk-ant-api03` API key, which
-#   we do not have. The token is wired from the repo secret of the same name;
-#   `ANTHROPIC_API_KEY` is intentionally NOT used here.
+# AUTH — ANTHROPIC_API_KEY (metered, EXCLUSIVE — never the subscription token)
+#   The metered backend authenticates EXCLUSIVELY from `ANTHROPIC_API_KEY`, the
+#   metered API key. It is wired from the repo secret of the same name as a pure
+#   env var (no `~/.claude.json`, no keychain, no `/login`) and authenticates the
+#   in-process Agent-SDK's `claude` child on the metered API. The subscription
+#   `CLAUDE_CODE_OAUTH_TOKEN` is intentionally NOT used here (#2707): the
+#   subscription is rate-limited by a depleting usage window, so a full
+#   211-scenario run would throttle and the throttled cells would be mislabeled.
+#   The metered API has no such window. The isolation env strips any inherited
+#   OAuth token so the in-container SDK can never bill the subscription.
 #
 # NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up)
 #   The runner SKIPs every scenario when `claude` is not on PATH, and a fully-
@@ -73,9 +74,19 @@
 #        eval step — a missing binary FAILS the job, it does not skip.
 #     2. It passes `--require-executed` unconditionally, so a collected-but-
 #        all-skipped run exits non-zero.
-#   The OAuth token is wired from the repo secret. Until that secret is set the
-#   job correctly fails RED (the metered backend can authenticate nothing) —
-#   that loud failure is intended, not a regression.
+#   The API key is wired from the `ANTHROPIC_API_KEY` repo secret. Until that
+#   secret is set the job correctly fails RED (the metered backend can
+#   authenticate nothing) — that loud failure is intended, not a regression.
+#
+# PUBLISH + FAILURE NOTIFICATION (souliane/teatree#2704)
+#   After the shard fan-out, the `publish` job merges every shard's SANITIZED
+#   summary (`eval-summary-*` — counts + a scenario|lane|verdict|trials|cost table, NO
+#   transcript) into the public dashboard `docs/evals/index.md` and pushes it to
+#   main; that push triggers `docs.yml`, which serves the dashboard on Pages. The
+#   private per-trial transcripts stay in the `eval-report-*` artifacts.
+#   A red weekly run needs no extra alerting plumbing: GitHub's NATIVE
+#   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
+#   no extra secret and no bot — that is the failure-notification mechanism here.
 #
 # The FREE deterministic TESTS (eval-skill-triggers commit-stage,
 # eval-pinned-regressions push-stage) are unaffected — they gate every push via
@@ -213,7 +224,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+      # Install the Claude CLI the metered api backend shells out to, then ASSERT
       # it. A missing binary must FAIL the job (the runner would otherwise skip
       # every scenario and report a decorative green). `claude --version` is the
       # post-install assertion that turns an install failure into a red job.
@@ -227,11 +238,12 @@ jobs:
       # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
       # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
-      # CLAUDE_CODE_OAUTH_TOKEN is forwarded in via docker's `-e` pass-through.
-      # `--backend sdk` keeps CI on the metered in-process Agent-SDK path explicitly.
+      # ANTHROPIC_API_KEY is forwarded in via docker's `-e` pass-through.
+      # `--backend api` keeps CI on the metered in-process Agent-SDK path explicitly.
       # This workflow always runs `--trials 3`, which cannot be served by the
       # transcript backend, so there is intentionally no backend input. Auth is
-      # the OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) — the June-15-safe everywhere path.
+      # the metered API key (`ANTHROPIC_API_KEY`) EXCLUSIVELY — never the
+      # subscription OAuth token, which a full run would throttle (#2707).
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
       # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
@@ -244,10 +256,20 @@ jobs:
       # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
       # (reasoning + tool calls) so a maintainer can diagnose a red shard.
+      # A filesystem-safe per-lane-and-shard suffix, computed BEFORE the eval run so
+      # the summary file is uniquely named per shard. `merge-multiple` flattens every
+      # shard's summary into ONE dir in the publish job — a shared basename would
+      # collide (last-writer-wins) and silently drop all but one shard's results.
+      - name: Compute a filesystem-safe artifact suffix
+        id: artifact
+        env:
+          EVAL_LANE: ${{ matrix.lane }}
+          EVAL_SHARD: ${{ matrix.shard }}
+        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
           # per-shard subset is bounded by the LANE's ceiling — clean_room ≤14,
           # under_load ≤4 (#2683) — and fits the 2x80min budget where the full suite,
@@ -280,23 +302,24 @@ jobs:
           # red shard is still captured). The retry re-runs the whole `command`, so
           # the file is simply overwritten with the last attempt's results — no
           # staleness.
+          # `--summary-md` writes the SANITIZED publish-safe dashboard (counts +
+          # a scenario|lane|verdict|trials|cost table, NO transcript) alongside the
+          # private transcript — both land in $RUNNER_TEMP (the writable artifacts
+          # mount). The `publish` job merges every shard's summary into the public
+          # dashboard; the transcript stays in the private `eval-report-*` artifact.
           command: |
-            uv run t3 eval run --trials 3 --require any --backend sdk \
+            uv run t3 eval run --trials 3 --require any --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
               --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-transcripts.html"
+              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
+              --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md"
       # Publish the per-trial transcript report THIS leg emitted as a job artifact.
       # `if: always()` so a red leg still publishes it (the report is exactly what a
       # maintainer reads to triage the failure; the eval step above already decided
       # the leg's exit code). No render step — the artifact was written by the run.
       # The name is per-lane-and-shard so parallel matrix legs never collide on one
       # artifact (the `/` in the shard token is replaced — artifact names forbid it).
-      - name: Compute a filesystem-safe artifact suffix
-        id: artifact
-        env:
-          EVAL_LANE: ${{ matrix.lane }}
-          EVAL_SHARD: ${{ matrix.shard }}
-        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+      # The `artifact` suffix step runs earlier, just before the eval run.
       - name: Upload the per-trial transcript report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
@@ -304,3 +327,81 @@ jobs:
           name: eval-report-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-transcripts.html
           if-no-files-found: warn
+      # The SANITIZED publish-safe summary (counts + a scenario|lane|verdict|trials|cost
+      # table, NO transcript) — a SEPARATE artifact from the private transcript so
+      # the `publish` job can download just these and merge them into the public
+      # dashboard. `if: always()` so a red shard still publishes its summary.
+      - name: Upload the sanitized summary (publish-safe)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: eval-summary-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
+          if-no-files-found: warn
+
+  # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
+  # commit it to main. `needs: [prepare, eval]` + `if: always() && run_eval == 'true'`
+  # so it still runs when a shard went red (a red dashboard is worth publishing) but is
+  # SKIPPED when prepare gated the eval out — otherwise it would download zero summaries
+  # and commit a zero-row dashboard over the real one. It downloads only
+  # the `eval-summary-*` artifacts (NEVER the private transcripts), merges them via
+  # scripts/eval/merge_summaries.py into docs/evals/index.md, writes the same
+  # content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits + pushes
+  # to main as github-actions[bot]. The push triggers docs.yml, which builds the
+  # site and serves the dashboard on GitHub Pages. The unchanged-file guard makes a
+  # no-diff run a clean no-op (no empty commit).
+  #
+  # FAILURE NOTIFICATION: a red weekly run is surfaced by GitHub's NATIVE failed-run
+  # email to the maintainer (no extra secret, no bot) — see the top-of-file note.
+  publish:
+    needs: [prepare, eval]
+    if: always() && needs.prepare.outputs.run_eval == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: main
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      # Pull every shard's sanitized summary into one dir (merge-multiple flattens
+      # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts
+      # — the private transcripts are never downloaded here.
+      - name: Download every shard's sanitized summary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: ${{ runner.temp }}/summaries
+          pattern: eval-summary-*
+          merge-multiple: true
+      # Merge into the public dashboard. The run-url / sha / generated-at are
+      # INJECTED here (the script never calls datetime.now()), so the merge is
+      # deterministic. `date -u` supplies the UTC timestamp.
+      - name: Merge the shard summaries into the public dashboard
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          uv run python scripts/eval/merge_summaries.py "$RUNNER_TEMP/summaries" \
+            --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
+            --out docs/evals/index.md
+          cat docs/evals/index.md >> "$GITHUB_STEP_SUMMARY"
+      # Commit + push the dashboard ONLY when it changed (an unchanged file is a
+      # clean no-op — no empty commit). The push to main triggers docs.yml, which
+      # serves the dashboard on Pages.
+      - name: Commit and push the dashboard when it changed
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --quiet -- docs/evals/index.md; then
+            echo "Dashboard unchanged — nothing to commit."
+          else
+            git add docs/evals/index.md
+            git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
+            git push origin main
+          fi

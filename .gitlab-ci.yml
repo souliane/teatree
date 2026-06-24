@@ -17,13 +17,13 @@
 #   * The Claude CLI is installed and asserted (`claude --version`) BEFORE the
 #     eval step — a missing binary FAILS the job, it does not skip.
 #   * `--require-executed` is passed UNCONDITIONALLY (never key-gated), so a
-#     collected-but-all-skipped run exits non-zero. Until CLAUDE_CODE_OAUTH_TOKEN
+#     collected-but-all-skipped run exits non-zero. Until ANTHROPIC_API_KEY
 #     is wired the job correctly fails RED — that loud failure is intended.
 #
-# AUTH: the metered backend authenticates from CLAUDE_CODE_OAUTH_TOKEN (the
-# OAuth token from `claude setup-token`) — the June-15-safe path that works in
-# every environment without an `sk-ant-api03` API key. Set it as a masked GitLab
-# CI/CD variable; it is injected into the job env and `claude -p` reads it.
+# AUTH: the metered backend authenticates EXCLUSIVELY from ANTHROPIC_API_KEY, the
+# metered API key — never the subscription OAuth token, which a full run would
+# throttle (#2707). Set it as a masked GitLab CI/CD variable; it is injected into
+# the job env and the metered Agent-SDK `claude` child reads it.
 #
 # The free deterministic lanes (skill-triggers, pinned-regressions) gate every
 # push via prek and the regression corpus is asserted every MR via pytest, so
@@ -43,7 +43,7 @@ variables:
   before_script:
     - pip install --no-cache-dir uv
     - uv sync
-    # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+    # Install the Claude CLI the metered api backend shells out to, then ASSERT
     # it. A missing binary must FAIL the job (the runner would otherwise skip
     # every scenario and report a decorative green). `claude --version` is the
     # post-install assertion that turns an install failure into a red job.
@@ -61,9 +61,10 @@ variables:
   script:
     # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
-    # `--backend sdk` keeps CI on the metered claude -p path explicitly (auth via
-    # CLAUDE_CODE_OAUTH_TOKEN); LOCAL `t3 eval run` defaults to the subscription
-    # backend (no API spend). Mirrors the GitHub eval workflow's fresh lane.
+    # `--backend api` keeps CI on the metered Agent-SDK path explicitly (auth via
+    # the metered ANTHROPIC_API_KEY, never the subscription OAuth token #2707);
+    # LOCAL `t3 eval run` defaults to the transcript backend (no API spend).
+    # Mirrors the GitHub eval workflow's fresh lane.
     # `--local` is intentional here: the cost-bounds gate must persist/read the
     # runner DB on this host, while the default Docker route is ephemeral and
     # rejects durable-history gates.
@@ -80,7 +81,7 @@ variables:
     # — clean_room and under_load alike — must be GREEN. A failing under_load
     # behavioural-drift scenario reds the run outright, exactly like any clean_room
     # failure; `run --trials k` exits non-zero on ANY red scenario.
-    - uv run t3 eval run --trials 3 --require any --backend sdk --local --require-executed --gate-cost-bounds
+    - uv run t3 eval run --trials 3 --require any --backend api --local --require-executed --gate-cost-bounds
 
 # Scheduled pre-check: skip the weekly eval cleanly when nothing new merged in
 # the lookback window. Writes a `RUN_EVAL` dotenv flag the eval-weekly rule reads.
