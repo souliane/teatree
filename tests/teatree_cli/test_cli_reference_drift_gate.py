@@ -18,7 +18,7 @@ import yaml
 
 from tests._git_repo import make_git_repo, run_git
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERATOR = _REPO_ROOT / "scripts" / "hooks" / "generate_cli_reference.py"
 _SYNC_CHECKER = _REPO_ROOT / "scripts" / "hooks" / "check_cli_reference_sync.py"
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"

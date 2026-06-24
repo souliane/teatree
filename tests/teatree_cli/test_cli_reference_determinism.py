@@ -21,7 +21,7 @@ from teatree.cli import app as _t3_app
 from teatree.cli import register_overlay_commands
 from teatree.cli.command_tree import render_cli_reference_deterministic
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERATOR = _REPO_ROOT / "scripts" / "hooks" / "generate_cli_reference.py"
 
 
