@@ -10,9 +10,9 @@ import os
 
 from django.test import TestCase
 
-from teatree.core.models import MiniLoopMarker
+from teatree.core.models import LoopState, MiniLoopMarker
 from teatree.loops.base import MiniLoop
-from teatree.loops.config import LoopOverride, LoopsConfig
+from teatree.loops.config import LoopsConfig
 from teatree.loops.orchestrator import Orchestrator, TickRequest
 
 
@@ -64,9 +64,9 @@ class OrchestratorTestCase(TestCase):
     def test_only_enabled_loops_dispatch(self) -> None:
         on = _loop("inbox", jobs=["a"])
         off = _loop("review", jobs=["b"])
-        config = LoopsConfig(per_loop={"review": LoopOverride(enabled=False)})
+        LoopState.objects.disable("review")
         recorded: list[str] = []
-        orch = self._orchestrator(loops=(on, off), config=config, dispatched=recorded)
+        orch = self._orchestrator(loops=(on, off), dispatched=recorded)
         report = orch.tick(TickRequest())
         assert "inbox" in report.dispatched_loops
         assert "review" in report.skipped_loops
@@ -117,14 +117,23 @@ class OrchestratorTestCase(TestCase):
         assert "scanner exploded" in report.errors["inbox"]
         assert "review" in report.dispatched_loops
 
-    def test_always_on_runs_when_global_disabled(self) -> None:
-        config = LoopsConfig(enabled=False)
-        always = _loop("dispatch", always_on=True, jobs=["a"])
-        normal = _loop("inbox", jobs=["b"])
-        orch = self._orchestrator(loops=(always, normal), config=config)
-        report = orch.tick(TickRequest())
-        assert "dispatch" in report.dispatched_loops
-        assert "inbox" not in report.dispatched_loops
+    def test_always_on_runs_when_env_disabled_all(self) -> None:
+        # The env kill-switch disables every non-always_on loop but never an
+        # always_on one; only a DB hold can stop an always_on loop.
+        old = os.environ.get("T3_LOOPS_DISABLED")
+        try:
+            os.environ["T3_LOOPS_DISABLED"] = "all"
+            always = _loop("dispatch", always_on=True, jobs=["a"])
+            normal = _loop("inbox", jobs=["b"])
+            orch = self._orchestrator(loops=(always, normal))
+            report = orch.tick(TickRequest())
+            assert "dispatch" in report.dispatched_loops
+            assert "inbox" not in report.dispatched_loops
+        finally:
+            if old is None:
+                os.environ.pop("T3_LOOPS_DISABLED", None)
+            else:
+                os.environ["T3_LOOPS_DISABLED"] = old
 
     def test_t3_loops_disabled_env_honored(self) -> None:
         # TestCase doesn't get pytest's monkeypatch fixture; restore manually.

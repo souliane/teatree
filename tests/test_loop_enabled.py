@@ -1,15 +1,17 @@
 """``loop_enabled_by_name`` — the layer-neutral mini-loop enable primitive.
 
 The shared resolver that lets a lower layer (the review-claim chokepoint in
-``teatree.loop``, which must not import ``teatree.loops``) reach the same
-env → per-loop → global enable verdict the orchestrator applies. Resolution
-order and fail-safe-to-enabled behaviour are pinned here.
+``teatree.loop``, which must not import ``teatree.loops``) reach the same env
+enable verdict the orchestrator applies. It is a DB-free platform leaf: it
+resolves the ``T3_LOOPS_DISABLED`` env kill-switch only (the #2359 pre-Django
+hard kill-switch), and the DB ``LoopState`` tier is layered ON TOP by the caller.
+The legacy ``[loops]`` toml fallback was removed in #2702, so there is no toml
+read here at all — only env → default.
 """
 
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 
@@ -32,58 +34,43 @@ def _env(value: str | None) -> Iterator[None]:
             os.environ["T3_LOOPS_DISABLED"] = previous
 
 
-def _write(path: Path, content: str) -> Path:
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
 class TestEnvKillSwitch:
-    def test_named_in_env_disabled_is_false(self, tmp_path: Path) -> None:
+    def test_named_in_env_disabled_is_false(self) -> None:
         with _env("review,ship"):
-            assert loop_enabled_by_name("review", path=tmp_path / "missing.toml") is False
+            assert loop_enabled_by_name("review") is False
 
-    def test_all_sentinel_disables_every_loop(self, tmp_path: Path) -> None:
+    def test_all_sentinel_disables_every_loop(self) -> None:
         with _env("ALL"):
-            assert loop_enabled_by_name("review", path=tmp_path / "missing.toml") is False
+            assert loop_enabled_by_name("review") is False
 
-    def test_always_on_loop_ignores_named_env_disable(self, tmp_path: Path) -> None:
+    def test_always_on_loop_ignores_named_env_disable(self) -> None:
         with _env("review"):
-            assert loop_enabled_by_name("review", always_on=True, path=tmp_path / "missing.toml") is True
+            assert loop_enabled_by_name("review", always_on=True) is True
+
+    def test_always_on_loop_ignores_all_sentinel(self) -> None:
+        with _env("all"):
+            assert loop_enabled_by_name("review", always_on=True) is True
 
 
-class TestTomlLayers:
-    def test_per_loop_override_wins(self, tmp_path: Path) -> None:
-        toml = _write(tmp_path / "t.toml", "[loops]\nenabled = true\n[loops.review]\nenabled = false\n")
+class TestDefaultsEnabled:
+    def test_no_env_resolves_enabled(self) -> None:
         with _env(None):
-            assert loop_enabled_by_name("review", path=toml) is False
+            assert loop_enabled_by_name("review") is True
 
-    def test_global_disabled_applies_without_per_loop(self, tmp_path: Path) -> None:
-        toml = _write(tmp_path / "t.toml", "[loops]\nenabled = false\n")
-        with _env(None):
-            assert loop_enabled_by_name("review", path=toml) is False
+    def test_empty_env_resolves_enabled(self) -> None:
+        with _env("   "):
+            assert loop_enabled_by_name("review") is True
 
-    def test_default_enabled_when_no_loops_table(self, tmp_path: Path) -> None:
-        toml = _write(tmp_path / "t.toml", "[teatree]\nmode = 'auto'\n")
-        with _env(None):
-            assert loop_enabled_by_name("review", path=toml) is True
-
-
-class TestFailSafe:
-    def test_missing_file_resolves_enabled(self, tmp_path: Path) -> None:
-        with _env(None):
-            assert loop_enabled_by_name("review", path=tmp_path / "nope.toml") is True
-
-    def test_malformed_toml_resolves_enabled(self, tmp_path: Path) -> None:
-        toml = _write(tmp_path / "bad.toml", "[loops\nenabled = ")
-        with _env(None):
-            assert loop_enabled_by_name("review", path=toml) is True
+    def test_other_named_loop_does_not_disable(self) -> None:
+        with _env("ship"):
+            assert loop_enabled_by_name("review") is True
 
 
 @pytest.mark.parametrize("disabled", ["review", "REVIEW", " review , ship "])
-def test_case_and_whitespace_tolerant_env(disabled: str, tmp_path: Path) -> None:
+def test_case_and_whitespace_tolerant_env(disabled: str) -> None:
     # The named entry matches verbatim after stripping; only the ``all``
     # sentinel is case-insensitive. ``REVIEW`` therefore does NOT disable
     # ``review`` (mirrors LoopsConfig._env_disabled_names).
     with _env(disabled):
         expected_disabled = "review" in {p.strip() for p in disabled.split(",")}
-        assert loop_enabled_by_name("review", path=tmp_path / "missing.toml") is (not expected_disabled)
+        assert loop_enabled_by_name("review") is (not expected_disabled)

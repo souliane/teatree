@@ -1,7 +1,10 @@
 """LoopsConfig — parses ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml``.
 
-Covers: missing tables → defaults; per-loop override wins; bad cadence →
-fallback; env override; cadence parser (``30s``/``5m``/``1h``).
+Covers: missing tables → defaults; per-loop cadence override; bad cadence →
+fallback; env override; cadence parser (``30s``/``5m``/``1h``). Loop-disabled
+state is env → DB ``LoopState`` → default (#2702 — no ``[loops] enabled`` toml
+fallback); the DB tier is pinned in ``test_loop_state_gating.py`` and the toml
+non-read in ``test_loops_disabled_db_not_toml_2702.py``.
 """
 
 from pathlib import Path
@@ -62,7 +65,6 @@ class TestParseCadence:
 class TestLoopsConfigLoad:
     def test_missing_file_returns_defaults(self, tmp_path: Path) -> None:
         cfg = LoopsConfig.load(tmp_path / "missing.toml")
-        assert cfg.enabled is True
         assert cfg.default_cadence == 300
         assert cfg.parallel is True
         assert cfg.summary_dm == "errors"
@@ -72,13 +74,13 @@ class TestLoopsConfigLoad:
         toml = tmp_path / "t.toml"
         _write_toml(toml, "")
         cfg = LoopsConfig.load(toml)
-        assert cfg.enabled is True
+        assert cfg.default_cadence == 300
 
     def test_no_loops_table_returns_defaults(self, tmp_path: Path) -> None:
         toml = tmp_path / "t.toml"
         _write_toml(toml, "[teatree]\nworkspace_dir = '/tmp/x'\n")
         cfg = LoopsConfig.load(toml)
-        assert cfg.enabled is True
+        assert cfg.default_cadence == 300
 
     def test_loops_table_overrides_globals(self, tmp_path: Path) -> None:
         toml = tmp_path / "t.toml"
@@ -86,52 +88,54 @@ class TestLoopsConfigLoad:
             toml,
             """
             [loops]
-            enabled = false
             default_cadence = "10m"
             parallel = false
             summary_dm = "always"
             """,
         )
         cfg = LoopsConfig.load(toml)
-        assert cfg.enabled is False
         assert cfg.default_cadence == 600
         assert cfg.parallel is False
         assert cfg.summary_dm == "always"
 
-    def test_per_loop_table_recorded(self, tmp_path: Path) -> None:
+    def test_per_loop_cadence_recorded(self, tmp_path: Path) -> None:
         toml = tmp_path / "t.toml"
         _write_toml(
             toml,
             """
             [loops.inbox]
             cadence = "1m"
-
-            [loops.review]
-            enabled = false
             """,
         )
         cfg = LoopsConfig.load(toml)
         assert "inbox" in cfg.per_loop
         assert cfg.per_loop["inbox"].cadence_seconds == 60
-        assert cfg.per_loop["review"].enabled is False
+
+    def test_loops_enabled_toml_key_is_not_read(self, tmp_path: Path) -> None:
+        # #2702: the [loops] enabled / [loops.<name>] enabled toml keys are no
+        # longer read — only cadence/parallel/summary come from toml now.
+        toml = tmp_path / "t.toml"
+        _write_toml(
+            toml,
+            """
+            [loops]
+            enabled = false
+
+            [loops.review]
+            enabled = false
+            cadence = "1m"
+            """,
+        )
+        cfg = LoopsConfig.load(toml)
+        assert cfg.per_loop["review"].cadence_seconds == 60
+        assert not hasattr(cfg, "enabled")
+        assert not hasattr(cfg.per_loop["review"], "enabled")
 
 
 class TestLoopsConfigEnable:
     def test_default_enabled(self, loop_inbox: MiniLoop) -> None:
         cfg = LoopsConfig()
         assert cfg.is_enabled(loop_inbox) is True
-
-    def test_global_disabled_disables_normal_loop(self, loop_inbox: MiniLoop) -> None:
-        cfg = LoopsConfig(enabled=False)
-        assert cfg.is_enabled(loop_inbox) is False
-
-    def test_global_disabled_keeps_always_on_loop(self, loop_dispatch: MiniLoop) -> None:
-        cfg = LoopsConfig(enabled=False)
-        assert cfg.is_enabled(loop_dispatch) is True
-
-    def test_per_loop_override_disables_one(self, loop_inbox: MiniLoop) -> None:
-        cfg = LoopsConfig(per_loop={"inbox": LoopOverride(enabled=False)})
-        assert cfg.is_enabled(loop_inbox) is False
 
     def test_env_disables_named_loops(
         self,

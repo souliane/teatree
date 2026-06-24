@@ -4,10 +4,10 @@ One :class:`LoopState` row per loop name carries the durable control-plane
 status of that mini-loop: ``enabled`` (the default — runs), ``paused`` (a
 reversible hold), or ``disabled`` (a durable kill-switch). The state is the
 canonical control tier, mirroring :class:`teatree.core.models.config_setting.ConfigSetting`
-("the canonical tier is the DB, with file/env fallback", #1775 / §17.4): an
-**absent row resolves to ``ENABLED``**, so an empty table leaves every loop
-running exactly as it does today, and the file/env ``[loops]`` config is the
-fall-through tier.
+("the canonical tier is the DB", #1775 / §17.4): an **absent row resolves to
+``ENABLED``**, so an empty table leaves every loop running exactly as it does
+today, and the ``T3_LOOPS_DISABLED`` env kill-switch is the only other disable
+tier (the ``[loops]`` toml fallback was removed in #2702).
 
 The motivation is the 2026-06-03 'pause everything' incident: there was no
 single atomic command and no durable paused state that survived a session
@@ -32,7 +32,8 @@ class LoopStatus(models.TextChoices):
     """The three durable control-plane states of a mini-loop.
 
     ``ENABLED`` is the default (and the resolved status of any loop with no
-    row): the loop runs subject to the file/env ``[loops]`` config and cadence.
+    row): the loop runs subject to the ``T3_LOOPS_DISABLED`` env kill-switch
+    and cadence (#2702 removed the ``[loops]`` toml disabled-state fallback).
     ``PAUSED`` is a reversible hold; ``DISABLED`` a durable kill-switch. Only
     ``ENABLED`` is runnable — both other states skip the loop in the tick and
     suppress the self-pump.
@@ -56,8 +57,8 @@ class LoopStateManager(models.Manager["LoopState"]):
         """Return the durable status of *name*, or ``ENABLED`` when no row exists.
 
         ``ENABLED`` is the fall-through default: an empty table leaves every
-        loop resolving exactly as the file/env config dictates (the #1913
-        no-regression invariant).
+        loop resolving exactly as the env kill-switch / cadence dictate (the
+        #1913 no-regression invariant; #2702 removed the toml tier).
         """
         row = self.filter(name=name).first()
         if row is None:
