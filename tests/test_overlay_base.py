@@ -101,6 +101,19 @@ def test_get_mcp_provider_expectations_default_is_empty():
     assert overlay.get_mcp_provider_expectations() == {}
 
 
+def test_get_e2e_scenarios_default_is_empty_tuple():
+    """The scenario-manifest seam defaults to ``()`` — overlay scenarios live in the overlay.
+
+    Core reads per-feature E2E scenarios through this overlay-agnostic hook
+    (mirroring ``get_e2e_run_provenance``); the default empty tuple keeps an
+    overlay that ships no scenario manifest inert, so every registered overlay
+    resolves without an override.
+    """
+    overlay = _MinimalOverlay()
+    assert overlay.get_e2e_scenarios("") == ()
+    assert overlay.get_e2e_scenarios("e2e/playwright/contrib/x/y.spec.ts") == ()
+
+
 def test_get_e2e_env_extras_returns_empty_dict_by_default():
     overlay = _MinimalOverlay()
     assert overlay.get_e2e_env_extras({}) == {}
