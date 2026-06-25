@@ -34,6 +34,7 @@ from teatree.core import test_plan_validation as _validation
 from teatree.core.backend_protocols import UploadVerification
 from teatree.core.management.commands import _test_plan
 from teatree.core.management.commands import _test_plan_render as _render
+from teatree.core.management.commands import _test_plan_scenario as _scenario
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -1528,6 +1529,127 @@ class TestLinkApiStepsRendered(TestCase):
         assert "1. POST /users" in visible
         assert "[POST /users]" in visible
         assert "```json" in visible
+
+
+class TestScenarioPlanTemplate(TestCase):
+    """The ``scenario-plan`` template renders the hand-authored exemplar shape.
+
+    Each scenario is a Preconditions / numbered Steps / Expected / Actual block
+    (with a ``✅`` pass marker), captioned inline screenshots for a UI scenario
+    or an API-contract block for an ``api`` scenario, ``---`` separators between
+    scenarios, and an ``**Environment:**`` footer.
+    """
+
+    def _ui_scenario(self, **over: object) -> _scenario.Scenario:
+        scenario: _scenario.Scenario = {
+            "surface": "Settings page",
+            "title": "Toggle dark mode",
+            "preconditions": "Logged in as a verified user.",
+            "steps": ["Open the settings page", "Click Dark mode", "Confirm"],
+            "expected": "The theme switches to dark.",
+            "modality": "ui",
+            "actual_pass": True,
+            "images": [{"slot": "settings", "caption": "Dark theme applied", "image_md": "![](/uploads/s/a.png)"}],
+        }
+        scenario.update(over)
+        return scenario
+
+    def _state(
+        self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = ""
+    ) -> _render.TestPlanState:
+        state: _render.TestPlanState = {
+            "ticket": "1025",
+            "title": "Dark mode toggle",
+            "mrs": [],
+            "dev": _empty_side(env="dev"),
+            "local": _empty_side(env="local"),
+            "steps": {},
+            "template": "scenario-plan",
+            "scenarios": scenarios,
+        }
+        if intro:
+            state["scenario_intro"] = intro
+        if environment:
+            state["environment"] = environment
+        return state
+
+    def test_renders_scenario_heading_with_surface(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "### Scenario 1 — Settings page" in body
+
+    def test_renders_preconditions_steps_expected_blocks(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        visible = body.split("-->")[-1]
+        assert "**Preconditions:** Logged in as a verified user." in visible
+        assert "**Steps:**" in visible
+        assert "1. Open the settings page" in visible
+        assert "2. Click Dark mode" in visible
+        assert "3. Confirm" in visible
+        assert "**Expected:** The theme switches to dark." in visible
+
+    def test_passing_actual_renders_check_pass(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "**Actual:** ✅ Pass." in body
+
+    def test_non_passing_actual_renders_blocked_marker(self) -> None:
+        scenario = self._ui_scenario(actual_pass=False, actual_note="Blocked: feature flag off on dev.")
+        body = _render.render_body(self._state(scenarios=[scenario]))
+        visible = body.split("-->")[-1]
+        assert "✅ Pass." not in visible
+        assert "Blocked: feature flag off on dev." in visible
+
+    def test_captioned_inline_images_render(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        visible = body.split("-->")[-1]
+        assert "*Dark theme applied*" in visible
+        assert "![](/uploads/s/a.png)" in visible
+
+    def test_api_scenario_renders_no_screenshot_block(self) -> None:
+        contract = self._ui_scenario(modality="api", images=[])
+        body = _render.render_body(self._state(scenarios=[contract]))
+        visible = body.split("-->")[-1]
+        assert "contract check — no screenshot" in visible
+
+    def test_scenarios_separated_by_horizontal_rule(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario(), self._ui_scenario(surface="Profile page")])
+        )
+        assert "### Scenario 2 — Profile page" in body
+        # One `---` separates the two scenarios.
+        assert body.count("\n---\n") >= 1
+
+    def test_environment_footer_renders(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario()], environment="dev.example.com @ commit abcd1234")
+        )
+        assert "**Environment:** dev.example.com @ commit abcd1234" in body
+
+    def test_optional_intro_renders_above_first_scenario(self) -> None:
+        body = _render.render_body(
+            self._state(scenarios=[self._ui_scenario()], intro="Verified the toggle flow end to end.")
+        )
+        visible = body.split("-->")[-1]
+        intro_at = visible.index("Verified the toggle flow end to end.")
+        first_scenario_at = visible.index("### Scenario 1")
+        assert intro_at < first_scenario_at
+
+    def test_header_marker_and_title_still_render(self) -> None:
+        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
+        assert "<!-- t3-e2e-evidence ticket=1025 -->" in body
+        assert "## Test Plan — Dark mode toggle" in body
+
+    def test_state_round_trips_scenarios_through_coerce(self) -> None:
+        state = self._state(scenarios=[self._ui_scenario()], intro="Intro line.", environment="dev.example.com")
+        recovered = _render.coerce_state(json.loads(json.dumps(state)))
+        assert recovered["template"] == "scenario-plan"
+        assert recovered["scenarios"][0]["surface"] == "Settings page"
+        assert recovered["scenarios"][0]["steps"] == ["Open the settings page", "Click Dark mode", "Confirm"]
+        assert recovered["scenarios"][0]["images"][0]["caption"] == "Dark theme applied"
+        assert recovered["scenario_intro"] == "Intro line."
+        assert recovered["environment"] == "dev.example.com"
+
+    def test_known_templates_includes_scenario_plan(self) -> None:
+        assert "scenario-plan" in _render.KNOWN_TEMPLATES
 
 
 class TestNeverEmptyRender(TestCase):

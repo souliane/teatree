@@ -20,6 +20,12 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
+from teatree.core.management.commands._test_plan_scenario import (
+    ScenarioSection,
+    coerce_scenario_section,
+    render_scenario_plan,
+)
+from teatree.core.management.commands._test_plan_workflow_templates import render_browser_click_first, render_link_api
 from teatree.utils.media import MediaKind, media_kind
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -29,7 +35,7 @@ _EMPTY_CELL = "—"
 
 # The known body templates; the default is the side-by-side capture matrix.
 DEFAULT_TEMPLATE = "capture-matrix"
-KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api")
+KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api", "scenario-plan")
 
 # The hidden idempotency marker — keyed on the TICKET (its number, e.g. 8521),
 # so a ticket carries exactly ONE test-plan note across all environments.
@@ -78,12 +84,15 @@ class SideState(TypedDict):
     missing_on_dev: NotRequired[list[str]]
 
 
-class TestPlanState(TypedDict):
+class TestPlanState(ScenarioSection):
     """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
 
-    ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``, or
-    ``"link-api"``. ``steps``: workflow → ordered step list (shared across sides,
-    persisted across re-runs). ``blocked_workflows``: workflow → reason string.
+    ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``,
+    ``"link-api"``, or ``"scenario-plan"``. ``steps``: workflow → ordered step
+    list (shared across sides, persisted across re-runs). ``blocked_workflows``:
+    workflow → reason string. The ``scenario-plan`` keys
+    (``scenarios``/``scenario_intro``/``environment``) come from
+    :class:`ScenarioSection`.
     """
 
     ticket: str
@@ -148,6 +157,7 @@ def coerce_state(raw: object) -> TestPlanState:
     blocked = _coerce_blocked_workflows(raw_dict.get("blocked_workflows"))
     if blocked:
         state["blocked_workflows"] = blocked
+    state.update(coerce_scenario_section(raw_dict))
     return state
 
 
@@ -545,54 +555,24 @@ def _blocked_lines(state: TestPlanState) -> list[str]:
     return lines
 
 
-def _render_browser_click_first(state: TestPlanState) -> list[str]:
-    """``browser-click-first`` template: numbered steps then inline screenshots."""
-    lines: list[str] = []
-    for workflow in _workflow_names(state):
-        lines.extend((f"### {workflow}", ""))
-        steps = state.get("steps", {}).get(workflow, [])
-        if steps:
-            lines.extend(("**How to test:**", ""))
-            lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
-            lines.append("")
-        for side in (state["dev"], state["local"]):
-            lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
-        lines.append("")
-    return lines
-
-
-def _render_link_api(state: TestPlanState) -> list[str]:
-    """``link-api`` template: How-to-test steps then link_md + code_md per workflow, no table, no images."""
-    lines: list[str] = []
-    for workflow in _workflow_names(state):
-        lines.extend((f"### {workflow}", ""))
-        lines.extend(_test_plan_block(state, workflow))
-        for side in (state["dev"], state["local"]):
-            embed = side.get("workflows", {}).get(workflow, {})
-            link_md = embed.get("link_md", "") if embed else ""
-            code_md = embed.get("code_md", "") if embed else ""
-            if link_md:
-                lines.append(link_md)
-            if code_md:
-                lines.append(code_md)
-        lines.append("")
-    return lines
-
-
 def render_body(state: TestPlanState) -> str:
     """Render the full note body from the merged state.
 
     Dispatches on ``state["template"]``: ``"browser-click-first"`` →
     numbered steps + inline screenshots; ``"link-api"`` → links + code
-    blocks; default ``"capture-matrix"`` → side-by-side Dev | Local table.
-    The blocked-workflow placeholders render on every template (shared tail).
-    Raises :class:`TestPlanValidationError` when nothing to post.
+    blocks; ``"scenario-plan"`` → per-scenario Preconditions/Steps/Expected/
+    Actual blocks with ``---`` separators and an Environment footer; default
+    ``"capture-matrix"`` → side-by-side Dev | Local table. The blocked-workflow
+    placeholders render on every template (shared tail). Raises
+    :class:`TestPlanValidationError` when nothing to post.
     """
     template = state.get("template") or DEFAULT_TEMPLATE
     if template == "browser-click-first":
-        workflow_lines = _render_browser_click_first(state)
+        workflow_lines = render_browser_click_first(state, workflow_names=_workflow_names)
     elif template == "link-api":
-        workflow_lines = _render_link_api(state)
+        workflow_lines = render_link_api(state, workflow_names=_workflow_names, test_plan_block=_test_plan_block)
+    elif template == "scenario-plan":
+        workflow_lines = render_scenario_plan(state)
     else:
         workflow_lines = []
         for workflow in _workflow_names(state):
@@ -602,7 +582,8 @@ def render_body(state: TestPlanState) -> str:
     dev_commits = bool(state["dev"].get("commits"))
     local_commits = bool(state["local"].get("commits"))
     mrs = bool(state.get("mrs"))
-    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs
+    scenarios = bool(state.get("scenarios"))
+    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs or scenarios
     if not has_content:
         msg = "empty: the test-plan state has no workflows and no blocked workflows — nothing to post."
         raise TestPlanValidationError(msg)
