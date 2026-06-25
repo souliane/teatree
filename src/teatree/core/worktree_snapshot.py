@@ -68,26 +68,6 @@ def _recovered_head_sha_if_in_remote(wt: Path) -> str | None:
         return None
 
 
-def _dirty_beyond_symref_artifacts(wt: Path) -> bool:
-    """Whether a dangling-HEAD worktree carries a GENUINE uncommitted delta.
-
-    A dangling-HEAD worktree has no resolvable ``HEAD`` to diff against, so
-    ``git status --porcelain`` reports EVERY tracked path as staged-added
-    (``"A "`` — index ``A``, worktree unmodified): a pure symref artifact, not
-    real work. Any other porcelain status code on any path (``"AM"`` an edit to
-    a tracked file, ``"??"`` an untracked file, …) is a genuine uncommitted
-    change whose loss matters. Returns ``True`` iff at least one line is NOT a
-    bare ``"A "`` symref artifact. Fails *open* (treat as dirty) on an
-    inconclusive status read, so the capture-or-refuse contract is never
-    bypassed by a probe error.
-    """
-    try:
-        porcelain = git.status_porcelain_strict(str(wt))
-    except CommandFailedError:
-        return True
-    return any(line[:2] != "A " for line in porcelain.splitlines() if line)
-
-
 def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, label: str) -> Path | None:
     """Capture a restorable artifact for a dirty/unpushed worktree, or do nothing.
 
@@ -116,19 +96,25 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
         recovered_sha = _recovered_head_sha_if_in_remote(wt)
         if recovered_sha is not None:
             # The worktree's branch ref was deleted post-merge → HEAD is a
-            # dangling symref, and the committed tip is safe on a remote. If the
-            # working tree is ALSO clean (every porcelain line is the bare
-            # ``"A "`` symref artifact), there is genuinely nothing to lose:
-            # capture is a clean no-op and the caller reaps the orphan. But the
+            # dangling symref, and the committed tip is safe on a remote. The
             # tip being in a remote does NOT make an UNCOMMITTED delta
-            # recoverable — an edit to a tracked file or an untracked file would
-            # be destroyed by the reap — so a genuine dirty delta falls through
-            # to capture, bundling+diffing against the recovered SHA (the
-            # dangling ``HEAD`` cannot be bundled or diffed, rc=128). #706/#835/
-            # #1506 capture-or-refuse: never silent-destroy.
-            if not _dirty_beyond_symref_artifacts(wt):
+            # recoverable, so "is there work to capture?" cannot be decided from
+            # ``git status --porcelain`` shape: with no resolvable HEAD git
+            # collapses the HEAD-vs-index column to ``A`` for EVERY indexed path,
+            # so a staged content-modify or a staged rename looks identical to an
+            # unmodified tracked file (the same bare ``"A "``). The robust signal
+            # is the SAME diff the capture writes: the worktree diffed against the
+            # recovered tip — non-empty for edit / staged-modify / rename /
+            # untracked alike (``full_worktree_diff`` marks untracked intent-to-add
+            # so they appear), empty only when the tree genuinely matches the tip.
+            # Empty → clean no-op (caller reaps the orphan). Non-empty → capture,
+            # reusing the exact diff so detection can never diverge from what the
+            # artifact preserves (the dangling ``HEAD`` itself cannot be diffed or
+            # bundled, rc=128). #706/#835/#1506 capture-or-refuse: never silent-destroy.
+            recovery_diff = git.full_worktree_diff(str(wt), base=recovered_sha)
+            if not recovery_diff:
                 return None
-            return _capture_dangling_head_dirty(repo_main, wt, recovered_sha, label)
+            return _capture_dangling_head_dirty(repo_main, wt, recovered_sha, recovery_diff, label)
 
     bundle_repo = wt if branch == git.DETACHED_HEAD else repo_main
 
@@ -156,16 +142,18 @@ def _new_recovery_dir(label: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
 
 
-def _capture_dangling_head_dirty(repo_main: Path, wt: Path, recovered_sha: str, label: str) -> Path:
+def _capture_dangling_head_dirty(repo_main: Path, wt: Path, recovered_sha: str, recovery_diff: str, label: str) -> Path:
     """Capture a dirty dangling-HEAD worktree against its recovered tip SHA.
 
-    ``git rev-parse HEAD`` exits 128 in a dangling-HEAD worktree, so neither a
-    ``bundle_create`` of ``HEAD`` nor a ``full_worktree_diff`` against ``HEAD``
-    can run. Both are re-anchored on ``recovered_sha`` (the surviving tip
-    recovered from the per-worktree reflog, proven to be in a remote): the
-    bundle anchors it under a transient ``refs/heads/`` recovery branch so a
-    ``git clone`` checks it out, and the diff captures the genuine uncommitted
-    delta on top of it. A partial artifact is cleaned up and the error re-raised.
+    ``git rev-parse HEAD`` exits 128 in a dangling-HEAD worktree, so a
+    ``bundle_create`` of ``HEAD`` cannot run; the bundle is re-anchored on
+    ``recovered_sha`` (the surviving tip recovered from the per-worktree reflog,
+    proven to be in a remote) under a transient ``refs/heads/`` recovery branch
+    so a ``git clone`` checks it out. ``recovery_diff`` is the
+    already-computed ``full_worktree_diff(wt, base=recovered_sha)`` the caller
+    used to decide this worktree is dirty — reused verbatim as the captured
+    patch so detection and the artifact can never diverge. A partial artifact is
+    cleaned up and the error re-raised.
     """
     recovery_dir = _new_recovery_dir(label)
     # A unique recovery-branch name per capture so concurrent reaps of two
@@ -173,7 +161,7 @@ def _capture_dangling_head_dirty(repo_main: Path, wt: Path, recovered_sha: str, 
     recovery_branch = f"{_RECOVERY_BRANCH}-{recovery_dir.name}"
     try:
         git.bundle_create_at_sha(str(wt), str(recovery_dir / _BUNDLE_NAME), recovered_sha, recovery_branch)
-        (recovery_dir / _DIFF_NAME).write_text(git.full_worktree_diff(str(wt), base=recovered_sha), encoding="utf-8")
+        (recovery_dir / _DIFF_NAME).write_text(recovery_diff, encoding="utf-8")
     except Exception:
         shutil.rmtree(recovery_dir, ignore_errors=True)
         raise

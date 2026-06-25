@@ -232,6 +232,109 @@ def test_branch_ref_gone_in_remote_but_dirty_still_captures(topo: _GitTopology) 
     assert (restore / "untracked.txt").read_text(encoding="utf-8") == "brand new uncommitted\n"
 
 
+def _recovery_branch_in_bundle(bundle: Path) -> str:
+    """Return the single ``refs/heads/<recovery>`` branch name a recovery bundle holds."""
+    heads = subprocess.run(
+        [_GIT, "bundle", "list-heads", str(bundle)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    ).stdout
+    branches = [
+        ref.removeprefix("refs/heads/")
+        for line in heads.splitlines()
+        if (ref := line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else "").startswith("refs/heads/")
+    ]
+    assert len(branches) == 1, f"expected exactly one recovery branch, got {branches}"
+    assert branches[0].startswith(_RECOVERY_BRANCH)
+    return branches[0]
+
+
+def test_branch_ref_gone_in_remote_staged_modify_only_still_captures(topo: _GitTopology) -> None:
+    # The reviewer's missed case: a STAGED content modification with NOTHING
+    # unstaged. With a dangling HEAD there is no HEAD to diff the index against,
+    # so ``git status --porcelain`` collapses EVERY indexed path to a bare "A "
+    # — the staged edit is indistinguishable from an unmodified tracked file by
+    # porcelain shape alone. The no-op must NOT fire: the staged bytes are
+    # genuinely unrecoverable and must be captured (#706/#835/#1506).
+    topo.commit_in_worktree()  # commits feature.txt as the tip
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    # Edit a tracked file (base.txt is on the pushed tip) and STAGE it — no
+    # further unstaged change.
+    (topo.wt_path / "base.txt").write_text("base\nPRECIOUS STAGED EDIT\n", encoding="utf-8")
+    _run_git("add", "base.txt", cwd=topo.wt_path)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "staged-modify-only dangling-HEAD-in-remote worktree must NOT be a silent no-op — "
+        "the staged bytes are unrecoverable"
+    )
+    assert (rec / "branch.bundle").is_file()
+    assert (rec / "working-tree.diff").is_file()
+    recovery_branch = _recovery_branch_in_bundle(rec / "branch.bundle")
+    restore = topo.temp_root / "restore-staged-modify"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nPRECIOUS STAGED EDIT\n"
+
+
+def test_branch_ref_gone_in_remote_staged_rename_only_still_captures(topo: _GitTopology) -> None:
+    # A STAGED rename (`git mv old new`) with nothing else. With a dangling HEAD
+    # both the renamed-from (gone) and renamed-to (added) paths collapse to bare
+    # "A " in porcelain — the porcelain-shape heuristic sees them as unmodified.
+    # The rename is genuine uncommitted work and must be captured, not reaped.
+    topo.commit_in_worktree()  # commits feature.txt as the tip
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    _run_git("mv", "feature.txt", "renamed.txt", cwd=topo.wt_path)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "staged-rename-only dangling-HEAD-in-remote worktree must NOT be a silent no-op — "
+        "the rename is uncommitted work"
+    )
+    assert (rec / "branch.bundle").is_file()
+    diff_text = (rec / "working-tree.diff").read_text(encoding="utf-8")
+    # The rename is preserved in the recovery diff.
+    assert "rename from feature.txt" in diff_text
+    assert "rename to renamed.txt" in diff_text
+    # And it restores cleanly on top of the recovered tip.
+    recovery_branch = _recovery_branch_in_bundle(rec / "branch.bundle")
+    restore = topo.temp_root / "restore-staged-rename"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "renamed.txt").is_file()
+    assert not (restore / "feature.txt").exists()
+
+
 def test_branch_ref_gone_unrecoverable_head_falls_through_to_capture(topo: _GitTopology) -> None:
     # HEAD is dangling and unrecoverable → fail closed to the normal capture path
     # (which then fails open and captures), never the silent no-op.
