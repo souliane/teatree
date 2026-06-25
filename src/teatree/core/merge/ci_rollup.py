@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.core.backend_protocols import PrMergeState, rollup_query_failed
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.models import MergeClear
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
@@ -96,8 +97,6 @@ def attach_touched_paths(clear: object, *, slug: str, pr_id: int, host_kind: str
     only WIDEN substrate over the recorded ``blast_class``, never narrow it, so a
     missing diff never weakens the existing label-based substrate gate.
     """
-    from teatree.core.models import MergeClear  # noqa: PLC0415
-
     if not isinstance(clear, MergeClear):
         return
     try:
