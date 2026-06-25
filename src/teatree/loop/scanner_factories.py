@@ -40,6 +40,7 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
+from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.loop.tick_resolvers import (
     _allowed_url_prefixes_for_host,
     _identity_alias_groups_for_overlay,
@@ -312,6 +313,9 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # #2210: scope the review-arm to the operator's own PRs — a colleague's
         # open PR in a watched repo must never be auto-scheduled for review.
         self_identities=backend.identities,
+        # Ping-and-hold: a held SUBSTRATE merge DMs the owner once (deduped per
+        # diff via the BotPing ledger) so substrate is never auto-merged silently.
+        substrate_pinger=NotifyWithFallbackSubstratePinger(),
     )
 
 

@@ -20,10 +20,11 @@ pre-conditions. These tests pin every branch of the decision ladder:
 """
 
 from dataclasses import dataclass, field, replace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, MergeableNotified, Task
+from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
@@ -34,6 +35,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     SlackMergeNotifier,
     _decode_pr,
 )
+from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -145,11 +147,22 @@ class FakeKeystone:
     merged: bool = True
     merged_sha: str = MAIN_SHA
     error: str = ""
+    escalation_kind: str = ""
     calls: list[int] = field(default_factory=list)
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
         self.calls.append(clear_id)
-        return self.merged, self.merged_sha, self.error
+        return self.merged, self.merged_sha, self.error, self.escalation_kind
+
+
+@dataclass(slots=True)
+class FakeSubstratePinger:
+    """Mock ``SubstratePinger`` — records every (text, idempotency_key) ping."""
+
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def ping(self, *, text: str, idempotency_key: str) -> None:
+        self.calls.append((text, idempotency_key))
 
 
 @dataclass(slots=True)
@@ -175,6 +188,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
     auto_review_dispatch: bool = False,
     dispatcher: FakeReviewDispatcher | None = None,
     self_identities: tuple[str, ...] = (SELF_LOGIN,),
+    substrate_pinger: FakeSubstratePinger | None = None,
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
@@ -188,6 +202,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
             auto_review_dispatch=auto_review_dispatch,
             review_dispatcher=dispatcher,
             self_identities=self_identities,
+            substrate_pinger=substrate_pinger,
         ),
         notifier,
     )
@@ -1288,13 +1303,13 @@ class TestErrorIsolation:
         class _BoomFirstKeystone:
             calls: list[int] = field(default_factory=list)
 
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
                 self.calls.append(clear_id)
                 if not self.calls or (self.calls == [clear_id] and len(self.calls) == 1):
                     # First call: inject a fault to simulate a merge conflict / DB error
                     msg = "simulated keystone failure"
                     raise RuntimeError(msg)
-                return True, MAIN_SHA, ""  # pragma: no cover
+                return True, MAIN_SHA, "", ""  # pragma: no cover
 
         # Issue a CLEAR for both PRs so _evaluate reaches _merge for each.
         _issue_clear(pr_id=6230)
@@ -1315,7 +1330,7 @@ class TestErrorIsolation:
 
         @dataclass(slots=True)
         class _AuthErrorKeystone:
-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
                 raise ScannerError(
                     scanner="pr_sweep",
                     error_class=ScannerErrorClass.AUTH,
@@ -1411,3 +1426,76 @@ class TestEvaluateOne:
         assert attempt.merged is False
         assert attempt.decision == "flag_no_review"
         assert api.merge_pr_calls == []
+
+
+class TestSubstrateHoldPing:
+    """A HELD substrate merge pings the owner ONCE per diff (ping-and-hold, #3.1)."""
+
+    def test_substrate_hold_pings_once_with_per_diff_key(self) -> None:
+        # The anti-vacuity test (a): a substrate refusal from the keystone fires
+        # exactly one notify ping with the per-diff idempotency key. Before the
+        # fix the held substrate clear was swallowed silently with no ping.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        text, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+        assert f"{SLUG}#6230" in text
+
+    def test_non_substrate_block_does_not_ping(self) -> None:
+        # The anti-vacuity twin (b-adjacent): a NON-substrate keystone refusal
+        # never pings — the loop pings ONLY on substrate.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="some other refusal", escalation_kind="")
+        pinger = FakeSubstratePinger()
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        scanner.scan()
+
+        assert pinger.calls == []
+
+    def test_substrate_hold_without_pinger_does_not_crash(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held", escalation_kind="substrate")
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=None)
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["decision"] == "blocked"
+
+    def test_re_tick_does_not_double_ping_real_notify_dedupe(self) -> None:
+        # The anti-vacuity test (d): re-running the sweep on the SAME held head
+        # does not double-ping. Uses the REAL NotifyWithFallbackSubstratePinger so
+        # the BotPing idempotency ledger genuinely dedupes across two ticks; only
+        # the unstoppable Slack HTTP boundary is faked.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone(merged=False, error="held: substrate", escalation_kind="substrate")
+        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=NotifyWithFallbackSubstratePinger())
+
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-USER"
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000100"}
+        backend.get_permalink.return_value = "https://x.slack.com/p1"
+        backend.fetch_message.return_value = {"ts": "1700000000.000100", "text": "held"}
+
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            scanner.scan()
+            scanner.scan()
+
+        key = f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+        assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).count() == 1
+        # Exactly one Slack post landed despite two ticks — the ledger deduped.
+        assert backend.post_message.call_count == 1

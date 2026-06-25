@@ -18,13 +18,16 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 
 import re
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
 # cannot be recorded by the maker/coding-agent/loop side — the author would be
@@ -50,6 +53,36 @@ SHA_FULL_LEN = 40
 
 
 _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
+
+# A diff is substrate — independent of the reviewer's ``blast_class`` label —
+# when it touches the merge keystone, the architecture spec, or a governance
+# doc. The label defaults to ``logic`` (the orchestrator's judgment), so a
+# substrate change a human forgot to mark would otherwise auto-merge silently
+# under ``autonomy = full``. This path detector makes the substrate guarantee
+# label-independent (invariant 4): the change is substrate if its diff is.
+_SUBSTRATE_PATH_PREFIXES = ("src/teatree/core/merge/", "docs/blueprint/")
+_SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
+
+
+def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
+    """True iff any of *paths* is a substrate path (merge keystone / spec / governance).
+
+    Substrate paths are: anything under ``src/teatree/core/merge/`` (the merge
+    keystone), the architecture spec (``BLUEPRINT.md`` and ``docs/blueprint/``),
+    and the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth). Matching
+    is on whole path components after stripping a leading ``./`` or ``/`` so a
+    look-alike sibling (``BLUEPRINT.md.bak``, ``src/teatree/core/merger/``) is not
+    misclassified.
+    """
+    for raw in paths:
+        normalized = raw.strip().lstrip("/").removeprefix("./")
+        if not normalized:
+            continue
+        if any(normalized.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
+            return True
+        if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
+            return True
+    return False
 
 
 def is_non_reviewer_role(identity: str) -> bool:
@@ -151,6 +184,13 @@ class MergeClear(models.Model):
     human_authorizer = models.CharField(max_length=255, blank=True, default="")
     issued_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
+
+    # Non-persisted: the diff paths the merge gate fetched live for this CLEAR.
+    # Populated at merge time (``_assert_clear_authorized``) from the forge's
+    # changed-file list so ``is_substrate()`` can detect a mislabeled substrate
+    # diff. Not a DB column — no migration, no compaction-survival concern (it is
+    # re-derived from the live PR each merge attempt).
+    touched_paths: "tuple[str, ...]" = ()
 
     class Meta:
         db_table = "teatree_merge_clear"
@@ -284,8 +324,15 @@ class MergeClear(models.Model):
         return all(bool(value) for value in required)
 
     def is_substrate(self) -> bool:
-        """True iff this CLEAR is for a substrate-class change (invariant 4)."""
-        return self.blast_class == self.BlastClass.SUBSTRATE
+        """True iff this CLEAR is for a substrate-class change (invariant 4).
+
+        Substrate by EITHER the recorded ``blast_class`` label OR the live diff
+        touching a substrate path (:func:`diff_paths_are_substrate` over
+        :attr:`touched_paths`). The path detector makes the guarantee reliable —
+        a substrate diff a human left at the default ``logic`` label is still
+        held, never auto-merged.
+        """
+        return self.blast_class == self.BlastClass.SUBSTRATE or diff_paths_are_substrate(self.touched_paths)
 
     def human_merge_authorized_by(self, presented_authorizer: str) -> bool:
         """True iff a substrate CLEAR's recorded authoriser matches what the merge call presents.

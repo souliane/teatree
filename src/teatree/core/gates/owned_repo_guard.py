@@ -48,12 +48,18 @@ class MergeKeystoneResult(TypedDict, total=False):
     ticket_state: str
     error: str
     escalated: bool
+    # ``"substrate"`` when a substrate-class refusal was escalated (the loop edge
+    # pings the owner once and holds — ping-and-hold). Empty / absent for any
+    # other refusal so the loop pings ONLY on substrate, not every held merge.
+    escalation_kind: str
 
 
 class _MergeClearLike(Protocol):
     slug: str
     pr_id: int | str
     ticket: object
+
+    def is_substrate(self) -> bool: ...  # pragma: no branch
 
 
 class PushScopeVerdict(StrEnum):
@@ -213,9 +219,19 @@ def escalated_merge_result(clear: "_MergeClearLike", error: str) -> MergeKeyston
     """The canonical "merge held, re-escalate" result for a CLEAR.
 
     Shared by every keystone-merge refusal (scope-gate AND merge-precondition)
-    so the held-merge result shape stays defined in exactly one place.
+    so the held-merge result shape stays defined in exactly one place. Carries
+    ``escalation_kind = "substrate"`` when the held CLEAR is substrate, so the
+    loop edge pings the owner ONCE and holds (ping-and-hold) — and only on
+    substrate, never on every held merge.
     """
-    return {"merged": False, "escalated": True, "pr_id": int(clear.pr_id), "slug": clear.slug, "error": error}
+    return {
+        "merged": False,
+        "escalated": True,
+        "pr_id": int(clear.pr_id),
+        "slug": clear.slug,
+        "error": error,
+        "escalation_kind": "substrate" if clear.is_substrate() else "",
+    }
 
 
 def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKeystoneResult | None:

@@ -76,6 +76,38 @@ def fetch_pr_is_draft(slug: str, pr_id: int, *, host_kind: str = "github") -> bo
     return _code_host_for(host_kind).fetch_pr_is_draft(slug=slug, pr_id=pr_id)
 
 
+def fetch_pr_changed_paths(slug: str, pr_id: int, *, host_kind: str = "github") -> list[str]:
+    """The PR/MR's changed file paths — feeds the path-based substrate detector.
+
+    Delegates to the registry-resolved :class:`CodeHostBackend` (GitHub reads
+    ``gh pr view --json files``; GitLab the MR ``diffs`` API). A forge error
+    degrades to an empty list — the path detector is an ADD-ON to the recorded
+    ``blast_class`` label (it can only widen substrate, never narrow it), so a
+    missing diff never weakens the existing label-based gate.
+    """
+    return _code_host_for(host_kind).fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
+
+
+def attach_touched_paths(clear: object, *, slug: str, pr_id: int, host_kind: str) -> None:
+    """Populate ``clear.touched_paths`` from the forge's live changed-file list.
+
+    Best-effort: a non-``MergeClear`` *clear* (the gate handles that refusal) or a
+    forge error degrades to leaving ``touched_paths`` empty. The path detector can
+    only WIDEN substrate over the recorded ``blast_class``, never narrow it, so a
+    missing diff never weakens the existing label-based substrate gate.
+    """
+    from teatree.core.models import MergeClear  # noqa: PLC0415
+
+    if not isinstance(clear, MergeClear):
+        return
+    try:
+        paths = fetch_pr_changed_paths(slug, pr_id, host_kind=host_kind)
+    except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
+        logger.debug("ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands", slug, pr_id)
+        return
+    clear.touched_paths = tuple(paths)
+
+
 class _RollupEntry(TypedDict, total=False):
     """One ``gh ... statusCheckRollup`` entry — CheckRun or StatusContext."""
 

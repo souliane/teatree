@@ -59,6 +59,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     record_mergeable_notified,
     red_checks_are_all_repo_state,
 )
+from teatree.loop.scanners.pr_sweep_substrate import SubstratePinger, ping_substrate_hold
 from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGE_STATE,
     GH_CONFLICT_MERGEABLE,
@@ -116,8 +117,13 @@ class PrApiClient(Protocol):
 class MergeKeystone(Protocol):
     """Adapter over ``call_command('ticket', 'merge', ...)`` — mockable."""
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
-        """Return ``(merged, merged_sha, error)`` — ``error`` is the rejection reason."""
+    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+        """Return ``(merged, merged_sha, error, escalation_kind)``.
+
+        ``error`` is the rejection reason; ``escalation_kind`` is ``"substrate"``
+        when the refusal is a substrate sign-off hold (else empty) so the loop
+        pings the owner ONLY on substrate.
+        """
         ...  # pragma: no branch
 
 
@@ -222,6 +228,11 @@ class PrSweepScanner:
     #: too, and a colleague's PR must never be auto-scheduled for review. Empty
     #: means no PR is confirmable as ours, so nothing is armed (fail closed).
     self_identities: tuple[str, ...] = ()
+    #: Bot→user DM seam for a HELD substrate merge (ping-and-hold). ``None`` keeps
+    #: the legacy log-only behaviour; ``scanner_factories`` wires the production
+    #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
+    #: substrate diff (deduped via the BotPing ledger on the per-diff key).
+    substrate_pinger: "SubstratePinger | None" = None
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -505,7 +516,7 @@ class PrSweepScanner:
             return False
 
     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
-        merged, merged_sha, error = self.keystone.merge_clear(clear_id=int(clear.pk))
+        merged, merged_sha, error, escalation_kind = self.keystone.merge_clear(clear_id=int(clear.pk))
         if merged:
             self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
             return MergeAttempt(
@@ -532,6 +543,8 @@ class PrSweepScanner:
                     merged_sha=fallback_sha,
                     reason="fallback_uv_audit_gh",
                 )
+        if escalation_kind == "substrate":
+            ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
