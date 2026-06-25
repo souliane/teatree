@@ -1,7 +1,12 @@
-"""Decompose a video into frames for visual analysis.
+"""Decompose a video into frames for visual analysis, or verify its quality.
 
-Extracts frames from a video file at a fixed interval using ffmpeg,
-producing numbered PNG images that an AI agent can read and analyze.
+Default mode extracts frames from a video file at a fixed interval using
+ffmpeg, producing numbered PNG images that an AI agent can read and analyze.
+
+``--verify`` mode runs the deterministic ``teatree.core.video_evidence`` check
+(leading blank/static pre-roll budget) and exits non-zero on failure — the same
+gate ``e2e post-test-plan`` machine-enforces — so a human or agent can check a
+recording directly before posting it.
 
 Supports local files and URLs (downloaded first via curl).
 """
@@ -70,6 +75,39 @@ def _download_url(url: str, dest: Path) -> Path:
     return local
 
 
+def _resolve_local_source(source: str) -> Path:
+    """Resolve *source* to a local path, downloading a URL into a temp dir first."""
+    if source.startswith(("http://", "https://")):
+        _check_ffmpeg()
+        tmp_dir = Path(tempfile.mkdtemp(prefix="t3_video_verify_"))
+        return _download_url(source, tmp_dir)
+    path = Path(source).expanduser().resolve()
+    if not path.exists():
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        raise typer.Exit(1)
+    return path
+
+
+def _run_verify(source: str, *, max_dead_lead: float) -> None:
+    """Run the deterministic video-evidence check and exit non-zero on failure."""
+    from teatree.core.video_evidence import DEFAULT_MAX_DEAD_LEAD_SECONDS, check_video_evidence
+
+    video_path = _resolve_local_source(source)
+    budget = max_dead_lead if max_dead_lead > 0 else DEFAULT_MAX_DEAD_LEAD_SECONDS
+    report = check_video_evidence(video_path, max_dead_lead_seconds=budget)
+    if report.skipped:
+        print(f"SKIPPED: {report.detail}", file=sys.stderr)
+        return
+    print(f"Video: {video_path.name}")
+    print(f"Duration: {report.duration:.1f}s")
+    print(f"Leading dead pre-roll: {report.dead_lead_seconds:.1f}s (budget {budget:.1f}s)")
+    if report.ok:
+        print("PASS: no excessive blank/static pre-roll.")
+        return
+    print(f"FAIL: {report.detail}", file=sys.stderr)
+    raise typer.Exit(1)
+
+
 @app.command()
 def main(  # noqa: PLR0913, PLR0917
     source: str = typer.Argument(help="Video file path or URL"),
@@ -103,13 +141,31 @@ def main(  # noqa: PLR0913, PLR0917
         "-t",
         help="Scene change threshold 0.0-1.0 (only with --scene)",
     ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Run the deterministic leading-dead-frame check and exit non-zero on failure",
+    ),
+    max_dead_lead: float = typer.Option(
+        0.0,
+        "--max-dead-lead",
+        help="Override the leading blank/static pre-roll budget in seconds (only with --verify)",
+    ),
 ) -> None:
-    """Decompose a video into frames for AI agent analysis.
+    """Decompose a video into frames for AI agent analysis, or verify its quality.
 
-    Extracts frames at a fixed interval (default: 1 per second) or at
-    scene changes. Outputs numbered PNGs and prints their paths so the
-    agent can read them with the Read tool.
+    Default: extracts frames at a fixed interval (default: 1 per second) or at
+    scene changes, prints numbered PNG paths the agent can Read.
+
+    ``--verify``: runs the deterministic ``teatree.core.video_evidence`` check
+    (leading blank/static pre-roll budget) and exits non-zero when the recording
+    opens with too much dead pre-roll — the same gate ``e2e post-test-plan``
+    enforces.
     """
+    if verify:
+        _run_verify(source, max_dead_lead=max_dead_lead)
+        return
+
     ffmpeg_path = _check_ffmpeg()
 
     # Resolve output directory

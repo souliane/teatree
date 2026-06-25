@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h3-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The video fails the legibility gate (H3): ~40s blank pre-roll and an unclear final frame. Recording a HOLD with the punch-list."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7788 e2e-8648 --reviewed-sha aabbccddeeff00112233445566778899aabbccdd --verdict hold --reviewer-identity reviewer-bot --findings-json /tmp/findings.json", "description": "record HOLD — H3 evidence legibility fails"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded hold"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

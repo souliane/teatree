@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from teatree.core import test_plan_validation as _tpv
+from teatree.core import video_evidence as _vev
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.management.commands._test_plan_render import (
@@ -218,14 +219,12 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: 
 def _preflight_images(manifest: TestPlanManifest, *, skip: bool, allow_no_video: bool) -> None:
     """Run the deterministic media preflight; re-raise a hard failure for the single catch arm.
 
-    Refuses (fail-loud) on a missing red box, a byte-identical duplicate, or a
-    stills-only manifest (screenshots but no video on any present side) by
-    re-raising the :class:`TestPlanImageValidationError` as an
-    :class:`TestPlanValidationError` so the command's existing single
-    ``except TestPlanValidationError`` arm exits non-zero before any upload.
-    Staleness warnings never refuse — they are logged loudly and the post
-    proceeds. ``skip`` bypasses the image gates; ``allow_no_video`` is the
-    stills-only escape (both user-authorised, the agent never sets them itself).
+    Refuses (fail-loud) on a missing red box, a byte-identical duplicate, a
+    stills-only manifest, or a video with excessive blank/static pre-roll
+    (:mod:`teatree.core.video_evidence`; ffmpeg-absent skips cleanly) — re-raising
+    as a :class:`TestPlanValidationError` so the command's single arm exits
+    non-zero before any upload. ``skip`` bypasses image AND video gates;
+    ``allow_no_video`` is the stills-only escape (both user-authorised).
     """
     wfs = [wf for side in (manifest.dev, manifest.local) if side.present for wf in side.workflows.values()]
     try:
@@ -233,7 +232,8 @@ def _preflight_images(manifest: TestPlanManifest, *, skip: bool, allow_no_video:
         _tpv.refuse_stills_only(
             has_image=any(wf.images for wf in wfs), has_video=any(wf.video for wf in wfs), allow_no_video=allow_no_video
         )
-    except _tpv.TestPlanImageValidationError as exc:
+        _vev.validate_manifest_videos([wf.video for wf in wfs if wf.video is not None], skip=skip)
+    except (_tpv.TestPlanImageValidationError, _vev.VideoEvidenceError) as exc:
         raise TestPlanValidationError(str(exc)) from exc
     for warning in warnings:
         _log.warning(warning)

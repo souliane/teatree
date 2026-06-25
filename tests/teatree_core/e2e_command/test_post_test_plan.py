@@ -19,6 +19,8 @@ on-behalf half asserts the gate stays in front of the post.
 """
 
 import json
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -544,6 +546,109 @@ class TestNoVideoGateAtCommand(TestCase):
     def test_manifest_with_a_video_passes(self) -> None:
         self._ticket()
         flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video=True))
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+
+def _blank_preroll_webm(path: Path) -> str:
+    """Render a REAL video that opens with ~8s of solid-black pre-roll, then motion.
+
+    This is the recurrence under test: a recording the author started long before
+    the interaction began, so the post path's video-evidence gate must refuse it.
+    Returns the path as a string for a manifest ``video`` slot.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg is not None
+    black = path.with_name("black.mp4")
+    moving = path.with_name("moving.mp4")
+    sources = (
+        ("color=c=black:size=160x120:rate=10", black, 8.0),
+        ("testsrc=size=160x120:rate=10", moving, 4.0),
+    )
+    for src, dst, dur in sources:
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "lavfi", "-i", f"{src}:duration={dur}", "-pix_fmt", "yuv420p", str(dst)],
+            check=True,
+            capture_output=True,
+        )
+    concat = path.with_name("concat.txt")
+    concat.write_text(f"file '{black}'\nfile '{moving}'\n", encoding="utf-8")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(path)],
+        check=True,
+        capture_output=True,
+    )
+    return str(path)
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed",
+)
+class TestVideoPrerollGateAtCommand(TestCase):
+    """``build_validated_post`` REFUSES a manifest whose video opens with blank pre-roll."""
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._tmp = tmp_path
+        monkeypatch.setattr(
+            _test_plan,
+            "resolve_worktree",
+            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
+        )
+
+    def _ticket(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
+
+    def _manifest(self, video_path: str) -> str:
+        return json.dumps(
+            {
+                "ticket": "8521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [
+                    {
+                        "workflow": "Login",
+                        "local": {"images": [str(_red_boxed_png(self._tmp / "a.png"))], "video": video_path},
+                    }
+                ],
+            },
+        )
+
+    def test_blank_preroll_video_is_refused(self) -> None:
+        self._ticket()
+        video = _blank_preroll_webm(self._tmp / "blank.mp4")
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video))
+        with pytest.raises(_test_plan.TestPlanValidationError, match=r"(?i)pre-roll"):
+            _test_plan.build_validated_post(flags)
+
+    def test_skip_validation_lets_a_blank_preroll_video_through(self) -> None:
+        self._ticket()
+        video = _blank_preroll_webm(self._tmp / "blank2.mp4")
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video), skip_validation=True)
+        post = _test_plan.build_validated_post(flags)
+        assert post.issue_url == _ISSUE_URL
+
+    def test_tight_video_passes(self) -> None:
+        self._ticket()
+        tight = self._tmp / "tight.mp4"
+        subprocess.run(
+            [
+                shutil.which("ffmpeg") or "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=10:duration=8",
+                "-pix_fmt",
+                "yuv420p",
+                str(tight),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(str(tight)))
         post = _test_plan.build_validated_post(flags)
         assert post.issue_url == _ISSUE_URL
 

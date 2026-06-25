@@ -451,6 +451,24 @@ Before claiming E2E success or posting screenshots as evidence, **visually inspe
 - **Feature element not visible:** The screenshot must show the specific UI element being tested. Use `element.scrollIntoViewIfNeeded()` before screenshots.
 - **Blank or transition-frame page:** Indicates the settle wait was insufficient — fail the step, do not post.
 
+### Video Sanity Check (Non-Negotiable)
+
+The same evidence bar the "Screenshot Sanity Check" enforces on stills applies to the **recorded video** — and it is the one a recent failure slipped through: a test-plan video with ~40s of blank pre-roll (out of 69.7s) and an unclear final frame was posted to a customer ticket and neither the author nor the e2e-review gate caught it, because the post path machine-enforced screenshot quality but had **zero** check on the video.
+
+The captured recording must:
+
+- **Start the interaction promptly** — no significant blank/static pre-roll. Begin the recording right before the interaction starts; do **not** record dead setup time (waiting on a login, a cold-loading SPA, an idle page) and leave it at the head of the clip. A recording that opens on a frozen or black screen for many seconds reads as a broken capture, not evidence.
+- **End on a clearly-framed final state** showing the asserted outcome — hold the final frame on the result the test verifies (the rendered field, the confirmation screen, the computed value), settled and unambiguous, so the last thing a reviewer sees is the proof. Do not let the recording cut mid-transition or end on a navigation/blank frame.
+
+The deterministic check is `teatree.core.video_evidence` (mirroring `teatree.core.test_plan_validation` for stills) — it shells ffprobe/ffmpeg to measure the leading blank/static run and refuses an over-budget pre-roll. Run it directly on any recording before posting:
+
+```bash
+# Verify one recording (exits non-zero on excessive blank/static pre-roll):
+uv run python scripts/analyze_video.py artifacts/<TICKET>/local/run.webm --verify
+```
+
+This check is **machine-enforced by `post-test-plan`**: `t3 <overlay> e2e post-test-plan` runs `check_video_evidence` over every manifest `video` alongside the image gates and **refuses the post** (naming the dead-lead seconds) when a recording opens with excessive pre-roll — so a dead-lead video can never reach the ticket. When ffmpeg is absent the check skips cleanly (it never blocks a post merely because the host lacks ffmpeg); `--skip-validation` is the user-authorised bypass (the agent never sets it itself). The final-frame clarity is the author's discipline — capture so the recording holds the asserted end-state, then `--verify` the head.
+
 ### Store Contamination Check
 
 E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from prior navigation. Each test must start from a clean state — navigate directly to the page under test. Empty dropdowns/lists are a red flag.
@@ -472,14 +490,14 @@ A single E2E pass is not self-driving: it can go green vacuously, miss an accept
 ### The loop as FSM edges (max 5 iterations per ticket)
 
 1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with Claude in Chrome where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
-2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): both hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
-3. **VERIFIED** — `score ≥ threshold` AND both hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
+2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): all three hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
+3. **VERIFIED** — `score ≥ threshold` AND all hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
 4. **BLOCKED** — a **hard external gate** blocks (no broker account and local can't substitute; a broken login with no available fix; a result observable nowhere programmatically — the rubric's `BLOCKED(<named-gate>)`). Terminal: surface the **named gate** to the user, post **nothing caveated**, exit. Do not loop.
 5. **HOLD** — below threshold (and fixable). The FSM loops **back to the `test`/e2e phase** (`e2e_reviewing --/next--> e2e`): a fresh `/t3:e2e` that applies the top rubric `findings` — fix spec brittleness, add the missing-AC assertions, fix the bug, de-flake — then re-scores. Re-loop.
 
 ### Terminal states (never loop forever)
 
-- **VERIFIED** (`score ≥ threshold`, both hard gates pass) — the clean test plan is posted, the rubric score recorded.
+- **VERIFIED** (`score ≥ threshold`, all hard gates pass) — the clean test plan is posted, the rubric score recorded.
 - **BLOCKED(named gate)** — a genuinely-unreachable feature (manual-only/no-API, infra-gated). The named gate is surfaced to the user; no caveated note is posted.
 - **MAX_ITERATIONS** (5 verify↔review rounds without VERIFIED) — stop and report the **best score reached** and the **precise remaining gap** (the specific rubric criteria/findings still short of threshold). Do not silently keep looping.
 
