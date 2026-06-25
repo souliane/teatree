@@ -10,11 +10,12 @@ ENFORCES the binding escalation rule.
 
 THE BINDING RULE. When a rule that ALREADY has a durable memory is violated AGAIN
 (``is_recurrence``), the remediation MUST be a gate or an eval, NEVER another
-memory. :func:`escalate_recurrences` files ONE deduped ``needs-triage`` ticket per
-recurring rule that PRESCRIBES the structural fix (a PreToolUse/Stop gate, a
-deterministic config self-check, or an anti-vacuous ``under_load`` eval) — it
-never proposes writing more prose. That is the operationalisation of
-``feedback_instruction_compliance_is_the_root_kpi``.
+memory. :func:`escalate_recurrences` drives ONE deduped umbrella checkbox +
+scheduled coding task per recurring rule (via ``umbrella_ledger.promote_gap``) that
+PRESCRIBES the structural fix (a PreToolUse/Stop gate, a deterministic config
+self-check, or an anti-vacuous ``under_load`` eval) and carries it to a MERGED fix
+under the standing umbrella issue — it never proposes writing more prose. That is
+the operationalisation of ``feedback_instruction_compliance_is_the_root_kpi``.
 
 The detector reuses :func:`teatree.loops.dream.transcript_extract.looks_like_user_correction`
 rather than re-implementing correction detection: a user-correction turn is the
@@ -44,8 +45,8 @@ from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES, UMBRE
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
 
 #: Where a reclassified recurring MEMORY_ONLY cluster is sent instead of a memory
-#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and files an
-#: enforcement ticket rather than re-promoting another memory.
+#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and drives an
+#: umbrella checkbox + scheduled gate/eval fix rather than re-promoting another memory.
 _RECURRENCE_CORE_DESTINATION = "src/teatree/loops/dream/compliance.py"
 
 #: The gap-key namespace for a compliance recurrence on the umbrella ledger, keyed
@@ -116,11 +117,12 @@ class ComplianceSnapshotResult:
 
 @dataclass(frozen=True, slots=True)
 class EscalationOutcome:
-    """The result of escalating one recurring rule to an enforcement ticket.
+    """The result of driving one recurring rule onto the standing umbrella issue.
 
-    ``filed`` is True only when a NEW issue was created; ``ticket_url`` is the
-    linked issue (newly filed OR a reused open dedup match); ``withheld`` is True
-    when the rendered body would leak a banned term / bare reference.
+    ``filed`` is True when a new umbrella checkbox was added OR a coding task was
+    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL;
+    ``withheld`` is True when the rendered body would leak a banned term / bare
+    reference.
     """
 
     rule_identity: str
@@ -273,9 +275,9 @@ def reclassify_recurring_memory_clusters(
     produce ANOTHER memory. So a cluster destined for a memory file
     (:func:`_is_memory_only`) whose cited slug already shows a recurrence in the
     audit ledger is reclassified to a teatree-core destination — Pass-2 triage then
-    reads it as a core gap and files an enforcement ticket instead of re-promoting a
-    memory. A cluster already destined for a core path, or whose rule has no
-    recurrence on record, is returned untouched.
+    reads it as a core gap and drives an umbrella checkbox + scheduled gate/eval fix
+    instead of re-promoting a memory. A cluster already destined for a core path, or
+    whose rule has no recurrence on record, is returned untouched.
     """
     recurring = _recurring_rule_slugs()
     if not recurring:
