@@ -11,6 +11,7 @@ from typing import cast
 import typer
 from claude_agent_sdk.types import EffortLevel
 
+from teatree.cli.eval.escalate import EscalationConfig
 from teatree.eval.backends import API_BACKEND
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
@@ -48,6 +49,34 @@ def require_api_backend_for_fresh_run(*, backend: str, trials: int, models: str 
         err=True,
     )
     raise typer.Exit(code=2)
+
+
+def resolve_escalation(
+    *, escalate_on_fail: bool, escalate_trials: int, trials: int, models: str | None
+) -> EscalationConfig | None:
+    """Validate ``--escalate-on-fail`` and return its config, or ``None`` when off.
+
+    Escalation only makes sense on the single-trial lane (``--trials 1``, no
+    ``--models``): the multi-trial and matrix shapes already aggregate across
+    trials, so re-running their failures would double-count. A request to escalate
+    a multi-trial/matrix run is a usage error (exit 2). ``escalate_trials`` must be
+    ``>= 2`` — a single escalation trial is no escalation.
+    """
+    if not escalate_on_fail:
+        return None
+    if trials > 1 or models is not None:
+        typer.echo(
+            "--escalate-on-fail applies to the single-trial lane only; --trials>1 and --models "
+            "already aggregate across trials. Drop --escalate-on-fail or drop --trials/--models.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if escalate_trials < 2:  # noqa: PLR2004 — one trial is no escalation; the single trial already ran it.
+        typer.echo(
+            f"--escalate-trials must be >= 2 (got {escalate_trials}); a single trial is no escalation.", err=True
+        )
+        raise typer.Exit(code=2)
+    return EscalationConfig(escalate_trials=escalate_trials)
 
 
 def reject_unsupported_run_output(

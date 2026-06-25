@@ -12,13 +12,16 @@ transcript-html branch.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from teatree.cli.eval.app_helpers import write_single_trial_reports
-from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
+from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
+from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.llm.credentials import AnthropicApiKeyCredential
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
 
@@ -88,7 +91,13 @@ def _run_with(monkeypatch: pytest.MonkeyPatch, run_for) -> None:
     )
 
 
-def _call(specs: list[EvalSpec], *, transcript_html: Path | None, summary_md: Path | None) -> None:
+def _call(
+    specs: list[EvalSpec],
+    *,
+    transcript_html: Path | None,
+    summary_md: Path | None,
+    escalation: EscalationConfig | None = None,
+) -> None:
     run_single_trial(
         specs,
         backend="transcript",
@@ -104,6 +113,7 @@ def _call(specs: list[EvalSpec], *, transcript_html: Path | None, summary_md: Pa
         transcript_html=transcript_html,
         summary_md=summary_md,
         gates=_NO_GATES,
+        escalation=escalation,
     )
 
 
@@ -159,6 +169,101 @@ def _result(name: str, *, passed: bool) -> ScenarioResult:
         matcher_results=(MatcherResult(matcher=matcher, passed=passed, message="" if passed else "no match"),),
         skipped=False,
     )
+
+
+class TestMakeEscalationRunner:
+    def test_builds_a_metered_api_runner_carrying_the_lane_effort(self) -> None:
+        # Escalation always RUNS the model fresh, so it is the metered api backend
+        # regardless of the initial backend, and it carries the lane effort.
+        with patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"):
+            runner = make_escalation_runner(max_budget_usd=2.0, effort="high")
+        assert isinstance(runner, ApiInProcessRunner)
+
+
+class _EscalationStubRunner:
+    """A metered escalation runner — maps a scenario name to a queue of pass/fail verdicts."""
+
+    def __init__(self, scripts: dict[str, list[bool]]) -> None:
+        self._iters = {name: iter(verdicts) for name, verdicts in scripts.items()}
+        self.calls: dict[str, int] = {}
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        self.calls[spec.name] = self.calls.get(spec.name, 0) + 1
+        passed = next(self._iters[spec.name])
+        # A metered trial bills a non-zero cost so the unmetered-$0 guard stays green.
+        return _passing_run(spec.name) if passed else _failing_run(spec.name)
+
+
+def _arm_escalation_runner(monkeypatch: pytest.MonkeyPatch, scripts: dict[str, list[bool]]) -> _EscalationStubRunner:
+    runner = _EscalationStubRunner(scripts)
+    monkeypatch.setattr(
+        "teatree.cli.eval.single_trial.make_escalation_runner",
+        lambda **_k: runner,
+    )
+    return runner
+
+
+class TestRunSingleTrialEscalation:
+    def test_flaky_escalation_stays_green(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Trial 1 fails; the escalation has a passing trial → flaky, NOT a hard red.
+        _run_with(monkeypatch, _failing_run)
+        runner = _arm_escalation_runner(monkeypatch, {"alpha": [True, False, False]})
+        summary = tmp_path / "summary.md"
+        # No SystemExit: a flaky-but-passing scenario does not red the lane.
+        _call(
+            [_spec("alpha")],
+            transcript_html=None,
+            summary_md=summary,
+            escalation=EscalationConfig(escalate_trials=3),
+        )
+        assert runner.calls == {"alpha": 3}
+        body = summary.read_text(encoding="utf-8")
+        assert "flaky" in body.lower()
+
+    def test_confirmed_escalation_reds_the_lane(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Trial 1 fails; every escalation trial fails too → confirmed, hard red.
+        _run_with(monkeypatch, _failing_run)
+        runner = _arm_escalation_runner(monkeypatch, {"alpha": [False, False, False]})
+        summary = tmp_path / "summary.md"
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [_spec("alpha")],
+                transcript_html=None,
+                summary_md=summary,
+                escalation=EscalationConfig(escalate_trials=3),
+            )
+        assert exc.value.code == 1
+        assert runner.calls == {"alpha": 3}
+        assert "confirmed" in summary.read_text(encoding="utf-8").lower()
+
+    def test_passing_trial_one_never_escalates(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # An all-green trial-1 run never spends escalation trials — the cheap path.
+        _run_with(monkeypatch, _passing_run)
+        runner = _arm_escalation_runner(monkeypatch, {})
+        _call(
+            [_spec("alpha")],
+            transcript_html=None,
+            summary_md=tmp_path / "summary.md",
+            escalation=EscalationConfig(escalate_trials=3),
+        )
+        assert runner.calls == {}
+
+    def test_flaky_escalation_without_a_summary_path_still_stays_green(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The summary_md=None branch: a flaky escalation must not red and must not
+        # try to write a missing summary file.
+        _run_with(monkeypatch, _failing_run)
+        _arm_escalation_runner(monkeypatch, {"alpha": [True, False, False]})
+        _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=EscalationConfig(escalate_trials=3))
+
+    def test_no_escalation_config_reds_immediately_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Without escalation, a trial-1 failure reds the lane with no re-run — the
+        # legacy single-trial behaviour is unchanged when escalation is off.
+        _run_with(monkeypatch, _failing_run)
+        with pytest.raises(SystemExit) as exc:
+            _call([_spec("alpha")], transcript_html=None, summary_md=tmp_path / "summary.md", escalation=None)
+        assert exc.value.code == 1
 
 
 class TestWriteSingleTrialReports:

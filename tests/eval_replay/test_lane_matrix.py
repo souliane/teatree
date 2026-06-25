@@ -28,6 +28,7 @@ _SPEC.loader.exec_module(_MOD)
 
 _lanes_for = _MOD._lanes_for
 _matrix_for = _MOD._matrix_for
+_efforts_for = _MOD._efforts_for
 main = _MOD.main
 
 
@@ -90,6 +91,50 @@ class TestMatrixFor:
             assert len(shard_specs) <= max_scenarios_per_shard(entry["lane"])
 
 
+class TestEffortsFor:
+    def test_empty_efforts_is_the_no_axis_sentinel(self) -> None:
+        # No --efforts → a single None tier, so the matrix keeps the legacy
+        # {lane, shard} shape (no effort axis, no behaviour change).
+        assert _efforts_for("") == [None]
+
+    def test_explicit_three_tier_matrix(self) -> None:
+        assert _efforts_for("low,medium,high") == ["low", "medium", "high"]
+
+    def test_blank_entries_dropped(self) -> None:
+        assert _efforts_for("low,,high") == ["low", "high"]
+
+    def test_unknown_effort_fails_loud(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            _efforts_for("low,bogus")
+        assert "bogus" in str(exc.value)
+
+
+class TestMatrixForWithEfforts:
+    def test_no_effort_axis_keeps_the_legacy_lane_shard_shape(self) -> None:
+        for entry in _matrix_for("", efforts=""):
+            assert set(entry) == {"lane", "shard"}
+
+    def test_three_tier_axis_multiplies_each_leg_across_efforts(self) -> None:
+        base = _matrix_for("under_load", efforts="")
+        tiered = _matrix_for("under_load", efforts="low,medium,high")
+        # Each {lane, shard} leg appears once per effort tier.
+        assert len(tiered) == len(base) * 3
+        for entry in tiered:
+            assert set(entry) == {"lane", "shard", "effort"}
+            assert entry["effort"] in {"low", "medium", "high"}
+        # Every (lane, shard) base leg is present at all three tiers.
+        for leg in base:
+            for tier in ("low", "medium", "high"):
+                assert {**leg, "effort": tier} in tiered
+
+    def test_every_tiered_leg_is_budget_safe(self) -> None:
+        specs = discover_specs()
+        for entry in _matrix_for("", efforts="low,medium,high"):
+            lane_specs = [s for s in specs if s.lane == entry["lane"]]
+            shard_specs = filter_specs_by_shard(lane_specs, entry["shard"])
+            assert len(shard_specs) <= max_scenarios_per_shard(entry["lane"])
+
+
 class TestMain:
     def test_empty_lane_prints_every_leg_as_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         code = main([])
@@ -104,6 +149,17 @@ class TestMain:
         printed = json.loads(capsys.readouterr().out)
         assert {e["lane"] for e in printed} == {CLEAN_ROOM_LANE}
 
+    def test_efforts_flag_emits_the_effort_axis(self, capsys: pytest.CaptureFixture[str]) -> None:
+        code = main(["--lane", "under_load", "--efforts", "low,medium,high"])
+        assert code == 0
+        printed = json.loads(capsys.readouterr().out)
+        assert all(set(entry) == {"lane", "shard", "effort"} for entry in printed)
+        assert {e["effort"] for e in printed} == {"low", "medium", "high"}
+
     def test_unknown_lane_exits_non_zero(self) -> None:
         with pytest.raises(SystemExit):
             main(["--lane", "bogus"])
+
+    def test_unknown_effort_exits_non_zero(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["--efforts", "low,bogus"])

@@ -35,6 +35,14 @@
 # NO-SILENT-GREEN
 #   `--require-executed` is passed unconditionally and `claude --version` is
 #   asserted before the eval, so a missing binary / all-skipped run fails RED.
+#
+# TRIALS — single trial + adaptive escalate-on-fail
+#   This PR lane runs `--trials 1` for fast/cheap feedback. A single LLM trial is
+#   noisy, so `--escalate-on-fail --escalate-trials 3` re-runs ONLY a failed
+#   scenario 3 more times before going red: the job goes RED only on a CONFIRMED
+#   failure (every escalation trial also failed); a scenario that recovers on any
+#   escalation trial is reported flaky-but-passing, NOT red. The common all-green
+#   PR pays nothing extra (only failures are re-run).
 # ============================================================
 
 on:
@@ -205,11 +213,14 @@ jobs:
           echo "All asserted scenarios are discovered."
       # Run ONLY the changed scenarios. `--only` is the comma-joined name list
       # from the detect job; `--trials 1` is the fast PR-lane single trial;
-      # `--require-executed` and the asserted CLI keep a no-coverage run from
-      # passing green; `--docker` routes through the CI image (auth forwarded via
-      # docker `-e`). `--transcript-html` is the PRIVATE per-trial transcript;
-      # `--summary-md` is the SANITIZED publish-safe summary — both land in
-      # $RUNNER_TEMP (the writable artifacts bind-mount), never the :ro repo mount.
+      # `--escalate-on-fail --escalate-trials 3` re-runs ONLY a failed scenario 3
+      # more times and reds the job only on a CONFIRMED failure (a recovered trial
+      # is flaky-but-passing, not red); `--require-executed` and the asserted CLI
+      # keep a no-coverage run from passing green; `--docker` routes through the CI
+      # image (auth forwarded via docker `-e`). `--transcript-html` is the PRIVATE
+      # per-trial transcript; `--summary-md` is the SANITIZED publish-safe summary
+      # (it gains the flaky/confirmed escalation table) — both land in $RUNNER_TEMP
+      # (the writable artifacts bind-mount), never the :ro repo mount.
       - name: Metered behavioral eval — only the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
@@ -221,6 +232,7 @@ jobs:
           retry_wait_seconds: 60
           command: |
             uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend api \
+              --escalate-on-fail --escalate-trials 3 \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary.md"

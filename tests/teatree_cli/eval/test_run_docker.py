@@ -53,6 +53,20 @@ class TestTranscriptHtmlPassthrough:
         assert "--no-persist" in _args(transcript_html=Path("/tmp/x.html")).passthrough()
 
 
+class TestEscalationPassthrough:
+    def test_forwards_escalate_on_fail_with_trials_into_the_container(self) -> None:
+        # The PR lane's single trial runs in --docker, so the escalation flags must
+        # cross the container boundary or the in-container run reds immediately on
+        # the first failure instead of escalating.
+        passthrough = _args(trials=1, escalate_on_fail=True, escalate_trials=3).passthrough()
+        assert "--escalate-on-fail" in passthrough
+        index = passthrough.index("--escalate-trials")
+        assert passthrough[index + 1] == "3"
+
+    def test_omits_the_flag_when_escalation_is_off(self) -> None:
+        assert "--escalate-on-fail" not in _args(trials=1, escalate_on_fail=False).passthrough()
+
+
 class TestSummaryMdPassthrough:
     def test_translates_host_path_to_the_artifacts_mount(self) -> None:
         args = _args(summary_md=Path("/home/runner/_temp/step-summary.md"))
