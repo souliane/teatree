@@ -288,6 +288,8 @@ class CodeHostBackend(Protocol):
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
+
     def merge_pr_squash_bound(
         self,
         *,

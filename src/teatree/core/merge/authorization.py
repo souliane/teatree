@@ -123,45 +123,41 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # 5. blast_class respected — substrate-class PRs are draft-locked and
-    #    require a recorded human sign-off (invariant 4 / §17.4.3 step 5). Two
-    #    things satisfy the per-PR sign-off, in this order:
-    #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
-    #         at merge time (the owner approved this exact diff), OR
-    #      b. the overlay's STANDING merge-approval grant — the owner recorded
-    #         once, in config, that this overlay merges end-to-end without a
-    #         per-PR sign-off (invariant 4 carve-out). EITHER equivalent owner
-    #         statement counts (#2666): ``autonomy = full``, OR an explicit
-    #         ``require_human_approval_to_merge = false`` on a non-collaborative
-    #         tier — see ``_overlay_grants_standing_substrate_signoff``.
-    #    Either way the AGENT executes through this same SHA-bound, audited
-    #    transition (invariant 8) — never raw ``gh``, never a human-performed
-    #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
-    #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
-    #    the carve-out; the standing grant removes ONLY the per-PR human sign-off.
+    # 5. blast_class respected — substrate-class PRs are draft-locked and require
+    #    a recorded PER-PR human sign-off (invariant 4 / §17.4.3 step 5). Substrate
+    #    is NEVER covered by the overlay's standing grant — not even at
+    #    ``autonomy = full``: the owner's directive is that substrate (merge
+    #    keystone, architecture spec, governance doc) PINGS-and-HOLDS so they
+    #    authorize every such merge. ``_overlay_grants_standing_substrate_signoff``
+    #    therefore returns ``False`` for any substrate clear (the explicit gate
+    #    that the standing grant excludes substrate), so the ONLY thing that unlocks
+    #    a substrate merge here is a per-CLEAR ``human_authorizer`` matching the
+    #    value re-presented at merge time. When unsatisfied the held clear raises
+    #    below, which the loop edge routes to the substrate-hold Slack ping. The
+    #    AGENT still executes the authorized merge through this same SHA-bound,
+    #    audited transition (invariant 8). The quality/safety floor (independent
+    #    cold-review, reviewed-SHA bind, CI-green, not-draft, never-lockout, privacy
+    #    scan) is untouched. NON-substrate changes self-merge unchanged.
     if (
         clear.is_substrate()
         and not clear.human_merge_authorized_by(presented)
         and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
     ):
         detail = (
-            "no human authoriser recorded on the CLEAR and the overlay carries no standing "
-            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
+            "no human authoriser recorded on the CLEAR — substrate is held for the owner, never auto-merged"
             if not clear.human_authorizer
             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
             if presented
-            else "no --human-authorized presented at merge time and the overlay carries no standing "
-            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
+            else "no --human-authorized presented at merge time"
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
-            f"changes require a recorded human approval and are draft-locked "
-            f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
-            f"{detail.capitalize()}. The sanctioned paths: `t3 <overlay> autonomy "
-            f"set full` (the standing owner grant), or issue `t3 <overlay> ticket "
+            f"changes are held for the owner and are draft-locked (invariant 4); the "
+            f"loop never auto-merges them, not even at autonomy=full (§17.4.3 step 5). "
+            f"{detail.capitalize()}. The sanctioned path: issue `t3 <overlay> ticket "
             f"clear … --blast-class substrate --human-authorize <id>` (a per-PR "
             f"recorded approval), then the agent executes `t3 <overlay> ticket "
-            f"merge <clear_id> [--human-authorized <id>]`"
+            f"merge <clear_id> --human-authorized <id>`"
         )
         raise MergePreconditionError(msg)
 
@@ -217,41 +213,33 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
 
 
 def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
-    """Whether the CLEAR's overlay carries a standing substrate sign-off grant (invariant 4 carve-out).
+    """Whether the overlay's standing grant covers this per-PR sign-off (invariant 4 carve-out).
 
-    Resolves the effective settings for the CLEAR's overlay
-    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings` and
-    treats the substrate per-PR human sign-off as satisfied when the owner has
-    recorded EITHER equivalent standing grant (#2666):
+    A SUBSTRATE clear is NEVER covered — it returns ``False`` immediately. The
+    owner's directive is that substrate must PING-and-HOLD, never auto-merge: a
+    substrate change (merge keystone, architecture spec, governance doc) is the
+    one class the owner sees and authorizes every time, so even at
+    ``autonomy = full`` the standing grant does not remove its per-PR human
+    sign-off. The held substrate CLEAR raises the same MergePreconditionError,
+    which the loop edge routes to the substrate-hold Slack ping.
 
-    1.  ``autonomy = full`` — the single switch that collapses every approval
-        gate, OR
-    2.  an explicit ``require_human_approval_to_merge = false`` on a
-        NON-collaborative tier — the canonical documented auto-merge knob
-        (``mode = auto`` + ``require_human_approval_to_merge = false``). This IS
-        the owner's standing "no per-PR human merge approval needed" statement,
-        the same one ``autonomy = full`` makes, so an owner who set it but left
-        ``autonomy`` at the default ``babysit`` must not have their OWN green,
-        cold-reviewed substrate CLEAR refused.
-
-    The ``notify`` collaborative tier is EXCLUDED: it also collapses
-    ``require_human_approval_to_merge`` to ``false``, but a notify-tier MR merges
-    only after a colleague approval, so its ``false`` is a tier side effect, not
-    a self-owned standing grant — its substrate CLEAR keeps the per-PR human
-    authoriser mandatory. Any other below-full tier with the merge-approval gate
-    ON, or an unresolvable overlay, is fail-closed: the per-CLEAR human authoriser
-    stays mandatory. The carve-out touches ONLY the per-PR sign-off — every other
-    substrate-merge floor guard (independent cold-review, reviewed-SHA bind,
-    CI-green, not-draft, never-lockout, privacy scan) runs unchanged.
+    The remaining resolution (the standing grant for a NON-substrate clear —
+    ``autonomy = full`` OR an explicit ``require_human_approval_to_merge = false``
+    on a non-collaborative tier, the ``notify`` tier excluded, #2666) is retained
+    so the gate stays a single named contract; non-substrate clears do not reach
+    this function from the substrate-only call site, so for them it is moot.
 
     *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
-    kwarg). It is the recovery source for a ticket-less CLEAR whose stored
-    ``slug`` is a branch name rather than ``owner/repo`` — see
-    :func:`_resolve_clear_overlay_name`.
+    kwarg) — see :func:`_resolve_clear_overlay_name`.
     """
     from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
 
+    # Substrate is excluded from the standing grant entirely (the §3.2 gate):
+    # substrate PINGS-and-HOLDS for the owner, so the standing grant never removes
+    # its per-PR human sign-off, not even at ``autonomy = full``.
+    if clear.is_substrate():
+        return False
     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
     if not overlay_name:
         return False

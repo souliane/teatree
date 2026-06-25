@@ -121,6 +121,14 @@ class GhMergeRpc:
             return [ROLLUP_QUERY_FAILED]
         return [entry for entry in rollup if isinstance(entry, dict)]
 
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "files", "--jq", ".files[].path"],
+        )
+        if rc != 0:
+            return []
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
         endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
         rc, out, err = self._run(
@@ -193,6 +201,25 @@ class GlabMergeRpc:
         if not isinstance(pipelines, list):
             return [ROLLUP_QUERY_FAILED]
         return [entry for entry in pipelines if isinstance(entry, dict)]
+
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs"])
+        if rc != 0 or not out.strip():
+            return []
+        try:
+            diffs = json.loads(out)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(diffs, list):
+            return []
+        paths: list[str] = []
+        for entry in diffs:
+            if not isinstance(entry, dict):
+                continue
+            new_path = str(entry.get("new_path") or entry.get("old_path") or "").strip()
+            if new_path:
+                paths.append(new_path)
+        return paths
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
         endpoint = f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/merge"

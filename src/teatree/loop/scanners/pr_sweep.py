@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from teatree.core.models.merge_clear import MergeClear
+from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_decision import (
     classify_checks,
@@ -116,8 +117,13 @@ class PrApiClient(Protocol):
 class MergeKeystone(Protocol):
     """Adapter over ``call_command('ticket', 'merge', ...)`` — mockable."""
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
-        """Return ``(merged, merged_sha, error)`` — ``error`` is the rejection reason."""
+    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+        """Return ``(merged, merged_sha, error, escalation_kind)``.
+
+        ``error`` is the rejection reason; ``escalation_kind`` is ``"substrate"``
+        when the refusal is a substrate sign-off hold (else empty) so the loop
+        pings the owner ONLY on substrate.
+        """
         ...  # pragma: no branch
 
 
@@ -222,6 +228,11 @@ class PrSweepScanner:
     #: too, and a colleague's PR must never be auto-scheduled for review. Empty
     #: means no PR is confirmable as ours, so nothing is armed (fail closed).
     self_identities: tuple[str, ...] = ()
+    #: Bot→user DM seam for a HELD substrate merge (ping-and-hold). ``None`` keeps
+    #: the legacy log-only behaviour; ``scanner_factories`` wires the production
+    #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
+    #: substrate diff (deduped via the BotPing ledger on the per-diff key).
+    substrate_pinger: "substrate.SubstratePinger | None" = None
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -375,6 +386,8 @@ class PrSweepScanner:
             return self._ci_block(pr, reason=ci_skip)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
+        if substrate.pr_diff_is_substrate(pr):
+            return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
         ok, merged_sha = self.api.merge_pr_squash_bound(
             slug=pr.slug,
             pr_id=pr.number,
@@ -505,7 +518,7 @@ class PrSweepScanner:
             return False
 
     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
-        merged, merged_sha, error = self.keystone.merge_clear(clear_id=int(clear.pk))
+        merged, merged_sha, error, escalation_kind = self.keystone.merge_clear(clear_id=int(clear.pk))
         if merged:
             self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
             return MergeAttempt(
@@ -516,7 +529,13 @@ class PrSweepScanner:
                 merged_sha=merged_sha,
                 reason="fallback_uv_audit" if fallback else "all_green",
             )
-        if fallback:
+        # Finding 1 (fail-open): the uv-audit-fallback raw-merge must NOT fire for a
+        # substrate CLEAR. A substrate change that lands on the fallback path (the
+        # only red check is uv-audit, red on main too) would otherwise raw-merge
+        # here BEFORE the substrate-ping check below, silently bypassing the keystone
+        # hold. Gate the escalation on the CLEAR not being substrate; a substrate
+        # CLEAR falls through to ping-and-hold instead.
+        if fallback and not clear.is_substrate():
             ok, fallback_sha = self.api.merge_pr_squash_bound(
                 slug=pr.slug,
                 pr_id=pr.number,
@@ -532,6 +551,8 @@ class PrSweepScanner:
                     merged_sha=fallback_sha,
                     reason="fallback_uv_audit_gh",
                 )
+        if escalation_kind == "substrate" or clear.is_substrate():
+            substrate.ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,

@@ -250,16 +250,17 @@ class CallCommandMergeKeystone:
 
     loop_identity: str = "merge-loop"
 
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
         from django.core.management import call_command  # noqa: PLC0415
 
         result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
         if not isinstance(result, dict):
-            return False, "", "ticket merge returned non-dict"
+            return False, "", "ticket merge returned non-dict", ""
         merged = bool(result.get("merged"))
         merged_sha = str(result.get("merged_sha") or "")
         error = str(result.get("error") or "")
-        return merged, merged_sha, error
+        escalation_kind = str(result.get("escalation_kind") or "")
+        return merged, merged_sha, error, escalation_kind
 
 
 @dataclass(slots=True)

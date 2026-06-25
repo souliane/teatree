@@ -40,7 +40,7 @@ from teatree.eval.regression_corpus_predicates import (
     _check_forge_resolves_by_host_not_token,
     _check_loop_owner_lease_pid_anchored,
     _check_merge_precondition_maker_is_not_checker,
-    _check_merge_precondition_substrate_full_autonomy,
+    _check_merge_precondition_substrate_full_autonomy_holds,
     _check_merge_precondition_substrate_human_authorize,
     _check_mr_description_first_line_validated,
     _check_private_repo_allowlist_path_segment_match,
@@ -99,10 +99,10 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         needs_db=True,
     ),
     RegressionCheck(
-        failure_class="substrate-merge full-autonomy carve-out",
+        failure_class="substrate-merge full-autonomy ping-and-hold",
         origin="https://github.com/souliane/teatree/issues/1748",
-        invariant="an autonomy=full overlay clears a ticket-less substrate CLEAR without a per-PR human sign-off",
-        predicate=_check_merge_precondition_substrate_full_autonomy,
+        invariant="an autonomy=full overlay HOLDS a substrate CLEAR with no per-PR human authorizer (ping-and-hold)",
+        predicate=_check_merge_precondition_substrate_full_autonomy_holds,
         needs_db=True,
     ),
     RegressionCheck(

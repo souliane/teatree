@@ -33,6 +33,7 @@ from teatree.core.merge.authorization import (
 )
 from teatree.core.merge.ci_rollup import (
     _code_host_for,
+    attach_touched_paths,
     fetch_live_head_sha,
     fetch_pr_is_draft,
     fetch_pr_merge_state,
@@ -180,21 +181,25 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     runs the post hook idempotently instead of re-issuing the merge — a
     lost post-hook becomes recoverable rather than a permanent brick.
 
-    The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
-    ``human_authorized`` OR the CLEAR's overlay carrying a STANDING merge-approval
-    grant. ``human_authorized`` unlocks the merge **only** when the CLEAR is
-    substrate-class AND its recorded ``human_authorizer`` matches; it can never
-    unlock a non-substrate CLEAR. The standing grant is EITHER equivalent owner
-    statement (#2666): ``autonomy = full``, OR an explicit
-    ``require_human_approval_to_merge = false`` on a non-collaborative tier (the
-    collaborative ``notify`` tier is excluded — it merges only after a colleague
-    approval; below-full tiers with the gate ON keep the per-CLEAR authoriser
-    mandatory). Either path runs the identical sanctioned ``t3`` transition
-    (invariant 8: even an owner-approved merge goes through it, never raw ``gh``).
-    The carve-out removes ONLY the per-PR sign-off — the quality/safety floor
-    (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
-    never-lockout, privacy scan) is untouched.
+    Substrate (step 5) is HELD for the owner — never covered by the standing
+    grant, not even at ``autonomy = full``: it pings-and-holds (the loop edge
+    DMs the owner). The ONLY thing that unlocks a substrate merge is a matching
+    per-CLEAR ``human_authorized`` re-presented at merge time; the AGENT then
+    executes through this same sanctioned transition (invariant 8). A substrate
+    diff is detected by EITHER the ``blast_class`` label OR the live diff paths
+    (:func:`attach_touched_paths`), so a mislabeled substrate change is still
+    held. Non-substrate self-merges through the standing grant unchanged. The
+    quality/safety floor (independent cold-review, reviewed-SHA bind, CI-green,
+    not-draft, never-lockout, privacy scan) is untouched.
     """
+    # Attach the live diff paths so the substrate authorization guard can detect
+    # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
+    # error degrades to no paths: the path detector only WIDENS substrate over the
+    # recorded ``blast_class``, never narrows it, so a missing diff never weakens
+    # the label-based gate. Set BEFORE the authorize call so the substrate branch
+    # reads it.
+    attach_touched_paths(clear, slug=slug, pr_id=pr_id, host_kind=host_kind)
+
     authorized_clear = _assert_clear_authorized(
         clear=clear,
         executing_loop_identity=executing_loop_identity,

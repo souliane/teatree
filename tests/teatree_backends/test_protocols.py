@@ -174,6 +174,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return []
 
+    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
+        _ = (slug, pr_id)
+        return []
+
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
         _ = (slug, pr_id, expected_head_oid)
         return ForgeMergeResult(returncode=0, stdout="", stderr="", merged_sha="")

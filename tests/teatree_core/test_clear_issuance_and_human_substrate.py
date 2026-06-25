@@ -671,26 +671,35 @@ def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "", slug
         )
 
 
-class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
-    """Invariant 4 carve-out: an overlay at ``autonomy = full`` is the standing human approval.
+class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
+    """Under ``autonomy = full`` a SUBSTRATE clear is HELD for the owner, never auto-merged.
 
-    The substrate per-PR sign-off is satisfied by EITHER a per-CLEAR
-    ``human_authorizer`` OR the CLEAR's overlay standing at ``autonomy = full``.
-    The quality/safety floor (independent cold-review, reviewed-SHA bind,
-    CI-green, not-draft, maker≠checker) is never relaxed by this knob — only
-    the per-PR human sign-off is what ``full`` removes.
+    The owner's directive: substrate (merge keystone, architecture spec,
+    governance doc) must PING-and-HOLD so the owner sees and authorizes every
+    such merge — even at ``autonomy = full``. The standing grant removes the
+    per-PR human sign-off only for NON-substrate changes; a substrate clear under
+    ``full`` raises the same ``MergePreconditionError`` (routed at the loop edge to
+    the substrate-hold Slack ping). The only path that merges a substrate clear is
+    a per-CLEAR ``human_authorizer`` re-presented at merge time. The quality/safety
+    floor (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
+    maker≠checker) is untouched.
     """
 
-    def test_full_autonomy_substrate_passes_without_human_authorizer(self) -> None:
-        """MUST-ALLOW: full + substrate + reviewer!=maker + green + not-draft + no authorizer."""
+    def test_full_autonomy_substrate_is_held_without_human_authorizer(self) -> None:
+        """MUST-DENY: full + substrate + no authorizer is HELD (the standing grant excludes substrate)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _substrate_clear(ticket)
-        with _overlay_autonomy("t3-teatree", "full"):
-            precheck = _assert_preconditions(clear)
-        assert precheck is not None
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
 
-    def test_full_autonomy_substrate_merges_end_to_end_without_human_authorizer(self) -> None:
-        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
+    def test_full_autonomy_substrate_is_held_end_to_end_no_auto_merge(self) -> None:
+        """MUST-DENY end-to-end: the keystone merge HOLDS the substrate clear and leaves the FSM untouched.
+
+        Pins the regression the fix closes: before the fix, ``autonomy = full``
+        auto-merged this substrate clear SILENTLY (``merged`` True, FSM advanced,
+        no ping). Now it is held (``merged`` False, escalated) so the loop edge can
+        ping the owner.
+        """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _substrate_clear(ticket, pr_id=1731)
         with (
@@ -703,9 +712,19 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
             )
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert result["merged"]
-        assert ticket.state == Ticket.State.MERGED
-        assert clear.consumed_at is not None
+        assert result["merged"] is False
+        assert result["escalated"] is True
+        assert result["escalation_kind"] == "substrate"
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+
+    def test_full_autonomy_substrate_with_human_authorizer_still_merges(self) -> None:
+        """MUST-ALLOW: a per-CLEAR ``human_authorizer`` re-presented at merge is the unchanged substrate path."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1730, human_authorizer="owner:adrien")
+        with _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
+        assert precheck is not None
 
     def test_notify_autonomy_substrate_without_authorizer_still_refused(self) -> None:
         """MUST-DENY: notify (not full) keeps the per-PR human authorizer mandatory."""
@@ -735,12 +754,17 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
         ):
             _assert_preconditions(clear)
 
-    def test_full_autonomy_does_not_relax_sha_bind_floor(self) -> None:
-        """MUST-DENY: full + head moved off reviewed_sha still refuses — the SHA bind is intact."""
+    def test_human_authorized_substrate_does_not_relax_sha_bind_floor(self) -> None:
+        """MUST-DENY: a human-authorized substrate clear with head moved off reviewed_sha still refuses.
+
+        The SHA-bind floor runs AFTER the substrate sign-off, so it is exercised
+        with the per-CLEAR human authoriser present (the only substrate-merge
+        path); the bind still fails closed on a moved head.
+        """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40)
+        clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="head moved"):
-            _assert_preconditions(clear)
+            _assert_preconditions(clear, human_authorized="owner:adrien")
 
     def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
         """MUST-DENY: full + non-green recorded verdict still refuses — the CI floor is intact."""
@@ -795,20 +819,18 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
         assert precheck is not None
 
-    def test_full_autonomy_substrate_passes_for_ticketless_clear_via_slug(self) -> None:
-        """MUST-ALLOW: a ticket-less CLEAR resolves its overlay from ``slug`` (the loop's common case)."""
+    def test_full_autonomy_substrate_is_held_for_ticketless_clear_via_slug(self) -> None:
+        """MUST-DENY: a ticket-less CLEAR whose slug resolves to the full overlay is STILL held (substrate)."""
         clear = _substrate_clear(None, pr_id=1740, slug="souliane/teatree")
-        with _overlay_autonomy("t3-teatree", "full"):
-            precheck = _assert_preconditions(clear)
-        assert precheck is not None
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
 
-    def test_full_autonomy_substrate_passes_when_ticket_overlay_is_canonical_alias(self) -> None:
-        """MUST-ALLOW: ``ticket.overlay`` short alias resolves the entry-point-keyed override."""
+    def test_full_autonomy_substrate_is_held_when_ticket_overlay_is_canonical_alias(self) -> None:
+        """MUST-DENY: a ``ticket.overlay`` alias resolving to the full overlay is STILL held (substrate)."""
         ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.IN_REVIEW)
         clear = _substrate_clear(ticket, pr_id=1741)
-        with _overlay_autonomy("t3-teatree", "full"):
-            precheck = _assert_preconditions(clear)
-        assert precheck is not None
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
 
     def test_babysit_autonomy_ticketless_clear_still_refused(self) -> None:
         """MUST-DENY: a ticket-less CLEAR under a below-full overlay keeps the per-PR sign-off."""
@@ -824,32 +846,23 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
 
 
 class TestBranchSlugClearResolvesOverlayFromRecoveredRepo(TestCase):
-    """A branch-name-slug CLEAR resolves its overlay from the merge's recovered repo.
+    """A branch-name-slug substrate CLEAR is held under ``full`` regardless of recovered repo.
 
     The loop issues ticket-less substrate CLEARs whose stored ``slug`` is a
     *branch name* (``merge-candidate-working-repos``), not ``owner/repo``. The
-    merge keystone recovers the real ``owner/repo`` via
-    ``resolve_pr_repo_slug`` → ``_reconcile_slug_against_reviewed_sha`` and
-    threads it into ``assert_merge_preconditions`` as the ``slug`` kwarg. The
-    autonomy carve-out must resolve its overlay from that recovered slug — not
-    the raw branch-name slug, which maps to no overlay (the global babysit
-    default) and wrongly refuses a merge the overlay genuinely stands ``full``
-    for. Fail-closed is preserved: a branch-slug CLEAR whose recovered repo is
-    NOT full (or unresolvable) still requires the per-PR human authoriser.
+    merge keystone recovers the real ``owner/repo`` and threads it into
+    ``assert_merge_preconditions`` as the ``slug`` kwarg. Substrate is HELD for the
+    owner regardless of how the overlay resolves: even when the recovered repo's
+    overlay stands at ``full``, a substrate CLEAR is held (ping-and-hold), never
+    auto-merged. The recovered-repo overlay resolution still governs the NON-
+    substrate standing grant (exercised elsewhere); for substrate it is moot.
     """
 
-    def test_full_autonomy_branch_slug_passes_via_recovered_repo(self) -> None:
-        """MUST-ALLOW: branch-name slug + recovered owner/repo at full satisfies the sign-off.
-
-        RED before the fix: the carve-out resolved the overlay from the raw
-        branch-name ``slug`` (→ no overlay → babysit) and refused with
-        "the overlay autonomy is not full" despite the recovered repo's overlay
-        standing at full.
-        """
+    def test_full_autonomy_branch_slug_substrate_held_via_recovered_repo(self) -> None:
+        """MUST-DENY: a branch-name slug recovered to a full overlay's repo is STILL held (substrate)."""
         clear = _substrate_clear(None, pr_id=1750, slug="merge-candidate-working-repos")
-        with _overlay_autonomy("t3-teatree", "full"):
-            precheck = _assert_preconditions(clear, slug="souliane/teatree")
-        assert precheck is not None
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear, slug="souliane/teatree")
 
     def test_full_autonomy_branch_slug_without_recovered_repo_still_refused(self) -> None:
         """MUST-DENY: a branch-name slug with no recovered owner/repo fails closed.
@@ -941,12 +954,13 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
             resolved = _resolve_clear_overlay_name(clear, resolved_slug=_OWNED_TOOLING_REPO)
         assert resolved == "t3-teatree"
 
-    def test_owned_repo_pr_is_not_human_approval_gated(self) -> None:
-        """A PR on a repo the full overlay owns is NOT human-approval-gated.
+    def test_owned_repo_substrate_pr_is_still_held(self) -> None:
+        """A SUBSTRATE PR on a repo the full overlay owns is STILL held (ping-and-hold).
 
-        The full end-to-end gate: a substrate CLEAR whose ticket carries a
-        foreign overlay token still PASSES the substrate sign-off, because the
-        repo's owning overlay stands at ``autonomy = full``.
+        Repo identity resolves to the ``full`` overlay, but substrate is held for
+        the owner regardless — the standing grant excludes substrate. (The
+        repo-identity standing grant still governs NON-substrate changes, pinned by
+        ``test_owned_repo_logic_clear_is_covered_by_standing_grant``.)
         """
         ticket = Ticket.objects.create(
             overlay="some-other-overlay",
@@ -954,66 +968,97 @@ class TestMergeGateResolvesOverlayByRepoIdentity(TestCase):
             state=Ticket.State.IN_REVIEW,
         )
         clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO)
-        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
-            precheck = _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
-        assert precheck is not None
-
-    def test_foreign_repo_pr_is_human_approval_gated(self) -> None:
-        """A PR on a repo NO full overlay owns IS human-approval-gated — no over-relax.
-
-        The foreign repo is owned by no registered (full) overlay in this test
-        environment, so repo identity resolves to no full overlay and the
-        substrate sign-off stays mandatory. The anti-vacuity twin: the fix must
-        keep a foreign repo's PR gated even when a ``full`` overlay exists.
-        """
-        ticket = Ticket.objects.create(
-            overlay="some-other-overlay",
-            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
-            state=Ticket.State.IN_REVIEW,
-        )
-        clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO)
         with (
             _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
             _overlay_autonomy("t3-teatree", "full"),
             pytest.raises(MergePreconditionError, match="substrate"),
         ):
-            _assert_preconditions(clear, slug=_FOREIGN_REPO)
+            _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
+
+    def test_owned_repo_logic_clear_is_covered_by_standing_grant(self) -> None:
+        """The NON-substrate standing grant resolves by repo identity (``full`` overlay owns the repo).
+
+        Tests ``_overlay_grants_standing_substrate_signoff`` directly for a LOGIC
+        clear: the repo's owning overlay (resolved from its slug) standing at
+        ``full`` covers the per-PR sign-off. (End-to-end, a logic clear never reaches
+        the substrate branch — this pins the resolution + standing-grant logic.)
+        """
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO, blast_class=MergeClear.BlastClass.LOGIC)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert granted is True
+
+    def test_foreign_repo_logic_clear_is_not_covered_by_standing_grant(self) -> None:
+        """The NON-substrate standing grant does NOT cover a repo no full overlay owns.
+
+        The anti-vacuity twin: a LOGIC clear on a foreign repo resolves to no full
+        overlay, so ``_overlay_grants_standing_substrate_signoff`` returns False.
+        """
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_FOREIGN_REPO)
+        assert granted is False
+
+    def test_substrate_clear_is_excluded_from_standing_grant(self) -> None:
+        """A SUBSTRATE clear is never covered by the standing grant, even on a full-owned repo (§3.2)."""
+        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="some-other-overlay",
+            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/8",
+            state=Ticket.State.IN_REVIEW,
+        )
+        clear = _substrate_clear(ticket, pr_id=8, slug=_OWNED_TOOLING_REPO)
+        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
+        assert granted is False
 
 
-class TestRequireHumanApprovalFalseStandingGrantSatisfiesSubstrateSignoff(TestCase):
+class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
     """#2666: ``require_human_approval_to_merge = false`` is the SAME standing grant as ``autonomy = full``.
 
-    An owner who turned auto-merge ON via the canonical documented knobs —
-    ``mode = auto`` + ``require_human_approval_to_merge = false`` — but left
-    ``autonomy`` at the default ``babysit`` (never flipping the newer single
-    switch) had their OWN green, cold-reviewed substrate CLEAR refused with "the
-    overlay autonomy is not full". ``require_human_approval_to_merge = false`` IS
-    the owner's standing "no per-PR human merge approval needed" statement — the
-    same one ``autonomy = full`` makes — so the substrate sign-off must honor it.
+    The standing grant (``autonomy = full`` OR ``require_human_approval_to_merge =
+    false`` on a non-collaborative tier) removes the per-PR human sign-off for
+    NON-substrate changes — proven here with a ``logic`` CLEAR. SUBSTRATE is
+    excluded from the standing grant entirely (held for the owner, ping-and-hold),
+    pinned by ``test_require_false_substrate_is_still_held`` below.
 
     The quality/safety floor (independent cold-review, reviewed-SHA bind,
     CI-green, not-draft, maker≠checker) is never relaxed by this — only the
     per-PR human sign-off is what the standing grant removes.
     """
 
-    def test_explicit_require_false_at_babysit_satisfies_substrate_signoff(self) -> None:
-        """MUST-ALLOW: babysit + require_human_approval_to_merge=false signs off the substrate CLEAR.
+    def test_explicit_require_false_at_babysit_signs_off_non_substrate(self) -> None:
+        """MUST-ALLOW: babysit + require_human_approval_to_merge=false signs off a NON-substrate CLEAR.
 
-        RED before the fix: the standing-grant check keyed solely on
+        RED before the #2666 fix: the standing-grant check keyed solely on
         ``autonomy = full``, so an explicit ``require_human_approval_to_merge =
-        false`` at the default ``babysit`` tier was ignored and the merge was
-        refused with "the overlay autonomy is not full".
+        false`` at the default ``babysit`` tier was ignored.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _substrate_clear(ticket, pr_id=2660)
+        clear = _substrate_clear(ticket, pr_id=2660, blast_class=MergeClear.BlastClass.LOGIC)
         with _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False):
             precheck = _assert_preconditions(clear)
         assert precheck is not None
 
-    def test_explicit_require_false_at_babysit_merges_end_to_end(self) -> None:
-        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
+    def test_explicit_require_false_at_babysit_merges_non_substrate_end_to_end(self) -> None:
+        """MUST-ALLOW end-to-end: the keystone merge advances the FSM for a NON-substrate CLEAR."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _substrate_clear(ticket, pr_id=2661)
+        clear = _substrate_clear(ticket, pr_id=2661, blast_class=MergeClear.BlastClass.LOGIC)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
@@ -1027,6 +1072,23 @@ class TestRequireHumanApprovalFalseStandingGrantSatisfiesSubstrateSignoff(TestCa
         assert result["merged"]
         assert ticket.state == Ticket.State.MERGED
         assert clear.consumed_at is not None
+
+    def test_require_false_substrate_is_still_held(self) -> None:
+        """MUST-DENY: require_human_approval_to_merge=false does NOT sign off a SUBSTRATE CLEAR.
+
+        Substrate is excluded from the standing grant entirely — even with the
+        owner's explicit ``require_human_approval_to_merge = false`` it is held for
+        the owner (ping-and-hold).
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=2666)
+        with (
+            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+            pytest.raises(MergePreconditionError, match="substrate"),
+        ):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
 
     def test_default_require_true_at_babysit_still_refused(self) -> None:
         """MUST-DENY: babysit + require_human_approval_to_merge=true keeps the per-PR sign-off.
@@ -1076,11 +1138,16 @@ class TestRequireHumanApprovalFalseStandingGrantSatisfiesSubstrateSignoff(TestCa
             _assert_preconditions(clear)
 
     def test_require_false_does_not_relax_sha_bind_floor(self) -> None:
-        """MUST-DENY: require=false + head moved off reviewed_sha still refuses — SHA bind holds."""
+        """MUST-DENY: a human-authorized substrate clear with head moved still refuses — SHA bind holds.
+
+        The SHA-bind floor runs after the substrate sign-off, so it is exercised
+        with the per-CLEAR human authoriser present (substrate holds first
+        otherwise); the bind still fails closed on a moved head.
+        """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40)
+        clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
             pytest.raises(MergePreconditionError, match="head moved"),
         ):
-            _assert_preconditions(clear)
+            _assert_preconditions(clear, human_authorized="owner:adrien")
