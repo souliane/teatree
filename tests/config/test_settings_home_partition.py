@@ -3,8 +3,8 @@
 
 The hard partition: a setting that CAN live in the DB MUST be DB-home; only the
 irreducible carve-out (pre-Django readers, path/infra bootstrap, nested
-structured tables, dead fields) stays TOML-home. Two fields are DERIVED — the
-resolver computes them, so they have no home and are excluded from the partition.
+structured tables, dead fields) stays TOML-home. One field is DERIVED — the
+resolver computes it, so it has no home and is excluded from the partition.
 
 The fitness functions below make the partition machine-checked: they go RED the
 moment a new ``UserSettings`` field is added without classifying it, or a field
@@ -66,8 +66,8 @@ def test_toml_carve_out_is_exactly_the_ten_fields() -> None:
     assert toml_home == _TOML_CARVE_OUT
 
 
-def test_derived_fields_are_exactly_the_two_computed_values() -> None:
-    assert frozenset({"notify_on_behalf", "ask_before_post_on_behalf"}) == DERIVED_FIELDS
+def test_derived_fields_are_exactly_the_one_computed_value() -> None:
+    assert frozenset({"notify_on_behalf"}) == DERIVED_FIELDS
 
 
 def test_db_home_covers_every_non_carve_out_non_derived_field() -> None:

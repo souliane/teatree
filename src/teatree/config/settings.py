@@ -293,7 +293,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
-    "branch_prefix": _parse_strict_str,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -493,7 +492,6 @@ def _default_handover_mirror_path() -> Path:
 class UserSettings:
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
     worktrees_dir: Path = field(default_factory=lambda: DATA_DIR / "worktrees")
-    branch_prefix: str = ""
     privacy: str = ""
     check_updates: bool = True
     timezone: str = ""
@@ -569,19 +567,6 @@ class UserSettings:
     # direct posting without flipping the global). Default on, mirroring
     # `require_human_approval_to_merge`.
     require_human_approval_to_answer: bool = True
-    # Pre-gate for posts the agent makes under the user's identity to a
-    # colleague/customer surface (PR/MR comment, issue comment, Slack
-    # channel/thread post, Notion post, PR/MR approve, reaction on
-    # someone else's message).
-    #
-    # **Deprecated** in favour of the tri-state ``on_behalf_post_mode``
-    # below, and now a DERIVED value (#1775): the resolver computes it
-    # (``True`` when the resolved mode is ``ASK`` or ``DRAFT_OR_ASK``,
-    # ``False`` when ``IMMEDIATE``) rather than reading it. Under the hard
-    # partition a legacy ``[teatree] ask_before_post_on_behalf`` TOML key is
-    # ignored on read; set the successor ``on_behalf_post_mode`` (DB-home)
-    # via ``config_setting set`` / migrate it with ``config_setting import``.
-    ask_before_post_on_behalf: bool = True
     # Tri-state pre-gate over on-behalf colleague/customer posts (#960):
     #
     # * ``DRAFT_OR_ASK`` (default) — colleague-invisible, revocable draft

@@ -58,14 +58,8 @@ The resolver returns one of three :class:`OnBehalfVerdict` values:
     :attr:`~teatree.config.OnBehalfPostMode.ASK` and
     :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (drafts are
     exempt under every blocking mode, not just the default).
-
-The legacy boolean helper :func:`ask_before_post_on_behalf_enabled` is
-kept as a deprecated shim returning ``True`` for ASK/DRAFT_OR_ASK and
-``False`` for IMMEDIATE — it emits a :class:`DeprecationWarning` on
-first call. Use :func:`resolve_on_behalf_verdict` instead.
 """
 
-import warnings
 from enum import StrEnum
 
 from teatree.config import OnBehalfPostMode, get_effective_settings
@@ -163,30 +157,3 @@ def resolve_on_behalf_verdict(action: str) -> OnBehalfVerdict:
     if action in _DRAFT_FORM_ACTIONS:
         return OnBehalfVerdict.AUTO_DRAFT
     return OnBehalfVerdict.BLOCK
-
-
-_DEPRECATION_EMITTED = False
-
-
-def ask_before_post_on_behalf_enabled() -> bool:
-    """Deprecated boolean shim — prefer :func:`resolve_on_behalf_verdict`.
-
-    Returns ``True`` when the resolved mode is ASK or DRAFT_OR_ASK (both
-    of which BLOCK colleague-visible posts), ``False`` when IMMEDIATE.
-    Note this boolean is per-mode, not per-action: it cannot express that
-    a draft-form action is exempt and auto-drafts under ASK/DRAFT_OR_ASK.
-    Emits a :class:`DeprecationWarning` on first call — new code should
-    call :func:`resolve_on_behalf_verdict` directly so the per-action
-    distinction (BLOCK for visible posts vs AUTO_DRAFT for drafts under
-    both blocking modes) isn't lost.
-    """
-    global _DEPRECATION_EMITTED  # noqa: PLW0603 — module-level first-call flag
-    if not _DEPRECATION_EMITTED:
-        warnings.warn(
-            "ask_before_post_on_behalf_enabled() is deprecated; "
-            "use teatree.on_behalf_gate.resolve_on_behalf_verdict(action) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        _DEPRECATION_EMITTED = True
-    return get_effective_settings().on_behalf_post_mode is not OnBehalfPostMode.IMMEDIATE

@@ -94,7 +94,7 @@ def _delete_discussion(
     Use to clean up a published general comment that should have
     been inline, or any other published note that needs removal.
     Distinct from `delete-draft-note`, which removes a user's own
-    pre-publication draft. Respects the `ask_before_post_on_behalf`
+    pre-publication draft. Respects the `on_behalf_post_mode`
     pre-gate (souliane/teatree#960).
     """
     from teatree.cli.review.commands import _require_token  # noqa: PLC0415

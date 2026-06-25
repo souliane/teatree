@@ -120,7 +120,7 @@ e2e_dir = "e2e"
 
 def test_load_e2e_repos_missing_section(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, '[teatree]\nbranch_prefix = "ac-"\n')
+    _write_toml(config_path, '[teatree]\nprivacy = "strict"\n')
     assert load_e2e_repos(config_path) == []
 
 

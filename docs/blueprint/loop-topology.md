@@ -155,7 +155,7 @@ approval:
 - `ask` — every colleague-VISIBLE action requires an explicit recorded approval before publishing; a draft is exempt and auto-publishes (+ DMs the user) without approval.
 - `draft_or_ask` (the new default) — identical to `ask`: `t3 review post-draft-note` publishes autonomously (drafts are colleague-invisible and revocable, and the agent DMs the user with the publish/delete commands); every colleague-visible action BLOCKs until the user records an approval.
 
-The legacy boolean `ask_before_post_on_behalf = true/false` keeps working through one deprecation release (true → `ask`, false → `immediate`). The setting is resolved through the env (`T3_ON_BEHALF_POST_MODE`) → active-overlay → global → default chain (`teatree.on_behalf_gate.resolve_on_behalf_verdict`); it is the *pre*-gate companion to the notify-*after* path (#949). Both ship on; the user flips this one off per-overlay first.
+The legacy boolean `ask_before_post_on_behalf` is retired (souliane/teatree#2731): its `UserSettings` field is gone and a leftover `[teatree]` / `[overlays.<name>]` key is ignored on read (`load_config` warns). Set the successor `on_behalf_post_mode` (DB-home) instead. The setting is resolved through the env (`T3_ON_BEHALF_POST_MODE`) → active-overlay → global → default chain (`teatree.on_behalf_gate.resolve_on_behalf_verdict`); it is the *pre*-gate companion to the notify-*after* path (#949). Both ship on; the user flips this one off per-overlay first.
 
 The gate is **enforced uniformly** at the chokepoints that cover every on-behalf publish path:
 

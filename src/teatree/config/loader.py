@@ -130,6 +130,40 @@ def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
     return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB]
 
 
+# Settings whose ``UserSettings`` field was removed (souliane/teatree#2731). A
+# stored ``[teatree]`` / ``[overlays.<name>]`` value for one of these resolves to
+# nothing — the key no longer maps to any field — so a leftover entry is warned
+# about (never silently no-opped) so the operator knows it has no effect.
+_RETIRED_SETTING_KEYS: frozenset[str] = frozenset({"branch_prefix", "ask_before_post_on_behalf"})
+
+
+def _warn_retired_keys_in_toml(raw: dict, path: Path) -> None:
+    """Emit ONE aggregated WARN for retired setting keys still present in TOML.
+
+    A retired key (its ``UserSettings`` field is gone, souliane/teatree#2731) maps
+    to no field, so a stored value resolves to nothing. Unlike a migrated DB-home
+    key — which the operator moves into the ``ConfigSetting`` store — a retired key
+    has no successor and should simply be deleted from the file.
+    """
+    offenders: list[str] = []
+    teatree = raw.get("teatree")
+    if isinstance(teatree, dict):
+        offenders.extend(f"[teatree] {key}" for key in _RETIRED_SETTING_KEYS if key in teatree)
+    overlays = raw.get("overlays")
+    if isinstance(overlays, dict):
+        for overlay_name, overlay_cfg in overlays.items():
+            if not isinstance(overlay_cfg, dict):
+                continue
+            offenders.extend(f"[overlays.{overlay_name}] {key}" for key in _RETIRED_SETTING_KEYS if key in overlay_cfg)
+    if offenders:
+        _logger.warning(
+            "Retired setting keys in %s have no effect (souliane/teatree#2731 removed the field) "
+            "and are IGNORED on read: %s. Delete them from the file.",
+            path,
+            ", ".join(offenders),
+        )
+
+
 def _conflicting_db_home_keys(
     toml_table: dict[str, Any], db_home_keys: list[str], db_overrides: dict[str, Any]
 ) -> list[str]:
@@ -219,6 +253,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
 
     raw = _load_toml(path)
     _warn_db_home_keys_in_toml(raw, path)
+    _warn_retired_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
     workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
@@ -229,11 +264,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # nested structured tables). Every DB-home field keeps its dataclass default
     # at the file tier; its value comes from the ``ConfigSetting`` store via
     # ``get_effective_settings``. ``on_behalf_post_mode`` is DB-home (so it keeps
-    # its default here), and ``ask_before_post_on_behalf`` is DERIVED from the
-    # mode — derived from the file-tier default mode here, re-derived from the
-    # resolved DB-home mode by ``get_effective_settings``. A DB-home key left in
-    # ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
-    # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
+    # its default here). A DB-home key left in ``[teatree]`` / ``[overlays.<name>]``
+    # is ignored on read (its home is the DB); migrate it into the store with
+    # ``t3 <overlay> config_setting import``.
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,

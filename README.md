@@ -562,7 +562,6 @@ live in `UserSettings` in `src/teatree/config.py`.
 ```toml
 [teatree]
 workspace_dir = "~/workspace"            # where ticket workspaces are created
-branch_prefix = "dev"                     # prefix for worktree branches
 mode = "interactive"                      # "interactive" (default) | "auto"
 privacy = ""                              # privacy-scan profile name
 contribute = false                        # enable skill self-improvement
@@ -582,7 +581,6 @@ path = "~/workspace/my-overlay"
 | Key | Default | Effect |
 |-----|---------|--------|
 | `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
-| `branch_prefix` | `""` | Prefix prepended to worktree branch names |
 | `mode` | `interactive` | `interactive` confirms before publishing; `auto` is end-to-end |
 | `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
@@ -622,7 +620,7 @@ to a less-safe mode.
 A subset of `[teatree]` keys can be **overridden per-overlay** in
 `[overlays.<name>]`. The overridable set lives in
 `OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config.py`: `mode`,
-`branch_prefix`, `privacy`, `contribute`, `excluded_skills`,
+`privacy`, `contribute`, `excluded_skills`,
 `loop_cadence_seconds`, `require_human_approval_to_merge`, and
 `require_human_approval_to_answer`. For example, run `auto` mode on a personal
 dogfooding overlay while keeping `interactive` on a client project:

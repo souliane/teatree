@@ -912,9 +912,7 @@ class TestApprove:
         # The autouse ``_no_on_behalf_gate`` fixture sets the gate to immediate
         # via ``T3_ON_BEHALF_POST_MODE`` (``on_behalf_post_mode`` is DB-home,
         # #1775). This test needs the gate ON, so undo that override and let the
-        # mode resolve to its blocking ``DRAFT_OR_ASK`` default. (The old
-        # ``ask_before_post_on_behalf`` TOML staging is inert — that field is
-        # derived from ``on_behalf_post_mode`` and ignored on read.)
+        # mode resolve to its blocking ``DRAFT_OR_ASK`` default.
         monkeypatch.delenv("T3_ON_BEHALF_POST_MODE", raising=False)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"

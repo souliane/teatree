@@ -24,7 +24,7 @@ from ._shared import _write_toml
 
 
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # workspace_dir + privacy are TOML-home; branch_prefix is DB-home and keeps
+    # workspace_dir + privacy are TOML-home; review_skill is DB-home and keeps
     # its dataclass default at the file tier (resolved from the DB store).
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
@@ -38,14 +38,14 @@ privacy = "strict"
     config = load_config(config_path)
     assert config.user.workspace_dir == Path("/custom/workspace")
     assert config.user.privacy == "strict"
-    assert config.user.branch_prefix == ""
+    assert config.user.review_skill == ""
     assert "teatree" in config.raw
 
 
 def test_load_config_missing_file(tmp_path: Path) -> None:
     config = load_config(tmp_path / "nonexistent.toml")
     assert config.user.workspace_dir == Path.home() / "workspace"
-    assert config.user.branch_prefix == ""
+    assert config.user.review_skill == ""
     assert config.user.privacy == ""
 
 
@@ -53,7 +53,7 @@ def test_load_config_defaults_when_teatree_section_empty(tmp_path: Path) -> None
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[other]\nfoo = 1\n")
     config = load_config(config_path)
-    assert config.user.branch_prefix == ""
+    assert config.user.review_skill == ""
 
 
 def test_handover_mirror_path_defaults_under_xdg_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,16 +212,11 @@ class TestDbHomeGlobalResolution(TestCase):
 
     def test_on_behalf_post_mode_db_immediate(self) -> None:
         ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
-        settings = get_effective_settings()
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-        # ask_before_post_on_behalf is DERIVED from the resolved mode.
-        assert settings.ask_before_post_on_behalf is False
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
 
-    def test_on_behalf_post_mode_db_ask_derives_true(self) -> None:
+    def test_on_behalf_post_mode_db_ask(self) -> None:
         ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
-        settings = get_effective_settings()
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.ASK
-        assert settings.ask_before_post_on_behalf is True
+        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.ASK
 
     def test_user_identity_aliases_db(self) -> None:
         ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"])

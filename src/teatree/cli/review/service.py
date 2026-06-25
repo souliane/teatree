@@ -453,7 +453,7 @@ class ReviewService:
         own unpublished draft — that is not a colleague-visible mutation
         and stays ungated; this one is.
 
-        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        Gated by ``on_behalf_post_mode`` (#960): the call is refused
         without any GitLab side effect when the gate is on and no recorded
         :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "delete_discussion")``.
         """
@@ -525,7 +525,7 @@ class ReviewService:
         the approve-on-review doctrine: an approval cannot be recorded
         without a prior reviewing footprint from the same identity.
 
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an approval is
+        Gated by ``on_behalf_post_mode`` (#960/#1013): an approval is
         an outward post on the user's identity, so it routes through the
         same recorded-approval gate every other on-behalf method uses. Gate
         ON + no recorded :class:`OnBehalfApproval` matching
@@ -556,7 +556,7 @@ class ReviewService:
         No review-first precondition — removing an approval is the safe
         direction and must always be reachable.
 
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an unapproval
+        Gated by ``on_behalf_post_mode`` (#960/#1013): an unapproval
         is still a colleague-visible post on the user's identity, so it
         routes through the same recorded-approval gate as ``approve`` (and
         every other on-behalf method). The recorded row scopes to
