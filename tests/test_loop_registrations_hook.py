@@ -115,6 +115,37 @@ class TestOwnerSessionEmitsPerLoop:
         router.handle_enforce_loop_on_prompt({"session_id": owner_session})
         assert capsys.readouterr().out == ""
 
+    def test_owner_emits_when_tick_meta_fresh_but_session_has_no_cron(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Regression for #2714: release+claim must re-register even when tick-meta is fresh.
+
+        tick-meta.json can be fresh because the previous owner session was ticking
+        normally before ``t3 loop release``.  A new session that claims ownership
+        afterwards has no registered cron yet — _tick_meta_stale() returning False
+        must NOT prevent registration.  Only _session_has_loop() is the correct gate.
+        """
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+        session_id = "new-owner-after-claim"
+        (state / f"{session_id}.teatree-active").touch()
+        # tick-meta is FRESH — previous owner was ticking before release.
+        monkeypatch.setattr(router, "_tick_meta_stale", lambda: False)
+        # This new session has no registered cron yet.
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+
+        router.handle_enforce_loop_on_prompt({"session_id": session_id})
+
+        out = capsys.readouterr().out
+        assert out != "", "must emit registration even when tick-meta is fresh after claim"
+        directive = json.loads(out.splitlines()[0])
+        loops = directive["hookSpecificOutput"]["loops"]
+        assert len(loops) == 2
+
     def test_non_owner_session_emits_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
