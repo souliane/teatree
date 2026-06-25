@@ -24,10 +24,13 @@ splits the weighted member set into tractable batches (capped by
 ``T3_DREAM_MAX_DISTILL_MEMBERS``) so a single oversized call can never silently
 return nothing, then merges the per-batch clusters by ``cluster_key``; a batch
 that returns 0 clusters from a NON-empty member set is counted and logged rather
-than swallowed. The real distiller (:func:`_sdk_distiller`) makes ONE bounded
-headless ``claude-agent-sdk`` call per batch (the headless-runner invocation
-shape) and parses its JSON defensively; tests inject a fake so the engine needs
-no LLM.
+than swallowed. The real distiller (:func:`~teatree.loops.dream.sdk_distiller.
+sdk_distiller`, a sibling module — the LLM-call + JSON-parse concern, split out of
+this engine in #2723) makes ONE bounded headless ``claude-agent-sdk`` call per batch
+(the headless-runner invocation shape) and parses its JSON defensively; tests inject
+a fake so the engine needs no LLM. The cluster identity is the deterministic sha256
+``cluster_key`` over the member set (not the LLM's prose), so a reworded slug upserts
+to one ledger row instead of forking a duplicate.
 
 Phase 3 (write to the ledger) — :func:`write_clusters` rejects any uncited /
 unknown-source / blank-citation cluster (no hallucinated memories), idempotently
@@ -67,14 +70,13 @@ failing gate marks the pass attempted-not-succeeded (staleness keeps firing), so
 lossy / delete-only / no-op consolidation is caught rather than stamped success.
 """
 
-import json
 import os
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from teatree.loops.dream.transcript_extract import high_signal_lines, looks_like_user_correction
 
@@ -408,148 +410,6 @@ def _upsert(cluster: DistilledCluster, *, max_member_weight: int, overlay: str) 
     )
 
 
-_DISTILL_SYSTEM_PROMPT = (
-    "You consolidate an agent's recent feedback and lessons into durable rules. "
-    "Group the snippets by ROOT CAUSE. Emit ONE imperative rule per group, and a "
-    "group ONLY when it cites a SPECIFIC real mistake quoted from the snippets — "
-    "never invent a rule with no cited mistake."
-)
-
-_DISTILL_PROMPT_TEMPLATE = (
-    "Consolidate the following weighted snippets into root-cause clusters.\n\n"
-    "Return ONLY a JSON array. Each element is an object with keys: "
-    "cluster_key (a stable lowercase slug), rule (one imperative sentence), "
-    "source_files (the snippet paths the rule cites — copy them verbatim), "
-    "is_binding (true when a source is a BINDING/user-correction), "
-    "verified_citation (a VERBATIM substring copied from one of the cited "
-    "snippets — the specific real mistake the rule would have prevented; do NOT "
-    "paraphrase, the quote must appear word-for-word in the snippet), "
-    "durable_destination (a suggested home).\n\n"
-    "Emit an element ONLY when verified_citation is a real quote present in a "
-    "cited snippet below. If nothing meets the bar, return [].\n\n"
-    "Snippets:\n{snippets}"
-)
-
-_DISTILL_WATCHDOG_SECONDS = 5 * 60
-_DISTILL_MODEL = "claude-haiku-4-5"
-_REQUIRED_CLUSTER_KEYS = ("cluster_key", "rule", "source_files", "is_binding", "verified_citation")
-
-
-def _sdk_distiller(extract: ConsolidationExtract) -> list[DistilledCluster]:
-    """The real distiller: one bounded headless SDK call, parsed defensively.
-
-    An empty extract short-circuits without an LLM call. Otherwise one bounded
-    turn through :func:`_run_distiller_turn` produces JSON, which is parsed into
-    clusters; malformed or partial JSON yields no clusters rather than a crash.
-    An SDK failure propagates so the command marks the pass attempted-not-
-    succeeded (staleness keeps firing) — never laundered into a fake success.
-    """
-    if not extract.snippets:
-        return []
-    raw = _run_distiller_turn(extract)
-    return _parse_clusters(raw)
-
-
-def _render_snippets(extract: ConsolidationExtract) -> str:
-    return "\n\n".join(
-        f"--- {snippet.path} (weight={snippet.weight}) ---\n{snippet.text}" for snippet in extract.snippets
-    )
-
-
-def _run_distiller_turn(extract: ConsolidationExtract) -> str:
-    """Run one bounded headless ``claude-agent-sdk`` turn, returning its text.
-
-    Reuses the headless-runner invocation shape (the ``claude_code`` preset,
-    ``bypassPermissions``, a wall-clock watchdog via :func:`asyncio.wait_for`)
-    for a single no-tool turn — the extract is already bounded, so the model
-    only transforms text to JSON. Raises when ``claude`` is unavailable or the
-    turn fails, so the caller never reports a fake success.
-    """
-    import asyncio  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
-
-    if shutil.which("claude") is None:
-        msg = "claude is not installed — the dream distiller cannot run"
-        raise RuntimeError(msg)
-    prompt = _DISTILL_PROMPT_TEMPLATE.format(snippets=_render_snippets(extract))
-    return asyncio.run(_collect_turn(prompt))
-
-
-async def _collect_turn(prompt: str) -> str:
-    import asyncio  # noqa: PLC0415
-
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock  # noqa: PLC0415
-    from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415
-
-    options = ClaudeAgentOptions(
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=_DISTILL_SYSTEM_PROMPT),
-        model=_DISTILL_MODEL,
-        permission_mode="bypassPermissions",
-        max_turns=1,
-        allowed_tools=[],
-    )
-    parts: list[str] = []
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(prompt)
-
-        async def _drain() -> list[object]:
-            return [message async for message in client.receive_response()]
-
-        for message in await asyncio.wait_for(_drain(), timeout=_DISTILL_WATCHDOG_SECONDS):
-            if isinstance(message, AssistantMessage):
-                parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
-    return "\n".join(parts)
-
-
-def _parse_clusters(raw: str) -> list[DistilledCluster]:
-    """Parse the distiller's JSON array into clusters, dropping malformed entries.
-
-    Tolerates surrounding prose by scanning for the first ``[`` … matching
-    ``]``. An entry missing a required key is skipped (not fatal), so one bad
-    element never discards a whole valid batch.
-    """
-    payload = _extract_json_array(raw)
-    if payload is None:
-        return []
-    clusters: list[DistilledCluster] = []
-    for entry in payload:
-        cluster = _coerce_cluster(entry)
-        if cluster is not None:
-            clusters.append(cluster)
-    return clusters
-
-
-def _extract_json_array(raw: str) -> list[object] | None:
-    start = raw.find("[")
-    end = raw.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        return None
-    try:
-        parsed = json.loads(raw[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, list) else None
-
-
-def _coerce_cluster(entry: object) -> DistilledCluster | None:
-    if not isinstance(entry, Mapping):
-        return None
-    fields = cast("Mapping[str, object]", entry)
-    if any(key not in fields for key in _REQUIRED_CLUSTER_KEYS):
-        return None
-    source_files = fields["source_files"]
-    if not isinstance(source_files, list):
-        return None
-    return DistilledCluster(
-        cluster_key=str(fields["cluster_key"]),
-        rule=str(fields["rule"]),
-        source_files=[str(path) for path in source_files],
-        is_binding=bool(fields["is_binding"]),
-        verified_citation=str(fields["verified_citation"]),
-        durable_destination=str(fields.get("durable_destination", "")),
-    )
-
-
 def run_consolidation(
     *,
     overlay: str,
@@ -571,10 +431,11 @@ def run_consolidation(
     descriptors, never a scenario file or fixture.
     """
     from teatree.loops.dream.distill import distill_in_batches  # noqa: PLC0415
+    from teatree.loops.dream.sdk_distiller import sdk_distiller  # noqa: PLC0415
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
-    distill = distiller or _sdk_distiller
+    distill = distiller or sdk_distiller
     outcome = distill_in_batches(extract, distiller=distill)
     clusters = outcome.clusters
     written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)

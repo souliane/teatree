@@ -11,14 +11,17 @@ classifier and a fake code host, so Pass 2 is fully testable without an LLM and
 without a live forge.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.loops.dream.merge import BindingConflict
 from teatree.loops.dream.promote_memory import (
     MemoryDisposition,
+    file_binding_reconciliation_tickets,
     file_core_gap_tickets,
     retire_resolved_memories,
     triage_disposition,
@@ -150,6 +153,97 @@ class FileCoreGapTicketsTestCase(TestCase):
         # The classification still advances (cheap, reversible), but no ticket is filed.
         assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
         host.create_issue.assert_not_called()
+
+
+def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:
+    return BindingConflict(
+        survivor_name=survivor,
+        absorbed_name=absorbed,
+        survivor_path=Path(f"/m/{survivor}.md"),
+        absorbed_path=Path(f"/m/{absorbed}.md"),
+    )
+
+
+class FileBindingReconciliationTicketsTestCase(TestCase):
+    """Two conflicting BINDING memories get a deduped reconciliation ticket (#2723)."""
+
+    def test_conflict_files_a_reconciliation_ticket(self) -> None:
+        host = _fake_host()
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert len(outcomes) == 1
+        assert outcomes[0].filed is True
+        _, kwargs = host.create_issue.call_args
+        assert "reconcil" in kwargs["body"].lower()
+        assert "feedback_bind_one.md" in kwargs["body"]
+        assert "feedback_bind_two.md" in kwargs["body"]
+        assert "needs-triage" in kwargs["labels"]
+
+    def test_existing_open_reconciliation_issue_is_reused(self) -> None:
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = [
+            {
+                "html_url": "https://github.com/souliane/teatree/issues/55",
+                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
+            }
+        ]
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].filed is False
+        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/55"
+        host.create_issue.assert_not_called()
+
+    def test_dedup_key_is_order_independent(self) -> None:
+        # The same pair surfaced with survivor/absorbed swapped dedups to one issue.
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = [
+            {
+                "html_url": "https://github.com/souliane/teatree/issues/55",
+                "body": "<!-- dream-binding-reconcile feedback_bind_one+feedback_bind_two -->",
+            }
+        ]
+        outcomes = file_binding_reconciliation_tickets(
+            host,
+            repo="souliane/teatree",
+            conflicts=[_conflict(survivor="feedback_bind_two", absorbed="feedback_bind_one")],
+        )
+        assert outcomes[0].filed is False
+        host.create_issue.assert_not_called()
+
+    def test_banned_term_body_is_withheld(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        host = _fake_host()
+        with patch("teatree.loops.dream.promote_memory.banned_terms_scanner.scan_text", return_value="customer-name"):
+            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].withheld is True
+        host.create_issue.assert_not_called()
+
+    def test_bare_reference_body_is_withheld(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        host = _fake_host()
+        with patch("teatree.loops.dream.promote_memory.find_bare_references", return_value=["#1234"]):
+            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].withheld is True
+        assert "bare reference" in (outcomes[0].reason or "")
+        host.create_issue.assert_not_called()
+
+    def test_dry_run_files_nothing(self) -> None:
+        host = _fake_host()
+        outcomes = file_binding_reconciliation_tickets(
+            host, repo="souliane/teatree", conflicts=[_conflict()], dry_run=True
+        )
+        assert outcomes == []
+        host.create_issue.assert_not_called()
+
+    def test_search_hiccup_does_not_block_filing(self) -> None:
+        # A search error must not block filing — the issue is filed anyway (refile-once
+        # self-corrects on the next pass).
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.side_effect = RuntimeError("forge search down")
+        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9001"}
+        outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].filed is True
+        host.create_issue.assert_called_once()
 
 
 class RetireResolvedMemoriesTestCase(TestCase):

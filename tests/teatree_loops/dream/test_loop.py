@@ -32,6 +32,7 @@ from teatree.loops.dream.loop import (
     decay_enabled,
     derive_evals_enabled,
     memory_promote_enabled,
+    merge_enabled,
     propose_evals_enabled,
     reindex_enabled,
 )
@@ -256,6 +257,7 @@ class MemoryPhaseKillSwitchTestCase(TestCase):
 
     _PHASES = (
         ("cross_link", "T3_DREAM_CROSS_LINK", cross_link_enabled),
+        ("merge", "T3_DREAM_MERGE", merge_enabled),
         ("reindex", "T3_DREAM_REINDEX", reindex_enabled),
         ("decay", "T3_DREAM_DECAY", decay_enabled),
     )

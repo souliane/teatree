@@ -32,6 +32,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
@@ -39,6 +40,11 @@ from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
 from teatree.core.review_findings import find_bare_references, neutralize_bare_references
 from teatree.hooks import banned_terms_scanner
 from teatree.types import RawAPIDict
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from teatree.loops.dream.merge import BindingConflict
 
 logger = logging.getLogger(__name__)
 
@@ -145,31 +151,96 @@ def _file_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, repo: str) 
 
     title = _ticket_title(row)
     body = _ticket_body(row)
-    rendered = f"{title}\n{body}"
 
-    banned = banned_terms_scanner.scan_text(rendered)
-    if banned is not None:
-        return TicketOutcome(
-            cluster_key=row.cluster_key, filed=False, withheld=True, reason=f"contains banned term '{banned}'"
-        )
-    leaked = find_bare_references(rendered)
-    if leaked:
-        return TicketOutcome(
-            cluster_key=row.cluster_key,
-            filed=False,
-            withheld=True,
-            reason=f"contains bare reference(s): {', '.join(leaked)}",
-        )
+    reason = _withholding_reason(f"{title}\n{body}")
+    if reason:
+        return TicketOutcome(cluster_key=row.cluster_key, filed=False, withheld=True, reason=reason)
 
-    raw = host.create_issue(repo=repo, title=title, body=body, labels=["dream-memory-gap", NEEDS_TRIAGE_LABEL])
+    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
     url = _issue_url(raw)
     row.mark_ticketed(url)
     return TicketOutcome(cluster_key=row.cluster_key, filed=True, ticket_url=url, reason="filed new issue")
 
 
 def _find_existing_gap_issue(host: CodeHostBackend, *, repo: str, cluster_key: str) -> str:
-    """Return the URL of an open gap issue already carrying this row's marker, or ``""``."""
+    """Return the URL of an open gap issue already carrying this marker, or ``""``."""
     marker = f"{_GAP_MARKER} {cluster_key}"
+    try:
+        matches = host.search_open_issues(repo=repo, query=marker)
+    except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
+        return ""
+    for raw in matches:
+        body = str(raw.get("body") or raw.get("description") or "")
+        if marker in body:
+            return _issue_url(raw)
+    return ""
+
+
+def _withholding_reason(rendered: str) -> str:
+    """The reason a rendered body must be withheld (banned term / bare ref), or ``""``."""
+    banned = banned_terms_scanner.scan_text(rendered)
+    if banned is not None:
+        return f"contains banned term '{banned}'"
+    leaked = find_bare_references(rendered)
+    if leaked:
+        return f"contains bare reference(s): {', '.join(leaked)}"
+    return ""
+
+
+#: The dedup marker for a binding-reconciliation ticket — keyed on the conflicting
+#: PAIR's sorted file stems so a re-run never refiles a conflict already tracked.
+_RECONCILE_MARKER = "dream-binding-reconcile"
+
+
+def _conflict_key(conflict: "BindingConflict") -> str:
+    return "+".join(sorted((conflict.survivor_name, conflict.absorbed_name)))
+
+
+def file_binding_reconciliation_tickets(
+    host: CodeHostBackend, *, repo: str, conflicts: "Sequence[BindingConflict]", dry_run: bool = False
+) -> list[TicketOutcome]:
+    """File a deduped reconciliation ticket per conflicting-BINDING memory pair (#2723).
+
+    Two BINDING near-duplicates are never auto-merged (Decision-3); the merge phase
+    cross-links them and hands the pair here. A deduped ``dream-memory-gap`` issue is
+    filed against *repo* so a human reconciles the doctrine. Dedup-first on the pair's
+    sorted stems, banned-term / bare-reference withholding reused verbatim from the
+    core-gap filer. Under *dry_run* nothing is filed. Returns one outcome per pair.
+    """
+    outcomes: list[TicketOutcome] = []
+    for conflict in conflicts:
+        if dry_run:
+            continue
+        outcomes.append(_file_one_reconciliation(host, conflict, repo=repo))
+    return outcomes
+
+
+def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict", *, repo: str) -> TicketOutcome:
+    key = _conflict_key(conflict)
+    marker = f"{_RECONCILE_MARKER} {key}"
+    existing = _find_existing_marker_issue(host, repo=repo, marker=marker)
+    if existing:
+        return TicketOutcome(cluster_key=key, filed=False, ticket_url=existing, reason="reused open issue")
+
+    title = f"Conflicting BINDING memories need reconciliation: {neutralize_bare_references(key)}"
+    body = (
+        "Two BINDING memory files are near-duplicates but cannot be auto-merged — "
+        "binding doctrine that disagrees must be reconciled by a human, not silently "
+        "collapsed. The dream merge phase cross-linked them; please decide which rule "
+        "is canonical and retire or rewrite the other.\n\n"
+        f"**Files:** `{conflict.survivor_name}.md`, `{conflict.absorbed_name}.md`\n\n"
+        f"<!-- {marker} -->\n"
+    )
+    reason = _withholding_reason(f"{title}\n{body}")
+    if reason:
+        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=reason)
+
+    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
+    return TicketOutcome(cluster_key=key, filed=True, ticket_url=_issue_url(raw), reason="filed new issue")
+
+
+def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str) -> str:
+    """Return the URL of an open issue already carrying *marker*, or ``""``."""
     try:
         matches = host.search_open_issues(repo=repo, query=marker)
     except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
@@ -245,6 +316,7 @@ __all__ = [
     "MemoryClassifier",
     "MemoryDisposition",
     "TicketOutcome",
+    "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
     "retire_resolved_memories",
     "triage_disposition",

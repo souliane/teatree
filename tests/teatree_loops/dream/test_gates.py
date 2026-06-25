@@ -276,6 +276,48 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert not result.passed
 
+    def test_budget_tracks_the_real_session_load_limit(self) -> None:
+        # #2723: the budget must track the ~24KB session-load truncation point,
+        # not a 10x regression alarm. Pin the load limit explicitly so a future
+        # widening of the threshold past loadability fails here.
+        assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
+        assert gates.INDEX_LINE_BUDGET <= 160
+
+
+class TestGateDLoadability(SimpleTestCase):
+    """#2723 anti-vacuous: a real over-budget corpus index FAILS, a small one passes.
+
+    The 2026-06-25 live index was 682 files / ~196KB — 8x the ~24KB load budget —
+    yet the dream pass stamped "all gates passed". This pins that a real corpus of
+    that size renders an index gate (d) REFUSES, while a handful of memories pass.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write_corpus(self, count: int) -> None:
+        for i in range(count):
+            (self.dir / f"feedback_lesson_{i:04d}.md").write_text(
+                f"---\nname: feedback_lesson_{i:04d}\n"
+                f"summary: a recurring lesson about subsystem {i} the agent keeps relearning\n"
+                f"---\nthe load-bearing body for lesson {i}\n",
+                encoding="utf-8",
+            )
+
+    def test_large_real_corpus_index_fails_the_budget(self) -> None:
+        self._write_corpus(682)
+        rendered = reindex.render_index(self.dir)
+        after = _snapshot({}, index=rendered)
+        result = Gate.index_budget(after)
+        assert not result.passed, "a 682-file index exceeds the session-load budget and must FAIL gate (d)"
+
+    def test_small_corpus_index_passes_the_budget(self) -> None:
+        self._write_corpus(20)
+        rendered = reindex.render_index(self.dir)
+        after = _snapshot({}, index=rendered)
+        result = Gate.index_budget(after)
+        assert result.passed
+
 
 class TestGateE(SimpleTestCase):
     def test_passes_when_second_pass_rate_not_lower(self) -> None:

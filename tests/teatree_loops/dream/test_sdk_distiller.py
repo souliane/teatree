@@ -1,0 +1,166 @@
+"""Tests for the real LLM distiller seam — extract → clusters, no live LLM (#2723)."""
+
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import claude_agent_sdk
+import pytest
+from django.test import SimpleTestCase
+
+from teatree.loops.dream import sdk_distiller
+from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
+from tests.teatree_agents._sdk_fake import FakeSdkClient, assistant_text
+
+
+def _extract_with_one_snippet() -> ConsolidationExtract:
+    return ConsolidationExtract(
+        snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
+        truncated=False,
+    )
+
+
+class SdkDistillerParseTestCase(SimpleTestCase):
+    def test_parses_clusters_from_json(self) -> None:
+        payload = (
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"the mistake","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        # #2723: the cluster_key is a deterministic sha256 over the member set, NOT
+        # the LLM-supplied "k1" slug.
+        assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert clusters[0].cluster_key != "k1"
+        assert clusters[0].is_binding is True
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_parses_json_embedded_in_prose(self) -> None:
+        payload = (
+            "Here is the result:\n"
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]\n'
+            "Done."
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+
+    def test_malformed_json_yields_no_clusters(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="not json at all"):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
+
+    def test_skips_entries_missing_required_keys(self) -> None:
+        # cluster_key is NO LONGER required from the LLM (it is derived). A missing
+        # rule/source_files still drops the entry; a complete one is kept.
+        payload = (
+            '[{"is_binding":false},'
+            '{"rule":"r","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/f.md"]
+
+    def test_cluster_key_is_deterministic_over_member_set(self) -> None:
+        # #2723: two payloads with the SAME member set but DIFFERENT LLM slugs derive
+        # the SAME cluster_key (and member order does not matter).
+        def _payload(slug: str, files: str) -> str:
+            return (
+                f'[{{"cluster_key":"{slug}","rule":"r","source_files":{files},'
+                '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+            )
+
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=_payload("slug-one", '["/b.md","/a.md"]')):
+            ca = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=_payload("slug-two", '["/a.md","/b.md"]')):
+            cb = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert ca[0].cluster_key == cb[0].cluster_key
+        # And it is a sha256 hex digest, matching the model docstring.
+        assert len(ca[0].cluster_key) == 64
+
+    def test_blank_and_whitespace_paths_are_dropped_before_hashing(self) -> None:
+        # The normalization that anchors idempotency: blanks dropped, dupes collapsed,
+        # order ignored — so "  /a.md ", "/a.md", "" hash to the same key as ["/a.md"].
+        key_noisy = deterministic_cluster_key(["  /a.md ", "/a.md", "", "   "])
+        key_clean = deterministic_cluster_key(["/a.md"])
+        assert key_noisy == key_clean
+
+    def test_malformed_json_array_decode_error_yields_no_clusters(self) -> None:
+        # A bracketed-but-INVALID payload reaches json.loads and raises JSONDecodeError;
+        # the parse swallows it to [] rather than crashing the pass.
+        payload = '[{"rule": "r", not valid json]'
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
+
+    def test_non_object_and_bad_source_files_entries_are_dropped(self) -> None:
+        # A non-Mapping element and a complete element whose source_files is not a list
+        # are both dropped; only the well-formed element survives.
+        payload = (
+            '["a bare string, not an object",'
+            '{"rule":"r","source_files":"not-a-list",'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""},'
+            '{"rule":"r","source_files":["/f.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/f.md"]
+
+    def test_missing_claude_binary_raises(self) -> None:
+        # The guard: with no claude on PATH the real turn raises rather than faking a
+        # success, so the pass is marked attempted-not-succeeded.
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="claude is not installed"),
+        ):
+            sdk_distiller._run_distiller_turn(_extract_with_one_snippet())
+
+    def test_live_turn_renders_snippets_and_parses_the_sdk_reply(self) -> None:
+        # The real _run_distiller_turn -> _collect_turn path with the SDK client faked:
+        # the prompt carries the rendered snippet, and the assistant's JSON reply is
+        # parsed into a cluster (deterministic key over the cited member).
+        reply = json.dumps(
+            [
+                {
+                    "cluster_key": "ignored-slug",
+                    "rule": "do x",
+                    "source_files": ["/feedback_x.md"],
+                    "is_binding": True,
+                    "verified_citation": "x",
+                    "durable_destination": "d.md",
+                }
+            ]
+        )
+
+        def _make_client(*, options: object = None, **_: object) -> FakeSdkClient:
+            return FakeSdkClient([assistant_text(reply)])
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _make_client),
+        ):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
+        assert "BINDING: x" in FakeSdkClient.last_prompt
+
+    def test_sdk_turn_failure_raises(self) -> None:
+        with (
+            patch.object(sdk_distiller, "_run_distiller_turn", side_effect=RuntimeError("sdk boom")),
+            pytest.raises(RuntimeError),
+        ):
+            sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+
+    def test_empty_extract_short_circuits_without_sdk_call(self) -> None:
+        empty = ConsolidationExtract(snippets=(), truncated=False)
+        with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
+            clusters = sdk_distiller.sdk_distiller(empty)
+        turn.assert_not_called()
+        assert clusters == []

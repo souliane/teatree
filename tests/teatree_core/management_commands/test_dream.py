@@ -377,10 +377,11 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
 
-    #: All four phase toggles cleared to default-ON unless a test overrides one.
+    #: All phase toggles cleared to default-ON unless a test overrides one.
     _PHASE_ENV: ClassVar[dict[str, str]] = {
         "T3_DREAM_PROPOSE_EVALS": "",
         "T3_DREAM_CROSS_LINK": "",
+        "T3_DREAM_MERGE": "",
         "T3_DREAM_REINDEX": "",
         "T3_DREAM_DECAY": "",
     }
@@ -411,6 +412,163 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         # cross-link disabled -> no link added, no cross-link clause.
         assert "[[mem_b]]" not in (self.memdir / "mem_a.md").read_text(encoding="utf-8")
         assert "cross-linked" not in stdout.getvalue()
+
+    def test_merge_phase_collapses_near_duplicates_and_index_shrinks(self) -> None:
+        # Two NEAR-DUPLICATE feedback files (Jaccard >= 0.85, same family) collapse
+        # to one survivor; the index lists one fewer pointer afterwards (#2723).
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_dup_a.md").write_text(
+            f"---\nname: feedback_dup_a\ntype: feedback\n---\n{topic} FIRST distinct detail\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_dup_b.md").write_text(
+            f"---\nname: feedback_dup_b\ntype: feedback\n---\n{topic} SECOND distinct detail\n", encoding="utf-8"
+        )
+        stdout = StringIO()
+        self._tick(stdout)
+        out = stdout.getvalue()
+        assert "merged" in out
+        survivors = {p.name for p in self.memdir.glob("feedback_dup_*.md")}
+        assert len(survivors) == 1
+        # The merged-away file is archived (moved), never deleted.
+        assert (self.memdir / "archive").is_dir()
+        # The re-index dropped the absorbed pointer: index lists one feedback_dup file.
+        index = (self.memdir / "MEMORY.md").read_text(encoding="utf-8")
+        assert index.count("feedback_dup_") == 1
+
+    def test_merge_disabled_keeps_both_near_duplicates(self) -> None:
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_dup_a.md").write_text(
+            f"---\nname: feedback_dup_a\ntype: feedback\n---\n{topic} FIRST\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_dup_b.md").write_text(
+            f"---\nname: feedback_dup_b\ntype: feedback\n---\n{topic} SECOND\n", encoding="utf-8"
+        )
+        stdout = StringIO()
+        self._tick(stdout, env={"T3_DREAM_MERGE": "0"})
+        assert "merged" not in stdout.getvalue()
+        assert (self.memdir / "feedback_dup_a.md").exists()
+        assert (self.memdir / "feedback_dup_b.md").exists()
+
+    def _write_binding_conflict(self) -> None:
+        # Isolate: drop the setUp memories so only the binding pair is present.
+        (self.memdir / "mem_a.md").unlink()
+        (self.memdir / "mem_b.md").unlink()
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        (self.memdir / "feedback_bind_one.md").write_text(
+            f"---\nname: feedback_bind_one\ntype: feedback\n---\n{topic} BINDING always push first\n", encoding="utf-8"
+        )
+        (self.memdir / "feedback_bind_two.md").write_text(
+            f"---\nname: feedback_bind_two\ntype: feedback\n---\n{topic} BINDING never push first\n", encoding="utf-8"
+        )
+
+    def test_two_binding_conflicts_file_a_reconciliation_ticket(self) -> None:
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
+
+        self._write_binding_conflict()
+        host = MagicMock(spec=CodeHostBackend)
+        host.search_open_issues.return_value = []
+        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9100"}
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(host, "souliane/teatree"),
+        ):
+            self._tick(stdout)
+        # The two BINDING files were NOT merged; a reconciliation ticket was filed.
+        assert "merged" not in stdout.getvalue()
+        assert "filed 1 binding-reconciliation ticket" in stdout.getvalue()
+        assert (self.memdir / "feedback_bind_one.md").exists()
+        assert (self.memdir / "feedback_bind_two.md").exists()
+        host.create_issue.assert_called_once()
+
+    def test_binding_conflict_with_no_host_is_warned_not_crashed(self) -> None:
+        self._write_binding_conflict()
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(None, "souliane/teatree"),
+        ):
+            self._tick(stdout)
+        assert "no teatree code host resolved" in stdout.getvalue()
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_merge_phase_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with patch("teatree.loops.dream.merge.merge_memories", side_effect=RuntimeError("merge boom")):
+            self._tick(stdout)
+        out = stdout.getvalue()
+        assert "WARN merge raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_budget_tier_archives_duplicates_and_index_drops_under_budget(self) -> None:
+        # #2723 anti-vacuous end-to-end: an over-budget index built from >90d
+        # near-duplicate files -> decay archives >0 AND MEMORY.md falls back under
+        # the gate-(d) load budget in the same pass.
+        import os  # noqa: PLC0415
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        from teatree.loops.dream import gates  # noqa: PLC0415
+
+        (self.memdir / "mem_a.md").unlink()
+        (self.memdir / "mem_b.md").unlink()
+        old = (datetime.now(tz=UTC) - timedelta(days=120)).timestamp()
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        # Many >90d near-duplicate feedback files (pairs of the same lesson) so the
+        # rendered index is well over the ~24KB / 150-line budget.
+        for i in range(120):
+            for half in ("a", "b"):
+                f = self.memdir / f"feedback_dup_{i:03d}_{half}.md"
+                f.write_text(
+                    f"---\nname: feedback_dup_{i:03d}_{half}\ntype: feedback\n---\n{topic} lesson {i}\n",
+                    encoding="utf-8",
+                )
+                os.utime(f, (old, old))
+        stdout = StringIO()
+        # Isolate the budget tier: cross-link OFF (it would link all near-duplicates
+        # and mark them referenced, which #2723 §2(d) calls out as the deadlock the
+        # tier must not be defeated by) and merge OFF (so the tier, not merge, prunes).
+        self._tick(stdout, env={"T3_DREAM_CROSS_LINK": "0", "T3_DREAM_MERGE": "0"})
+        out = stdout.getvalue()
+        assert "archived" in out
+        # MEMORY.md is now under the gate-(d) load budget.
+        snap = gates.snapshot_memory_dir(self.memdir)
+        assert gates.Gate.index_budget(snap).passed, snap.index_byte_size
+
+    def test_binding_reconciliation_failure_is_warned_not_crashed(self) -> None:
+        self._write_binding_conflict()
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch(
+                "teatree.loops.dream.promote_memory.file_binding_reconciliation_tickets",
+                side_effect=RuntimeError("reconcile boom"),
+            ),
+        ):
+            self._tick(stdout)
+        out = stdout.getvalue()
+        assert "WARN binding reconciliation raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
     def test_reindex_disabled_writes_no_index(self) -> None:
         stdout = StringIO()

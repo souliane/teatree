@@ -1,11 +1,17 @@
 """Phase 5 of the dream pass — regenerate the ``MEMORY.md`` index (#1933 § 6).
 
-``MEMORY.md`` is the index of the memory set: one line per memory file, each a
-clickable link plus a one-line summary (≤~200 chars), so a reader scans the
-index and opens the topic file for detail. This phase REGENERATES that index
-from the current ``*.md`` set under a ``memory_dir`` — it never moves content
-INTO the index (the body stays in the topic file), only re-derives the one-line
-pointers.
+``MEMORY.md`` is the index of the memory set: one line per memory file, a bare
+filename pointer plus a tight one-line summary, so a reader scans the index and
+opens the topic file for detail. This phase REGENERATES that index from the
+current ``*.md`` set under a ``memory_dir`` — it never moves content INTO the
+index (the body stays in the topic file), only re-derives the one-line pointers.
+
+Each line is ``- name.md — summary`` — a SINGLE bare filename pointer, not the
+former ``[name.md](name.md)`` markdown link that listed the filename twice and
+inflated the index. The summary is clipped to ``_SUMMARY_MAX_CHARS`` and the
+WHOLE line is capped at ``_LINE_MAX_CHARS`` (filename intact, summary absorbing
+the cap), so the index stays under the session-load budget gate (d) enforces
+(#2723).
 
 The regeneration is PURE and idempotent: the summary of each memory is derived
 deterministically (its frontmatter ``summary``/``description``, else its first
@@ -21,7 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _INDEX_NAME = "MEMORY.md"
-_SUMMARY_MAX_CHARS = 200
+
+#: Per-summary clip and per-line cap (#2723). The summary is clipped first; the
+#: whole line is then capped so a long filename plus a long summary can never
+#: blow the per-line budget. Sized so ~150 lines fit the ~24 KB index budget.
+_SUMMARY_MAX_CHARS = 120
+_LINE_MAX_CHARS = 160
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -71,8 +82,17 @@ def _summary_for(text: str) -> str:
 
 
 def _index_line(md: Path, summary: str) -> str:
-    link = f"[{md.name}]({md.name})"
-    return f"- {link} — {summary}" if summary else f"- {link}"
+    if not summary:
+        return f"- {md.name}"
+    line = f"- {md.name} — {summary}"
+    if len(line) <= _LINE_MAX_CHARS:
+        return line
+    # Whole-line cap: keep the pointer filename intact, clip the summary so the
+    # line fits the per-line budget regardless of how long the filename is.
+    keep = _LINE_MAX_CHARS - len(f"- {md.name} — ") - 1
+    if keep <= 0:
+        return f"- {md.name}"
+    return f"- {md.name} — {summary[:keep].rstrip()}…"
 
 
 def render_index(memory_dir: Path) -> str:

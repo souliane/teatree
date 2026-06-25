@@ -56,6 +56,7 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 #: One phase toggle: the ``[loops.dream]`` toml key and its ``T3_DREAM_*`` env var.
 _PROPOSE_EVALS = ("propose_evals", "T3_DREAM_PROPOSE_EVALS")
 _CROSS_LINK = ("cross_link", "T3_DREAM_CROSS_LINK")
+_MERGE = ("merge", "T3_DREAM_MERGE")
 _REINDEX = ("reindex", "T3_DREAM_REINDEX")
 _DECAY = ("decay", "T3_DREAM_DECAY")
 
@@ -98,6 +99,11 @@ def propose_evals_enabled(*, config_path: Path | None = None) -> bool:
 def cross_link_enabled(*, config_path: Path | None = None) -> bool:
     """Whether phase 4 (cross-link related memories) runs (default ON)."""
     return _phase_enabled(*_CROSS_LINK, config_path=config_path)
+
+
+def merge_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase 4b (merge near-duplicate memories) runs (default ON, #2723)."""
+    return _phase_enabled(*_MERGE, config_path=config_path)
 
 
 def reindex_enabled(*, config_path: Path | None = None) -> bool:

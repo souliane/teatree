@@ -57,20 +57,25 @@ if TYPE_CHECKING:
 
 _INDEX_NAME = "MEMORY.md"
 _HEADING_RE = re.compile(r"^#{1,6}\s")
-#: The memory-file an index line POINTS AT — the ``](name.md)`` markdown link
-#: target the re-index writes (``- [name.md](name.md) — summary``). Anchored on
-#: the link href, not any ``.md`` token, so a ``.md`` filename merely mentioned
-#: in the free-text summary never counts as the line's target — only a reworded
-#: pointer to a still-present memory homes the line; a genuinely lost pointer
-#: stays unhomed even if its summary name-drops a surviving memory.
-_MEMORY_REF_RE = re.compile(r"]\(([\w.\-/]+\.md)\)")
+#: The memory-file an index line POINTS AT — the LEADING filename pointer the
+#: re-index writes at line start (``- name.md — summary``, or the legacy
+#: ``- [name.md](name.md) — summary`` markdown-link form). Anchored on the
+#: line-leading pointer position, NOT any ``.md`` token mid-line, so a ``.md``
+#: filename merely mentioned in the free-text summary never counts as the line's
+#: target — only a reworded pointer to a still-present memory homes the line; a
+#: genuinely lost pointer stays unhomed even if its summary name-drops a
+#: surviving memory.
+_MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
 
-#: Load-warning thresholds for the rendered ``MEMORY.md`` index (gate d). The
-#: index is one short line per memory; past these the index has stopped being a
-#: scannable pointer list and the consolidation pass has failed to keep it small.
-#: Generous on purpose — they are a regression alarm, not a hard size cap.
-INDEX_LINE_BUDGET = 900
-INDEX_BYTE_BUDGET = 256 * 1024
+#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one
+#: short line per memory and is read WHOLE at every session load; past the
+#: ~24 KB / ~150-line truncation point the loader clips it, so the tail of the
+#: index never reaches the agent and the consolidation pass has silently failed
+#: to keep memory loadable. These track that real session-load limit — NOT a
+#: 10x regression alarm — so an over-budget index trips gate (d) RED while it is
+#: still recoverable (#2723).
+INDEX_LINE_BUDGET = 150
+INDEX_BYTE_BUDGET = 24 * 1024
 
 
 #: How a probe is checked against a snapshot — injectable so a future LLM answerer

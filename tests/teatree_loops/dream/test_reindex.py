@@ -10,6 +10,7 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
+from teatree.loops.dream import reindex
 from teatree.loops.dream.reindex import reindex_memory, render_index
 
 
@@ -28,18 +29,47 @@ class ReindexTestCase(SimpleTestCase):
         result = reindex_memory(self.dir)
         index = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
         assert result.lines_indexed == 2
-        assert "- [mem_a.md](mem_a.md) — the lease guard rejects an empty owner" in index
-        assert "- [mem_b.md](mem_b.md) — the first prose line is the summary" in index
+        # #2723: a single bare filename pointer, no `[name.md](name.md)` href duplication.
+        assert "- mem_a.md — the lease guard rejects an empty owner" in index
+        assert "- mem_b.md — the first prose line is the summary" in index
 
-    def test_summary_is_clipped_to_200_chars(self) -> None:
+    def test_no_href_duplication(self) -> None:
+        # #2723: the old `[name.md](name.md)` listed the filename TWICE per line,
+        # inflating the index. The pointer is now a single bare filename.
+        self._write("mem_a", "---\nname: mem_a\nsummary: a lesson\n---\nbody")
+        index = render_index(self.dir)
+        assert "(mem_a.md)" not in index
+        assert "[mem_a.md]" not in index
+        assert index.count("mem_a.md") == 1
+
+    def test_summary_is_clipped_to_120_chars(self) -> None:
+        # #2723: the summary clip is shortened to ~120 chars to keep lines tight.
         long = "x" * 500
         self._write("mem_long", f"---\nname: mem_long\nsummary: {long}\n---\nbody")
         index = render_index(self.dir)
         line = next(line for line in index.splitlines() if "mem_long.md" in line)
-        # link + " — " + ≤200-char (199 + ellipsis) summary
         summary = line.split(" — ", 1)[1]
-        assert len(summary) <= 200
+        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
+        assert reindex._SUMMARY_MAX_CHARS <= 120
         assert summary.endswith("…")
+
+    def test_whole_line_is_capped(self) -> None:
+        # #2723: the WHOLE line (filename + summary) is capped, so a long filename
+        # plus a long summary can never blow the per-line byte budget. The pointer
+        # filename is preserved intact; only the summary absorbs the cap.
+        self._write("mem_with_a_very_long_descriptive_filename", f"---\nsummary: {'y' * 500}\n---\nbody")
+        index = render_index(self.dir)
+        line = next(line for line in index.splitlines() if line.startswith("- "))
+        assert len(line) <= reindex._LINE_MAX_CHARS
+        assert "mem_with_a_very_long_descriptive_filename.md" in line
+
+    def test_filename_alone_over_budget_drops_the_summary(self) -> None:
+        # #2723 edge: when the bare pointer filename ALONE exceeds the per-line budget
+        # there is no room for any summary, so the line degrades to just the pointer
+        # rather than emitting a negative-length clip.
+        long_name = Path("m" * (reindex._LINE_MAX_CHARS + 10) + ".md")
+        line = reindex._index_line(long_name, "a summary that cannot fit")
+        assert line == f"- {long_name.name}"
 
     def test_idempotent_rerun_is_byte_identical(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
@@ -56,14 +86,14 @@ class ReindexTestCase(SimpleTestCase):
         self._write("alpha", "---\nname: alpha\nsummary: a\n---\nbody")
         index = render_index(self.dir)
         lines = [line for line in index.splitlines() if line.startswith("- ")]
-        assert lines[0].startswith("- [alpha.md]")
-        assert lines[1].startswith("- [zeta.md]")
+        assert lines[0].startswith("- alpha.md")
+        assert lines[1].startswith("- zeta.md")
 
     def test_index_does_not_index_itself(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
         (self.dir / "MEMORY.md").write_text("stale index\n", encoding="utf-8")
         index = render_index(self.dir)
-        assert "MEMORY.md](MEMORY.md)" not in index
+        assert "MEMORY.md" not in index
 
     def test_no_body_content_moved_into_index(self) -> None:
         body = "this is a long multi-line body that must NOT be copied into the index wholesale"
@@ -96,13 +126,13 @@ class ReindexTestCase(SimpleTestCase):
     def test_memory_with_only_headings_has_no_summary(self) -> None:
         self._write("mem_a", "---\nname: mem_a\n---\n# Only A Heading\n## And Another")
         index = render_index(self.dir)
-        # No prose line -> link only, no " — summary".
-        assert "- [mem_a.md](mem_a.md)\n" in index
+        # No prose line -> pointer only, no " — summary".
+        assert "- mem_a.md\n" in index
 
     def test_empty_dir_renders_header_only(self) -> None:
         index = render_index(self.dir)
         assert index.startswith("# Auto Memory")
-        assert "- [" not in index
+        assert not any(line.startswith("- ") for line in index.splitlines())
 
     def test_unreadable_file_is_skipped(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: ok\n---\nbody")
