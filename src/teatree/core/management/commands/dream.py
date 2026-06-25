@@ -229,6 +229,11 @@ class Command(TyperCommand):
         # Phase 3c (#2663) runs BEFORE the gates so gate (g) reads the just-persisted
         # compliance records (a recurrence remediated with a memory FAILS the pass).
         compliance = self._run_compliance_phase(since=since, dry_run=dry_run, force_all_phases=mode.force_all_phases)
+        # Phase 3d (#2663) — the "improve-with-new-stuff" sibling: promote recurring
+        # automatable user asks to a fix-and-merge under the same standing umbrella.
+        automation_asks = self._run_automation_asks_phase(
+            since=since, dry_run=dry_run, force_all_phases=mode.force_all_phases
+        )
         memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
             clusters_recorded=result.clusters_recorded, dry_run=dry_run
         )
@@ -241,16 +246,17 @@ class Command(TyperCommand):
             DreamRunMarker.objects.mark_attempted(now)
             self.stdout.write(
                 f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
-                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{memory_phases}"
-                f"{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped succeeded.",
+                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{automation_asks}"
+                f"{memory_phases}{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped "
+                f"succeeded.",
             )
             return False
 
         DreamRunMarker.objects.mark_succeeded(now)
         self.stdout.write(
             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{memory_phases}"
-            f"{memory_promote}{gates_summary}.",
+            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{compliance}{automation_asks}"
+            f"{memory_phases}{memory_promote}{gates_summary}.",
         )
         return True
 
@@ -274,6 +280,41 @@ class Command(TyperCommand):
             return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host)
         except Exception as exc:  # noqa: BLE001
             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
+
+    def _run_automation_asks_phase(self, *, since: "dt.datetime | None", dry_run: bool, force_all_phases: bool) -> str:
+        """Phase 3d — promote recurring automatable user asks to a fix-and-merge (#2663; never raises).
+
+        The "improve-with-new-stuff" sibling of the compliance accountant. Runs only
+        when the default-OFF ``automation_asks`` toggle is on (env / toml) OR the
+        ``--full`` pipeline is requested — it PROMOTES fixes (a checkbox + scheduled
+        coding task under the standing umbrella), mirroring the compliance posture. The
+        detect → classify → promote work lives in
+        :func:`teatree.loops.dream.automation_ask.run_automation_asks_phase`; this rebuilds
+        the same bounded extract the engine distils (for the grounding guard), wires the
+        resolved backlog host, and fault-isolates the phase.
+        """
+        from teatree.loops.dream.loop import automation_asks_enabled  # noqa: PLC0415
+
+        if not force_all_phases and not automation_asks_enabled():
+            return ""
+        try:
+            from teatree.loops.dream import automation_ask, engine  # noqa: PLC0415
+
+            host, _repo = self._teatree_backlog_host()
+            if host is None:
+                return "; WARN automatable-ask promotion skipped — no teatree code host resolved"
+            extract = engine.build_extract(engine.enumerate_members(since=since))
+            umbrella = self._automation_umbrella_url()
+            return automation_ask.run_automation_asks_phase(extract, host, umbrella_url=umbrella, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            return f"; WARN automatable-ask phase raised: {type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _automation_umbrella_url() -> str:
+        """The standing umbrella issue every grounded dream gap rides (#2663)."""
+        from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL  # noqa: PLC0415
+
+        return UMBRELLA_ISSUE_URL
 
     def _promote_candidates(
         self, *, propose_evals: bool, dry_run: bool, force_all_phases: bool = False, validate_live: bool = False
