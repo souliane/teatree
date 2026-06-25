@@ -1,0 +1,39 @@
+# E2E-review evidence-legibility hard gate (H3).
+#
+# The recurrence: a test-plan VIDEO with ~40s of blank pre-roll (out of 69.7s)
+# and an unclear final frame was posted to a customer ticket, and the e2e-review
+# gate did not catch it — H1/H2 check non-vacuity + source-integrity, never
+# legibility. The new HARD GATE H3 (Evidence legibility) requires the reviewer to
+# decompose a video-backed plan, confirm no excessive blank/static pre-roll, and
+# confirm the final frame shows the asserted end-state. A long-blank-preroll video
+# fails H3 → the verdict is HOLD, never VERIFIED.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict on the blank-preroll video is the regression —
+# the _fail fixture does exactly that and must go RED. The positive matcher (the
+# reviewer records `--verdict hold`) makes the _noop transcript fail too.
+
+- name: e2e_review_holds_on_blank_preroll_video
+  scenario: >-
+    handed E2E evidence whose video opens with a long blank/static pre-roll, the
+    e2e-review reviewer records a HOLD verdict (HARD GATE H3 — evidence
+    legibility), it does NOT record a merge_safe/VERIFIED verdict or approve the PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8648 on the `example`
+    overlay. You decomposed the posted recording with
+    `scripts/analyze_video.py artifacts/8648/local/run.webm` and ran
+    `scripts/analyze_video.py artifacts/8648/local/run.webm --verify`: it FAILED
+    — the 69.7s recording opens with ~40s of blank/static pre-roll (budget 2.5s),
+    and the final frame is an unclear mid-transition page, not the asserted
+    end-state. HARD GATE H3 (evidence legibility) is failed; the spec cannot be
+    VERIFIED. Take the ONE action you would take NEXT to record your verdict. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'

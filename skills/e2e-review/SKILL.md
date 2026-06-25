@@ -10,7 +10,6 @@ companions:
 metadata:
   version: 0.0.1
   subagent_safe: true
-eval_exempt: pure-doc reviewer checklist; no behaviour-bearing CLI surface of its own
 ---
 
 # Reviewing E2E Specs
@@ -95,6 +94,7 @@ A static read of a spec cannot tell you it passes; a green local read of a spec 
 - **A golden-master assertion must not re-encode the bug.** When a spec pins exact values against a reference (a schedule, a reference PDF, a worked example), check two things: the expected values were **not** captured from the code-under-test's own output (that certifies the defect), and the tolerance was **not** widened to make an approximating calculator pass over the very values the fix changes. If the system only approximates the reference (different day-count basis, different rounding), the reviewable form asserts **structural invariants** (no phantom row, monotone balance, the step pattern, variant discriminators, schedule completeness) — not a cell-by-cell euro golden behind a loosened bar. Where a reference artifact exists, coverage is the **whole** reference, not a one-or-two-row spot-check. (The `/t3:e2e` § "Writing Tests" exact-vs-structural rule.)
 - **Watch for a quietly-skipped or no-op spec** — a `test.skip`, a `test.fixme`, a `test.only` left in (which silently drops the rest of the file from the run), an empty body, or an assertion that can never fail. Any of these is a blocker; a green CI line over a skipped test is a false signal. Removing a skip/fixme is valid only when the same user workflow is covered by another running assertion; otherwise it deletes evidence instead of improving it.
 - **Visual / media evidence follows the project's E2E evidence rules** (real screenshots/video from an actual run, never a text stub). Those mechanics — capture, where to post, refuse-on-zero-media — live in `/t3:e2e`; this skill only checks that the evidence exists and matches the asserted behaviour.
+- **Decompose any video-backed plan and view its frames (Non-Negotiable).** For a plan whose evidence includes a recording, do not approve on the existence of a video file alone — **decompose the video into frames** (`uv run python scripts/analyze_video.py <recording>`) and view them. Confirm the deterministic check passes (no excessive blank/static pre-roll — `analyze_video.py <recording> --verify`, the same `teatree.core.video_evidence` gate `post-test-plan` enforces) **AND** that the **final frame unambiguously shows the asserted end-state** (the rendered field, the confirmation, the computed value — not a mid-transition, navigation, or blank frame). A recording that opens on a long blank pre-roll or ends on an unclear frame is not legible evidence — you cannot VERIFY it. This is the reviewer half of `/t3:e2e` § "Video Sanity Check"; it caught a 69.7s recording with ~40s of blank head and an unclear final frame that the existence-only check let through.
 
 ## Reviewer verdict
 
@@ -110,16 +110,17 @@ Post findings through the normal review path in `/t3:review` (draft-by-default, 
 
 The severity verdict above is the human-review language; the **rubric** is the machine-scoreable form of the same judgement, so the verify↔review loop in `/t3:e2e` § "Verify–Review Loop to Threshold" has a number to gate on. The reviewer scores a spec (or a spec + its run) 0–100 and returns a structured verdict. The score exists for one purpose: to decide whether the spec has earned **VERIFIED** or must loop back for another verify pass — never to dress up a brittle spec as "90% good enough".
 
-### Two hard gates (either failing caps the score to HOLD)
+### Three hard gates (any one failing caps the score to HOLD)
 
-A hard gate is not a weighted criterion — it is a precondition. If either fails, the spec **cannot** be VERIFIED no matter how high the weighted criteria score; the verdict is **HOLD** (loop back) or, when the gate is an external impossibility, **BLOCKED** (see below). Check both before scoring the weighted criteria.
+A hard gate is not a weighted criterion — it is a precondition. If any fails, the spec **cannot** be VERIFIED no matter how high the weighted criteria score; the verdict is **HOLD** (loop back) or, when the gate is an external impossibility, **BLOCKED** (see below). Check all three before scoring the weighted criteria.
 
 - **HARD GATE H1 — Non-vacuous green.** The spec actually **ran** — not `test.skip`/`test.fixme`/`test.only`-dropped, not flag-gated off, not an empty body. Every **precondition** assertion passed for the *right reason*: the role-gated/RBAC precheck (e.g. the resolved `/api/me` role and group memberships from § "Writing Tests" in `/t3:e2e`) asserted the test account's real identity before the behaviour assertion, so a green can't come from an unexpected identity. Real assertions fired (web-first `expect(...)`, not a swallowed `isVisible()` read). For a **regression** spec, the anti-vacuity proof holds: revert the production fix → the spec goes **red** (the full rule is `../review/SKILL.md`; apply it, don't restate it). A spec that goes green with the fix reverted, or whose precondition never fired, fails H1.
 - **HARD GATE H2 — Evidence integrity.** The green came from the **deployed environment** (dev/staging) **or** a teatree-managed local stack — never a stale local build, golden test PDFs (`build/test-results/`, `src/test/resources/`), `pdftotext` of a locally-rendered document, or a `localhost` screenshot. This is the `/t3:e2e` § "Evidence Source Integrity" rule in gate form: if the evidence backing the green violates that rule, H2 fails regardless of how clean the spec reads.
+- **HARD GATE H3 — Evidence legibility.** For any **video-backed** plan, the reviewer **decomposes the recording** (`scripts/analyze_video.py`) and views the frames, confirming BOTH: the deterministic check passes (**no excessive blank/static pre-roll** — `analyze_video.py <recording> --verify`, the `teatree.core.video_evidence` gate `post-test-plan` machine-enforces) AND the **final frame unambiguously shows the asserted end-state** (not a mid-transition, navigation, or blank frame). A recording that opens on a long blank pre-roll or ends on an unclear frame is illegible evidence — the reviewer **cannot VERIFY** it, so H3 fails. This is the gate form of `/t3:e2e` § "Video Sanity Check"; it exists because a 69.7s recording with ~40s of blank head and an unclear final frame slipped past an existence-only check.
 
 ### Weighted criteria (sum = 100)
 
-Scored only once both hard gates pass. Each is the rubric form of one of the six principles above:
+Scored only once all hard gates pass. Each is the rubric form of one of the six principles above:
 
 | Criterion | Weight | What full marks looks like |
 |---|---:|---|
@@ -138,7 +139,7 @@ The reviewer returns a structured result:
 {score: <0-100>, threshold: <configured, default 90>, verdict: VERIFIED | HOLD | BLOCKED, findings: [...]}
 ```
 
-- **VERIFIED** — `score ≥ threshold` **AND both hard gates pass**. The spec has earned the clean test plan; the loop exits.
+- **VERIFIED** — `score ≥ threshold` **AND all hard gates pass**. The spec has earned the clean test plan; the loop exits.
 - **HOLD** — below threshold, or a hard gate failed for a reason the maker can fix (a missing-AC assertion, a brittle locator, a fixed sleep, a vacuous precondition). The `findings` are the punch-list the next verify pass works through; the loop continues.
 - **BLOCKED** — a hard gate fails for a reason **no spec edit can fix** (see below).
 
@@ -155,7 +156,7 @@ The canonical command (generic placeholders — substitute your real overlay, PR
 HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a short SHA
 ```
 
-**Clean spec → `merge_safe` (terminates the loop).** When the spec clears both hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
+**Clean spec → `merge_safe` (terminates the loop).** When the spec clears all hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
 
 ```bash
 t3 <overlay> review record <pr_id> <slug> \
