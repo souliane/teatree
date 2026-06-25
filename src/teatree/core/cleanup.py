@@ -31,6 +31,7 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     probe_host_cli,
 )
+from teatree.core.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -294,10 +295,15 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     ``refs/remotes/*`` block teardown. The error names the branch, the count,
     and up to ``_SUBJECT_PREVIEW_LIMIT`` short SHAs so the loss is loud.
 
-    **Fails closed.** If the probe itself errors (invalid/missing ref,
-    corrupt repo, any ``git log`` failure) it raises ``CommandFailedError``;
-    we translate that into a refusal rather than proceeding, because an
-    inconclusive probe means we cannot prove the commits are pushed.
+    **Fails closed, with a branch-ref-gone reap path.** If the probe errors
+    (``CommandFailedError``) the named ref is gone — a forge post-merge branch
+    deletion leaves the worktree's HEAD a dangling symref, so ``git log HEAD
+    --not --remotes`` exits 128. Branch-ref-gone is itself the post-merge-delete
+    signal: before refusing, :func:`_head_in_remote_after_ref_gone` recovers the
+    worktree's last HEAD SHA from its per-worktree reflog and reaps only when that
+    SHA is POSITIVELY contained in a remote. HEAD on no remote (genuinely-unsynced
+    local work), an unrecoverable HEAD, or any error keeps the refusal — the probe
+    failure never reaps on uncertainty, only on positive proof the work shipped.
 
     **Merged override (#1578 / #2205).** A squash-merge creates a new SHA on the
     default branch and deletes the source ref, so the branch's own commits are
@@ -317,12 +323,8 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
     except CommandFailedError as exc:
-        msg = (
-            f"{worktree.repo_path} ({target.label}): "
-            f"refused teardown — could not verify the branch is pushed "
-            f"(git probe failed: {exc}). Push the branch or pass force=True to discard."
-        )
-        raise RuntimeError(msg) from exc
+        raise_or_reap_orphan_ref(worktree, target, exc)
+        return
     if not unpushed:
         return
     # Sample the stale tracking ref BEFORE the fetch prunes it; fetch after so the

@@ -46,6 +46,7 @@ from teatree.utils.git_sync import fetch, merge_abort, merge_no_edit, pull_ff_on
 from teatree.utils.git_worktree import (
     bundle_create,
     commits_absent_from_all_remotes,
+    recovered_head_sha_after_ref_gone,
     worktree_add,
     worktree_add_at_ref,
     worktree_remove,
@@ -78,6 +79,7 @@ __all__ = [
     "pull_ff_only",
     "push",
     "rebase",
+    "recovered_head_sha_after_ref_gone",
     "remote_slug",
     "remote_url",
     "rev_count",

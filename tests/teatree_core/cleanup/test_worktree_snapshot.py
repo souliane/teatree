@@ -7,10 +7,13 @@ under ``tmp_path``. No Django: the snapshot helper depends only on
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from teatree.core.worktree_snapshot import capture_worktree_snapshot
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -47,6 +50,17 @@ class _GitTopology:
     def push_branch_to_main(self) -> None:
         _run_git("push", "-q", "origin", f"{self.branch}:main", cwd=self.repo_main)
         _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    def commit_in_worktree(self) -> None:
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feature.txt").write_text("feature\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: work", cwd=self.wt_path)
+
+    def drop_local_branch_ref(self) -> None:
+        """Delete ``refs/heads/<branch>`` → the worktree HEAD becomes a dangling symref."""
+        _run_git("update-ref", "-d", f"refs/heads/{self.branch}", cwd=self.repo_main)
 
 
 @pytest.fixture
@@ -139,3 +153,51 @@ def test_survives_git_worktree_remove_of_the_captured_tree(topo: _GitTopology) -
         env=_clean_env(),
     ).stdout
     assert "feat: unpushed" in log
+
+
+def _capture_head(topo: _GitTopology) -> Path | None:
+    """Capture with ``branch=HEAD`` — the dangling-symref orphan path."""
+    return capture_worktree_snapshot(topo.repo_main, str(topo.wt_path), branch=git.DETACHED_HEAD, label="1764")
+
+
+def test_branch_ref_gone_in_remote_is_noop(topo: _GitTopology) -> None:
+    # Work pushed, branch ref dropped → HEAD dangling but the tip is in a remote.
+    topo.commit_in_worktree()
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is None, "dangling-HEAD worktree whose tip is in a remote has nothing to capture"
+    assert _recovery_dirs(topo.temp_root) == []
+
+
+def test_branch_ref_gone_unrecoverable_head_falls_through_to_capture(topo: _GitTopology) -> None:
+    # HEAD is dangling and unrecoverable → fail closed to the normal capture path
+    # (which then fails open and captures), never the silent no-op.
+    topo.commit_in_worktree()
+    topo.drop_local_branch_ref()
+    # The normal path bundles the dangling HEAD, which fails — the re-raise proves
+    # we did NOT take the silent no-op shortcut on an unrecoverable HEAD.
+    with (
+        patch("teatree.core.worktree_snapshot.git.recovered_head_sha_after_ref_gone", return_value=None),
+        pytest.raises(CommandFailedError),
+    ):
+        _capture_head(topo)
+
+
+def test_branch_ref_gone_containment_probe_error_falls_through_to_capture(topo: _GitTopology) -> None:
+    # The recovered SHA's remote-containment probe errors → fail closed (not the
+    # no-op), so the normal capture path runs and re-raises on the dangling bundle.
+    topo.commit_in_worktree()
+    topo.drop_local_branch_ref()
+    with (
+        patch("teatree.core.worktree_snapshot.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"),
+        patch(
+            "teatree.core.worktree_snapshot.git.commits_absent_from_all_remotes",
+            side_effect=CommandFailedError(["git"], 128, "", "boom"),
+        ),
+        pytest.raises(CommandFailedError),
+    ):
+        _capture_head(topo)

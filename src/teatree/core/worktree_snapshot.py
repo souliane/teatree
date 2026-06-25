@@ -42,6 +42,28 @@ def _has_unpushed_commits(repo_main: Path, branch: str) -> bool:
         return True
 
 
+def _head_ref_gone_and_in_remote(wt: Path) -> bool:
+    """Whether ``wt`` is a branch-ref-gone worktree whose recovered HEAD is in a remote.
+
+    A forge post-merge branch deletion leaves the worktree's HEAD a dangling
+    symref, so a real ``git rev-parse HEAD`` fails. This recovers the last HEAD
+    SHA from the per-worktree reflog and returns ``True`` only when that SHA is
+    POSITIVELY contained in a remote — the case where the "dirty" working-tree
+    status is purely a symref artifact and there is nothing to capture. Fails
+    *closed*: an unrecoverable HEAD or an erroring containment probe returns
+    ``False`` so the normal capture path still runs (it fails open to capturing).
+    """
+    if git.check(repo=str(wt), args=["rev-parse", "--verify", "--quiet", "HEAD"]):
+        return False
+    sha = git.recovered_head_sha_after_ref_gone(str(wt))
+    if not sha:
+        return False
+    try:
+        return not git.commits_absent_from_all_remotes(str(wt), sha)
+    except CommandFailedError:
+        return False
+
+
 def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, label: str) -> Path | None:
     """Capture a restorable artifact for a dirty/unpushed worktree, or do nothing.
 
@@ -64,6 +86,14 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
     """
     wt = Path(wt_path)
     if not wt.is_dir():
+        return None
+
+    if branch == git.DETACHED_HEAD and _head_ref_gone_and_in_remote(wt):
+        # The worktree's branch ref was deleted post-merge → HEAD is a dangling
+        # symref. ``git status`` then reports every path as Added (no HEAD to diff
+        # against) and the bundle of the dangling ``HEAD`` would fail — but the
+        # recovered tip is already on a remote, so there is genuinely nothing to
+        # lose. Capture is a clean no-op; the caller reaps the orphan.
         return None
 
     bundle_repo = wt if branch == git.DETACHED_HEAD else repo_main

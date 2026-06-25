@@ -5,8 +5,53 @@ the #706 "absent from all remotes" guard, and the bundle-recovery primitive,
 all via the :mod:`teatree.utils.git_run` runners.
 """
 
-from teatree.utils.git_run import check, run_strict
+from pathlib import Path
+
+from teatree.utils.git_run import check, run, run_strict
 from teatree.utils.run import CommandFailedError, run_checked
+
+# A git reflog line is "<old-sha> <new-sha> <committer> <ts> <tz>\t<message>";
+# fewer than two whitespace fields means there is no <new-sha> to recover.
+_REFLOG_MIN_FIELDS = 2
+
+
+def recovered_head_sha_after_ref_gone(wt_path: str) -> str | None:
+    """Return the worktree's last HEAD SHA when its checked-out branch ref is gone.
+
+    A forge post-merge branch deletion leaves a worktree's HEAD a *dangling
+    symref*: ``refs/heads/<branch>`` is gone, so ``git rev-parse HEAD`` and every
+    ``HEAD@{N}`` reflog walk in the worktree dir exit 128 ("unknown revision").
+    The tip SHA survives only in the per-worktree HEAD reflog (``logs/HEAD`` under
+    the worktree's gitdir), which git itself keeps but cannot resolve through the
+    dangling symref. This reads that reflog's most-recent entry — the
+    authoritative record of what HEAD pointed at before the ref vanished — and
+    returns the resolved commit SHA.
+
+    Used only on the rc=128 branch of the teardown data-loss probe: a recovered
+    SHA lets the caller decide by *containment in a remote* instead of refusing
+    blindly. Returns ``None`` when there is nothing safe to recover — the dir is
+    gone, no reflog exists, the entry is malformed, or the SHA does not resolve to
+    a commit in ``wt_path`` — so the caller keeps its fail-closed refusal.
+    """
+    if not Path(wt_path).is_dir():
+        return None
+    git_dir = run(repo=wt_path, args=["rev-parse", "--absolute-git-dir"])
+    if not git_dir:
+        return None
+    head_log = Path(git_dir) / "logs" / "HEAD"
+    if not head_log.is_file():
+        return None
+    try:
+        last_entry = head_log.read_text(encoding="utf-8").splitlines()[-1]
+    except (OSError, IndexError):
+        return None
+    # The second whitespace field is the SHA HEAD moved TO (the surviving tip).
+    fields = last_entry.split()
+    if len(fields) < _REFLOG_MIN_FIELDS:
+        return None
+    candidate = fields[1]
+    resolved = run(repo=wt_path, args=["rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"])
+    return resolved or None
 
 
 def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:

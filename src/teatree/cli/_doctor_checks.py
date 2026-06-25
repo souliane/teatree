@@ -56,6 +56,68 @@ def _check_entrypoint_is_primary_clone() -> bool:
     return False
 
 
+def _check_dangling_editable_pth() -> bool:
+    """FAIL when the teatree editable ``.pth`` or uv receipt points at a gone dir.
+
+    The reaped-worktree footgun: a sub-agent repointed the GLOBAL uv-tool
+    ``teatree.pth`` at its own worktree, which ``clean-all`` later reaped, leaving
+    the ``.pth`` dangling so every ``t3`` died with ``ModuleNotFoundError: No
+    module named 't3_bootstrap'`` machine-wide. This detects that dangling state
+    (and the sibling uv-receipt ``editable`` clone) before it can wedge the next
+    invocation, and auto-repairs the ``.pth`` to ``$T3_REPO/src`` when it is SAFE
+    to do so — i.e. only when the running ``t3`` is already importing teatree from
+    the canonical clone (never from a worktree, which would re-anchor the global
+    install at a transient checkout, the #1507 hazard).
+
+    A healthy install passes silently. Crash-proof: any unexpected error degrades
+    to a pass so this diagnostic never aborts the whole doctor run.
+    """
+    from teatree.utils.editable_pth import (  # noqa: PLC0415
+        canonical_src_dir,
+        detect_dangling_editable,
+        repair_pth_to_canonical,
+        running_from_canonical_clone,
+    )
+
+    try:
+        dangling = detect_dangling_editable()
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"WARN  Could not inspect the teatree editable .pth: {exc}")
+        return True
+    if not dangling.is_dangling:
+        return True
+
+    canonical = canonical_src_dir()
+    pth = dangling.pth
+    if (
+        pth is not None
+        and dangling.pth_dangling_dir is not None
+        and canonical is not None
+        and running_from_canonical_clone()
+        and repair_pth_to_canonical(pth, canonical)
+    ):
+        typer.echo(
+            f"WARN  Repaired dangling teatree editable .pth (was {dangling.pth_dangling_dir}, "
+            f"now {canonical}). The reaped worktree it pointed at would have broken t3 machine-wide."
+        )
+        if dangling.receipt_source is None:
+            return False
+    if dangling.pth_dangling_dir is not None:
+        typer.echo(
+            f"FAIL  teatree editable .pth points at a non-existent dir: {dangling.pth_dangling_dir} "
+            f"({dangling.pth}). A reaped worktree left it dangling — t3 dies with "
+            f"ModuleNotFoundError. Re-anchor: re-run `t3 setup` from the canonical clone "
+            f"(or rewrite the .pth to $T3_REPO/src), then `cd $T3_REPO && uv tool install --editable . --force`."
+        )
+    if dangling.receipt_source is not None:
+        typer.echo(
+            f"FAIL  uv tool receipt records a non-existent editable source: {dangling.receipt_source}. "
+            f"It re-breaks the .pth on the next `t3 update`/reinstall. Fix: "
+            f"`cd $T3_REPO && uv tool install --editable . --force`."
+        )
+    return False
+
+
 def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
     from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
