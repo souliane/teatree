@@ -107,6 +107,43 @@ class TestRepairPthToCanonical:
 
         assert editable_pth.repair_pth_to_canonical(pth, canonical) is False
 
+    def test_preserves_comment_and_import_lines(self, tmp_path: Path) -> None:
+        # An editable .pth often carries an `import` directive (uv/setuptools
+        # editable installs do) and/or a comment. Repairing the dangling path
+        # entry must keep those lines in place — only the path line is rewritten.
+        pth = tmp_path / "teatree.pth"
+        pth.write_text(
+            "# editable install\nimport sys; sys.path.insert(0, 'x')\n" + str(tmp_path / "reaped" / "src") + "\n",
+            encoding="utf-8",
+        )
+        canonical = tmp_path / "canonical" / "src"
+        canonical.mkdir(parents=True)
+
+        changed = editable_pth.repair_pth_to_canonical(pth, canonical)
+
+        assert changed is True
+        # The dangling path entry is now the canonical src...
+        assert editable_pth.pth_source_dirs(pth) == [canonical]
+        # ...and the comment + import lines survived verbatim.
+        contents = pth.read_text(encoding="utf-8")
+        assert "# editable install" in contents
+        assert "import sys; sys.path.insert(0, 'x')" in contents
+
+    def test_collapses_multiple_path_entries_to_canonical(self, tmp_path: Path) -> None:
+        # Two dangling path entries collapse to the single canonical src while a
+        # comment between them is preserved.
+        pth = tmp_path / "teatree.pth"
+        pth.write_text(
+            str(tmp_path / "reaped-a" / "src") + "\n# keep me\n" + str(tmp_path / "reaped-b" / "src") + "\n",
+            encoding="utf-8",
+        )
+        canonical = tmp_path / "canonical" / "src"
+        canonical.mkdir(parents=True)
+
+        assert editable_pth.repair_pth_to_canonical(pth, canonical) is True
+        assert editable_pth.pth_source_dirs(pth) == [canonical]
+        assert "# keep me" in pth.read_text(encoding="utf-8")
+
 
 class TestEditablePthPrimitives:
     def test_uv_tool_dir_default_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,8 +282,47 @@ class TestCheckDanglingEditablePth:
 
         ok, message = _run_check()
 
-        assert ok is False  # still reports the FAIL for the repaired link
+        # The repair healed the only problem → the check passes (a WARN, not a
+        # FAIL). The stale "Re-anchor: re-run t3 setup" FAIL must NOT print for a
+        # .pth this run just repaired.
+        assert ok is True
         assert "Repaired dangling teatree editable .pth" in message
+        assert "FAIL" not in message
+        assert "Re-anchor" not in message
+        pth = tool_dir / "teatree" / "lib" / "python3.13" / "site-packages" / "teatree.pth"
+        assert editable_pth.pth_source_dirs(pth) == [canonical_src]
+
+    def test_repaired_pth_with_dangling_receipt_suppresses_stale_pth_fail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # BOTH the .pth and the uv receipt are dangling. The .pth repair succeeds,
+        # but the receipt clone is still gone. The healed .pth must NOT FAIL (no
+        # "Re-anchor" message), while the genuinely-unrelated receipt FAIL is kept.
+        canonical_clone = tmp_path / "canonical"
+        canonical_src = canonical_clone / "src"
+        canonical_src.mkdir(parents=True)
+        reaped = tmp_path / "reaped-wt" / "src"  # dangling .pth target
+        gone_clone = tmp_path / "reaped-clone"  # dangling receipt source
+        tool_dir = _make_tool_layout(tmp_path, pth_src=reaped, editable=gone_clone)
+        monkeypatch.setenv("UV_TOOL_DIR", str(tool_dir))
+        monkeypatch.setenv("T3_REPO", str(canonical_clone))
+        monkeypatch.setattr(editable_pth, "running_from_canonical_clone", lambda: True)
+
+        ok, message = _run_check()
+
+        assert ok is False  # the receipt is still broken
+        assert "Repaired dangling teatree editable .pth" in message
+        # The .pth FAIL / re-anchor advice is suppressed — that link was just
+        # healed. The reaped path may still appear in the WARN ("was <reaped>"),
+        # but no FAIL line should mention it.
+        assert "Re-anchor" not in message
+        assert "teatree editable .pth points at a non-existent dir" not in message
+        fail_lines = [line for line in message.splitlines() if line.startswith("FAIL")]
+        assert all(str(reaped) not in line for line in fail_lines)
+        # The genuinely-unrelated receipt FAIL is preserved and accurate.
+        assert "uv tool receipt records a non-existent editable source" in message
+        assert str(gone_clone) in message
+        # The .pth on disk really was repaired to the canonical src.
         pth = tool_dir / "teatree" / "lib" / "python3.13" / "site-packages" / "teatree.pth"
         assert editable_pth.pth_source_dirs(pth) == [canonical_src]
 

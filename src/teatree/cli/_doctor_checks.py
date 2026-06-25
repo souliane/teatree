@@ -100,9 +100,15 @@ def _check_dangling_editable_pth() -> bool:
             f"WARN  Repaired dangling teatree editable .pth (was {dangling.pth_dangling_dir}, "
             f"now {canonical}). The reaped worktree it pointed at would have broken t3 machine-wide."
         )
-        if dangling.receipt_source is None:
-            return False
-    if dangling.pth_dangling_dir is not None:
+        # Re-evaluate after the repair so a stale, pre-repair snapshot does not
+        # FAIL on (and tell the user to re-anchor) a .pth this run just healed.
+        # Any genuinely-unrelated receipt problem is preserved by the re-detect.
+        dangling = detect_dangling_editable()
+        if not dangling.is_dangling:
+            return True
+
+    pth_still_dangling = dangling.pth_dangling_dir is not None
+    if pth_still_dangling:
         typer.echo(
             f"FAIL  teatree editable .pth points at a non-existent dir: {dangling.pth_dangling_dir} "
             f"({dangling.pth}). A reaped worktree left it dangling — t3 dies with "

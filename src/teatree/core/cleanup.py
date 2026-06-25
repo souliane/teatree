@@ -299,9 +299,10 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
     (``CommandFailedError``) the named ref is gone — a forge post-merge branch
     deletion leaves the worktree's HEAD a dangling symref, so ``git log HEAD
     --not --remotes`` exits 128. Branch-ref-gone is itself the post-merge-delete
-    signal: before refusing, :func:`_head_in_remote_after_ref_gone` recovers the
-    worktree's last HEAD SHA from its per-worktree reflog and reaps only when that
-    SHA is POSITIVELY contained in a remote. HEAD on no remote (genuinely-unsynced
+    signal: before refusing, :func:`raise_or_reap_orphan_ref` (via
+    :func:`classify_orphan_ref`) recovers the worktree's last HEAD SHA from its
+    per-worktree reflog and reaps only when that SHA is POSITIVELY contained in a
+    remote. HEAD on no remote (genuinely-unsynced
     local work), an unrecoverable HEAD, or any error keeps the refusal — the probe
     failure never reaps on uncertainty, only on positive proof the work shipped.
 

@@ -124,3 +124,26 @@ def bundle_create(repo: str, bundle_path: str, branch: str) -> None:
     caller must not believe a recovery artifact exists when it does not).
     """
     run_strict(repo=repo, args=["bundle", "create", bundle_path, branch])
+
+
+def bundle_create_at_sha(repo: str, bundle_path: str, sha: str, recovery_branch: str) -> None:
+    """Bundle a bare ``sha`` anchored under ``refs/heads/<recovery_branch>``.
+
+    Used to capture a dangling-HEAD worktree (forge post-merge ref deletion):
+    ``git rev-parse HEAD`` exits 128 there, so :func:`bundle_create` of the
+    literal ``HEAD`` cannot run — but the surviving tip SHA recovered from the
+    per-worktree reflog still resolves as a commit. ``git bundle`` refuses a
+    bare commit ("Refusing to create empty bundle") and ``git clone`` only
+    checks out branch refs, so this anchors the recovered tip under a transient
+    ``refs/heads/<recovery_branch>`` ref, bundles THAT (clone-restorable to a
+    branch the caller can ``git apply`` its working-tree diff onto), then
+    deletes the temp ref. Raises ``CommandFailedError`` on a failed bundle (the
+    temp ref is still cleaned up first) so the caller never believes a recovery
+    artifact exists when it does not.
+    """
+    recovery_ref = f"refs/heads/{recovery_branch}"
+    run_strict(repo=repo, args=["update-ref", recovery_ref, sha])
+    try:
+        run_strict(repo=repo, args=["bundle", "create", bundle_path, recovery_ref])
+    finally:
+        check(repo=repo, args=["update-ref", "-d", recovery_ref])

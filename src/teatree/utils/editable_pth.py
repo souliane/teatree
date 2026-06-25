@@ -150,19 +150,51 @@ def canonical_src_dir() -> Path | None:
     return src if src.is_dir() else None
 
 
+def _is_path_entry(line: str) -> bool:
+    """Whether a ``.pth`` line is a ``sys.path`` entry (not blank/comment/import).
+
+    Mirrors the ``site`` module's own rules — the same predicate
+    :func:`pth_source_dirs` filters on.
+    """
+    stripped = line.strip()
+    return bool(stripped) and not stripped.startswith(("#", "import ", "import\t"))
+
+
 def repair_pth_to_canonical(pth: Path, canonical_src: Path) -> bool:
     """Rewrite ``pth`` to point at ``canonical_src``; return whether it changed.
 
-    Only the path entries are rewritten — ``import`` / comment lines are kept.
-    Idempotent: when the ``.pth`` already names exactly ``canonical_src``, nothing
-    is written and ``False`` is returned. Fails safe to ``False`` on any write
-    error so the caller still reports the problem rather than claiming a repair.
+    Only the path entries are rewritten — ``import`` / comment / blank lines are
+    kept verbatim, in place. The first path entry becomes ``canonical_src`` and
+    any further path entries are dropped (the editable install is a single
+    ``src`` dir), so the relative order of preserved non-path lines is unchanged.
+    Idempotent: when the ``.pth`` already names exactly ``canonical_src`` (and no
+    other path entry), nothing is written and ``False`` is returned. Fails safe
+    to ``False`` on any read/write error so the caller still reports the problem
+    rather than claiming a repair.
     """
     target = str(canonical_src)
     if [str(d) for d in pth_source_dirs(pth)] == [target]:
         return False
     try:
-        pth.write_text(target + os.linesep, encoding="utf-8")
+        original = pth.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    rebuilt: list[str] = []
+    canonical_written = False
+    for raw in original.splitlines():
+        if _is_path_entry(raw):
+            if not canonical_written:
+                rebuilt.append(target)
+                canonical_written = True
+            # Drop any additional path entries — collapse to the single canonical src.
+        else:
+            rebuilt.append(raw)
+    if not canonical_written:
+        rebuilt.append(target)
+
+    try:
+        pth.write_text(os.linesep.join(rebuilt) + os.linesep, encoding="utf-8")
     except OSError:
         return False
     return True

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core.worktree_snapshot import capture_worktree_snapshot
+from teatree.core.worktree_snapshot import _RECOVERY_BRANCH, capture_worktree_snapshot
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
@@ -171,6 +171,65 @@ def test_branch_ref_gone_in_remote_is_noop(topo: _GitTopology) -> None:
 
     assert rec is None, "dangling-HEAD worktree whose tip is in a remote has nothing to capture"
     assert _recovery_dirs(topo.temp_root) == []
+
+
+def test_branch_ref_gone_in_remote_but_dirty_still_captures(topo: _GitTopology) -> None:
+    # The committed tip is pushed (in a remote) AND the branch ref was dropped →
+    # HEAD is a dangling symref. But the worktree ALSO carries a genuine
+    # uncommitted delta — an edit to a tracked file PLUS an untracked file. The
+    # tip being in a remote does NOT make that uncommitted work recoverable, so
+    # the no-op short-circuit must NOT fire: capture a recovery artifact (#706/
+    # #835/#1506 capture-or-refuse, never silent-destroy).
+    topo.commit_in_worktree()
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    # Genuine uncommitted work on top of the pushed tip.
+    (topo.wt_path / "base.txt").write_text("base\nUNCOMMITTED EDIT\n", encoding="utf-8")
+    (topo.wt_path / "untracked.txt").write_text("brand new uncommitted\n", encoding="utf-8")
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "dirty dangling-HEAD-in-remote worktree must NOT be a silent no-op — its uncommitted work is unrecoverable"
+    )
+    assert (rec / "branch.bundle").is_file()
+    assert (rec / "working-tree.diff").is_file()
+    # The bundle anchors the recovered tip under a per-capture-unique recovery
+    # branch (prefixed _RECOVERY_BRANCH), and the captured diff restores the
+    # uncommitted edit + the untracked file on top of it (bundling/diffing the
+    # dangling HEAD itself would fail rc=128).
+    heads = subprocess.run(
+        [_GIT, "bundle", "list-heads", str(rec / "branch.bundle")],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    ).stdout
+    recovery_branches = [
+        ref.removeprefix("refs/heads/")
+        for line in heads.splitlines()
+        if (ref := line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else "").startswith("refs/heads/")
+    ]
+    assert len(recovery_branches) == 1
+    recovery_branch = recovery_branches[0]
+    assert recovery_branch.startswith(_RECOVERY_BRANCH)
+    restore = topo.temp_root / "restore-dirty-dangling"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nUNCOMMITTED EDIT\n"
+    assert (restore / "untracked.txt").read_text(encoding="utf-8") == "brand new uncommitted\n"
 
 
 def test_branch_ref_gone_unrecoverable_head_falls_through_to_capture(topo: _GitTopology) -> None:

@@ -26,7 +26,7 @@ def status_porcelain_strict(repo: str = ".") -> str:
     return run_strict(repo=repo, args=["status", "--porcelain"])
 
 
-def full_worktree_diff(repo: str) -> str:
+def full_worktree_diff(repo: str, base: str = "HEAD") -> str:
     """Return a single patch covering staged, unstaged, AND untracked changes.
 
     ``git diff HEAD`` alone omits untracked files. Marking them intent-to-add
@@ -34,6 +34,12 @@ def full_worktree_diff(repo: str) -> str:
     staging their content), so a single ``git apply`` of the returned patch
     restores edits and brand-new files alike. The intent-to-add marks are
     harmless: the worktree is about to be removed.
+
+    ``base`` is the revision the working tree is diffed against — ``HEAD`` for
+    a normal worktree. A dangling-HEAD worktree (forge post-merge ref deletion)
+    has no resolvable ``HEAD`` (``git diff HEAD`` exits 128), so the caller
+    passes the recovered tip SHA instead, so the patch still captures the
+    genuine uncommitted delta on top of that tip.
 
     The prefixes are forced explicitly with ``--src-prefix=a/
     --dst-prefix=b/``: ``git diff`` otherwise honours the caller's git config,
@@ -45,7 +51,7 @@ def full_worktree_diff(repo: str) -> str:
     env = git_env_without_overrides()
     run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
     result = run_checked(
-        ["git", "-C", repo, "diff", "HEAD", "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
+        ["git", "-C", repo, "diff", base, "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
         env=env,
     )
     return result.stdout

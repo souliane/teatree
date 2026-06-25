@@ -42,26 +42,50 @@ def _has_unpushed_commits(repo_main: Path, branch: str) -> bool:
         return True
 
 
-def _head_ref_gone_and_in_remote(wt: Path) -> bool:
-    """Whether ``wt`` is a branch-ref-gone worktree whose recovered HEAD is in a remote.
+_RECOVERY_BRANCH = "t3-recovered-detached"
+
+
+def _recovered_head_sha_if_in_remote(wt: Path) -> str | None:
+    """The recovered HEAD SHA of a branch-ref-gone worktree, only if it is in a remote.
 
     A forge post-merge branch deletion leaves the worktree's HEAD a dangling
     symref, so a real ``git rev-parse HEAD`` fails. This recovers the last HEAD
-    SHA from the per-worktree reflog and returns ``True`` only when that SHA is
-    POSITIVELY contained in a remote — the case where the "dirty" working-tree
-    status is purely a symref artifact and there is nothing to capture. Fails
-    *closed*: an unrecoverable HEAD or an erroring containment probe returns
-    ``False`` so the normal capture path still runs (it fails open to capturing).
+    SHA from the per-worktree reflog and returns it ONLY when that SHA is
+    POSITIVELY contained in a remote — the case where the committed tip is
+    genuinely safe on a remote. Returns ``None`` when HEAD resolves normally
+    (not a dangling symref), the HEAD is unrecoverable, the containment probe
+    errors, or the tip is on no remote — fails *closed* so the normal capture
+    path still runs (it fails open to capturing).
     """
     if git.check(repo=str(wt), args=["rev-parse", "--verify", "--quiet", "HEAD"]):
-        return False
+        return None
     sha = git.recovered_head_sha_after_ref_gone(str(wt))
     if not sha:
-        return False
+        return None
     try:
-        return not git.commits_absent_from_all_remotes(str(wt), sha)
+        return sha if not git.commits_absent_from_all_remotes(str(wt), sha) else None
     except CommandFailedError:
-        return False
+        return None
+
+
+def _dirty_beyond_symref_artifacts(wt: Path) -> bool:
+    """Whether a dangling-HEAD worktree carries a GENUINE uncommitted delta.
+
+    A dangling-HEAD worktree has no resolvable ``HEAD`` to diff against, so
+    ``git status --porcelain`` reports EVERY tracked path as staged-added
+    (``"A "`` — index ``A``, worktree unmodified): a pure symref artifact, not
+    real work. Any other porcelain status code on any path (``"AM"`` an edit to
+    a tracked file, ``"??"`` an untracked file, …) is a genuine uncommitted
+    change whose loss matters. Returns ``True`` iff at least one line is NOT a
+    bare ``"A "`` symref artifact. Fails *open* (treat as dirty) on an
+    inconclusive status read, so the capture-or-refuse contract is never
+    bypassed by a probe error.
+    """
+    try:
+        porcelain = git.status_porcelain_strict(str(wt))
+    except CommandFailedError:
+        return True
+    return any(line[:2] != "A " for line in porcelain.splitlines() if line)
 
 
 def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, label: str) -> Path | None:
@@ -88,13 +112,23 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
     if not wt.is_dir():
         return None
 
-    if branch == git.DETACHED_HEAD and _head_ref_gone_and_in_remote(wt):
-        # The worktree's branch ref was deleted post-merge → HEAD is a dangling
-        # symref. ``git status`` then reports every path as Added (no HEAD to diff
-        # against) and the bundle of the dangling ``HEAD`` would fail — but the
-        # recovered tip is already on a remote, so there is genuinely nothing to
-        # lose. Capture is a clean no-op; the caller reaps the orphan.
-        return None
+    if branch == git.DETACHED_HEAD:
+        recovered_sha = _recovered_head_sha_if_in_remote(wt)
+        if recovered_sha is not None:
+            # The worktree's branch ref was deleted post-merge → HEAD is a
+            # dangling symref, and the committed tip is safe on a remote. If the
+            # working tree is ALSO clean (every porcelain line is the bare
+            # ``"A "`` symref artifact), there is genuinely nothing to lose:
+            # capture is a clean no-op and the caller reaps the orphan. But the
+            # tip being in a remote does NOT make an UNCOMMITTED delta
+            # recoverable — an edit to a tracked file or an untracked file would
+            # be destroyed by the reap — so a genuine dirty delta falls through
+            # to capture, bundling+diffing against the recovered SHA (the
+            # dangling ``HEAD`` cannot be bundled or diffed, rc=128). #706/#835/
+            # #1506 capture-or-refuse: never silent-destroy.
+            if not _dirty_beyond_symref_artifacts(wt):
+                return None
+            return _capture_dangling_head_dirty(repo_main, wt, recovered_sha, label)
 
     bundle_repo = wt if branch == git.DETACHED_HEAD else repo_main
 
@@ -103,11 +137,7 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
     if not dirty and not unpushed:
         return None
 
-    safe_label = "".join(c if c.isalnum() or c in "-_" else "-" for c in (label or "unknown"))
-    timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    prefix = f"t3-recover-{safe_label}-{timestamp}-"
-    recovery_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
-
+    recovery_dir = _new_recovery_dir(label)
     try:
         git.bundle_create(str(bundle_repo), str(recovery_dir / _BUNDLE_NAME), branch)
         (recovery_dir / _DIFF_NAME).write_text(git.full_worktree_diff(str(wt)), encoding="utf-8")
@@ -116,4 +146,42 @@ def capture_worktree_snapshot(repo_main: Path, wt_path: str, *, branch: str, lab
         raise
 
     logger.warning("%s (%s): dirty/unpushed worktree — wrote recovery artifact to %s", repo_main, branch, recovery_dir)
+    return recovery_dir
+
+
+def _new_recovery_dir(label: str) -> Path:
+    safe_label = "".join(c if c.isalnum() or c in "-_" else "-" for c in (label or "unknown"))
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+    prefix = f"t3-recover-{safe_label}-{timestamp}-"
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
+
+
+def _capture_dangling_head_dirty(repo_main: Path, wt: Path, recovered_sha: str, label: str) -> Path:
+    """Capture a dirty dangling-HEAD worktree against its recovered tip SHA.
+
+    ``git rev-parse HEAD`` exits 128 in a dangling-HEAD worktree, so neither a
+    ``bundle_create`` of ``HEAD`` nor a ``full_worktree_diff`` against ``HEAD``
+    can run. Both are re-anchored on ``recovered_sha`` (the surviving tip
+    recovered from the per-worktree reflog, proven to be in a remote): the
+    bundle anchors it under a transient ``refs/heads/`` recovery branch so a
+    ``git clone`` checks it out, and the diff captures the genuine uncommitted
+    delta on top of it. A partial artifact is cleaned up and the error re-raised.
+    """
+    recovery_dir = _new_recovery_dir(label)
+    # A unique recovery-branch name per capture so concurrent reaps of two
+    # dangling-HEAD worktrees never collide on the shared ``refs/heads/`` store.
+    recovery_branch = f"{_RECOVERY_BRANCH}-{recovery_dir.name}"
+    try:
+        git.bundle_create_at_sha(str(wt), str(recovery_dir / _BUNDLE_NAME), recovered_sha, recovery_branch)
+        (recovery_dir / _DIFF_NAME).write_text(git.full_worktree_diff(str(wt), base=recovered_sha), encoding="utf-8")
+    except Exception:
+        shutil.rmtree(recovery_dir, ignore_errors=True)
+        raise
+
+    logger.warning(
+        "%s (dangling HEAD, tip %s): dirty worktree — wrote recovery artifact to %s",
+        repo_main,
+        recovered_sha,
+        recovery_dir,
+    )
     return recovery_dir

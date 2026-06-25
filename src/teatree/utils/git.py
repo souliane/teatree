@@ -45,6 +45,7 @@ from teatree.utils.git_status import full_worktree_diff, status_porcelain, statu
 from teatree.utils.git_sync import fetch, merge_abort, merge_no_edit, pull_ff_only, push, rebase
 from teatree.utils.git_worktree import (
     bundle_create,
+    bundle_create_at_sha,
     commits_absent_from_all_remotes,
     recovered_head_sha_after_ref_gone,
     worktree_add,
@@ -59,6 +60,7 @@ __all__ = [
     "branch_diff",
     "branch_merged",
     "bundle_create",
+    "bundle_create_at_sha",
     "check",
     "commit",
     "commit_messages",
