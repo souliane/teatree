@@ -22,22 +22,17 @@ here via ``call_command``.
 
 import datetime as dt
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 
 import typer
-from django.apps import apps
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.overlay_loader import get_all_overlays
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from teatree.core.backend_protocols import CodeHostBackend
-    from teatree.core.models import ConsolidatedMemory
-    from teatree.loops.dream.decay import ArchivedMemory
+    from teatree.loops.dream.phase_runner import MemoryPhaseRunner
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,183 +373,19 @@ class Command(TyperCommand):
                 return host, repo
         return None, repo
 
+    def _phase_runner(self) -> "MemoryPhaseRunner":
+        """The composed file-side phase runner, wired to the backlog host resolver."""
+        from teatree.loops.dream.phase_runner import MemoryPhaseRunner  # noqa: PLC0415
+
+        return MemoryPhaseRunner(backlog_host_resolver=self._teatree_backlog_host)
+
     def _run_memory_phases(self, *, dry_run: bool) -> str:
-        """Run the memory-file phases 4-6 over every discovered memory dir, fault-isolated.
-
-        Phases 4 (cross-link), 5 (re-index), and 6 (decay/archive) each run LIVE by
-        default behind their own ``[loops.dream]`` / ``T3_DREAM_*`` kill-switch and
-        each in its own try/except, so one phase (or one memory dir) failing never
-        crashes the tick or stops the other phases. Operates only on the discovered
-        ``~/.claude`` memory dirs (engine reuse); the units under test inject a tmp
-        dir directly into the phase functions, never the real one.
-        """
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
-
-        memory_dirs = discover_memory_dirs()
-        if not memory_dirs:
-            return ""
-        phases: list[tuple[str, Callable[..., int]]] = [
-            ("cross-link", self._cross_link_dirs),
-            ("re-index", self._reindex_dirs),
-            ("decay", self._decay_dirs),
-        ]
-        parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run)[0] for label, runner in phases]
-        return "".join(part for part in parts if part)
+        """Run phases 4-6 over every discovered memory dir (quiet-night path, no gates)."""
+        return self._phase_runner().run_memory_phases(dry_run=dry_run)
 
     def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
-        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545).
-
-        Snapshots every discovered memory dir BEFORE the phases mutate it, runs the
-        phases (capturing what decay archived per dir), snapshots AFTER, then runs the
-        six acceptance gates per dir (:func:`teatree.loops.dream.gates.run_acceptance_pass`),
-        which also populates the ``DreamQaProbe`` corpus. Returns
-        ``(phase_summary, all_gates_passed, gate_summary)`` — a failing gate makes the
-        caller stamp the pass attempted-not-succeeded (staleness keeps firing) rather
-        than laundering a lossy consolidation into a success.
-
-        Fault-isolated: a gate-evaluation failure for one dir is reported in the
-        summary, defaults that dir's verdict to PASS (the gate machinery, not the
-        consolidation, broke), and never crashes the tick.
-        """
-        from teatree.loops.dream import gates  # noqa: PLC0415
-        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
-
-        memory_dirs = discover_memory_dirs()
-        if not memory_dirs:
-            return "", True, ""
-
-        before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
-        schema_before = self._ledger_schema_count()
-        phase_summary, archived_by_dir, maintenance_performed = self._run_phases(memory_dirs, dry_run=dry_run)
-        schema_after = self._ledger_schema_count()
-
-        all_passed = True
-        clauses: list[str] = []
-        for d in memory_dirs:
-            try:
-                report = gates.run_acceptance_pass(
-                    before[d],
-                    gates.snapshot_memory_dir(d),
-                    overlay="",
-                    archived=archived_by_dir.get(d, ()),
-                    schema_before=schema_before,
-                    schema_after=schema_after,
-                    clusters_recorded=clusters_recorded,
-                    maintenance_performed=maintenance_performed,
-                    persist=not dry_run,
-                )
-            except Exception as exc:  # noqa: BLE001
-                clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
-                continue
-            all_passed = all_passed and report.passed
-            if not report.passed:
-                failed = ", ".join(g.name for g in report.gate_results if not g.passed)
-                clauses.append(f"gates FAILED ({failed})")
-        gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
-        return phase_summary, all_passed, gate_summary
-
-    def _run_phases(
-        self, memory_dirs: list[Path], *, dry_run: bool
-    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]], bool]":
-        """Run phases 4 (cross-link) + 5 (re-index) then decay.
-
-        Returns the summary clause, decay's archives per dir, and a
-        ``maintenance_performed`` flag — True when ANY file-side phase did real
-        work (cross-link edges added, MEMORY.md re-indexed, or stale memories
-        archived). The gate uses that flag to count a quiet 0-cluster maintenance
-        pass as genuine consolidation (#2626).
-        """
-        cross_link_summary, links_added = self._phase_summary(
-            "cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run
-        )
-        reindex_summary, reindexed = self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run)
-        decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
-        archived = sum(len(a) for a in archived_by_dir.values())
-        maintenance_performed = links_added > 0 or reindexed > 0 or archived > 0
-        parts = [cross_link_summary, reindex_summary, decay_summary]
-        return "".join(part for part in parts if part), archived_by_dir, maintenance_performed
-
-    @staticmethod
-    def _ledger_schema_count() -> int:
-        """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
-        consolidated_memory_model = cast("type[ConsolidatedMemory]", apps.get_model("core", "ConsolidatedMemory"))
-        return consolidated_memory_model.objects.count()
-
-    def _decay_dirs_with_archives(
-        self, memory_dirs: list[Path], *, dry_run: bool
-    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
-        """Run phase-6 decay per dir under fault isolation, returning its summary + archives."""
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
-
-        archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
-        if not decay_enabled():
-            return "", archived_by_dir
-        total = 0
-        for d in memory_dirs:
-            try:
-                result = decay.decay_memories(d, dry_run=dry_run)
-            except Exception as exc:  # noqa: BLE001
-                return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
-            archived_by_dir[d] = result.archived
-            total += result.archived_count
-        return (f"; archived {total} stale memory(ies)" if total else ""), archived_by_dir
-
-    def _phase_summary(
-        self,
-        label: str,
-        runner: "Callable[..., int]",
-        memory_dirs: list[Path],
-        *,
-        dry_run: bool,
-    ) -> tuple[str, int]:
-        """Run one phase's per-dir runner under fault isolation.
-
-        Returns ``(summary_clause, work_count)`` — the work count is the phase's
-        own unit (edges added / MEMORY.md re-indexed / memories archived) and feeds
-        the ``maintenance_performed`` gate signal. A fault-isolated failure returns
-        a WARN clause and a 0 count (the phase did no provable work).
-        """
-        try:
-            count = runner(memory_dirs, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001
-            return f"; WARN {label} raised: {type(exc).__name__}: {exc}", 0
-        clause = self._phase_clause(label, count)
-        return (f"; {clause}" if clause else ""), count
-
-    @staticmethod
-    def _phase_clause(label: str, count: int) -> str:
-        if not count:
-            return ""
-        return {
-            "cross-link": f"cross-linked {count} memory edge(s)",
-            "re-index": f"re-indexed {count} MEMORY.md",
-            "decay": f"archived {count} stale memory(ies)",
-        }[label]
-
-    def _cross_link_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import cross_link  # noqa: PLC0415
-        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415
-
-        if not cross_link_enabled():
-            return 0
-        return sum(cross_link.cross_link_memories(d, dry_run=dry_run).links_added for d in memory_dirs)
-
-    def _reindex_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import reindex  # noqa: PLC0415
-        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415
-
-        if not reindex_enabled():
-            return 0
-        return sum(1 for d in memory_dirs if reindex.reindex_memory(d, dry_run=dry_run).changed)
-
-    def _decay_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> int:
-        from teatree.loops.dream import decay  # noqa: PLC0415
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
-
-        if not decay_enabled():
-            return 0
-        return sum(decay.decay_memories(d, dry_run=dry_run).archived_count for d in memory_dirs)
+        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545)."""
+        return self._phase_runner().run_memory_phases_and_gates(clusters_recorded=clusters_recorded, dry_run=dry_run)
 
 
 def _env_propose_evals() -> bool:
