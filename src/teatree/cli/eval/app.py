@@ -13,14 +13,14 @@ from teatree.cli.eval.app_helpers import (
     require_api_backend_for_fresh_run,
     require_effort,
     require_spec,
+    resolve_escalation,
 )
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.metered_routing import warn_local_metered
-from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval.only_filter import filter_specs_by_only
+from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
-from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
 from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
@@ -267,6 +267,27 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "diff touched here, so a PR meters only the scenarios it changed."
         ),
     ),
+    escalate_on_fail: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--escalate-on-fail",
+        help=(
+            "ADAPTIVE escalation for the cheap single-trial PR lane: a scenario that FAILS the "
+            "single trial is not yet a hard red — it is re-run at --escalate-trials higher trials. "
+            "The lane reds only on a CONFIRMED failure (every escalation trial also failed); a "
+            "scenario that recovers on any escalation trial is reported flaky-but-passing, not red. "
+            "Single-trial only (rejects --trials>1/--models, which already aggregate)."
+        ),
+    ),
+    escalate_trials: int = typer.Option(
+        3,
+        "--escalate-trials",
+        help=(
+            "How many trials a --escalate-on-fail re-run uses to confirm a single-trial failure "
+            "(default 3). Must be >= 2 — one trial is no escalation. Only the scenarios that "
+            "failed the single trial are re-run, so the spend is bounded by the failures, not the "
+            "whole changed set."
+        ),
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -319,6 +340,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     max_turns = resolve_max_turns_override(max_turns)
     metered = backend == API_BACKEND or trials > 1 or models is not None
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
+    escalation = resolve_escalation(
+        escalate_on_fail=escalate_on_fail, escalate_trials=escalate_trials, trials=trials, models=models
+    )
     require_persist_for_history_gates(
         persist=persist,
         baseline=baseline,
@@ -344,6 +368,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             transcript_html=transcript_html,
             summary_md=summary_md,
             only=only,
+            escalate_on_fail=escalate_on_fail,
+            escalate_trials=escalate_trials,
         ),
         docker=docker,
         local=local,
@@ -382,62 +408,23 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # the transcript backend's legitimate pre-transcript all-skip.
     api_metered = backend == API_BACKEND or trials > 1 or models is not None
     require_executed = require_executed or api_metered
-    if models is not None:
-        run_model_matrix_lane(
-            specs,
-            models=models,
+    dispatch_resolved_run(
+        specs,
+        ResolvedRun(
+            backend=backend,
             max_turns=max_turns,
-            trials=trials,
-            require=require,
-            output_format=output_format,
-            persist=persist,
-            baseline=baseline,
-            gate_regressions=gate_regressions,
-            gate_cost_regression=gate_cost_regression,
-            cost_regression_tolerance=cost_regression_tolerance,
-            gate_cost_bounds=gate_cost_bounds,
-            grader=grader,
+            transcript_dir=transcript_dir,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
             effort=effort_level,
-        )
-        return
-    if trials > 1:
-        run_pass_at_k_lane(
-            specs,
-            max_turns=max_turns,
-            trials=trials,
-            require=require,
+            parallel=parallel,
             output_format=output_format,
-            persist=persist,
-            baseline=baseline,
-            gate_regressions=gate_regressions,
-            gate_cost_regression=gate_cost_regression,
-            cost_regression_tolerance=cost_regression_tolerance,
-            gate_cost_bounds=gate_cost_bounds,
-            grader=grader,
-            require_executed=require_executed,
-            max_budget_usd=max_budget_usd,
-            effort=effort_level,
+            judge=judge,
             transcript_html=transcript_html,
             summary_md=summary_md,
-        )
-        return
-    run_single_trial(
-        specs,
-        backend=backend,
-        max_turns=max_turns,
-        transcript_dir=transcript_dir,
-        require_executed=require_executed,
-        max_budget_usd=max_budget_usd,
-        effort=effort_level,
-        parallel=parallel,
-        output_format=output_format,
-        grader=grader,
-        judge=judge,
-        transcript_html=transcript_html,
-        summary_md=summary_md,
-        gates=SingleTrialGates(
+            trials=trials,
+            require=require,
+            models=models,
             persist=persist,
             baseline=baseline,
             gate_regressions=gate_regressions,
@@ -445,6 +432,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             cost_regression_tolerance=cost_regression_tolerance,
             gate_cost_bounds=gate_cost_bounds,
         ),
+        grader=grader,
+        escalation=escalation,
     )
 
 

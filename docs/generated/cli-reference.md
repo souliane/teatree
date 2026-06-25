@@ -2155,6 +2155,41 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     touched here, so a PR    │
 │                                                     meters only the          │
 │                                                     scenarios it changed.    │
+│ --escalate-on-fail                                  ADAPTIVE escalation for  │
+│                                                     the cheap single-trial   │
+│                                                     PR lane: a scenario that │
+│                                                     FAILS the single trial   │
+│                                                     is not yet a hard red —  │
+│                                                     it is re-run at          │
+│                                                     --escalate-trials higher │
+│                                                     trials. The lane reds    │
+│                                                     only on a CONFIRMED      │
+│                                                     failure (every           │
+│                                                     escalation trial also    │
+│                                                     failed); a scenario that │
+│                                                     recovers on any          │
+│                                                     escalation trial is      │
+│                                                     reported                 │
+│                                                     flaky-but-passing, not   │
+│                                                     red. Single-trial only   │
+│                                                     (rejects                 │
+│                                                     --trials>1/--models,     │
+│                                                     which already            │
+│                                                     aggregate).              │
+│ --escalate-trials                          INTEGER  How many trials a        │
+│                                                     --escalate-on-fail       │
+│                                                     re-run uses to confirm a │
+│                                                     single-trial failure     │
+│                                                     (default 3). Must be >=  │
+│                                                     2 — one trial is no      │
+│                                                     escalation. Only the     │
+│                                                     scenarios that failed    │
+│                                                     the single trial are     │
+│                                                     re-run, so the spend is  │
+│                                                     bounded by the failures, │
+│                                                     not the whole changed    │
+│                                                     set.                     │
+│                                                     [default: 3]             │
 │ --help                                              Show this message and    │
 │                                                     exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯

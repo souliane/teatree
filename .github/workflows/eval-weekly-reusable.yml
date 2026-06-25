@@ -50,6 +50,11 @@ on:
         required: false
         default: ""
         type: string
+      efforts:
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default)."
+        required: false
+        default: "low,medium,high"
+        type: string
       lookback-days:
         description: "No-PR-merged guard lookback window in days."
         required: false
@@ -144,19 +149,24 @@ jobs:
               echo "run_eval=false" >> "$GITHUB_OUTPUT"
             fi
           fi
-      # Compute the {lane, shard} matrix the eval job fans out over. Empty `lane`
-      # = every permitted lane, sharded into budget-safe legs on the lane-aware
-      # ceiling. An unknown lane fails loud here rather than producing an empty
-      # matrix. The lane input is routed through an `env:` var (never inlined).
-      - name: Compute the lane+shard matrix
+      # Compute the {lane, shard[, effort]} matrix the eval job fans out over.
+      # Empty `lane` = every permitted lane, sharded into budget-safe legs on the
+      # lane-aware ceiling. `efforts` (default 'low,medium,high') adds the model-
+      # tier axis: each {lane, shard} leg runs once per reasoning-effort tier, so
+      # the weekly run measures pass-rate vs effort across the whole suite; an
+      # empty `efforts` keeps the single-tier {lane, shard} matrix. An unknown lane
+      # or effort fails loud here rather than producing an empty/invalid matrix.
+      # Both inputs are routed through `env:` vars (never inlined into the script).
+      - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
+          EVAL_EFFORTS: ${{ inputs.efforts }}
         run: |
-          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE")"
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "Lane+shard matrix: $MATRIX"
+          echo "Lane+shard+effort matrix: $MATRIX"
 
   # GATE: the metered AI behavioral-eval suite, fanned out ONE {lane, shard} per
   # matrix leg. The Claude CLI install is asserted and `--require-executed` is
@@ -226,31 +236,46 @@ jobs:
       # A filesystem-safe per-lane-and-shard suffix, computed BEFORE the eval run
       # so each shard's summary file is uniquely named (a shared basename would
       # collide under `merge-multiple` and drop all but one shard's results).
+      # The suffix carries the EFFORT tier too (when the matrix has an effort axis),
+      # so the three tiers of the same {lane, shard} leg get distinct summary
+      # filenames — a shared basename would collide under `merge-multiple` and drop
+      # all but one tier's results. `matrix.effort` is empty when no effort axis is
+      # used, so the suffix degrades cleanly to the legacy lane-shard form.
       - name: Compute a filesystem-safe artifact suffix
         id: artifact
         env:
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
-        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+          EVAL_EFFORT: ${{ matrix.effort }}
+        run: |
+          SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
+          [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
       # `--docker` routes the metered lane THROUGH the CI container; the host's
       # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--backend api` pins
       # the metered in-process Agent-SDK path; `--trials 3` is the flake-resistant
       # weekly sweep. `--require-executed` is UNCONDITIONAL so an all-skipped run
       # exits non-zero. `--lane`/`--shard` scope the leg to its one shard.
+      # `--effort <tier>` is appended only when the matrix carries an effort axis
+      # (the model-tier matrix), so each tier of a leg meters that reasoning effort;
+      # with no effort axis the run keeps the lane-default effort, unchanged.
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
+          EVAL_EFFORT: ${{ matrix.effort }}
           SUMMARY_SUFFIX: ${{ steps.artifact.outputs.suffix }}
         with:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
           command: |
+            EFFORT_FLAG=""
+            [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             uv run t3 eval run --trials 3 --require any --backend api \
-              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
+              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary-$SUMMARY_SUFFIX.md"

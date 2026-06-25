@@ -108,6 +108,11 @@ on:
         required: false
         default: ""
         type: string
+      efforts:
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default)."
+        required: false
+        default: "low,medium,high"
+        type: string
 
 jobs:
   # PREPARE: ONE place that (a) decides whether the eval runs at all (the weekly
@@ -163,22 +168,26 @@ jobs:
               echo "run_eval=false" >> "$GITHUB_OUTPUT"
             fi
           fi
-      # Compute the {lane, shard} matrix the eval job fans out over. Empty `lane`
-      # input (scheduled runs and the default manual run) = every permitted lane,
-      # sharded into budget-safe legs on the lane-aware ceiling (clean_room ~182 →
-      # ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 — #2683). An explicit
-      # `lane` input shards only that lane. An unknown lane fails loud here rather
-      # than producing an empty matrix. The lane input is routed through an `env:`
-      # var (never inlined into the shell) and validated by lane_matrix.py against
-      # PERMITTED_LANES.
-      - name: Compute the lane+shard matrix
+      # Compute the {lane, shard[, effort]} matrix the eval job fans out over.
+      # Empty `lane` input (scheduled runs and the default manual run) = every
+      # permitted lane, sharded into budget-safe legs on the lane-aware ceiling
+      # (clean_room ~182 → ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 —
+      # #2683). The `efforts` axis (default 'low,medium,high', also for the
+      # scheduled cron run) fans each {lane, shard} leg across the three reasoning-
+      # effort tiers, so the weekly run measures pass-rate vs effort across the
+      # whole suite; an empty `efforts` keeps the single-tier matrix. An unknown
+      # lane or effort fails loud here rather than producing an empty/invalid
+      # matrix. Both inputs are routed through `env:` vars (never inlined) and
+      # validated by lane_matrix.py.
+      - name: Compute the lane+shard+effort matrix
         id: matrix
         env:
           EVAL_LANE: ${{ inputs.lane || '' }}
+          EVAL_EFFORTS: ${{ inputs.efforts || 'low,medium,high' }}
         run: |
-          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE")"
+          MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "Lane+shard matrix: $MATRIX"
+          echo "Lane+shard+effort matrix: $MATRIX"
 
   # GATE (weekly + on-demand): the metered AI behavioral-eval suite, fanned out
   # ONE {lane, shard} per matrix leg (#2492). The Claude CLI install is asserted
@@ -256,16 +265,22 @@ jobs:
       # writable /artifacts bind-mount, never the `:ro` repo mount). The artifact
       # carries, per scenario, each trial's PASS/FAIL plus the agent's transcript
       # (reasoning + tool calls) so a maintainer can diagnose a red shard.
-      # A filesystem-safe per-lane-and-shard suffix, computed BEFORE the eval run so
-      # the summary file is uniquely named per shard. `merge-multiple` flattens every
-      # shard's summary into ONE dir in the publish job — a shared basename would
-      # collide (last-writer-wins) and silently drop all but one shard's results.
+      # A filesystem-safe per-lane-shard-and-EFFORT suffix, computed BEFORE the eval
+      # run so the summary file is uniquely named per leg. `merge-multiple` flattens
+      # every leg's summary into ONE dir in the publish job — a shared basename
+      # would collide (last-writer-wins) and silently drop all but one leg's
+      # results. `matrix.effort` is empty when no effort axis is used, so the suffix
+      # degrades cleanly to the legacy lane-shard form.
       - name: Compute a filesystem-safe artifact suffix
         id: artifact
         env:
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
-        run: echo "suffix=${EVAL_LANE}-${EVAL_SHARD//\//-}" >> "$GITHUB_OUTPUT"
+          EVAL_EFFORT: ${{ matrix.effort }}
+        run: |
+          SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
+          [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
       - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
@@ -279,6 +294,9 @@ jobs:
           # permitted lane and `shard` is always a valid index/total.
           EVAL_LANE: ${{ matrix.lane }}
           EVAL_SHARD: ${{ matrix.shard }}
+          # The matrix's reasoning-effort tier (model-tier axis); empty when no
+          # effort axis is used, in which case the run keeps the lane-default effort.
+          EVAL_EFFORT: ${{ matrix.effort }}
         with:
           # A single shard is ≤ its lane's ceiling (clean_room ≤14, under_load ≤4 —
           # #2683) x 3 trials, each a real metered `claude` SDK call. Each retry
@@ -308,8 +326,10 @@ jobs:
           # mount). The `publish` job merges every shard's summary into the public
           # dashboard; the transcript stays in the private `eval-report-*` artifact.
           command: |
+            EFFORT_FLAG=""
+            [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
             uv run t3 eval run --trials 3 --require any --backend api \
-              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" \
+              --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
               --summary-md "$RUNNER_TEMP/eval-summary-${{ steps.artifact.outputs.suffix }}.md"

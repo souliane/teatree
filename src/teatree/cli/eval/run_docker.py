@@ -38,6 +38,8 @@ class RunDockerArgs:
     transcript_html: Path | None = None
     summary_md: Path | None = None
     only: str | None = None
+    escalate_on_fail: bool = False
+    escalate_trials: int = 3
 
     def _container_transcript_path(self) -> str:
         """The in-container path the transcript artifact is written to.
@@ -92,6 +94,7 @@ class RunDockerArgs:
             ["--parallel", str(self.parallel)] if self.parallel != DEFAULT_PARALLEL else [],
             ["--transcript-html", self._container_transcript_path()] if self.transcript_html is not None else [],
             ["--summary-md", self._container_summary_path()] if self.summary_md is not None else [],
+            ["--escalate-on-fail", "--escalate-trials", str(self.escalate_trials)] if self.escalate_on_fail else [],
         ]
 
     def passthrough(self) -> list[str]:
