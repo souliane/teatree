@@ -26,10 +26,17 @@ class WorktreeProvisioner(RunnerBase):
 
     #33: a ticket whose repos live on DIFFERENT branches maps each repo to its
     own branch in ``ticket.extra['branches']`` (repo → branch); a repo absent
-    from the map falls back to ``extra['branch']``. The ticket DIR is always
-    ``extra['branch']`` regardless, so every repo provisions as a SIBLING in
-    one dir even when the repos are on split per-repo branches — this is what
-    lets an e2e / workspace-ticket stack compose split branches together.
+    from the map falls back to ``extra['branch']``. Every repo provisions as a
+    SIBLING in one dir even when the repos are on split per-repo branches — this
+    is what lets an e2e / workspace-ticket stack compose split branches together.
+
+    The ticket dir is normally ``<workspace>/<extra['branch']>``, but when the
+    ticket ALREADY has materialised worktrees (a repo added to an in-flight
+    ticket via ``workspace ticket --repos``) the dir is taken from the existing
+    worktrees' shared parent so the added repo co-locates as a sibling — see
+    ``_existing_ticket_dir``. This keeps an added FE next to the backend even
+    when ``extra['branch']`` has drifted from the original dir name (the
+    ``auto:<branch>`` ticket case).
     """
 
     def __init__(self, ticket: Ticket) -> None:
@@ -53,7 +60,14 @@ class WorktreeProvisioner(RunnerBase):
         branches = dict(extra.get("branches") or {})
 
         workspace = _workspace_dir()
-        ticket_dir = workspace / branch
+        # A repo ADDED to a ticket that already has materialised worktrees must
+        # co-locate as a SIBLING of the existing ones — derive the ticket dir
+        # from an existing worktree's parent, not blindly from ``branch``. The
+        # ``auto:<branch>`` case is where this matters: the first worktree lives
+        # in ``<workspace>/<actual-branch>`` while ``extra['branch']`` may have
+        # been (re)set to a pk-default like ``<pk>-ticket`` by a later scope(),
+        # so ``workspace / branch`` would split the second repo into a new dir.
+        ticket_dir = self._existing_ticket_dir(ticket) or (workspace / branch)
         ticket_dir.mkdir(parents=True, exist_ok=True)
 
         provisioned: dict[str, str] = dict(extra.get("provision") or {})
@@ -96,6 +110,26 @@ class WorktreeProvisioner(RunnerBase):
         if failed:
             return RunnerResult(ok=False, detail=f"failed to create worktrees for: {', '.join(failed)}")
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
+
+    @staticmethod
+    def _existing_ticket_dir(ticket: Ticket) -> Path | None:
+        """The shared parent dir of this ticket's already-materialised worktrees.
+
+        Returns the common parent of every existing ``Worktree`` whose
+        ``worktree_path`` is on disk, so a repo added later co-locates as a
+        sibling there rather than in a fresh ``<workspace>/<branch>`` dir. A
+        repo worktree lives at ``<ticket_dir>/<repo-basename>``, so its parent
+        IS the ticket dir. Returns ``None`` when the ticket has no materialised
+        worktree yet (first provision) or when the existing ones disagree on a
+        parent (a pre-existing split we don't paper over), leaving the caller's
+        ``workspace / branch`` default in force.
+        """
+        parents = {
+            Path(path).parent
+            for wt in Worktree.objects.filter(ticket=ticket)
+            if (path := (wt.extra or {}).get("worktree_path")) and Path(path).is_dir()
+        }
+        return parents.pop() if len(parents) == 1 else None
 
     @staticmethod
     def _create(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> tuple[str, Path] | None:
