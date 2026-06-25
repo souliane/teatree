@@ -3,14 +3,24 @@
 The functions are exercised end-to-end in ``test_review_approve_gate.py``
 and ``test_review_approve_already_approved.py``, but the branches around
 malformed payloads and the username-resolution failure mode are easier
-to pin directly. Pure stub against the ``GitLabAPI.current_username`` /
-``get_json`` shape — no Django, no network, no migrations.
+to pin directly. Stub against the ``GitLabAPI.current_username`` /
+``get_json`` / ``get_json_paginated`` shape — no network, no migrations.
+
+Since #2716 the "no published note" path also consults the recorded
+internal verdict (:class:`OnBehalfApproval`), so this module carries the
+``django_db`` mark; the note-found tests short-circuit before the DB read
+and never write a row.
 """
 
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from teatree.cli.review.approval import identity_has_reviewed, identity_in_approved_by
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
 
 
 def _api(*, username: str = "souliane", discussions: Any = None) -> MagicMock:
