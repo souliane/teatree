@@ -11,7 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import distill, engine
+from teatree.loops.dream import distill, engine, sdk_distiller
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
@@ -116,6 +116,28 @@ class WriteClustersTestCase(TestCase):
         write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
         assert ConsolidatedMemory.objects.filter(cluster_key="k1").count() == 1
+
+    def test_different_llm_slugs_same_members_upsert_to_one_row(self) -> None:
+        # #2723: the distiller emits DIFFERENT slugs across two runs for the SAME
+        # member set. With a DETERMINISTIC cluster_key (sha256 over the members) the
+        # second run UPSERTS the existing row instead of creating a duplicate.
+        member = _write_member(self.tmp)
+        extract = _extract_of(member)
+        payload_a = (
+            f'[{{"cluster_key":"slug-run-1","rule":"Run the gate before pushing.",'
+            f'"source_files":["{member.path}"],"is_binding":false,'
+            f'"verified_citation":"{_CITATION}","durable_destination":"feedback/run_gate.md"}}]'
+        )
+        payload_b = payload_a.replace("slug-run-1", "a-completely-different-slug-run-2")
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload_a):
+            clusters_a = sdk_distiller.sdk_distiller(extract)
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload_b):
+            clusters_b = sdk_distiller.sdk_distiller(extract)
+
+        write_clusters(clusters_a, extract, dry_run=False)
+        write_clusters(clusters_b, extract, dry_run=False)
+        # ONE row — the reworded slug did not fork a duplicate.
+        assert ConsolidatedMemory.objects.count() == 1
 
     def test_rejects_cluster_with_empty_source_files(self) -> None:
         member = _write_member(self.tmp)
@@ -644,67 +666,6 @@ class TestTranscriptMember:
         member = TranscriptMember(path=tmp_path / "x.jsonl", kind="main")
         with pytest.raises(AttributeError):
             member.kind = "other"  # type: ignore[misc]
-
-
-def _extract_with_one_snippet() -> ConsolidationExtract:
-    return ConsolidationExtract(
-        snippets=(WeightedSnippet(path=Path("/feedback_x.md"), kind="memory", weight=9, text="BINDING: x"),),
-        truncated=False,
-    )
-
-
-class SdkDistillerParseTestCase(TestCase):
-    def test_parses_clusters_from_json(self) -> None:
-        payload = (
-            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
-            '"is_binding":true,"verified_citation":"the mistake","durable_destination":"d.md"}]'
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert len(clusters) == 1
-        assert clusters[0].cluster_key == "k1"
-        assert clusters[0].is_binding is True
-        assert clusters[0].source_files == ["/feedback_x.md"]
-
-    def test_parses_json_embedded_in_prose(self) -> None:
-        payload = (
-            "Here is the result:\n"
-            '[{"cluster_key":"k1","rule":"do x","source_files":["/f.md"],'
-            '"is_binding":false,"verified_citation":"m","durable_destination":""}]\n'
-            "Done."
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert len(clusters) == 1
-
-    def test_malformed_json_yields_no_clusters(self) -> None:
-        with patch.object(engine, "_run_distiller_turn", return_value="not json at all"):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert clusters == []
-
-    def test_skips_entries_missing_required_keys(self) -> None:
-        payload = (
-            '[{"rule":"no key here"},'
-            '{"cluster_key":"ok","rule":"r","source_files":["/f.md"],'
-            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
-        )
-        with patch.object(engine, "_run_distiller_turn", return_value=payload):
-            clusters = engine._sdk_distiller(_extract_with_one_snippet())
-        assert [c.cluster_key for c in clusters] == ["ok"]
-
-    def test_sdk_turn_failure_raises(self) -> None:
-        with (
-            patch.object(engine, "_run_distiller_turn", side_effect=RuntimeError("sdk boom")),
-            pytest.raises(RuntimeError),
-        ):
-            engine._sdk_distiller(_extract_with_one_snippet())
-
-    def test_empty_extract_short_circuits_without_sdk_call(self) -> None:
-        empty = ConsolidationExtract(snippets=(), truncated=False)
-        with patch.object(engine, "_run_distiller_turn") as turn:
-            clusters = engine._sdk_distiller(empty)
-        turn.assert_not_called()
-        assert clusters == []
 
 
 def _many_members(tmp_path: Path, count: int) -> list[TranscriptMember]:

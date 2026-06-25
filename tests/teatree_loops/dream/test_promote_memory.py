@@ -217,6 +217,16 @@ class FileBindingReconciliationTicketsTestCase(TestCase):
         assert outcomes[0].withheld is True
         host.create_issue.assert_not_called()
 
+    def test_bare_reference_body_is_withheld(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        host = _fake_host()
+        with patch("teatree.loops.dream.promote_memory.find_bare_references", return_value=["#1234"]):
+            outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert outcomes[0].withheld is True
+        assert "bare reference" in (outcomes[0].reason or "")
+        host.create_issue.assert_not_called()
+
     def test_dry_run_files_nothing(self) -> None:
         host = _fake_host()
         outcomes = file_binding_reconciliation_tickets(

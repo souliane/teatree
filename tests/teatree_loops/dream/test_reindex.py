@@ -63,6 +63,14 @@ class ReindexTestCase(SimpleTestCase):
         assert len(line) <= reindex._LINE_MAX_CHARS
         assert "mem_with_a_very_long_descriptive_filename.md" in line
 
+    def test_filename_alone_over_budget_drops_the_summary(self) -> None:
+        # #2723 edge: when the bare pointer filename ALONE exceeds the per-line budget
+        # there is no room for any summary, so the line degrades to just the pointer
+        # rather than emitting a negative-length clip.
+        long_name = Path("m" * (reindex._LINE_MAX_CHARS + 10) + ".md")
+        line = reindex._index_line(long_name, "a summary that cannot fit")
+        assert line == f"- {long_name.name}"
+
     def test_idempotent_rerun_is_byte_identical(self) -> None:
         self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
         self._write("mem_b", "---\nname: mem_b\nsummary: b\n---\nbody")
