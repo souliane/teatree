@@ -1,4 +1,4 @@
-"""Protocol-coverage fitness for the 5 merge-RPC methods (PR 4 / #1985).
+"""Protocol-coverage fitness for the merge-RPC methods (PR 4 / #1985).
 
 ``runtime_checkable`` only checks method NAMES; these tests additionally pin the
 exact keyword-only signature so a drifted parameter (or a removed method on one
@@ -31,6 +31,10 @@ _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
     ],
     "fetch_required_checks_rollup": [
+        ("slug", inspect.Parameter.KEYWORD_ONLY),
+        ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+    ],
+    "fetch_pr_changed_paths": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
     ],
