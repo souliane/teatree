@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
+from teatree.cli.eval._registration import register_imported_commands
 from teatree.cli.eval.all import STRICT_HELP, build_scenarios_table, run_full_suite
 from teatree.cli.eval.app_helpers import (
     reject_unsupported_run_output,
@@ -13,25 +14,13 @@ from teatree.cli.eval.app_helpers import (
     require_effort,
     require_spec,
 )
-from teatree.cli.eval.audit import audit
-from teatree.cli.eval.benchmark import benchmark
-from teatree.cli.eval.capture_subagent import capture_subagent
-from teatree.cli.eval.corpus import corpus_app
-from teatree.cli.eval.history import history_command
-from teatree.cli.eval.label import label_app
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
-from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
 from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
-from teatree.cli.eval.negative_control import negative_control
 from teatree.cli.eval.only_filter import filter_specs_by_only
-from teatree.cli.eval.prepare_transcript import prepare_transcript
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
 from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
-from teatree.cli.eval.skill_command_lane import skill_command_validity
-from teatree.cli.eval.skill_prose_lane import skill_prose_judge
-from teatree.cli.eval.transcript_replay import transcript_replay
 from teatree.eval.api_runner import resolve_max_turns_override, resolve_metered_budget_usd, resolve_metered_effort
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
@@ -54,18 +43,7 @@ eval_app = typer.Typer(
     no_args_is_help=False,
     help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
 )
-eval_app.command("negative-control")(negative_control)
-eval_app.command("benchmark")(benchmark)
-eval_app.command("capture-subagent")(capture_subagent)
-eval_app.command("transcript-replay")(transcript_replay)
-eval_app.command("skill-triggers")(skill_triggers)
-eval_app.command("coverage")(coverage)
-eval_app.command("pinned-regressions")(pinned_regressions)
-eval_app.command("skill-command-validity")(skill_command_validity)
-eval_app.command("skill-prose-judge")(skill_prose_judge)
-eval_app.command("audit")(audit)
-eval_app.add_typer(corpus_app, name="corpus")
-eval_app.add_typer(label_app, name="label")
+register_imported_commands(eval_app)
 
 
 @eval_app.command("list")
@@ -468,10 +446,6 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_cost_bounds=gate_cost_bounds,
         ),
     )
-
-
-eval_app.command("prepare-transcript")(prepare_transcript)
-eval_app.command("history")(history_command)
 
 
 @eval_app.callback(invoke_without_command=True)

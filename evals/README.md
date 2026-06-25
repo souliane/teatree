@@ -194,7 +194,17 @@ t3 eval audit --confusion <axis>              # …then render the confusion mat
 t3 eval label nominate                        # audit records nominated for ground-truth labelling
 t3 eval label add <session-id>                # scaffold a corpus entry from an audited session (redaction-guarded)
 t3 eval label review                          # validate every label loads + every matcher oracle is independent (non-zero on failure)
+t3 eval changed-scenarios < changed-files.txt # CI primitive: print the scenario names a PR's STDIN diff touched (selective-PR gate); exit --skip-code when none
+t3 eval merged-prs-since --prs-file prs.json --days 7  # CI primitive: exit 0 iff any PR merged in the window (the scheduled-eval no-PR guard); else --skip-code
+t3 eval merge-summaries summaries/ --run-url … --sha … --generated-at …  # CI primitive: merge per-shard sanitized summaries into one weekly dashboard
 ```
+
+The last three are the reusable CI primitives an overlay's eval workflow consumes
+(`changed-scenarios` selects a PR's scenarios, `merged-prs-since` guards the
+weekly cron, `merge-summaries` builds the public dashboard) — the same logic the
+host's `scripts/eval/*.py` workflow shims and the reusable `eval-pr-reusable.yml`
+/ `eval-weekly-reusable.yml` (`workflow_call`) workflows delegate to, so an
+overlay reuses teatree's eval CI instead of duplicating it.
 
 The two deterministic lanes are wired into prek under their explicit names: the
 sub-second `eval-skill-triggers` hook runs at the **pre-commit** stage (pure
