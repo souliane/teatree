@@ -167,6 +167,35 @@ def test_close_issue_returns_error_when_project_not_resolved() -> None:
     client.put_json.assert_not_called()
 
 
+def test_update_issue_puts_the_description() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"iid": 3}
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue(issue_url="https://gitlab.com/org/repo/-/issues/3", body="new umbrella body")
+
+    assert result == {"iid": 3}
+    client.put_json.assert_called_once_with("projects/42/issues/3", {"description": "new umbrella body"})
+
+
+def test_update_issue_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert "error" in host.update_issue(issue_url="https://gitlab.com/org/unknown/-/issues/3", body="x")
+    client.put_json.assert_not_called()
+
+
+def test_update_issue_rejects_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert "error" in host.update_issue(issue_url="https://example.com/not/an/issue", body="x")
+    client.put_json.assert_not_called()
+
+
 def test_search_open_issues_searches_project() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()

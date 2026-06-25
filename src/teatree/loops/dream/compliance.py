@@ -10,11 +10,12 @@ ENFORCES the binding escalation rule.
 
 THE BINDING RULE. When a rule that ALREADY has a durable memory is violated AGAIN
 (``is_recurrence``), the remediation MUST be a gate or an eval, NEVER another
-memory. :func:`escalate_recurrences` files ONE deduped ``needs-triage`` ticket per
-recurring rule that PRESCRIBES the structural fix (a PreToolUse/Stop gate, a
-deterministic config self-check, or an anti-vacuous ``under_load`` eval) — it
-never proposes writing more prose. That is the operationalisation of
-``feedback_instruction_compliance_is_the_root_kpi``.
+memory. :func:`escalate_recurrences` drives ONE deduped umbrella checkbox +
+scheduled coding task per recurring rule (via ``umbrella_ledger.promote_gap``) that
+PRESCRIBES the structural fix (a PreToolUse/Stop gate, a deterministic config
+self-check, or an anti-vacuous ``under_load`` eval) and carries it to a MERGED fix
+under the standing umbrella issue — it never proposes writing more prose. That is
+the operationalisation of ``feedback_instruction_compliance_is_the_root_kpi``.
 
 The detector reuses :func:`teatree.loops.dream.transcript_extract.looks_like_user_correction`
 rather than re-implementing correction detection: a user-correction turn is the
@@ -39,22 +40,18 @@ from pathlib import Path
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
-from teatree.hooks import banned_terms_scanner
 from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet
-from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES
+from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES, UMBRELLA_ISSUE_URL
 from teatree.loops.dream.transcript_extract import looks_like_user_correction
-from teatree.types import RawAPIDict
 
 #: Where a reclassified recurring MEMORY_ONLY cluster is sent instead of a memory
-#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and files an
-#: enforcement ticket rather than re-promoting another memory.
+#: file — a teatree-core path, so Pass-2 triage reads it as a core gap and drives an
+#: umbrella checkbox + scheduled gate/eval fix rather than re-promoting another memory.
 _RECURRENCE_CORE_DESTINATION = "src/teatree/loops/dream/compliance.py"
 
-#: The dedup marker the escalation filer embeds (and searches for), keyed on the
-#: recurring rule's identity, so a re-run never refiles a recurrence that already
-#: has an open enforcement issue — mirrors the Pass-2 gap marker.
+#: The gap-key namespace for a compliance recurrence on the umbrella ledger, keyed
+#: on the recurring rule's identity, so a re-run upserts the same checkbox / reuses
+#: the same scheduled fix instead of double-adding — mirrors the Pass-2 gap key.
 _RECURRENCE_MARKER = "compliance-recurrence"
 
 #: Tokens shorter than this carry no topical signal — a correction sharing only
@@ -120,11 +117,12 @@ class ComplianceSnapshotResult:
 
 @dataclass(frozen=True, slots=True)
 class EscalationOutcome:
-    """The result of escalating one recurring rule to an enforcement ticket.
+    """The result of driving one recurring rule onto the standing umbrella issue.
 
-    ``filed`` is True only when a NEW issue was created; ``ticket_url`` is the
-    linked issue (newly filed OR a reused open dedup match); ``withheld`` is True
-    when the rendered body would leak a banned term / bare reference.
+    ``filed`` is True when a new umbrella checkbox was added OR a coding task was
+    scheduled (the ``promote_gap`` outcome); ``ticket_url`` is the umbrella issue URL;
+    ``withheld`` is True when the rendered body would leak a banned term / bare
+    reference.
     """
 
     rule_identity: str
@@ -277,9 +275,9 @@ def reclassify_recurring_memory_clusters(
     produce ANOTHER memory. So a cluster destined for a memory file
     (:func:`_is_memory_only`) whose cited slug already shows a recurrence in the
     audit ledger is reclassified to a teatree-core destination — Pass-2 triage then
-    reads it as a core gap and files an enforcement ticket instead of re-promoting a
-    memory. A cluster already destined for a core path, or whose rule has no
-    recurrence on record, is returned untouched.
+    reads it as a core gap and drives an umbrella checkbox + scheduled gate/eval fix
+    instead of re-promoting a memory. A cluster already destined for a core path, or
+    whose rule has no recurrence on record, is returned untouched.
     """
     recurring = _recurring_rule_slugs()
     if not recurring:
@@ -330,26 +328,27 @@ def escalate_recurrences(
     findings: Sequence[ComplianceFinding],
     host: CodeHostBackend,
     *,
-    repo: str,
+    umbrella_url: str = UMBRELLA_ISSUE_URL,
     snapshot: InstructionComplianceSnapshot | None = None,
     dry_run: bool = False,
 ) -> list[EscalationOutcome]:
-    """File ONE deduped enforcement ticket per recurring rule — never a memory.
+    """Drive ONE umbrella checkbox + scheduled gate/eval fix per recurring rule (#2663).
 
     Only recurrences (a rule that already had a durable memory, violated again)
-    escalate; a first-occurrence finding files nothing. Two recurrences of the same
-    rule collapse to one ticket (deduped by ``rule_identity``), and an open issue
-    already carrying the recurrence marker is reused. The ticket PRESCRIBES the
-    structural fix — a gate, a config self-check, or an anti-vacuous eval — and
-    NEVER proposes writing another memory. When *snapshot* is supplied, the matching
-    audit row is stamped escalated with the filed URL.
+    escalate; a first-occurrence finding does nothing. Two recurrences of the same
+    rule collapse to one gap (deduped by ``rule_identity``). Each recurrence rides the
+    standing umbrella (*umbrella_url*) as a checkbox + a scheduled coding task whose
+    title PRESCRIBES the structural fix — a gate, a config self-check, or an
+    anti-vacuous eval — and NEVER proposes writing another memory; it no longer files a
+    fresh ``needs-triage`` issue that the scanner skips. When *snapshot* is supplied,
+    the matching audit row is stamped escalated with the umbrella URL.
     """
     recurring = {f.rule_identity: f for f in findings if f.is_recurrence}
     outcomes: list[EscalationOutcome] = []
     for identity, finding in recurring.items():
         if dry_run:
             continue
-        outcome = _file_one_escalation(host, finding, repo=repo)
+        outcome = _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url)
         outcomes.append(outcome)
         if snapshot is not None and outcome.ticket_url:
             _stamp_escalated(snapshot, identity, outcome.ticket_url)
@@ -361,15 +360,15 @@ def run_compliance_phase(
     since: datetime | None,
     dry_run: bool,
     host: CodeHostBackend | None,
-    repo: str,
 ) -> str:
     """Detect → persist → escalate one pass's instruction-compliance failures.
 
     Builds the same bounded extract the engine distils, detects failures, persists
-    one snapshot + audit rows, and (unless *dry_run*) escalates each recurrence to
-    ONE deduped enforcement ticket via *host*. Returns the dream-command summary
-    clause. A None *host* (no resolved backlog code host) reports a skip rather than
-    raising. The phase enable/gating decision is the caller's; this runs the work.
+    one snapshot + audit rows, and (unless *dry_run*) drives each recurrence to a
+    fix-and-merge under the standing umbrella via *host* (a checkbox + a scheduled
+    gate/eval coding task). Returns the dream-command summary clause. A None *host*
+    (no resolved backlog code host) reports a skip rather than raising. The phase
+    enable/gating decision is the caller's; this runs the work.
     """
     from teatree.loops.dream import engine  # noqa: PLC0415
 
@@ -380,7 +379,7 @@ def run_compliance_phase(
     if not dry_run:
         if host is None:
             return "; WARN compliance escalation skipped — no teatree code host resolved"
-        outcomes = escalate_recurrences(summary.findings, host, repo=repo, snapshot=snapshot, dry_run=dry_run)
+        outcomes = escalate_recurrences(summary.findings, host, snapshot=snapshot, dry_run=dry_run)
         filed = sum(1 for o in outcomes if o.filed)
     if not summary.findings:
         return ""
@@ -422,83 +421,37 @@ def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str
         row.mark_escalated(ticket_url)
 
 
-def _file_one_escalation(host: CodeHostBackend, finding: ComplianceFinding, *, repo: str) -> EscalationOutcome:
-    """File (or reuse) one enforcement ticket for a recurring rule.
+def _escalate_one_recurrence(
+    host: CodeHostBackend, finding: ComplianceFinding, *, umbrella_url: str
+) -> EscalationOutcome:
+    """Drive one recurring rule to a fix-and-merge via the umbrella ledger (#2663).
 
-    Dedup-first: an open issue already carrying this rule's recurrence marker is
-    reused. A body that would leak a banned term / bare reference is withheld.
-    Otherwise a ``needs-triage`` issue prescribing the structural fix is filed.
+    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
+    upserted under the umbrella (deduped by this recurrence's gap key) and a coding
+    task is scheduled (deduped by the same key). The checkbox title PRESCRIBES the
+    structural fix — a gate or an eval — never another memory. The banned-term /
+    bare-reference withholding is enforced inside ``promote_gap``.
     """
-    existing = _find_existing_escalation(host, repo=repo, rule_identity=finding.rule_identity)
-    if existing:
-        return EscalationOutcome(
-            rule_identity=finding.rule_identity, filed=False, ticket_url=existing, reason="reused open issue"
-        )
+    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
 
-    title = _escalation_title(finding)
-    body = _escalation_body(finding)
-    rendered = f"{title}\n{body}"
-
-    banned = banned_terms_scanner.scan_text(rendered)
-    if banned is not None:
-        return EscalationOutcome(
-            rule_identity=finding.rule_identity, filed=False, withheld=True, reason=f"contains banned term '{banned}'"
-        )
-    leaked = find_bare_references(rendered)
-    if leaked:
-        return EscalationOutcome(
-            rule_identity=finding.rule_identity,
-            filed=False,
-            withheld=True,
-            reason=f"contains bare reference(s): {', '.join(leaked)}",
-        )
-
-    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_RECURRENCE_MARKER, NEEDS_TRIAGE_LABEL])
-    return EscalationOutcome(
-        rule_identity=finding.rule_identity, filed=True, ticket_url=_issue_url(raw), reason="filed"
+    gap_key = f"{_RECURRENCE_MARKER}-{finding.rule_identity}"
+    outcome = umbrella_ledger.promote_gap(
+        host,
+        umbrella_url=umbrella_url,
+        gap=umbrella_ledger.GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key),
     )
-
-
-def _find_existing_escalation(host: CodeHostBackend, *, repo: str, rule_identity: str) -> str:
-    marker = f"{_RECURRENCE_MARKER} {rule_identity}"
-    try:
-        matches = host.search_open_issues(repo=repo, query=marker)
-    except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
-        return ""
-    for raw in matches:
-        body = str(raw.get("body") or raw.get("description") or "")
-        if marker in body:
-            return _issue_url(raw)
-    return ""
+    if outcome.withheld:
+        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
+    return EscalationOutcome(
+        rule_identity=finding.rule_identity,
+        filed=outcome.scheduled or outcome.checkbox_added,
+        ticket_url=umbrella_url,
+        reason=outcome.reason,
+    )
 
 
 def _escalation_title(finding: ComplianceFinding) -> str:
     return f"Compliance recurrence — enforce `{finding.rule_identity}` with a gate or eval"
-
-
-def _escalation_body(finding: ComplianceFinding) -> str:
-    evidence = neutralize_bare_references(finding.evidence.strip()) or "(no excerpt captured)"
-    return (
-        "A rule that ALREADY has a durable memory was violated AGAIN. Per the root-KPI "
-        "rule, a recurrence-despite-memory must be remediated with a STRUCTURAL forcing "
-        "function — never another memory (more prose is itself an instruction that will "
-        "not be followed).\n\n"
-        f"**Recurring rule:** `{finding.rule_identity}` (source: durable memory)\n\n"
-        f"**Evidence this pass:** {evidence}\n\n"
-        "**Prescribed structural fix (pick one):**\n"
-        "- a PreToolUse/Stop gate that blocks the violating action on the actual write path, or\n"
-        "- a deterministic config self-check that fails loud, or\n"
-        "- an anti-vacuous `under_load` eval scenario with a `_fail` fixture that pins the behaviour.\n\n"
-        f"<!-- {_RECURRENCE_MARKER} {finding.rule_identity} -->\n"
-    )
-
-
-def _issue_url(raw: RawAPIDict) -> str:
-    for key in ("html_url", "web_url", "url"):
-        value = raw.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
 
 
 __all__ = [

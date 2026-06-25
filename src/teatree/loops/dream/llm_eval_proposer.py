@@ -454,7 +454,7 @@ _REQUIRED_SYNTH_KEYS = ("scenario_name", "context_preamble", "prompt", "expect",
 def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
     """The real synthesizer: one bounded headless SDK turn → a scenario, parsed defensively.
 
-    Mirrors :func:`teatree.loops.dream.engine._sdk_distiller`'s invocation shape (the
+    Mirrors :func:`teatree.loops.dream.sdk_distiller.sdk_distiller`'s invocation shape (the
     ``claude_code`` preset, ``bypassPermissions``, a wall-clock watchdog) for a single
     no-tool turn that transforms the candidate + slice into one scenario JSON object.
     Raises on an unavailable ``claude`` or a malformed reply, so the caller DROPS the
@@ -505,7 +505,7 @@ async def _collect_synth_turn(prompt: str) -> str:
 def _extract_json_object(raw: str) -> Mapping[str, object] | None:
     """The FIRST balanced JSON object in *raw*, tolerating prose and trailing objects.
 
-    The object analogue of :func:`teatree.loops.dream.engine._extract_json_array`:
+    The object analogue of :func:`teatree.loops.dream.sdk_distiller._extract_json_array`:
     rather than spanning the first ``{`` to the last ``}`` (which captures multiple
     objects or a trailing fragment and makes ``json.loads`` raise ``Extra data``), it
     scans each ``{`` with :meth:`json.JSONDecoder.raw_decode` and returns the first

@@ -785,14 +785,14 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         stdout = StringIO()
         with (
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=filed),
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(object(), "souliane/teatree"),
             ),
         ):
             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
-        assert "ticketed 1 core-gap memory(ies), retired 0" in stdout.getvalue()
+        assert "promoted 1 core-gap fix(es), reconciled 0 merged" in stdout.getvalue()
 
     def test_promotion_failure_is_warned_not_crashed(self) -> None:
         stdout = StringIO()
@@ -851,7 +851,7 @@ class DreamFullFlagTestCase(TestCase):
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]) as file_fn,
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(object(), "souliane/teatree"),
@@ -867,7 +867,7 @@ class DreamFullFlagTestCase(TestCase):
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
+            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
             patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]) as stage_fn,
             patch(
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",

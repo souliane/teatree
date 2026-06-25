@@ -6,11 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import teatree.backends.github.api as github_api_mod
 import teatree.backends.github.client as github_mod
 import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
-from teatree.backends.github.client import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.api import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
 from teatree.backends.github.projects import _gh_graphql
 from teatree.core.backend_protocols import PullRequestSpec
 
@@ -60,13 +61,13 @@ class TestRunGh:
 
 class TestGhApiGet:
     def test_returns_parsed_json(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout='{"key": "value"}')
             result = _gh_api_get("/repos/test/issues")
         assert result == {"key": "value"}
 
     def test_passes_token(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="{}")
             _gh_api_get("/test", token="tok")
         assert mock_run.call_args[1]["token"] == "tok"
@@ -75,7 +76,7 @@ class TestGhApiGet:
 class TestGhApiGetPaginated:
     def test_flattens_slurped_pages(self) -> None:
         pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=json.dumps(pages))
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments?per_page=100")
         argv = mock_run.call_args.args
@@ -85,13 +86,13 @@ class TestGhApiGetPaginated:
         assert result == [{"id": 1}, {"id": 2}, {"id": 3}]
 
     def test_passes_token(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             _gh_api_get_paginated("repos/o/r/issues/5/comments", token="tok")
         assert mock_run.call_args.kwargs["token"] == "tok"
 
     def test_empty_pages_return_empty_list(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == []
@@ -99,13 +100,13 @@ class TestGhApiGetPaginated:
     def test_non_array_outer_payload_returns_empty_list(self) -> None:
         # A single-object endpoint accidentally passed here must not explode;
         # ``--slurp`` always yields an outer array, but guard defensively.
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == []
 
     def test_skips_non_list_pages(self) -> None:
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=json.dumps([[{"id": 1}], {"oops": True}]))
             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
         assert result == [{"id": 1}]
@@ -514,7 +515,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_my_prs(author="alice")
@@ -544,7 +545,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_review_requested_prs(reviewer="alice")
@@ -573,7 +574,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.list_assigned_issues(assignee="alice")
@@ -617,7 +618,7 @@ class TestGitHubCodeHost:
         page_one = [{"number": i} for i in range(100)]
         page_two = [{"number": 100}]
         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
@@ -651,6 +652,24 @@ class TestGitHubCodeHost:
     def test_close_issue_rejects_non_issue_url(self) -> None:
         with patch.object(github_mod, "_gh_api_patch") as mock_patch:
             result = GitHubCodeHost().close_issue(issue_url="https://example.com/not/an/issue")
+        assert "error" in result
+        mock_patch.assert_not_called()
+
+    def test_update_issue_patches_the_body(self) -> None:
+        url = "https://github.com/org/repo/issues/9"
+        with patch.object(github_mod, "_gh_api_patch", return_value={"number": 9}) as mock_patch:
+            host = GitHubCodeHost(token="tok")
+            result = host.update_issue(issue_url=url, body="new umbrella body")
+        assert result == {"number": 9}
+        mock_patch.assert_called_once_with(
+            "repos/org/repo/issues/9",
+            {"body": "new umbrella body"},
+            token="tok",
+        )
+
+    def test_update_issue_rejects_non_issue_url(self) -> None:
+        with patch.object(github_mod, "_gh_api_patch") as mock_patch:
+            result = GitHubCodeHost().update_issue(issue_url="https://example.com/not/an/issue", body="x")
         assert "error" in result
         mock_patch.assert_not_called()
 
@@ -709,7 +728,7 @@ class TestGitHubCodeHost:
         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
         page_two = [{"id": 100, "body": "## Test Plan"}]
         slurped_pages = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped_pages)
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
@@ -721,7 +740,7 @@ class TestGitHubCodeHost:
 
     def test_list_pr_comments_returns_empty_when_slurp_yields_no_pages(self) -> None:
         # No comments → ``--slurp`` emits ``[]`` (zero pages) → empty result.
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="[]")
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
@@ -747,7 +766,7 @@ class TestGitHubCodeHost:
         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
         page_two = [{"id": 100, "body": "## Test Plan"}]
         slurped_pages = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped_pages)
             host = GitHubCodeHost()
             result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
@@ -891,7 +910,7 @@ class TestGitHubCodeHost:
         page_one = [{"user": {"login": "alice"}, "state": "APPROVED"}] * 100
         page_two = [{"user": {"login": "alice"}, "state": "DISMISSED"}]
         slurped = json.dumps([page_one, page_two])
-        with patch.object(github_mod, "_run_gh") as mock_run:
+        with patch.object(github_api_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
             result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")

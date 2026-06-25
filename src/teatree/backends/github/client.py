@@ -1,13 +1,20 @@
 """GitHub backend — code host via the ``gh`` CLI."""
 
-import json
-import os
 import re
 from typing import cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.errors import IssueNotFoundError
+from teatree.backends.github.api import (
+    _gh_api_get,
+    _gh_api_get_paginated,
+    _gh_api_patch,
+    _gh_api_post,
+    _gh_api_search_paginated,
+    _parse_issue_ref,
+    _run_gh,
+)
 from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.github.payloads import (
     _GitHubPullRequestSummary,
@@ -27,7 +34,7 @@ from teatree.core.backend_protocols import (
 )
 from teatree.types import RawAPIDict
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
+from teatree.utils.run import CommandFailedError
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
@@ -44,134 +51,6 @@ def issue_repo_short(url: str) -> str:
     path = urlparse(url).path
     match = _ISSUE_URL_RE.match(path) or _PR_URL_RE.match(path)
     return match.group("repo") if match else ""
-
-
-def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
-    """Run a ``gh`` CLI command and return the result.
-
-    Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
-    ``--header``; injecting it into ``gh pr create`` fails with
-    ``unknown flag --header``.
-    """
-    env = {**os.environ, "GH_TOKEN": token} if token else None
-    return run_checked(list(args), env=env)
-
-
-def _gh_api_get(endpoint: str, *, token: str = "") -> object:
-    """Call ``gh api`` (GET) and return parsed JSON."""
-    result = _run_gh(
-        "gh",
-        "api",
-        endpoint,
-        "--header",
-        "Accept: application/vnd.github+json",
-        token=token,
-    )
-    return json.loads(result.stdout)
-
-
-def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
-    """Fetch EVERY page of a list endpoint and return one flat list.
-
-    A plain ``gh api`` GET returns only the first page — GitHub's default
-    page size silently caps the result, so a comment older than the most
-    recent page goes unseen and the find-then-update dedup re-posts a
-    duplicate. ``--paginate`` follows the ``Link`` header to the last page;
-    ``--slurp`` wraps each page's JSON array into one outer array
-    (``[[page1…], [page2…]]``), which this flattens into a single list.
-
-    Non-list pages (a single-object body, an error payload) are skipped so
-    a malformed page can never raise. Returns ``[]`` when the outer payload
-    is not an array.
-    """
-    result = _run_gh(
-        "gh",
-        "api",
-        endpoint,
-        "--paginate",
-        "--slurp",
-        "--header",
-        "Accept: application/vnd.github+json",
-        token=token,
-    )
-    pages = json.loads(result.stdout)
-    if not isinstance(pages, list):
-        return []
-    flattened: list[RawAPIDict] = []
-    for page in pages:
-        if isinstance(page, list):
-            flattened.extend(cast("list[RawAPIDict]", page))
-    return flattened
-
-
-def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
-    """Fetch every page of a GitHub search endpoint and return a flat item list.
-
-    Search responses wrap results in ``{"items": [...], "total_count": N}``
-    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
-    bare arrays per page via ``--slurp``) cannot be used here.
-    ``--paginate`` + ``--slurp`` emits each page as a search-object element;
-    this pulls the ``items`` list from each page and flattens them.
-    """
-    result = _run_gh(
-        "gh",
-        "api",
-        endpoint,
-        "--paginate",
-        "--slurp",
-        "--header",
-        "Accept: application/vnd.github+json",
-        token=token,
-    )
-    pages = json.loads(result.stdout)
-    if not isinstance(pages, list):
-        return []
-    items: list[RawAPIDict] = []
-    for page in pages:
-        if not isinstance(page, dict):
-            continue
-        page_items = cast("RawAPIDict", page).get("items")
-        if isinstance(page_items, list):
-            items.extend(cast("list[RawAPIDict]", page_items))
-    return items
-
-
-def _gh_api_post(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
-    """Call ``gh api`` (POST) and return parsed JSON."""
-    cmd = [
-        "gh",
-        "api",
-        endpoint,
-        "--method",
-        "POST",
-        "--header",
-        "Accept: application/vnd.github+json",
-        "--input",
-        "-",
-    ]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd, stdin_text=json.dumps(payload))
-    return json.loads(result.stdout)
-
-
-def _gh_api_patch(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
-    """Call ``gh api`` (PATCH) and return parsed JSON."""
-    cmd = [
-        "gh",
-        "api",
-        endpoint,
-        "--method",
-        "PATCH",
-        "--header",
-        "Accept: application/vnd.github+json",
-        "--input",
-        "-",
-    ]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd, stdin_text=json.dumps(payload))
-    return json.loads(result.stdout)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -345,13 +224,10 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         Idempotent: ``PATCH state=closed`` is a no-op on an already-closed issue.
         Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
-
-        repo = f"{match['owner']}/{match['repo']}"
-        number = int(match["number"])
+        repo, number = ref
         if comment:
             self.post_issue_comment(issue_url=issue_url, body=comment)
         data = _gh_api_patch(
@@ -359,6 +235,22 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             {"state": "closed", "state_reason": "not_planned"},
             token=self._token,
         )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Replace a GitHub issue's body (description) in place.
+
+        Used to keep ONE auto-managed checkbox ledger in a standing umbrella
+        issue's body: the dream-promote flow re-fetches the body, upserts a
+        gap checkbox keyed on a stable HTML-comment marker, and writes the
+        whole body back. Returns ``{"error": ...}`` when the URL is not a
+        recognised GitHub issue URL.
+        """
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+        repo, number = ref
+        data = _gh_api_patch(f"repos/{repo}/issues/{number}", {"body": body}, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
@@ -382,12 +274,11 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
                 (5xx, timeout, network error) propagates as the original
                 ``CommandFailedError`` so the scanner keeps retrying it.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
-
-        endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
+        repo, number = ref
+        endpoint = f"repos/{repo}/issues/{number}"
         try:
             data = _gh_api_get(endpoint, token=self._token)
         except CommandFailedError as exc:
@@ -401,19 +292,15 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the ``<owner>/<repo>`` that owns *issue_url*, or ``""`` when unparsable."""
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        return f"{match['owner']}/{match['repo']}" if match is not None else ""
+        ref = _parse_issue_ref(issue_url)
+        return ref[0] if ref is not None else ""
 
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
         """Post a comment to a GitHub issue; returns ``{"error": ...}`` on a non-issue URL."""
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
-
-        repo = f"{match['owner']}/{match['repo']}"
-        target_number = int(match["number"])
+        repo, target_number = ref
         data = _gh_api_post(
             f"repos/{repo}/issues/{target_number}/comments",
             {"body": body},
@@ -433,25 +320,21 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
 
     def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
         """List the comments on a GitHub issue; returns ``[]`` on a non-issue URL."""
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return []
-
-        repo = f"{match['owner']}/{match['repo']}"
-        return _gh_api_get_paginated(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
+        repo, number = ref
+        return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=self._token)
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
         """Edit a GitHub issue comment in place via /repos/{repo}/issues/comments/{id}.
 
         Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
         """
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
-
-        repo = f"{match['owner']}/{match['repo']}"
+        repo = ref[0]
         data = _gh_api_patch(
             f"repos/{repo}/issues/comments/{comment_id}",
             {"body": body},
@@ -460,11 +343,10 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
     def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
-        path = urlparse(issue_url).path
-        match = _ISSUE_URL_RE.match(path)
-        if match is None:
+        ref = _parse_issue_ref(issue_url)
+        if ref is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
-        repo = f"{match['owner']}/{match['repo']}"
+        repo = ref[0]
         _run_gh(
             "gh",
             "api",

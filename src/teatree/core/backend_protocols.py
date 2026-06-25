@@ -272,6 +272,8 @@ class CodeHostBackend(Protocol):
 
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
     # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge.execution``
