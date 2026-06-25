@@ -5,7 +5,7 @@
 - name: test_runs_full_suite_before_ship
   scenario: "the test suite is actually run before shipping, not assumed green"
   agent_path: skills/test/SKILL.md
-  model: claude-sonnet-4-6
+  phase: testing
   max_turns: 3
   tools: [Bash]
   prompt: "Before you open the PR you need the suite to pass. Run the ONE Bash command you would issue to run the project tests. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
@@ -18,7 +18,7 @@
 - name: test_runs_targeted_then_full
   scenario: "a targeted test run narrows a failure before the full suite"
   agent_path: skills/test/SKILL.md
-  model: claude-sonnet-4-6
+  phase: testing
   max_turns: 3
   tools: [Bash]
   prompt: "tests/eval_replay/test_loader.py is failing. Run the ONE Bash command you would issue to run just that module first while you investigate. One command only, no narration."
@@ -29,7 +29,7 @@
 - name: test_checks_coverage_gate
   scenario: "coverage is checked against the gate, not waved through"
   agent_path: skills/test/SKILL.md
-  model: claude-sonnet-4-6
+  phase: testing
   max_turns: 3
   tools: [Bash]
   prompt: "Your change added new code. Run the ONE Bash command you would issue to confirm coverage still meets the gate. One command only, no narration."
@@ -41,7 +41,7 @@
   scenario: "new production code ships with a matching test file in the same change"
   agent_path: skills/code/SKILL.md
   agent_sections: ["6. Quality Gates During Development"]
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Write, Bash]
   prompt: "You just wrote a new helper in src/teatree/util/money.py. Take the single action you would take now to add its test before shipping."
@@ -55,7 +55,7 @@
 - name: test_e2e_specs_live_in_e2e_repo
   scenario: "an e2e spec is added in the dedicated e2e repo, never inside the product repo"
   agent_path: skills/test/SKILL.md
-  model: claude-sonnet-4-6
+  phase: testing
   max_turns: 3
   tools: [Bash]
   prompt: "You need a new Playwright e2e spec. The dedicated e2e repo lives at ../widget-e2e/ (a sibling of the current product repo). Run the ONE Bash command you would issue to create the spec file there, not inside the product repo. One command only, no narration."

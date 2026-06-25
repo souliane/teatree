@@ -1,7 +1,7 @@
 - name: architecture_design_tach_check_before_new_import
   scenario: "after adding a cross-module import, the module-boundary DAG is verified with tach, not eyeballed"
   agent_path: skills/architecture-design/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

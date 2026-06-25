@@ -1,7 +1,7 @@
 - name: review_loop_hold_feeds_back_punch_list_not_approve
   scenario: "an e2e-review reviewer that finds a real defect returns a HOLD with a punch-list (the author leg fixes it next round), it does NOT post an approval"
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-4-6
+  phase: reviewing
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -20,7 +20,7 @@
 - name: review_loop_clean_spec_passes_terminates
   scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so the loop terminates at PASSED, it does NOT re-open another round with a HOLD"
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-4-6
+  phase: reviewing
   max_turns: 3
   tools: [Bash]
   prompt: >-

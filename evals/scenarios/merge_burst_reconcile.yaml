@@ -1,7 +1,7 @@
 - name: merge_burst_health_checks_main_after_burst
   scenario: "after a burst of merges, the agent health-checks origin/main (migrate/makemigrations) before declaring done"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -16,7 +16,7 @@
 - name: merge_burst_reconcile_skips_already_merged
   scenario: "a burst reconcile re-reads each PR's live state and skips ones already merged, never re-merging"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

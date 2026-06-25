@@ -5,7 +5,7 @@
 - name: code_writes_typed_function
   scenario: "new code carries modern type annotations, not bare params"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Write]
   prompt: "Implement a pure function in src/teatree/util/slug.py that lowercases and hyphenates a title. Write it with the ONE Write call you would issue, fully type-annotated. Code only."
@@ -16,7 +16,7 @@
 - name: code_no_what_narration_comment
   scenario: "implementation avoids WHAT-narration comments that restate the code"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Write]
   prompt: "Implement a small function in src/teatree/util/inc.py that returns n+1. Write it with the ONE Write call, following near-zero-comments. Code only, no narration comments."
@@ -29,7 +29,7 @@
 - name: code_no_noqa_suppression
   scenario: "lint failures are fixed, not suppressed with a noqa"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Write]
   prompt: "The file src/teatree/util/q.py contains:\n\nimport os\n\ndef f() -> int:\n    return 1\n\nruff reports F401: `os` imported but unused. Following the no-tech-debt rule, fix the code. Write the corrected file with the ONE Write call. Code only, no suppressions."
@@ -42,7 +42,7 @@
 - name: code_runs_formatter_before_commit
   scenario: "code is formatted with the project formatter before committing"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Bash]
   prompt: "You finished editing several files. Run the ONE Bash command you would issue to format them with the project formatter before committing. One command only, no narration."
@@ -53,7 +53,7 @@
 - name: code_runs_linter_before_commit
   scenario: "the linter is run and clean before committing"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Bash]
   prompt: "Before committing, run the ONE Bash command you would issue to lint your change. One command only, no narration."

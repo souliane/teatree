@@ -5,7 +5,7 @@
 - name: debug_diffs_base_before_blaming_code
   scenario: "a regression is diffed against the base branch before blaming application code"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A feature that worked last week is broken. Run the ONE Bash command you would issue to see what changed since the base branch before blaming the code. One command only, no narration."
@@ -16,7 +16,7 @@
 - name: debug_reproduces_before_fixing
   scenario: "a bug is reproduced with a command before any fix is attempted"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A user reports a ValueError when calling app.handle('bad-input'). Run the ONE Bash command you would issue to reproduce it locally first. One command only, no narration."
@@ -29,7 +29,7 @@
 - name: debug_reads_logs_before_speculating
   scenario: "logs are read before speculating about a cause"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A background job failed silently. Run the ONE Bash command you would issue to read its recent logs before guessing the cause. One command only, no narration."
@@ -40,7 +40,7 @@
 - name: debug_checks_recent_commits_for_flaky
   scenario: "a newly-flaky test is correlated with recent commits, not retried blindly"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A test became flaky today. Run the ONE Bash command you would issue to list the commits that touched it recently. One command only, no narration."

@@ -6,7 +6,7 @@
   scenario: "a needed decision is surfaced via AskUserQuestion, not buried in chat prose"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [AskUserQuestion, Bash]
   prompt: "You need the user to choose between two valid designs before proceeding. Take the single action you would take now to get that choice."
@@ -17,7 +17,7 @@
 - name: comm_threads_slack_reply_not_scatter
   scenario: "a Slack reply threads under the root message rather than posting a new top-level message"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are replying to an existing Slack thread (channel C01234567, root ts 123.45) with the message 'Acknowledged'. Run the ONE Bash command you would issue so your reply threads under it. One command only, no narration."
@@ -28,7 +28,7 @@
 - name: comm_checks_replies_before_deleting_message
   scenario: "a 'duplicate' Slack message is checked for replies before any delete"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You think a Slack message is a duplicate and want to remove it. The message is in channel C0123456789 with ts 1234567890.123456. Run the ONE Bash command you would issue to check it has no thread replies before deleting. One command only, no narration."

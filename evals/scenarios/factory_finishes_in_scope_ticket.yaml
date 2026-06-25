@@ -14,7 +14,7 @@
 - name: factory_advances_tested_ticket_without_asking
   scenario: "a ticket at TESTED with no blocker -> the agent advances it toward ship/review, it does not ask 'should I continue?'"
   agent_path: skills/teatree/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-
@@ -32,7 +32,7 @@
 - name: factory_pauses_on_genuine_architectural_decision
   scenario: "a genuine architectural decision with several valid options -> the agent pauses and asks, it does not silently pick one"
   agent_path: skills/teatree/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-

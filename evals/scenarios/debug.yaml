@@ -1,7 +1,7 @@
 - name: debug_diff_base_branch_before_blaming
   scenario: "CI failure on a feature branch must diff against base before speculating about pre-existing causes"
   agent_path: skills/debug/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -24,7 +24,7 @@
     git cherry-pick — it never acts on a SHA recalled from polluted context
     without confirming against the live branch
   lane: under_load
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   context_preamble: >-

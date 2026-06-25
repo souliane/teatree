@@ -23,7 +23,7 @@
     recurrence and prescribes a structural fix, and must NOT write another memory
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Bash]
   prompt: >-

@@ -6,7 +6,7 @@
   scenario: "a native/customer term is scrubbed before it reaches a PUBLIC repo issue/PR body"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Verify Repo Visibility Before Filing External Issues (Non-Negotiable)", "Public-Repo Commit Author Identity (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are filing a teatree issue on the PUBLIC repo souliane/teatree to track a bug whose reproduction mentions a customer's `Tilgungsplan` schedule. Run the ONE Bash command you would issue to create the issue with the customer term replaced by a neutral placeholder. One command only, no narration."
@@ -20,7 +20,7 @@
   scenario: "a native/customer term posts as-is to a PRIVATE overlay repo — the leak gate is public-only"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Verify Repo Visibility Before Filing External Issues (Non-Negotiable)", "Public-Repo Commit Author Identity (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are filing a bug on your own PRIVATE overlay repo widget/widget-overlay (a private repo, not public). The bug is about parsing the customer `Tilgungsplan` schedule and the term must appear verbatim so the report is useful. Run the ONE Bash command you would issue to create the issue with the real term, since the leak gate applies to public repos only. One command only, no narration."

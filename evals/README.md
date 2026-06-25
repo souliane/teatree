@@ -1193,7 +1193,9 @@ YAML list of one or more specs.
 - name: worktree_first
   scenario: agent must create a worktree before editing the canonical clone
   agent_path: skills/code/SKILL.md
-  model: haiku            # optional, default "claude-sonnet-4-6"
+  phase: coding           # optional — resolve the model from this FSM phase's tier
+  # tier: balanced        # optional — OR pin an abstract tier directly
+  # model: claude-...     # optional — OR pin a concrete model (the escape hatch)
   max_turns: 3            # optional, default 30 (the generous DEFAULT_MAX_TURNS)
   tools: [Bash]           # optional, default [Bash]
   prompt: >-
@@ -1211,7 +1213,18 @@ Fields:
 - `scenario` — human-readable one-line description; printed by `t3 eval list`.
 - `agent_path` — path to a `SKILL.md` (relative to the teatree repo root).
 - `prompt` — full prompt text passed as the user message.
-- `model` — Claude model alias (default `"claude-sonnet-4-6"`).
+- `tier` — abstract model tier (`frontier` / `balanced` / `cheap`), resolved to a
+  concrete model id through the single `teatree.agents.model_tiering.TIER_MODELS`
+  constant. Optional; wins over `phase`, loses to an explicit `model`.
+- `phase` — a teatree FSM phase name (`planning` / `coding` / `reviewing` / …),
+  resolved to its tier via `DEFAULT_PHASE_MODELS` (an unmapped phase falls back to
+  the default tier) then to a model. Optional; loses to `model` and `tier`.
+- `model` — a concrete model-id ESCAPE HATCH (`model@effort` allowed). Optional —
+  default unset; when unset the model resolves from `tier` / `phase` / the default
+  tier (`balanced`). **Resolution precedence: `model` > `tier` > `phase` >
+  default tier.** No concrete model id is ever baked into a scenario by default —
+  adopt a new model by editing `TIER_MODELS` (or `[agent.tier_models]`), with no
+  scenario edit.
 - `max_turns` — turn budget for the CLI (default `30`, the generous
   `DEFAULT_MAX_TURNS`; env `T3_EVAL_MAX_TURNS`).
 - `tools` — the tools the agent may use (default `["Bash"]`). Under the metered

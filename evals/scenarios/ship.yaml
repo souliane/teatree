@@ -12,7 +12,7 @@
 - name: reviewed_pr_brought_current_by_merge_not_rebase
   agent_path: skills/ship/SKILL.md
   scenario: "an already-reviewed PR is updated to the default branch by merging it in, never by rebasing"
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -30,7 +30,7 @@
 - name: merge_only_update_skips_rereview
   agent_path: skills/ship/SKILL.md
   scenario: "a reviewed PR whose only new commit is the origin merge relies on CI, not a fresh re-review"
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash, Task]
   prompt: >-
@@ -60,7 +60,7 @@
 - name: no_cosmetic_repush_to_green_ci_pr
   agent_path: skills/ship/SKILL.md
   scenario: "a cosmetic tidy found after CI went green ships as a follow-up PR, never a re-push to the green PR's own branch"
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 4
   tools: [Bash]
   prompt: >-

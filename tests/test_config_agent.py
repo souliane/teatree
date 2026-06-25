@@ -230,6 +230,43 @@ class TestComposesWithPhaseModels:
         assert resolved.skill_models == {"code-review": "opus"}
 
 
+class TestTierModelsParse:
+    """``[agent.tier_models]`` override parsing — the model-constant escape hatch."""
+
+    def test_parsed_from_agent_subtable(self, tmp_path: Path) -> None:
+        # Sentinel override values (not real model ids) — the parser accepts any
+        # string, so the test proves parsing without baking a concrete model id.
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_models]\nfrontier = "sentinel-frontier"\ncheap = "sentinel-cheap"\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.tier_models == {"frontier": "sentinel-frontier", "cheap": "sentinel-cheap"}
+
+    def test_whitespace_stripped(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_models]\nfrontier = "  sentinel-frontier  "\n')
+        assert resolve_agent_config(config_path=cfg).tier_models == {"frontier": "sentinel-frontier"}
+
+    def test_blank_and_non_string_values_skipped(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_models]\nfrontier = ""\nbalanced = "ok"\ncheap = 5\n')
+        # A blank value and a non-string value are tolerated and skipped (matches
+        # skill_models tolerance); only the real override survives.
+        assert resolve_agent_config(config_path=cfg).tier_models == {"balanced": "ok"}
+
+    def test_absent_tier_models_is_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        assert resolve_agent_config(config_path=cfg).tier_models == {}
+
+    def test_non_table_tier_models_falls_back_to_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\ntier_models = "oops"\n')
+        assert resolve_agent_config(config_path=cfg).tier_models == {}
+
+    def test_default_config_has_empty_tier_models(self) -> None:
+        assert AgentConfig().tier_models == {}
+
+
 class TestPhaseFanoutParse:
     """``[agent.phase_fanout]`` opt-in parsing (teatree#2229)."""
 

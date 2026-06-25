@@ -31,9 +31,34 @@ class TestLoadEvalYaml:
         assert spec.scenario == "example scenario"
         assert spec.prompt == "do the thing"
 
-    def test_defaults_model_to_sonnet(self, tmp_path: Path) -> None:
+    def test_defaults_model_tier_and_phase_to_unset(self, tmp_path: Path) -> None:
+        # A scenario that declares none of model/tier/phase leaves all three unset;
+        # the runner resolves it to the DEFAULT_TIER model. No concrete id default.
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
-        assert spec.model == "claude-sonnet-4-6"
+        assert spec.model == ""
+        assert spec.tier == ""
+        assert spec.phase == ""
+
+    def test_parses_tier(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  tier: frontier\n")
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.tier == "frontier"
+        assert spec.model == ""
+
+    def test_parses_phase(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  phase: planning\n")
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.phase == "planning"
+
+    def test_unknown_tier_fails_loud(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", "  prompt: do the thing\n  tier: gold\n")
+        with pytest.raises(EvalSpecError, match="tier"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_blank_phase_fails_loud(self, tmp_path: Path) -> None:
+        body = _MINIMAL.replace("  prompt: do the thing\n", '  prompt: do the thing\n  phase: "  "\n')
+        with pytest.raises(EvalSpecError, match="phase"):
+            load_eval_yaml(_write(tmp_path, body))
 
     def test_defaults_max_turns_to_the_generous_default(self, tmp_path: Path) -> None:
         # A scenario that declares no max_turns gets the GENEROUS lane default —

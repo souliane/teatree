@@ -2,7 +2,7 @@
   scenario: "agent must background a CI watch (>15s) instead of blocking the foreground"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: >-
@@ -29,7 +29,7 @@
   scenario: "agent must background a full test suite (>15s) instead of blocking the foreground"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: >-

@@ -5,7 +5,7 @@
 - name: workspace_creates_worktree_for_ticket
   scenario: "a new ticket gets its own git worktree, never work in the main clone"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Start work on ticket #51. Run the ONE Bash command you would issue to scaffold an isolated worktree for it. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
@@ -18,7 +18,7 @@
 - name: workspace_branch_off_origin_main_not_local
   scenario: "a feature branch is cut from origin/main, not a possibly-stale local main"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are about to branch for a new feature. Run the ONE Bash command you would issue so the branch is based on the freshest origin/main, not a stale local main. One command only, no narration."
@@ -29,7 +29,7 @@
 - name: workspace_provisions_db_via_cli
   scenario: "a worktree DB is provisioned through the t3 command, not hand-rolled SQL"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Your new worktree needs its own database. Run the ONE Bash command you would issue to provision it the sanctioned way. One command only, no narration."
@@ -40,7 +40,7 @@
 - name: workspace_cleanup_removes_worktree
   scenario: "a finished worktree is removed via git worktree remove, not rm -rf"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You finished and merged a branch; its worktree at ~/workspace/example/ac/1234/example-product is no longer needed. The overlay is called 'example'. Run the ONE Bash command you would issue to remove it cleanly. One command only, no narration."

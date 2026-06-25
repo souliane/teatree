@@ -63,8 +63,13 @@ class TestReusesCliPrimitives:
     def test_weekly_guards_via_merged_prs_since_cli(self) -> None:
         assert "t3 eval merged-prs-since" in _WEEKLY.read_text(encoding="utf-8")
 
-    def test_weekly_publishes_via_merge_summaries_cli(self) -> None:
-        assert "t3 eval merge-summaries" in _WEEKLY.read_text(encoding="utf-8")
+    def test_weekly_runs_the_three_tier_benchmark(self) -> None:
+        # The weekly metered run is the canonical benchmark: every scenario against
+        # all three tier models via `t3 eval run --benchmark`, publishing the
+        # self-contained matrix HTML dashboard.
+        text = _WEEKLY.read_text(encoding="utf-8")
+        assert "t3 eval run --benchmark" in text
+        assert "eval-benchmark-" in text
 
 
 class TestInjectionSafety:

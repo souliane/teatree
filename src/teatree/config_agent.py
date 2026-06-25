@@ -18,9 +18,18 @@ the existing ``[agent.phase_models]`` table)::
     code-review = "opus"
     architecture-design = "fable"
 
+    [agent.tier_models]           # override the concrete model id of an abstract tier
+    frontier = "claude-opus-4-9"  # adopt a new frontier model with one config line
+
 The per-skill floor is MODEL only — effort is settable session-wide (on the
 interactive loop spawn) and never per-sub-agent, so there is deliberately no
 ``skill_effort`` axis.
+
+The ``[agent.tier_models]`` table mirrors ``[agent.skill_models]``: each entry
+overrides the concrete model id a tier resolves to, merged OVER the
+:data:`teatree.agents.model_tiering.TIER_MODELS` shipped default. It is the
+config escape hatch for the "single source of truth" model constant — adopting a
+new model is one TOML line, with no code edit.
 
 :data:`_INHERIT_SENTINELS` lives here (foundation) rather than in
 :mod:`teatree.agents.model_tiering` (domain) so a model value can be normalised
@@ -79,6 +88,12 @@ class AgentConfig:
 
     *   ``skill_models`` — companion-skill-name → model floor (``None`` for a
         skill explicitly opted out via an inherit sentinel). MODEL only.
+    *   ``tier_models`` — abstract-tier-name → concrete model id, merged OVER
+        :data:`teatree.agents.model_tiering.TIER_MODELS`. The config escape hatch
+        for the single model constant: adopting a new model for a tier is one TOML
+        line. Empty by default → the shipped :data:`TIER_MODELS` stands unchanged.
+        Mirrors ``skill_models`` (a typed ``[agent.tier_models]`` sub-table); a
+        non-table value or a non-string entry value yields no override.
     *   ``session_model`` — the interactive main-agent ``--model`` pin, or
         ``None`` to inherit the user's default.
     *   ``session_effort`` — the interactive main-agent ``--effort`` pin (a
@@ -119,6 +134,7 @@ class AgentConfig:
     fable_fallback: str = "opus"
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "fable"
+    tier_models: dict[str, str] = field(default_factory=dict)
 
 
 def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
@@ -156,6 +172,23 @@ def _skill_models_from(raw: object) -> dict[str, str | None]:
     if not isinstance(raw, dict):
         return {}
     return {str(skill): _normalize_model(model) for skill, model in raw.items()}
+
+
+def _tier_models_from(raw: object) -> dict[str, str]:
+    """Normalise the ``[agent.tier_models]`` table into a tier → model-id override map.
+
+    Each entry overrides the concrete model id a tier resolves to. A non-table
+    value yields an empty map, and a non-string-or-blank entry value is skipped —
+    the same tolerance as ``skill_models`` — so a malformed override never
+    poisons the shipped :data:`teatree.agents.model_tiering.TIER_MODELS` default.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for tier, model in raw.items():
+        if isinstance(model, str) and model.strip():
+            resolved[str(tier)] = model.strip()
+    return resolved
 
 
 def _fable_fallback_from(raw: object) -> str:
@@ -199,6 +232,7 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         fable_fallback=_fable_fallback_from(agent.get("fable_fallback")),
         phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
         honesty_model=_honesty_model_from(agent.get("honesty_model")),
+        tier_models=_tier_models_from(agent.get("tier_models")),
     )
 
 

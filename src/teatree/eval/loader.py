@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
@@ -28,7 +29,10 @@ from teatree.eval.models import (
 )
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# Scenarios reference models by ABSTRACT TIER, not a concrete id. ``model`` is the
+# escape-hatch concrete-id pin and defaults to unset (``""``); a tier/phase
+# scenario resolves through teatree.agents.model_tiering.TIER_MODELS at run time.
+DEFAULT_MODEL = ""
 # DEFAULT_MAX_TURNS is the single canonical default, reused from
 # teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
@@ -72,12 +76,9 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         raise EvalSpecError(path, None, f"spec {name!r}: `expect` must be a non-empty list")
     else:
         matchers = tuple(_parse_matcher(item, name, path) for item in expect)
-    model = str(spec_map.get("model") or DEFAULT_MODEL)
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
     agent_sections = _parse_agent_sections(spec_map, name, path)
-    lane = _parse_lane(spec_map, name, path)
-    context_preamble = str(spec_map.get("context_preamble") or "")
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -85,16 +86,48 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         prompt=prompt,
         matchers=matchers,
         source_path=path,
-        model=model,
+        model=str(spec_map.get("model") or DEFAULT_MODEL),
+        tier=_parse_tier(spec_map, name, path),
+        phase=_parse_phase(spec_map, name, path),
         max_turns=max_turns,
         tools=tools,
         judge=judge,
         agent_sections=agent_sections,
-        lane=lane,
-        context_preamble=context_preamble,
+        lane=_parse_lane(spec_map, name, path),
+        context_preamble=str(spec_map.get("context_preamble") or ""),
         max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
     )
+
+
+def _parse_tier(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse an optional ``tier`` (``frontier`` / ``balanced`` / ``cheap``), or ``""``.
+
+    Validated against :data:`teatree.agents.model_tiering.TIER_MODELS` so a typo'd
+    tier fails loud at load time, never silently resolves to the default tier.
+    """
+    raw = entry.get("tier")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or raw not in TIER_MODELS:
+        permitted = ", ".join(sorted(TIER_MODELS))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `tier` must be one of {permitted}, got {raw!r}")
+    return raw
+
+
+def _parse_phase(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse an optional ``phase`` (a teatree FSM phase name), or ``""``.
+
+    A phase resolves to its tier via ``DEFAULT_PHASE_MODELS`` at run time; an
+    unmapped phase legitimately falls back to the default tier, so any non-empty
+    string is accepted (only an empty/blank value is rejected).
+    """
+    raw = entry.get("phase")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `phase` must be a non-empty string")
+    return raw.strip()
 
 
 def _parse_judge(entry: Mapping[str, Any], spec_name: str, path: Path) -> JudgeSpec | None:

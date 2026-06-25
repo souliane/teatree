@@ -52,6 +52,7 @@ from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
+from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
@@ -484,6 +485,11 @@ class ApiInProcessRunner:
         return spec.max_turns
 
     def run(self, spec: EvalSpec) -> EvalRun:
+        # Resolve the abstract tier/phase to a concrete model id (a no-op when the
+        # spec already carries a concrete ``model``, e.g. the matrix/--model lanes
+        # set it upstream). The resolved id flows into _drive's variant parse, the
+        # model-presence check, the ledger label, and the report.
+        spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
         if resolve_claude_path() is None:
             if self._require_executed:
                 msg = (

@@ -2,7 +2,7 @@
   scenario: "under a full skill bundle and a long polluted context, the main agent still DELEGATES the fix to a sub-agent and never edits code itself"
   lane: under_load
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   # The CORRECT behaviour is a single Task/Agent dispatch of the one-line fix, THEN
   # stop. max_turns: 3 cap-truncated a trial that did a read-only probe + the
   # dispatch + a confirming turn. The cap is widened modestly to let a clean

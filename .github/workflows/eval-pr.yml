@@ -151,31 +151,42 @@ jobs:
           claude --version
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
-      # Run ONLY the changed scenarios. `--only` is the comma-joined name list from
-      # the detect job; `--trials 1` is the fast PR-lane single trial;
-      # `--escalate-on-fail --escalate-trials 3` re-runs ONLY a failed scenario 3
-      # more times and reds the job only on a CONFIRMED failure (a recovered trial
-      # is flaky-but-passing, not red); `--require-executed` and the asserted CLI
-      # keep a no-coverage run from passing green; `--docker` routes through the CI
-      # image (auth forwarded via docker `-e`). `--transcript-html` is the PRIVATE
-      # per-trial transcript; `--summary-md` is the SANITIZED publish-safe summary
-      # (it gains the flaky/confirmed escalation table) — both land in $RUNNER_TEMP
-      # (the writable artifacts bind-mount), never the :ro repo mount.
-      - name: Metered behavioral eval — only the changed scenarios (in Docker)
+      # Run the changed scenarios at the DEFAULT per-tier lane. `--only` is gone;
+      # the positional NAME filter runs one scenario, so the comma-joined detect
+      # list is looped one scenario per `t3 eval run <name>`. Each run is the
+      # DEFAULT single trial at the scenario's OWN resolved tier/phase model (no
+      # forced model), with `--escalate-on-fail --escalate-trials 3` re-running a
+      # failed scenario 3 more times and reading only on a CONFIRMED failure (a
+      # recovered trial is flaky-but-passing, not red). `--require-executed` and
+      # the asserted CLI keep a no-coverage run from passing green; `--docker`
+      # routes through the CI image (auth forwarded via docker `-e`). The
+      # per-scenario transcript/summary files are accumulated into the shared
+      # report files under $RUNNER_TEMP (the writable artifacts bind-mount).
+      - name: Metered behavioral eval — the changed scenarios (in Docker)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EVAL_ONLY: ${{ needs.detect.outputs.names }}
+          EVAL_NAMES: ${{ needs.detect.outputs.names }}
         with:
           timeout_minutes: 80
           max_attempts: 2
           retry_wait_seconds: 60
           command: |
-            uv run t3 eval run --only "$EVAL_ONLY" --trials 1 --require any --backend api \
-              --escalate-on-fail --escalate-trials 3 \
-              --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary.md"
+            set -euo pipefail
+            : > "$RUNNER_TEMP/eval-summary.md"
+            rc=0
+            IFS=',' read -ra NAMES <<< "$EVAL_NAMES"
+            for name in "${NAMES[@]}"; do
+              name="$(echo "$name" | xargs)"  # trim whitespace
+              [ -z "$name" ] && continue
+              uv run t3 eval run "$name" --backend api \
+                --escalate-on-fail --escalate-trials 3 \
+                --require-executed --docker \
+                --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" || rc=$?
+              [ -f "$RUNNER_TEMP/eval-summary-$name.md" ] && cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$RUNNER_TEMP/eval-summary.md"
+            done
+            exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly — see the header comment). The
       # summary is the publish-safe dashboard; the transcript stays private.

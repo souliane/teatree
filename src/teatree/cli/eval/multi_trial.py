@@ -26,7 +26,7 @@ from teatree.cli.eval.run_modes import (
 )
 from teatree.eval.api_runner import MAX_BUDGET_USD
 from teatree.eval.backends import API_BACKEND, EvalRunner, make_runner
-from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
+from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
@@ -223,6 +223,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     require_executed: bool = False,
     max_budget_usd: float = float(MAX_BUDGET_USD),
     effort: EffortLevel | None = None,
+    html_out: Path | None = None,
 ) -> None:
     """Run the suite once per model and render a per-model comparison.
 
@@ -230,6 +231,10 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     ``METERED_DEFAULT_EFFORT`` calibration), the runner-wide default for scenarios
     declaring no ``model@effort``. A matrix variant's own ``model@effort`` tag (and
     a scenario's own) still win over this lane default at the runner's seam.
+
+    ``html_out`` (the ``--benchmark`` artifact path) writes a self-contained HTML
+    matrix dashboard from THIS run's rows, BEFORE any gate can exit — so a red
+    benchmark still drops the publishable artifact the weekly workflow uploads.
     """
     model_list = parse_model_tags(models)
     require_persist_for_history_gates(
@@ -251,6 +256,10 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
         typer.echo(render_matrix_text(rows, model_list, specs))
+    # The benchmark HTML artifact, written BEFORE any guard/gate can exit so a red
+    # benchmark still drops the dashboard the weekly workflow uploads/publishes.
+    if html_out is not None:
+        html_out.write_text(render_matrix_html(rows, model_list, specs), encoding="utf-8")
     RunGuards.executed(
         executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed
     )

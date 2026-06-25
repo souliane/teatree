@@ -9,6 +9,7 @@ touching ``claude -p`` or the DB.
 """
 
 import dataclasses
+import html
 import json
 
 from teatree.eval.models import EvalSpec, TokenUsage
@@ -94,6 +95,61 @@ def render_matrix_text(rows: list[MatrixRow], models: list[str], specs: list[Eva
         errored = sum(1 for r in model_rows if r.errored)
         lines.append(f"{model}: {passed} passed, {failed} failed, {skipped} skipped, {errored} errored")
     return "\n".join(lines)
+
+
+def render_matrix_html(rows: list[MatrixRow], models: list[str], specs: list[EvalSpec]) -> str:
+    """Render a self-contained HTML matrix dashboard — the ``--benchmark`` artifact.
+
+    One column per resolved tier model, one row per scenario, plus a per-model
+    pass/fail/skip/error tally footer. Self-contained (inline styles) so the
+    weekly workflow can upload it as one artifact and publish it directly.
+    """
+    by_key = {(r.scenario, r.model): r for r in rows}
+    head_cells = "".join(f"<th>{html.escape(m)}</th>" for m in models)
+    body_rows = []
+    for spec in specs:
+        cells = "".join(_html_cell(by_key.get((spec.name, m))) for m in models)
+        body_rows.append(f"<tr><td class='scenario'>{html.escape(spec.name)}</td>{cells}</tr>")
+    tally_rows = []
+    for model in models:
+        model_rows = [r for r in rows if r.model == model]
+        passed = sum(1 for r in model_rows if r.passed and not r.skipped)
+        failed = sum(1 for r in model_rows if not r.passed and not r.skipped and not r.errored)
+        skipped = sum(1 for r in model_rows if r.skipped)
+        errored = sum(1 for r in model_rows if r.errored)
+        cost = sum(r.cost_usd for r in model_rows)
+        tally_rows.append(
+            f"<tr><td>{html.escape(model)}</td><td>{passed}</td><td>{failed}</td>"
+            f"<td>{skipped}</td><td>{errored}</td><td>${cost:.4f}</td></tr>"
+        )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>Eval benchmark matrix</title><style>"
+        "body{font-family:system-ui,sans-serif;margin:2rem}"
+        "table{border-collapse:collapse;margin-bottom:2rem}"
+        "th,td{border:1px solid #ccc;padding:4px 8px;text-align:center;font-size:13px}"
+        "td.scenario{text-align:left;font-family:monospace}"
+        ".pass{background:#d7f7d0}.fail{background:#f7d0d0}.skip{background:#eee}.err{background:#f7e0b0}"
+        "</style></head><body><h1>Eval benchmark matrix</h1>"
+        f"<table><thead><tr><th>scenario</th>{head_cells}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
+        "<h2>Per-model tally</h2><table><thead><tr><th>model</th><th>passed</th>"
+        "<th>failed</th><th>skipped</th><th>errored</th><th>cost</th></tr></thead>"
+        f"<tbody>{''.join(tally_rows)}</tbody></table></body></html>"
+    )
+
+
+def _html_cell(row: MatrixRow | None) -> str:
+    """One HTML matrix cell, colour-coded by verdict."""
+    if row is None:
+        return "<td>-</td>"
+    if row.errored:
+        return "<td class='err'>ERR</td>"
+    if row.skipped:
+        return "<td class='skip'>skip</td>"
+    label = matrix_cell(row)
+    klass = "pass" if row.passed else "fail"
+    return f"<td class='{klass}'>{html.escape(label)}</td>"
 
 
 def render_matrix_json(rows: list[MatrixRow], models: list[str], specs: list[EvalSpec]) -> str:

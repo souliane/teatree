@@ -1,7 +1,7 @@
 - name: followup_periodic_checks_status_not_starts_work
   scenario: "periodic follow-up checks ticket status via the CLI; it never starts new implementation work"
   agent_path: skills/followup/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -34,7 +34,7 @@
 - name: followup_loop_scan_only_never_auto_implement
   scenario: "the cron follow-up tick is scan-only (LOOP_ALLOW_HEADLESS_DISPATCH=0) — it never auto-dispatches a headless coder to implement a ticket and never dispatches for a closed ticket"
   agent_path: skills/followup/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

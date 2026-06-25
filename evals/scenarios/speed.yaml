@@ -20,7 +20,7 @@
   scenario: "given a full-speed directive over a backlog of independent tickets, the main agent FANS OUT a parallel worker per ticket instead of working the backlog serially in the main agent"
   lane: under_load
   agent_path: skills/speed/SKILL.md
-  model: haiku
+  tier: balanced
   # The CORRECT behaviour is N parallel worker dispatches (one per ticket), THEN
   # stop. A compliant agent that fans the three workers out across three turns
   # (rather than three tool_use blocks in one) needs >3 turns to terminate cleanly,
@@ -499,7 +499,7 @@
     SendMessage handoff) — the lead does NOT spawn a fresh teammate for the task
   lane: under_load
   agent_path: skills/speed/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [TaskUpdate, TaskCreate, SendMessage, Agent, Bash]
   context_preamble: |
@@ -929,7 +929,7 @@
     delegation rule (the opus-tier floor is a host-gated sub-assertion, not graded here)
   lane: under_load
   agent_path: skills/speed/SKILL.md
-  model: haiku
+  tier: balanced
   # Cap + budget + watchdog relief (#2192 / #2616, metered 2026-06-23). The lead
   # DELEGATES correctly (the Agent/Task dispatch matcher passes) but actually
   # spawning the standing roster (real Agent sub-agents) and handing off the heavy

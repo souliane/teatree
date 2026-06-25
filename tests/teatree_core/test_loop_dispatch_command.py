@@ -12,6 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.ticket import schedule_external_review
 
@@ -89,8 +90,7 @@ class TestPendingSpawn(_LoopDispatchTest):
 
         entry = json.loads(stdout.getvalue())[0]
         assert "model" in entry
-        # reviewing is a mechanical phase → sonnet tier by default.
-        assert entry["model"] == "sonnet"
+        assert entry["model"] == TIER_MODELS["frontier"]
         assert isinstance(entry["skill_bundle"], list)
 
     def test_payload_never_carries_an_effort_key(self) -> None:
@@ -118,7 +118,6 @@ class TestPendingSpawn(_LoopDispatchTest):
         ):
             call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
-        # reviewing's sonnet phase floor raised to fable by the code-review skill.
         assert entry["model"] == "fable"
         assert entry["skill_bundle"] == ["code-review"]
 

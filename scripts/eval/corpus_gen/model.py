@@ -103,6 +103,11 @@ class Scenario:
     max_turns: int = 3
     agent_sections: tuple[str, ...] = ()
     yaml_file: str = ""
+    #: Explicit abstract tier (``frontier``/``balanced``/``cheap``). Empty → the
+    #: tier is INFERRED from ``agent_path`` (see :func:`infer_tier_or_phase`). The
+    #: emitted YAML carries ``tier:`` or ``phase:``, never a concrete model id —
+    #: the single ``teatree.agents.model_tiering.TIER_MODELS`` constant owns ids.
+    tier: str = ""
     #: Per-scenario metered-budget ceiling (USD). ``None`` leaves the lane default
     #: ($1.0). A scenario whose CORRECT trajectory legitimately dispatches a
     #: sub-agent (an orchestrator-delegation scenario) burns more than the default,
@@ -154,6 +159,35 @@ def _matcher_yaml(expect: Expect, indent: str) -> list[str]:
     ]
 
 
+def infer_tier_or_phase(agent_path: str) -> str:
+    """Infer the ``tier:``/``phase:`` YAML line for a scenario from its *agent_path*.
+
+    Maps the skill the scenario exercises to a teatree FSM phase (resolved to a
+    tier at run time) or, when no phase fits, the ``balanced`` tier. The single
+    ``teatree.agents.model_tiering.TIER_MODELS`` constant owns the concrete model
+    ids — this emits an ABSTRACT tier/phase only, never a model id.
+    """
+    p = agent_path.lower()
+    phase = None
+    if "planner" in p or "writing-plans" in p or "planning" in p:
+        phase = "planning"
+    elif "review-request" in p or "review_request" in p:
+        phase = "requesting_review"
+    elif "/code/" in p or p.endswith("/code"):
+        phase = "coding"
+    elif "/review/" in p or "/e2e-review/" in p:
+        phase = "reviewing"
+    elif "/test/" in p:
+        phase = "testing"
+    elif "/ship/" in p:
+        phase = "shipping"
+    elif "/retro/" in p:
+        phase = "retrospecting"
+    if phase is not None:
+        return f"  phase: {phase}"
+    return "  tier: balanced"
+
+
 def scenario_yaml(scenario: Scenario) -> str:
     """Render one scenario as a YAML list entry the loader accepts."""
     tools = "[" + ", ".join(scenario.tools) + "]"
@@ -165,8 +199,9 @@ def scenario_yaml(scenario: Scenario) -> str:
     if scenario.agent_sections:
         sections = "[" + ", ".join(json.dumps(s, ensure_ascii=False) for s in scenario.agent_sections) + "]"
         lines.append(f"  agent_sections: {sections}")
+    tier_line = f"  tier: {scenario.tier}" if scenario.tier else infer_tier_or_phase(scenario.agent_path)
     lines += [
-        "  model: claude-sonnet-4-6",
+        tier_line,
         f"  max_turns: {scenario.max_turns}",
     ]
     if scenario.max_budget_usd is not None:

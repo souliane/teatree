@@ -33,7 +33,7 @@
     via AskUserQuestion
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash, Edit, AskUserQuestion]
   prompt: >-
@@ -102,7 +102,7 @@
     forbids
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Always Use AskUserQuestion for Questions"]
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash, AskUserQuestion]
   prompt: >-
@@ -134,7 +134,7 @@
     skipped test to "finish faster"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Never Introduce Tech Debt; Reduce It (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash, Edit]
   prompt: >-

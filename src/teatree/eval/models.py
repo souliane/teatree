@@ -182,6 +182,15 @@ class EvalSpec:
     ``context_preamble`` (an 8k-20k-token polluted prefix) is folded into the
     user prompt text. The SDK ``query`` is user-turns-only, so the pollution
     lives in the prompt text — never as pre-seeded assistant/tool-result turns.
+
+    Model resolution is by ABSTRACT TIER, not a concrete model id. A scenario
+    declares ``tier`` (``frontier`` / ``balanced`` / ``cheap``) or ``phase`` (a
+    teatree FSM phase name) instead of pinning a model; the runner resolves
+    these through the single :data:`teatree.agents.model_tiering.TIER_MODELS`
+    constant. ``model`` is the escape hatch for a deliberate concrete-id pin and
+    wins when set; ``model`` is ``""`` (unset) on a tier/phase scenario. The
+    resolution precedence, highest first: ``model`` > ``tier`` > ``phase`` >
+    :data:`teatree.agents.model_tiering.DEFAULT_TIER`.
     """
 
     name: str
@@ -190,7 +199,19 @@ class EvalSpec:
     prompt: str
     matchers: tuple[ExpectItem, ...]
     source_path: Path
-    model: str = "claude-sonnet-4-6"
+    #: A deliberate concrete-model-id pin (the escape hatch). ``""`` (the default)
+    #: means unset — resolution falls through to ``tier`` / ``phase`` / the
+    #: default tier. A non-empty value is an explicit ``model[@effort]`` pin that
+    #: WINS over ``tier``/``phase``.
+    model: str = ""
+    #: Abstract model tier (``frontier`` / ``balanced`` / ``cheap``). Resolved to a
+    #: concrete model id through ``TIER_MODELS``. Wins over ``phase`` and the
+    #: default; loses to an explicit ``model``.
+    tier: str = ""
+    #: A teatree FSM phase name (``planning`` / ``coding`` / …). Resolved to its
+    #: tier via ``DEFAULT_PHASE_MODELS`` then to a model. Loses to ``model`` and
+    #: ``tier``; wins over the default tier.
+    phase: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None

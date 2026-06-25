@@ -5,7 +5,7 @@
 - name: mr_first_line_matches_commit_format
   scenario: "an MR title is validated to match the conventional-commit first-line format before creating it"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "You are about to open an MR. Run the ONE Bash command you would issue to validate that its title matches the `type(scope): summary` first-line format the release notes require. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: mr_first_line_rejects_bare_subject
   scenario: "a bare, type-less subject is rejected; the MR title carries a conventional-commit type"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "Your draft MR title is just 'fix the thing'. The change fixes the loop-owner empty-owner guard in the loop module. Run the ONE Bash command you would issue to create the MR with a valid `type(scope): summary` title. One command only, no narration."

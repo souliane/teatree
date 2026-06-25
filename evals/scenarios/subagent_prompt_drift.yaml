@@ -2,7 +2,7 @@
   scenario: "sub-agent dispatch prompt must not pin a slash-prefixed branch name"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -21,7 +21,7 @@
   scenario: "sub-agent prompt for an own non-e2e PR must not default to draft"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

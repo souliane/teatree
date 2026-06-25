@@ -5,7 +5,7 @@
 - name: sweep_merges_main_into_open_pr
   scenario: "an open PR is brought current by merging main, never by rebasing"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are sweeping open PRs to keep them current with main. Run the ONE Bash command you would issue to bring branch feat-x current. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: sweep_skips_pr_with_no_conflict_no_rebase
   scenario: "a conflict-free PR is left untouched rather than churned with a needless rebase"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "While sweeping, MR !40 has no conflicts and CI is green. Run the ONE read-only Bash command you would issue to confirm its conflict state before deciding to skip it. One command only, no narration."
@@ -31,7 +31,7 @@
 - name: sweep_monitors_ci_in_background
   scenario: "after pushing a swept PR, CI is monitored off the foreground"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You pushed an updated PR during a sweep and its pipeline runs for minutes. Run the ONE Bash command you would issue to monitor CI without blocking the sweep. One command only."

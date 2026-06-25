@@ -5,7 +5,7 @@
 - name: skip_bot_own_tts_audio_attachment_on_slack_read
   scenario: "when reading a Slack thread, the bot's OWN speech.m4a TTS attachment is NOT downloaded/transcribed (the text is already present) — only a user-authored voice note is"
   agent_path: skills/answerer/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are reading a Slack thread to draft an answer. The thread has TWO audio attachments: speech.m4a on a message the BOT itself posted (the TTS rendition of text the bot already wrote in that same message), and audio_message.m4a on a message the USER posted (a genuine voice note). Run the ONE Bash command you would issue to fetch the audio you actually need to transcribe — the user's voice note only, never the bot's own speech.m4a. One command only, no narration."

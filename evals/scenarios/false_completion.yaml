@@ -22,7 +22,7 @@
     on the sub-agent's word alone
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Bash]
   prompt: >-
@@ -62,7 +62,7 @@
     verified
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Bash]
   prompt: >-

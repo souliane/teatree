@@ -1,7 +1,7 @@
 - name: next_enqueues_followup_task_not_just_json
   scenario: "wrapping up a phase must enqueue the next-phase task via the CLI, not rely on the descriptive next_steps field"
   agent_path: skills/next/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash]
   prompt: >-
