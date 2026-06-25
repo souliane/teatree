@@ -51,10 +51,14 @@ _VIOLATION_TURN = (
 _CLEAN_TURN = '{"type": "assistant", "content": "Implemented the feature and ran the tests."}'
 
 
-def _fake_host(*, created_url: str = "https://github.com/souliane/teatree/issues/9300") -> CodeHostBackend:
+UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
+
+
+def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
     host = MagicMock(spec=CodeHostBackend)
     host.search_open_issues.return_value = []
-    host.create_issue.return_value = {"html_url": created_url}
+    host.get_issue.return_value = {"body": body}
+    host.update_issue.return_value = {"number": 2663}
     return host
 
 
@@ -96,7 +100,7 @@ class DetectComplianceFailuresTestCase(TestCase):
 
 
 class EscalateRecurrencesTestCase(TestCase):
-    """A recurrence files exactly one deduped enforcement ticket, never a memory."""
+    """A recurrence rides the umbrella + a scheduled gate/eval fix, never a memory."""
 
     def _recurrence(self, identity: str = "feedback_askuserquestion_overuse") -> ComplianceFinding:
         return ComplianceFinding(
@@ -106,38 +110,38 @@ class EscalateRecurrencesTestCase(TestCase):
             is_recurrence=True,
         )
 
-    def test_one_recurrence_files_one_gate_or_eval_ticket(self) -> None:
+    def test_one_recurrence_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
+        from teatree.core.models.task import Task  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
         host = _fake_host()
-        outcomes = escalate_recurrences([self._recurrence()], host, repo="souliane/teatree")
+        outcomes = escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        host.create_issue.assert_called_once()
-        _, kwargs = host.create_issue.call_args
-        # The ticket must prescribe a STRUCTURAL fix (a gate or an eval), never "write a memory".
-        body = kwargs["body"].lower()
-        assert "gate" in body or "eval" in body
-        assert "write another memory" not in body
-        assert "needs-triage" in kwargs["labels"]
+        # No fresh needs-triage issue — the recurrence rides the umbrella + a coding task.
+        host.create_issue.assert_not_called()
+        host.update_issue.assert_called_once()
+        _, kwargs = host.update_issue.call_args
+        # The checkbox title prescribes a STRUCTURAL fix (a gate or an eval).
+        title = kwargs["body"].lower()
+        assert "gate" in title or "eval" in title
+        assert Ticket.objects.filter(extra__dream_gap_key__startswith="compliance-recurrence").exists()
+        assert Task.objects.filter(phase="coding").exists()
 
-    def test_two_recurrences_of_the_same_rule_file_one_ticket(self) -> None:
+    def test_two_recurrences_of_the_same_rule_promote_one_gap(self) -> None:
         host = _fake_host()
-        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], host, repo="souliane/teatree")
+        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], host, umbrella_url=UMBRELLA)
         filed = [o for o in outcomes if o.filed]
         assert len(filed) == 1
-        host.create_issue.assert_called_once()
 
-    def test_existing_open_escalation_is_reused_not_duplicated(self) -> None:
-        host = MagicMock(spec=CodeHostBackend)
-        host.search_open_issues.return_value = [
-            {
-                "html_url": "https://github.com/souliane/teatree/issues/55",
-                "body": "<!-- compliance-recurrence feedback_askuserquestion_overuse -->",
-            }
-        ]
-        outcomes = escalate_recurrences([self._recurrence()], host, repo="souliane/teatree")
-        assert outcomes[0].filed is False
-        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/55"
-        host.create_issue.assert_not_called()
+    def test_existing_checkbox_is_not_double_added(self) -> None:
+        existing = (
+            "## Open gaps\n- [ ] Compliance recurrence ... "
+            "<!-- dream-gap compliance-recurrence-feedback_askuserquestion_overuse -->\n"
+        )
+        host = _fake_host(body=existing)
+        escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
+        host.update_issue.assert_not_called()
 
     def test_non_recurrence_findings_are_never_escalated(self) -> None:
         first_occurrence = ComplianceFinding(
@@ -147,9 +151,9 @@ class EscalateRecurrencesTestCase(TestCase):
             is_recurrence=False,
         )
         host = _fake_host()
-        outcomes = escalate_recurrences([first_occurrence], host, repo="souliane/teatree")
+        outcomes = escalate_recurrences([first_occurrence], host, umbrella_url=UMBRELLA)
         assert outcomes == []
-        host.create_issue.assert_not_called()
+        host.update_issue.assert_not_called()
 
 
 class PersistCompliancePassTestCase(TestCase):
@@ -189,10 +193,11 @@ class PersistCompliancePassTestCase(TestCase):
             is_recurrence=True,
         )
         snapshot = persist_compliance_pass([finding], instructions_observed=4)
-        escalate_recurrences([finding], host, repo="souliane/teatree", snapshot=snapshot)
+        escalate_recurrences([finding], host, umbrella_url=UMBRELLA, snapshot=snapshot)
         row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
         assert row.remediation == RemediationKind.ESCALATION
-        assert row.escalation_url == "https://github.com/souliane/teatree/issues/9300"
+        # The escalation is now the standing umbrella (the recurrence rides it + a coding task).
+        assert row.escalation_url == UMBRELLA
 
 
 class BuildComplianceSnapshotTestCase(TestCase):

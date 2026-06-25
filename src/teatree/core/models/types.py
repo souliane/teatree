@@ -117,6 +117,15 @@ class TicketExtra(TypedDict, total=False):
     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
     # ``TrivialPlanSkip``.
     trivial_plan_skip: "TrivialPlanSkip"
+    # #2663 dream-promote = fix-and-merge: a Ticket scheduled to fix a grounded
+    # dream gap. ``dream_gap_key`` is the stable gap identity (also the umbrella
+    # checkbox marker); ``dream_memory_cluster_key`` links back to the
+    # ``ConsolidatedMemory`` row to retire on merge; ``dream_umbrella_url`` is the
+    # standing umbrella issue whose checkbox is checked when the fix merges. See
+    # ``teatree.loops.dream.umbrella_ledger``.
+    dream_gap_key: str
+    dream_memory_cluster_key: str
+    dream_umbrella_url: str
 
 
 class ReviewSkillRun(TypedDict, total=False):

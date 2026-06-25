@@ -454,6 +454,32 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             or {}
         )
 
+    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
+        """Replace a GitLab issue's description in place.
+
+        Mirrors :meth:`GitHubCodeHost.update_issue`: the dream-promote flow
+        re-fetches the description, upserts a gap checkbox keyed on a stable
+        HTML-comment marker, and writes the whole description back. Returns
+        ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or
+        when the project cannot be resolved.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+
+        return (
+            self._client.put_json(
+                f"projects/{project.project_id}/issues/{int(match['iid'])}",
+                {"description": body},
+            )
+            or {}
+        )
+
     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
         """Return the project slug that OWNS *issue_url* (the note's own project).
 

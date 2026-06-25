@@ -270,8 +270,8 @@ class Command(TyperCommand):
         try:
             from teatree.loops.dream import compliance  # noqa: PLC0415
 
-            host, repo = self._teatree_backlog_host()
-            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host, repo=repo)
+            host, _repo = self._teatree_backlog_host()
+            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host)
         except Exception as exc:  # noqa: BLE001
             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
 
@@ -335,32 +335,36 @@ class Command(TyperCommand):
         return f"; staged {staged} derived eval(s) for review, dropped {len(outcomes) - staged}"
 
     def _run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
-        """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
+        """Pass 2 — drive each core gap to a fix-and-merge under the umbrella (#2663).
 
         Runs only when the default-OFF ``memory_promote`` toggle is on, because it
-        FILES backlog tickets. Resolves the teatree backlog code host, triages every
-        untriaged ``ConsolidatedMemory`` row, files a deduped ``needs-triage`` ticket
-        for each core-generic gap, and retires any TICKETED memory whose linked ticket
-        has closed. A failure is reported in the summary line, never crashing the pass.
+        schedules fixes. Resolves the teatree backlog code host, triages every
+        untriaged ``ConsolidatedMemory`` row, and PROMOTES each core-generic gap to a
+        fix: a checkbox is upserted under the standing umbrella issue and a coding task
+        is scheduled (instead of a fresh ``needs-triage`` issue that piles up). Then it
+        RECONCILES — every gap whose fix Ticket merged has its umbrella checkbox checked
+        and its memory retired. A failure is reported in the summary line, never
+        crashing the pass.
         """
         from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
 
         if not force_all_phases and not memory_promote_enabled():
             return ""
         try:
-            from teatree.loops.dream import promote_memory  # noqa: PLC0415
+            from teatree.loops.dream import promote_memory, umbrella_ledger  # noqa: PLC0415
 
-            host, repo = self._teatree_backlog_host()
+            host, _repo = self._teatree_backlog_host()
             if host is None:
                 return "; WARN memory promotion skipped — no teatree code host resolved"
-            filed = promote_memory.file_core_gap_tickets(host, repo=repo, dry_run=dry_run)
-            retired = [] if dry_run else promote_memory.retire_resolved_memories(host)
+            umbrella = promote_memory.UMBRELLA_ISSUE_URL
+            promoted = promote_memory.file_core_gap_tickets(host, umbrella_url=umbrella, dry_run=dry_run)
+            reconciled = [] if dry_run else umbrella_ledger.reconcile_merged_gaps(host, umbrella_url=umbrella)
         except Exception as exc:  # noqa: BLE001
             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
-        new_tickets = sum(1 for o in filed if o.filed)
-        if not filed and not retired:
+        new_fixes = sum(1 for o in promoted if o.filed)
+        if not promoted and not reconciled:
             return ""
-        return f"; ticketed {new_tickets} core-gap memory(ies), retired {len(retired)}"
+        return f"; promoted {new_fixes} core-gap fix(es), reconciled {len(reconciled)} merged"
 
     @staticmethod
     def _teatree_backlog_host() -> "tuple[CodeHostBackend | None, str]":
