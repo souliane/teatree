@@ -19,7 +19,14 @@ reviewer approve.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from teatree.cli.review.approval import identity_has_reviewed
+
+# The reviewer-absent path consults the recorded internal verdict
+# (:class:`OnBehalfApproval`) since #2716, so it touches the DB.
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
 
 
 def _api_with_paginated(*, username: str, page1: list, page2: list) -> MagicMock:

@@ -559,7 +559,13 @@ t3 review approve <REPO> <MR_IID>      # approve
 t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 ```
 
-**Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` — default draft, #1207) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
+**Review-first precondition (enforced, not advisory) — never forces a public note (#2716).** `approve` refuses unless the approver has left a *reviewing footprint*, encoding the approve-on-review doctrine in the tool: you cannot record an approval without having reviewed first. The doctrine is an anti-rubber-stamp guarantee, **not** a public comment — so a content-free "APPROVE" prose note is never posted to satisfy it. Any of three footprints clears the gate, none of which is a colleague-visible auto-comment:
+
+- a **published note/discussion** authored by your identity (a genuine inline finding — still fine, never auto-posted just to clear this gate);
+- a **draft note** authored by your identity (a colleague-invisible review — no public comment);
+- the **recorded internal verdict** — an `OnBehalfApproval` for `(<repo>!<mr>, "approve")`, the human-recorded, maker≠checker attribution the on-behalf approve path already requires. On the on-behalf path the `approve-on-behalf` row *is* the footprint, so approving records the verdict + the GitLab `approved_by` (and the ✅ reaction) with **zero** MR notes/discussions posted.
+
+If it refuses, leave a genuine review (a real finding via `t3 review post-comment` — default draft, #1207 — or record the internal verdict), then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
 **On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960). Under an autonomous overlay (`autonomy = "full"` / `"notify"`, which collapse the mode to `"immediate"`) the approval proceeds unattended — that is the "Colleague-MR Autonomy" behavior above, no further step. Under `"babysit"` (mode stays `"ask"` / `"draft_or_ask"`) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or raise the tier with `t3 <overlay> autonomy set full` / `t3 <overlay> autonomy set notify` (preferred — one knob) for the overlay.
 
