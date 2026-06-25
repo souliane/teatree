@@ -82,6 +82,7 @@ Overlays subclass `OverlayBase` and override methods:
 - `get_e2e_env_extras(env_cache)` — overlay-specific env vars merged into the Playwright environment (e.g. map `WT_VARIANT` → `CUSTOMER`); default `{}`
 - `get_e2e_preflight(customer, base_url)` — pre-Playwright gates that fail fast on auth/SSO/network issues; default `[]`
 - `get_e2e_run_provenance(spec_path)` — resolve a vanilla spec path to its manifest entry id (e.g. CI lane) recorded on the run so it is reproducible from the DB alone; default `""` (overlay with no per-spec manifest)
+- `get_e2e_scenarios(spec_path)` — the per-feature acceptance scenarios for a spec (overlay-defined frozen `Scenario` elements: `surface`/`title`/`preconditions`/`steps`/`expected`/`modality`/`captures`) that the templated-test-plan renderer reads through this overlay-agnostic seam; default `()` (overlay with no scenario manifest)
 
 ## Skill Loading
 
