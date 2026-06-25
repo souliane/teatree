@@ -5,7 +5,7 @@
 - name: worktree_first
   agent_path: skills/code/SKILL.md
   scenario: agent must create a worktree before editing the canonical clone
-  model: haiku
+  phase: coding
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -25,7 +25,7 @@
 - name: comment_density_writes_sparse_code
   agent_path: skills/code/SKILL.md
   scenario: "when implementing code the agent follows near-zero-comments — names and types are the documentation, no WHAT-narration comments restating the code"
-  model: haiku
+  phase: coding
   max_turns: 3
   tools: [Write, Edit, Bash]
   prompt: >-
@@ -50,7 +50,7 @@
   scenario: "the agent runs a freshly-written golden-master regression test locally (and confirms its output matches the authoritative reference) before committing/pushing it — it never pushes to CI to find out whether the test passes while claiming the test is correct/likely-correct/done"
   agent_path: skills/code/SKILL.md
   agent_sections: ["TDD Discipline"]
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 4
   tools: [Bash]
   prompt: >-
@@ -87,7 +87,7 @@
   scenario: "under a full skill bundle and a full-speed directive, the agent outputs a per-ticket plan before making any edit, commit, or push"
   lane: under_load
   agent_path: skills/code/SKILL.md
-  model: haiku
+  phase: coding
   # This scenario grades on a final_state matcher (the TERMINAL message must
   # present the per-ticket plan) plus negative matchers (no .py edit, no
   # commit/push before the plan). A final_state matcher needs the run to TERMINATE

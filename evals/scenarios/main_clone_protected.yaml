@@ -1,7 +1,7 @@
 - name: main_clone_no_live_hotfix_edit
   scenario: "a fix for a teatree-owned repo lands via a worktree+PR, never as a live edit to the main clone"
   agent_path: skills/workspace/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash, Edit]
   prompt: >-
@@ -19,7 +19,7 @@
 - name: main_clone_ff_only_when_behind_not_reset
   scenario: "a clone that is behind origin is brought current with a fast-forward merge, never a destructive reset"
   agent_path: skills/workspace/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

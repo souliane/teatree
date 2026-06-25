@@ -13,11 +13,11 @@ from teatree.cli.eval.app_helpers import (
     require_api_backend_for_fresh_run,
     require_effort,
     require_spec,
+    resolve_benchmark_selection,
     resolve_escalation,
 )
 from teatree.cli.eval.lane_filter import filter_specs_by_lane
 from teatree.cli.eval.metered_routing import warn_local_metered
-from teatree.cli.eval.only_filter import filter_specs_by_only
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
@@ -256,15 +256,25 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             "the weekly public dashboard. Written from THIS run's results (single-trial AND --trials)."
         ),
     ),
-    only: str | None = typer.Option(
-        None,
-        "--only",
+    benchmark: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--benchmark",
         help=(
-            "Restrict the run to exactly these comma-separated scenario names (e.g. "
-            "'worktree_first,never_edit_main_clone'). Composes with --lane/--shard (those slice "
-            "the catalog first, then --only further restricts). An unknown name fails loud — it "
-            "is never silently dropped. The selective-PR eval workflow passes the scenarios a PR's "
-            "diff touched here, so a PR meters only the scenarios it changed."
+            "Run every (filtered) scenario against ALL three tier models "
+            "(frontier, balanced, cheap — resolved through the single TIER_MODELS "
+            "constant) and render a comparison matrix + a self-contained HTML "
+            "dashboard. The canonical CI benchmark entry — adopting a new model "
+            "needs no flag edit. Routes through the metered matrix lane (--backend api)."
+        ),
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help=(
+            "Force the WHOLE suite onto one model[@effort], overriding every "
+            "scenario's tier/phase. A single-trial metered run against that one "
+            "model — e.g. spot-check the suite on a candidate model. Mutually "
+            "exclusive with --benchmark/--models."
         ),
     ),
     escalate_on_fail: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -338,7 +348,18 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     # re-invocation in-process (no re-route loop).
     effort_level = require_effort(effort)
     max_turns = resolve_max_turns_override(max_turns)
-    metered = backend == API_BACKEND or trials > 1 or models is not None
+    # --benchmark expands to the three tier models (matrix lane + HTML); --model
+    # forces the whole suite onto one model. At most one of benchmark/model/models
+    # may be set. The benchmark HTML dashboard is written to --transcript-html.
+    selection = resolve_benchmark_selection(benchmark=benchmark, model=model, models=models, html_out=transcript_html)
+    models = selection.models
+    # --benchmark (the 3-tier matrix) and --model (force one model) both run a
+    # fresh metered pass, so the metered api backend is implied — a transcript
+    # grade of a freshly-forced model is nonsensical. Mirror how --models always
+    # drives the api matrix lane.
+    if benchmark or selection.model_override is not None:
+        backend = API_BACKEND
+    metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
     require_api_backend_for_fresh_run(backend=backend, trials=trials, models=models)
     escalation = resolve_escalation(
         escalate_on_fail=escalate_on_fail, escalate_trials=escalate_trials, trials=trials, models=models
@@ -361,13 +382,17 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             effort=effort_level,
             trials=trials,
             require=require,
-            models=models,
+            # The docker re-invocation re-derives the lane from the ORIGINAL flags
+            # (--benchmark/--model), not the resolved tier list, so it re-runs the
+            # same expansion in-container.
+            models=models if not benchmark else None,
             backend=backend,
             require_executed=require_executed,
             parallel=parallel,
             transcript_html=transcript_html,
             summary_md=summary_md,
-            only=only,
+            benchmark=benchmark,
+            model=model,
             escalate_on_fail=escalate_on_fail,
             escalate_trials=escalate_trials,
         ),
@@ -385,10 +410,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     require_valid_format(output_format, _RUN_FORMATS)
     reject_unsupported_run_output(
         output_format=output_format,
-        transcript_html=transcript_html,
+        # Under --benchmark, --transcript-html is REPURPOSED as the matrix HTML
+        # dashboard out (not a per-trial transcript), so it is permitted alongside
+        # the resolved tier models. Pass None to the guard to skip that rejection.
+        transcript_html=None if benchmark else transcript_html,
         summary_md=summary_md,
         trials=trials,
-        models=models,
+        models=None if benchmark else models,
     )
     if name is None:
         specs = filter_specs_by_lane(discover_specs(), lane)
@@ -399,14 +427,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             raise typer.Exit(code=2) from None
     else:
         specs = [require_spec(name)]
-    specs = filter_specs_by_only(specs, only)
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     # "If we run the fresh-run lane, of course we want it executed." The api
     # backend (and the always-fresh-run --trials/--models lanes) arm the
     # all-skipped gate unconditionally — a fresh run that executes nothing must
     # fail loud, never pass. --require-executed stays only as the opt-in knob for
     # the transcript backend's legitimate pre-transcript all-skip.
-    api_metered = backend == API_BACKEND or trials > 1 or models is not None
+    api_metered = backend == API_BACKEND or trials > 1 or models is not None or selection.model_override is not None
     require_executed = require_executed or api_metered
     dispatch_resolved_run(
         specs,
@@ -420,7 +447,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             parallel=parallel,
             output_format=output_format,
             judge=judge,
-            transcript_html=transcript_html,
+            # Under --benchmark, --transcript-html is the matrix HTML out (handled
+            # by benchmark_html), not a single-trial transcript — so suppress it here.
+            transcript_html=None if benchmark else transcript_html,
             summary_md=summary_md,
             trials=trials,
             require=require,
@@ -431,6 +460,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             gate_cost_regression=gate_cost_regression,
             cost_regression_tolerance=cost_regression_tolerance,
             gate_cost_bounds=gate_cost_bounds,
+            model_override=selection.model_override,
+            benchmark_html=selection.benchmark_html,
         ),
         grader=grader,
         escalation=escalation,

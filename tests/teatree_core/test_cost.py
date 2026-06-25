@@ -67,12 +67,27 @@ class TestFableTier:
 
 
 class TestTierRank:
+    def test_abstract_tier_order_cheap_lt_balanced_lt_frontier_lt_fable(self) -> None:
+        # The redesigned ordering is expressed in the ABSTRACT tiers.
+        assert tier_rank("cheap") < tier_rank("balanced") < tier_rank("frontier") < tier_rank("fable")
+
     def test_capability_order_haiku_lt_sonnet_lt_opus_lt_fable(self) -> None:
+        # The legacy short-names still rank consistently (family-mapped onto the
+        # abstract tiers): haiku≡cheap, sonnet≡balanced, opus≡frontier.
         assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus") < tier_rank("fable")
+
+    def test_family_and_abstract_tier_rank_identically(self) -> None:
+        # A model FAMILY (old short-name or dated id) ranks identically to the
+        # abstract tier it belongs to — the floor merge is tier-space consistent.
+        assert tier_rank("opus") == tier_rank("frontier")
+        assert tier_rank("sonnet") == tier_rank("balanced")
+        assert tier_rank("haiku") == tier_rank("cheap")
 
     def test_dated_ids_rank_like_their_tier(self) -> None:
         assert tier_rank("claude-fable-5[1m]") == tier_rank("fable")
         assert tier_rank("claude-sonnet-4-6") == tier_rank("sonnet")
+        assert tier_rank("claude-opus-4-8") == tier_rank("frontier")
+        assert tier_rank("claude-haiku-4-5") == tier_rank("cheap")
 
     def test_unknown_full_id_ranks_above_every_known_tier(self) -> None:
         unknown = tier_rank("claude-some-future-model")

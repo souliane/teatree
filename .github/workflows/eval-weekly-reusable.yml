@@ -29,12 +29,12 @@
 #   run on the subscription OAuth token would throttle on its depleting usage
 #   window and mislabel the throttled cells; the metered API has no such window.
 #
-# PUBLISH — the `publish` job merges every shard's SANITIZED summary (counts + a
-#   scenario|lane|verdict|trials|cost table, NO transcript) via `t3 eval
-#   merge-summaries` into the caller's `dashboard-path` and pushes it to the
-#   caller's default branch when it changed. The private per-trial transcripts
-#   stay in the `eval-report-*` artifacts. A red weekly run is surfaced by
-#   GitHub's NATIVE failed-run email (no extra secret, no bot).
+# PUBLISH — the `publish` job collects every shard's SANITIZED benchmark matrix
+#   HTML (per-(scenario, tier) verdicts + per-model tally, NO reasoning/tool
+#   transcript) into the caller's dashboard `benchmark/` dir and pushes it to the
+#   caller's default branch when it changed. The benchmark HTML is itself the
+#   publish-safe artifact. A red weekly run is surfaced by GitHub's NATIVE
+#   failed-run email (no extra secret, no bot).
 # ============================================================
 
 on:
@@ -252,14 +252,15 @@ jobs:
           [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
       # `--docker` routes the metered lane THROUGH the CI container; the host's
-      # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--backend api` pins
-      # the metered in-process Agent-SDK path; `--trials 3` is the flake-resistant
-      # weekly sweep. `--require-executed` is UNCONDITIONAL so an all-skipped run
-      # exits non-zero. `--lane`/`--shard` scope the leg to its one shard.
-      # `--effort <tier>` is appended only when the matrix carries an effort axis
-      # (the model-tier matrix), so each tier of a leg meters that reasoning effort;
-      # with no effort axis the run keeps the lane-default effort, unchanged.
-      - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
+      # ANTHROPIC_API_KEY is forwarded in via docker's `-e`. `--benchmark` runs
+      # every (lane/shard-filtered) scenario against ALL THREE tier models
+      # (frontier/balanced/cheap, resolved through the single TIER_MODELS constant)
+      # and renders the comparison matrix + a self-contained HTML dashboard — the
+      # canonical weekly benchmark. `--require-executed` is UNCONDITIONAL so an
+      # all-skipped run exits non-zero. `--lane`/`--shard` scope the leg to its one
+      # shard. `--effort <tier>` is appended only when the matrix carries an effort
+      # axis; with no effort axis the run keeps the lane-default effort.
+      - name: Metered behavioral benchmark suite (in Docker; 3-tier matrix; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
           ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
@@ -274,36 +275,28 @@ jobs:
           command: |
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
-            uv run t3 eval run --trials 3 --require any --backend api \
+            uv run t3 eval run --benchmark --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
-              --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \
-              --summary-md "$RUNNER_TEMP/eval-summary-$SUMMARY_SUFFIX.md"
-      # Publish the per-trial transcript report THIS leg emitted (private). The
-      # name is per-lane-and-shard so parallel matrix legs never collide.
-      - name: Upload the per-trial transcript report
+              --transcript-html "$RUNNER_TEMP/eval-benchmark-$SUMMARY_SUFFIX.html"
+      # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
+      # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
+      # matrix HTML is itself sanitized (no reasoning/tool-call transcript — only
+      # the per-(scenario, tier) verdicts + per-model tally), so it is BOTH the
+      # private report and the publish-safe summary artifact.
+      - name: Upload the benchmark matrix HTML dashboard
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: eval-report-${{ steps.artifact.outputs.suffix }}
-          path: ${{ runner.temp }}/eval-transcripts.html
-          if-no-files-found: warn
-      # The SANITIZED publish-safe summary (no transcript) — a SEPARATE artifact
-      # the `publish` job downloads and merges into the public dashboard.
-      - name: Upload the sanitized summary (publish-safe)
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
-        with:
-          name: eval-summary-${{ steps.artifact.outputs.suffix }}
-          path: ${{ runner.temp }}/eval-summary-${{ steps.artifact.outputs.suffix }}.md
+          name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
+          path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
           if-no-files-found: warn
 
-  # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
-  # commit it to the caller's default branch. `if: always() && run_eval == 'true'`
-  # so it still runs when a shard went red (a red dashboard is worth publishing)
-  # but is SKIPPED when prepare gated the eval out (else it would commit a
-  # zero-row dashboard over the real one). Only the `eval-summary-*` artifacts are
-  # downloaded (NEVER the private transcripts).
+  # PUBLISH: collect every shard's benchmark matrix HTML into the public
+  # dashboard dir and commit it to the caller's default branch. `if: always() &&
+  # run_eval == 'true'` so it still runs when a shard went red (a red dashboard is
+  # worth publishing) but is SKIPPED when prepare gated the eval out. The matrix
+  # HTML is itself sanitized (verdicts + tally only, no reasoning/tool transcript).
   publish:
     needs: [prepare, eval]
     if: always() && needs.prepare.outputs.run_eval == 'true'
@@ -335,41 +328,39 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      # Pull every shard's sanitized summary into one dir (merge-multiple flattens
-      # the per-artifact subdirs). Only the publish-safe `eval-summary-*` artifacts.
-      - name: Download every shard's sanitized summary
+      # Pull every shard's benchmark matrix HTML into one dir (merge-multiple
+      # flattens the per-artifact subdirs). Only the publish-safe `eval-benchmark-*`
+      # HTML artifacts (verdicts + tally, no reasoning/tool transcript).
+      - name: Download every shard's benchmark matrix HTML
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          path: ${{ runner.temp }}/summaries
-          pattern: eval-summary-*
+          path: ${{ runner.temp }}/benchmarks
+          pattern: eval-benchmark-*
           merge-multiple: true
-      # Merge into the caller's public dashboard via the reusable `t3 eval
-      # merge-summaries` CLI. The run-url / sha / generated-at are INJECTED here
-      # (the CLI never calls datetime.now()), so the merge is deterministic.
-      - name: Merge the shard summaries into the public dashboard
+      # Copy every shard's matrix HTML into the caller's public dashboard dir. The
+      # per-shard HTML files keep their lane/shard/effort suffix, so parallel legs
+      # never collide. An index links them; the dir is the published dashboard.
+      - name: Collect the shard matrices into the public dashboard dir
         env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.sha }}
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
-          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          mkdir -p "$(dirname "$DASHBOARD_PATH")"
-          uv run t3 eval merge-summaries "$RUNNER_TEMP/summaries" \
-            --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
-            --out "$DASHBOARD_PATH"
-          cat "$DASHBOARD_PATH" >> "$GITHUB_STEP_SUMMARY"
+          DASHBOARD_DIR="$(dirname "$DASHBOARD_PATH")/benchmark"
+          mkdir -p "$DASHBOARD_DIR"
+          cp "$RUNNER_TEMP"/benchmarks/*.html "$DASHBOARD_DIR"/ 2>/dev/null || true
+          ls -1 "$DASHBOARD_DIR" >> "$GITHUB_STEP_SUMMARY" || true
       # Commit + push the dashboard ONLY when it changed (an unchanged file is a
       # clean no-op — no empty commit).
       - name: Commit and push the dashboard when it changed
         env:
           DASHBOARD_PATH: ${{ inputs.dashboard-path }}
         run: |
+          DASHBOARD_DIR="$(dirname "$DASHBOARD_PATH")/benchmark"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if git diff --quiet -- "$DASHBOARD_PATH"; then
-            echo "Dashboard unchanged — nothing to commit."
+          git add "$DASHBOARD_DIR"
+          if git diff --cached --quiet -- "$DASHBOARD_DIR"; then
+            echo "Benchmark dashboard unchanged — nothing to commit."
           else
-            git add "$DASHBOARD_PATH"
-            git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
+            git commit -m "docs(evals): refresh weekly behavioral-benchmark dashboard"
             git push
           fi

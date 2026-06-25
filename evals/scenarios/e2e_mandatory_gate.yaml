@@ -12,7 +12,7 @@
 - name: e2e_mandatory_records_evidence_before_ship
   scenario: "a customer-display-impacting change with no E2E -> the agent obtains E2E evidence, it does not ship/CLEAR without it"
   agent_path: skills/e2e/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -33,7 +33,7 @@
 - name: e2e_mandatory_evidence_must_be_posted_not_just_recorded
   scenario: "recorded E2E evidence is not enough — the record-e2e-run attestation carries the POSTED evidence comment URL"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -52,7 +52,7 @@
 - name: e2e_mandatory_bypass_only_via_user_approval
   scenario: "the mandatory-E2E gate is bypassed ONLY by the user-approval command, never by the agent self-asserting a skip"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -70,7 +70,7 @@
 - name: e2e_mandatory_no_spurious_bypass_for_test_only_change
   scenario: "a non-display-impacting test-only change ships without a spurious E2E bypass — the gate does not fire, so no bypass is recorded"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Bash]
   prompt: >-

@@ -19,7 +19,7 @@
 - name: customer_mr_green_dms_mergeable_notify
   scenario: "a green colleague-facing MR the user authored → the agent DMs the user it is mergeable, ready to request review (and does NOT merge or auto-request review)"
   agent_path: skills/sweeping-prs/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   prompt: >-

@@ -14,9 +14,10 @@ from teatree.cli import app
 from teatree.cli.eval.all import AiLaneOutcome, _suite_should_fail
 from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
-from teatree.cli.eval.run_modes import RunGuards
+from teatree.cli.eval.run_modes import RunGuards, with_model
 from teatree.cli.eval.verdict import LaneResult
 from teatree.eval.coverage import CoverageReport, SkillCoverage
+from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.persistence import persist_run
@@ -969,8 +970,11 @@ class TestEvalCostRegressionGate:
     def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
         # A zero-cost baseline is a subscription/free run (no metered cost) — persist it
         # through the ledger directly, the way such a baseline really lands, rather than
-        # the metered api path (whose $0-fail guard would correctly reject it).
-        results = [evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)) for spec in specs]
+        # the metered api path (whose $0-fail guard would correctly reject it). The
+        # specs carry their RESOLVED model (the candidate run resolves per-scenario at
+        # dispatch), so the per-scenario cost-regression diff keys on the same model.
+        resolved = [with_model(spec, resolve_eval_model(spec)) for spec in specs]
+        results = [evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)) for spec in resolved]
         record = persist_run(results, model="claude-sonnet-4-6", git_sha="")
         record.mark_baseline()
 

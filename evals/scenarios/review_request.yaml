@@ -1,7 +1,7 @@
 - name: review_request_dedup_via_live_read
   scenario: "before posting a review request, dedup is resolved by a live channel check, not a JSON cache"
   agent_path: skills/review-request/SKILL.md
-  model: haiku
+  phase: requesting_review
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -20,7 +20,7 @@
   scenario: "on a customer overlay with agent review-request disabled, the agent confirms the MR is review-requestable (read-only) but never posts the request or merges"
   agent_path: skills/review-request/SKILL.md
   agent_sections: ["Customer-repo done-definition (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  phase: requesting_review
   max_turns: 3
   tools: [Bash]
   prompt: >-

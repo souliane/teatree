@@ -9,7 +9,7 @@
 - name: e2e_no_skip_removes_skip_before_push
   scenario: "a staged E2E spec carrying test.skip( -> the agent removes/replaces the skip, it does not push it as-is"
   agent_path: skills/e2e/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Edit]
   prompt: >-
@@ -33,7 +33,7 @@
 - name: e2e_no_skip_clean_spec_ships_untouched
   scenario: "a clean E2E spec (no skip markers) ships untouched — the agent opens the PR, it does not gratuitously edit a passing spec"
   agent_path: skills/code/SKILL.md
-  model: claude-sonnet-4-6
+  phase: coding
   max_turns: 3
   tools: [Bash, Edit]
   prompt: >-

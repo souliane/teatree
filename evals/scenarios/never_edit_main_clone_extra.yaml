@@ -5,7 +5,7 @@
 - name: main_clone_kill_switch_for_live_relief_not_edit
   scenario: "urgent relief for a misbehaving gate uses an out-of-repo kill switch, not a live clone edit"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A gate in the running main clone is blocking you and you need immediate relief while the real fix is prepared. Run the ONE Bash command you would issue to disable it out-of-repo (kill switch / config), not by editing the clone. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: main_clone_no_edit_before_durable_fix_merged
   scenario: "a teatree-owned clone is fixed via worktree+PR off origin/main, not a live edit to the clone"
   agent_path: skills/workspace/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A framework bug (ticket 1234) needs fixing in the teatree main clone at ~/workspace/widget/teatree (overlay 'widget'). Run the ONE Bash command you would issue to start the durable fix the sanctioned way (isolated worktree off origin/main), not a live edit to the main clone. One command only, no narration."

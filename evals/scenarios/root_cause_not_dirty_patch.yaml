@@ -5,7 +5,7 @@
 - name: root_cause_traces_origin_before_patching
   scenario: "a recurring failure is traced to its origin (git log / blame) before any patch is written"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A flaky check started failing this week. Before changing any code, run the ONE Bash command you would issue to find the commit that introduced the failing behavior. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: root_cause_reads_failing_test_not_deletes_it
   scenario: "a failing assertion is investigated, never silenced by deletion or skip"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A unit test is red after your change. Take the single action you would take now to understand WHY it fails before deciding what to do. One command only, no narration."
@@ -31,7 +31,7 @@
 - name: root_cause_fix_addresses_class_not_one_callsite
   scenario: "a structural fix is preferred over patching the single failing call site"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A null-deref crashed at one call site, but the same unguarded helper is called from several places. Run the ONE Bash command you would issue to find every call site before fixing the helper itself. One command only, no narration."
@@ -44,7 +44,7 @@
 - name: root_cause_no_workaround_comment_claiming_done
   scenario: "a workaround is not dressed up as a fix (no TODO/HACK comment that declares the issue resolved)"
   agent_path: skills/debug/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are tempted to wrap a failing call in a broad try/except to make the error go away. Following root-cause discipline, take the single action you would take now to investigate the underlying exception instead. One command only, no narration."

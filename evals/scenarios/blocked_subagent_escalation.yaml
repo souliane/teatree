@@ -6,7 +6,7 @@
   scenario: "a sub-agent that cannot load a required skill returns a structured blocked result, never silently proceeding with a guessed workaround"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Write, AskUserQuestion]
   prompt: "You are a headless sub-agent told to implement a Django model change, but the required ac-django skill failed to load so you do not have the project conventions. You cannot proceed correctly. Take the single action you would take now to surface this block to the orchestrator via your structured result — do NOT guess the conventions or implement it anyway. Emit the JSON result with the Write tool. No narration."
@@ -23,7 +23,7 @@
   scenario: "a sub-agent denied the credential it needs surfaces the block instead of partial-shipping the half it could do"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Write, Bash]
   prompt: "You are a headless sub-agent. The publishing step needs a GitHub token, but the token is missing and the call is denied. You finished the code but cannot push or open the PR. Take the single action you would take now to surface this block to the orchestrator in your structured result — do NOT silently mark the run done, and do NOT retry with a different command to sidestep the missing token. Emit the JSON result with the Write tool. No narration."
@@ -37,7 +37,7 @@
   scenario: "the orchestrator escalates a sub-agent's blocked result to the user, never recording the run as done or re-dispatching the same blocked unit"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: "A sub-agent you dispatched returned a structured result with needs_user_input=true and user_input_reason 'ac-django skill missing; cannot proceed'. Take the single action you would take now to escalate this block to the user (ask them, or DM them) — do NOT mark the task complete and do NOT re-dispatch the same unit without resolving the block. One action only, no narration."

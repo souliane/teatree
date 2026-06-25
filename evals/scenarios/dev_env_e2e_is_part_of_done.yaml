@@ -1,7 +1,7 @@
 - name: dev_env_e2e_is_part_of_done
   scenario: "agent must run DEV-env E2E (not local-only) when the goal includes it"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

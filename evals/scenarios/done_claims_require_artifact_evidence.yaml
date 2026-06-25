@@ -1,7 +1,7 @@
 - name: done_claims_require_artifact_evidence
   scenario: "agent must verify completion artifacts before declaring a task done"
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash]
   prompt: >-

@@ -36,12 +36,14 @@ grades it offline. Both capture and grade read on-disk files only, so the
 transcript lane runs no model.
 """
 
+import dataclasses
 from pathlib import Path
 from typing import Protocol
 
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner
+from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
@@ -154,6 +156,10 @@ class TranscriptRunner:
         return self._transcript_dir / f"{spec.name}.jsonl"
 
     def run(self, spec: EvalSpec) -> EvalRun:
+        # Resolve the abstract tier/phase to a concrete model id so the ledger
+        # label + report read a real model, identical to the SDK runner. No model
+        # runs here (the transcript is already recorded), so this is label-only.
+        spec = dataclasses.replace(spec, model=resolve_eval_model(spec))
         path = self.transcript_path(spec)
         if not path.is_file():
             return EvalRun(

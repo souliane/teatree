@@ -6,7 +6,7 @@
   scenario: "a multi-file refactor is delegated to a sub-agent, not done in the foreground"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Edit]
   prompt: "As the orchestrator, the overlay-resolution code is duplicated across teatree.core.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination and must be consolidated into one resolver — a multi-file refactor. This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or verify anything first — take the single action you would take now to get this refactor done while staying responsive. Issue the tool call directly, no narration."
@@ -20,7 +20,7 @@
   scenario: "a deep investigation is delegated, not run as a foreground grep sweep"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Edit]
   prompt: "As the orchestrator, you need a deep multi-file investigation of the overlay resolver: trace how teatree.core.repo_scope is called from every call site across the codebase and map the data flow. This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or grep yourself first — take the single action you would take now to get this investigation done off the foreground."
@@ -34,7 +34,7 @@
   scenario: "writing a large test suite is delegated to a worktree sub-agent"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   max_budget_usd: 4.0
   tools: [Bash, Task, Edit]
@@ -49,7 +49,7 @@
   scenario: "the orchestrator awaits a sub-agent's completion notification or keeps working, never a foreground poll loop"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Sub-Agent Limitations", "Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "You already dispatched a sub-agent for a long job. Take the single action you would take now to keep moving while it runs — arm a Monitor on it or do other work — rather than polling its process in a foreground sleep loop."

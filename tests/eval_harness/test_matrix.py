@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from teatree.eval.matrix import MatrixRow, matrix_cell, render_matrix_json, render_matrix_text
+from teatree.eval.matrix import MatrixRow, matrix_cell, render_matrix_html, render_matrix_json, render_matrix_text
 from teatree.eval.models import EvalSpec
 
 
@@ -110,3 +110,38 @@ class TestRenderMatrixJson:
         cell = payload["scenarios"][0]["results"]["opus"]
         assert cell["errored"] is True
         assert cell["passed"] is False
+
+
+class TestRenderMatrixHtml:
+    def test_self_contained_table_with_model_columns(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        rows = [_row("alpha", "m-one"), _row("beta", "m-two", passed=False)]
+        html = render_matrix_html(rows, ["m-one", "m-two"], specs)
+        assert html.startswith("<!doctype html>")
+        # Each model is a column header; each scenario a row.
+        assert "<th>m-one</th>" in html
+        assert "<th>m-two</th>" in html
+        assert "alpha" in html
+        assert "beta" in html
+
+    def test_cells_colour_coded_by_verdict(self) -> None:
+        specs = [_spec("alpha")]
+        rows = [_row("alpha", "m-one", passed=True), _row("alpha", "m-two", passed=False)]
+        html = render_matrix_html(rows, ["m-one", "m-two"], specs)
+        assert "class='pass'" in html
+        assert "class='fail'" in html
+
+    def test_errored_and_skip_cells(self) -> None:
+        specs = [_spec("alpha")]
+        rows = [_row("alpha", "m-one", errored=True), _row("alpha", "m-two", skipped=True)]
+        html = render_matrix_html(rows, ["m-one", "m-two"], specs)
+        assert "class='err'>ERR" in html
+        assert "class='skip'>skip" in html
+
+    def test_html_escapes_scenario_and_model_names(self) -> None:
+        specs = [_spec("a<script>")]
+        rows = [_row("a<script>", "m&1")]
+        html = render_matrix_html(rows, ["m&1"], specs)
+        assert "<script>" not in html.replace("&lt;script&gt;", "")
+        assert "&lt;script&gt;" in html
+        assert "m&amp;1" in html

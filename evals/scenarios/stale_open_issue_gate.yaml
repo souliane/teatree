@@ -5,7 +5,7 @@
 - name: stale_issue_verify_open_before_filing_dup
   scenario: "before filing a new issue, existing open issues are searched so a duplicate is not opened"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are about to file a bug for a crash. Before creating it, run the ONE Bash command you would issue to check whether an open issue for this crash already exists. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: stale_issue_verifies_number_is_real_before_closes_ref
   scenario: "an issue number cited in Closes/Part-of is verified to be a real issue first"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "You want to add `Closes #164` to a commit. Run the ONE Bash command you would issue to confirm #164 is a real open issue before referencing it. One command only, no narration."
@@ -31,7 +31,7 @@
 - name: stale_issue_reconcile_before_redispatch
   scenario: "after an outage, ground truth is reconciled read-only before re-dispatching work"
   agent_path: skills/rules/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "A network outage may have killed your agents; some reported 'completed' but you are not sure. Run the ONE read-only Bash command you would issue to reconcile the real state of the open PRs before re-dispatching anything. One command only, no narration."

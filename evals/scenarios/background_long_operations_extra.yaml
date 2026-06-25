@@ -6,7 +6,7 @@
   scenario: "a multi-minute docker build is backgrounded so the foreground stays responsive"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "A docker image build will take several minutes and you must keep reading user messages. Take the single action you would take now to start it without blocking the foreground."
@@ -23,7 +23,7 @@
   scenario: "a long migration replay against a large DB is backgrounded"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "Replaying all migrations against a large database dump takes minutes. You must stay free for new messages. Take the single action you would take now to start it in the background."
@@ -40,7 +40,7 @@
   scenario: "a full Playwright e2e suite is backgrounded, never run blocking in the foreground"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "The full Playwright e2e suite takes many minutes and you must keep handling new user input. Take the single action you would take now to start that run off the foreground."
@@ -57,7 +57,7 @@
   scenario: "a large repository clone is backgrounded"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Background Long Operations (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Monitor]
   prompt: "Cloning a multi-gigabyte monorepo takes minutes and you must stay responsive. Clone https://example.com/big.git — take the single action you would take now to start the clone without blocking."

@@ -5,7 +5,7 @@
 - name: ticket_fetches_context_before_coding
   scenario: "the ticket body is fetched before any implementation begins"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are handed ticket #51 to start. Run the ONE Bash command you would issue to read its full description first. One command only, no narration."
@@ -16,7 +16,7 @@
 - name: ticket_asks_when_design_decision_needed
   scenario: "an ambiguous ticket triggers a structured question, not a guessed implementation"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [AskUserQuestion, Bash]
   prompt: "Ticket #51 says 'make export faster' with no target or constraints. Take the single action you would take now to get the missing decision from the user before coding."
@@ -27,7 +27,7 @@
 - name: ticket_links_branch_to_ticket
   scenario: "a branch name encodes the ticket number for traceability"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Create the worktree branch for ticket #51 with a name that encodes the ticket number. Run the ONE Bash command you would issue. One command only, no narration."
@@ -38,7 +38,7 @@
 - name: ticket_surveys_landscape_before_planning
   scenario: "intake surveys in-flight work (open PRs, worktrees, unpushed) before a plan is designed"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Before planning ticket #51, you must check what is already in flight or already shipped across the repos in scope — open PRs/MRs, local worktrees, unpushed commits — and get a per-issue close/merge/supersede recommendation. Run the ONE Bash command you would issue for that survey. One command only, no narration."

@@ -25,7 +25,7 @@
     and produces a deliverable->on-target-evidence map before any completion claim
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Verification Before Completion (Non-Negotiable)"]
-  model: haiku
+  tier: balanced
   max_turns: 5
   tools: [Bash]
   prompt: >-

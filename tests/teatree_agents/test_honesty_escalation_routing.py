@@ -6,11 +6,13 @@ honesty_model`` (today Fable) when an active
 the session. The must-fire / must-not-fire twin defeats vacuity:
 
 - must-fire — active row + ``reviewing`` → ``"fable"``.
-- negative control — NO row + ``reviewing`` → the exact baseline ``"sonnet"``
-    (regressing ``DEFAULT_PHASE_MODELS["reviewing"]`` to fable fails THIS test).
-- situational scope — a non-verification phase (``coding``) never escalates.
-- auto-clear — an expired row resolves to ``"sonnet"`` (no cron; the clock is
-    the only mock).
+- negative control — NO row + ``reviewing`` → the exact baseline (the frontier
+    tier model — regressing ``DEFAULT_PHASE_MODELS["reviewing"]`` to fable fails
+    THIS test).
+- situational scope — a non-verification phase (``coding``) never escalates (it
+    stays the frontier tier model, not fable).
+- auto-clear — an expired row resolves back to the baseline tier model (no cron;
+    the clock is the only mock).
 - kill-switch — ``fable_enabled=false`` + a row → ``"opus"`` (NOT "≠ fable":
     proving the escalated Fable passed THROUGH ``_downgrade_fable``).
 - #4 backstop — a rubric-gate refusal writes the ``shipped_incomplete`` row.
@@ -24,7 +26,7 @@ from pathlib import Path
 import pytest
 from django.utils import timezone
 
-from teatree.agents.model_tiering import resolve_spawn_model
+from teatree.agents.model_tiering import TIER_MODELS, resolve_spawn_model
 from teatree.core.models.honesty_escalation import _DEFAULT_TTL, HonestyEscalation
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -54,27 +56,28 @@ class TestEscalationRouting:
         resolved = resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg)
         assert resolved == "fable"
 
-    def test_no_escalation_stays_sonnet(self, tmp_path: Path) -> None:
+    def test_no_escalation_stays_baseline(self, tmp_path: Path) -> None:
         # NEGATIVE CONTROL: the same call with NO row resolves to the exact
-        # DEFAULT_PHASE_MODELS["reviewing"] baseline. Regressing that default to
-        # "fable" (making the must-fire test pass vacuously) fails THIS test.
+        # DEFAULT_PHASE_MODELS["reviewing"] baseline (the frontier tier model).
+        # Regressing that default to "fable" (making the must-fire test pass
+        # vacuously) fails THIS test.
         cfg = _write_toml(tmp_path, "")
         resolved = resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg)
-        assert resolved == "sonnet"
+        assert resolved == TIER_MODELS["frontier"]
 
     def test_no_session_id_never_escalates(self, tmp_path: Path) -> None:
         # A spawn with no session id (both call-site ids absent) can never match
         # a row → byte-identical to today's baseline.
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
         cfg = _write_toml(tmp_path, "")
-        assert resolve_spawn_model("reviewing", skills=[], session_id=None, config_path=cfg) == "sonnet"
+        assert resolve_spawn_model("reviewing", skills=[], session_id=None, config_path=cfg) == TIER_MODELS["frontier"]
 
     def test_non_verification_phase_never_escalates(self, tmp_path: Path) -> None:
-        # An active row does NOT escalate a non-verification phase (coding inherits
-        # the user default → None). Situational, scoped to verification phases.
+        # An active row does NOT escalate a non-verification phase (coding stays
+        # the frontier tier model, NOT fable). Situational, scoped to verification.
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
         cfg = _write_toml(tmp_path, "")
-        assert resolve_spawn_model("coding", skills=[], session_id=SESSION, config_path=cfg) is None
+        assert resolve_spawn_model("coding", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
 
     def test_every_verification_phase_escalates(self, tmp_path: Path) -> None:
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
@@ -89,13 +92,17 @@ class TestEscalationRouting:
         cfg = _write_toml(tmp_path, "")
         future = timezone.now() + _DEFAULT_TTL + timedelta(minutes=1)
         monkeypatch.setattr(timezone, "now", lambda: future)
-        assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "sonnet"
+        assert (
+            resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
+        )
 
     def test_cleared_escalation_no_longer_routes(self, tmp_path: Path) -> None:
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
         HonestyEscalation.mark_cleared(SESSION)
         cfg = _write_toml(tmp_path, "")
-        assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "sonnet"
+        assert (
+            resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
+        )
 
     def test_kill_switch_reverts_escalation_to_opus(self, tmp_path: Path) -> None:
         # fable_enabled=false + an active row: the escalation still RAISES to
@@ -107,18 +114,23 @@ class TestEscalationRouting:
         assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "opus"
 
     def test_honesty_model_config_overrides_target(self, tmp_path: Path) -> None:
-        # honesty_model is config-driven: pointing it at opus routes the escalated
-        # verification spawn to opus (the "most-honest model" is a one-line edit).
+        # honesty_model is config-driven: pointing it at the frontier tier routes
+        # the escalated verification spawn to that tier's model (the "most-honest
+        # model" is a one-line edit).
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
-        cfg = _write_toml(tmp_path, '[agent]\nhonesty_model = "opus"\n')
-        assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "opus"
+        cfg = _write_toml(tmp_path, '[agent]\nhonesty_model = "frontier"\n')
+        assert (
+            resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
+        )
 
     def test_escalation_only_raises_never_lowers(self, tmp_path: Path) -> None:
         # A phase already pinned ABOVE the honesty model is not lowered: most-
-        # capable-wins. honesty_model=sonnet must not downgrade an opus phase.
+        # capable-wins. honesty_model=cheap must not downgrade a frontier phase.
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
-        cfg = _write_toml(tmp_path, '[agent]\nhonesty_model = "sonnet"\nphase_models.reviewing = "opus"\n')
-        assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "opus"
+        cfg = _write_toml(tmp_path, '[agent]\nhonesty_model = "cheap"\nphase_models.reviewing = "frontier"\n')
+        assert (
+            resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
+        )
 
 
 class TestHonestyEscalationActiveFailSafe:
@@ -133,7 +145,9 @@ class TestHonestyEscalationActiveFailSafe:
         HonestyEscalation.record(HonestyEscalation.Reason.USER_ASKED, session_id=SESSION)
         cfg = _write_toml(tmp_path, "")
         assert mt_mod._honesty_escalation_active(SESSION, None) is False
-        assert resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == "sonnet"
+        assert (
+            resolve_spawn_model("reviewing", skills=[], session_id=SESSION, config_path=cfg) == TIER_MODELS["frontier"]
+        )
 
 
 class TestHonestyEscalationModel:

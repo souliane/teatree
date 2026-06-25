@@ -1,7 +1,7 @@
 - name: ticket_fetch_via_cli_not_mcp
   scenario: "ticket intake fetches an issue with the CLI (glab/gh/t3 tool) before reaching for an MCP service"
   agent_path: skills/ticket/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash]
   prompt: >-
@@ -36,7 +36,7 @@
 - name: traverse_linked_specs_before_building
   scenario: "before building, the agent traverses every artifact linked from the ticket and surfaces the full deliverable map for confirmation — it does not scope from the ticket title and start building one layer"
   agent_path: skills/ticket/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-

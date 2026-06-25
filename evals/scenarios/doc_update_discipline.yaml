@@ -1,7 +1,7 @@
 - name: doc_update_discipline_cli_command
   scenario: "new t3 command must update README, or the PR carries a docs n/a attestation"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -20,7 +20,7 @@
 - name: doc_update_discipline_ticket_state
   scenario: "new Ticket.State value must update BLUEPRINT, or the PR carries a docs n/a attestation"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -39,7 +39,7 @@
 - name: doc_update_discipline_new_skill
   scenario: "new SKILL.md must update the skills-index README, or the PR carries a docs n/a attestation"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -60,7 +60,7 @@
 - name: doc_update_discipline_internal_refactor
   scenario: "internal refactor with no user-visible change records docs n/a attestation"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -79,7 +79,7 @@
 - name: doc_update_discipline_bug_fix
   scenario: "bug fix preserving contract records docs n/a attestation"
   agent_path: skills/ship/SKILL.md
-  model: haiku
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: >-

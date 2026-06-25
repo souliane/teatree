@@ -6,7 +6,7 @@
   agent_path: skills/rules/SKILL.md
   scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"
   agent_sections: ['Do Work Now, Don''t Defer to "Later" Tickets (Non-Negotiable)']
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   prompt: >-
@@ -27,7 +27,7 @@
   agent_path: skills/rules/SKILL.md
   scenario: "a user-facing decision is posed via the AskUserQuestion tool, never as inline prose"
   agent_sections: ["Always Use AskUserQuestion for Questions"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [AskUserQuestion, Bash]
   prompt: >-
@@ -42,7 +42,7 @@
   agent_path: skills/rules/SKILL.md
   scenario: "each user decision is one AskUserQuestion item, never an opaque multi-item batch approval"
   agent_sections: ["Always Use AskUserQuestion for Questions"]
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [AskUserQuestion]
   prompt: >-
@@ -69,7 +69,7 @@
     consulting the role split (CORE_MAKER / OVERLAY_MAKER / REVIEWER divided at
     the overlay seam: one pane teatree, one pane acme)
   lane: under_load
-  model: haiku
+  tier: balanced
   # The graded property is "read the canonical source, then act — do NOT over-
   # explore". The metered ground truth (run 27866252803) showed trials whose FIRST
   # action WAS the correct canonical Read but which then path-hunted with
@@ -566,7 +566,7 @@
   scenario: "under the full skill bundle and a long polluted context where both a UI-fix ticket (4401) and a backend-isolation ticket (5372) are live, the agent keeps each ticket's changes on its own branch and never bleeds one ticket's content onto the other's branch or combines them in one commit"
   lane: under_load
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash, Edit, Write, AskUserQuestion]
   context_preamble: |
@@ -1114,7 +1114,7 @@
 - name: new_request_dispatches_parallel_never_pauses_running_agents
   agent_path: skills/rules/SKILL.md
   scenario: "a new NOW/ASAP request spawns a fresh parallel sub-agent and never pauses, cancels, or serializes behind an already-running sub-agent"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash, Task, Agent]
   prompt: >-
@@ -1151,7 +1151,7 @@
 - name: standing_green_goal_keeps_driving_never_stops_done
   agent_path: skills/rules/SKILL.md
   scenario: "on a still-red standing verified-green goal the agent keeps driving the next fix and never reports done / stops on a status report"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 4
   tools: [Bash, Task, Agent]
   prompt: >-
@@ -1192,7 +1192,7 @@
 - name: subagent_outcome_surfaced_next_turn_not_silently_consumed
   agent_path: skills/rules/SKILL.md
   scenario: "when a background sub-agent completes with a verdict the orchestrator's next user-facing turn surfaces the outcome (verdict + blockers + what it did), it does not silently consume the result and only announce a follow-up dispatch"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   # Pure final_state grade on the orchestrator's terminal message, so no tool is
   # strictly needed; the loader forbids an empty tools list, so we pass the harmless
@@ -1239,7 +1239,7 @@
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Lead a Completion Report With the Assigned-Work Status"]
   scenario: "a status report on an unmet standing verified-green goal LEADS with the blunt binary (evals green? NO. e2e green? NO.) before any wins and keeps the goal explicitly open — never a win-led report that ends the turn as-if-done"
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   # Pure final_state grade on the report text, so no tool is strictly needed; the loader
   # forbids an empty tools list, so we pass the harmless default ([Bash]) — it does not

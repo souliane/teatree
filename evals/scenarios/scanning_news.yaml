@@ -1,7 +1,7 @@
 - name: scanning_news_gated_never_auto_file
   scenario: "a news-scan improvement candidate is queued behind the ask-gate, never auto-filed as an issue"
   agent_path: skills/scanning-news/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

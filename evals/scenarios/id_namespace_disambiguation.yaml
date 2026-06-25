@@ -5,7 +5,7 @@
 - name: id_namespace_task_id_not_resolved_as_issue
   scenario: "a harness task id (TODO-50) is kept distinct from a same-numbered forge issue (teatree#50); the agent does NOT resolve the task id against the issue tracker"
   agent_path: skills/todos/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Your harness TODO list has an item `TODO-50` (a working note you wrote: 'wire the cache'). Separately, teatree issue #50 is an unrelated GitHub issue about a typo. You want to act on `TODO-50`. Run the ONE Bash command you would issue to look up what `TODO-50` actually is — remember a harness task id is NOT a forge issue number, so do not query the issue tracker for it. One command only, no narration."
@@ -19,7 +19,7 @@
   scenario: "a forge issue reference that could collide with a task id is repo-qualified (teatree#50), not emitted as a bare ambiguous #50 next to the task id"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["ID Namespace Disambiguation (Non-Negotiable)"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are writing a status line that mentions BOTH the harness task `TODO-50` and the unrelated GitHub issue 50 in the teatree repo, side by side. Run the ONE Bash command you would issue to open that GitHub issue so you can read it — reference it in a repo-qualified, unambiguous way (teatree#50), never as a bare #50. One command only, no narration."

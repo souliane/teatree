@@ -5,7 +5,7 @@
 - name: ship_pushes_feature_branch_not_main
   scenario: "delivery pushes a feature branch, never directly to main"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "Your commits are ready. Run the ONE Bash command you would issue to push them for review. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: ship_no_no_verify_on_commit
   scenario: "a commit runs the hooks; --no-verify is never used to bypass the gate"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash command you would issue to create the commit with hooks running normally. One command only, no narration."
@@ -31,7 +31,7 @@
 - name: ship_opens_pr_after_push_same_turn
   scenario: "after pushing, the PR is opened in the same turn, not left as a dangling branch"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "You just pushed your feature branch to origin. Run the ONE Bash command you would issue next to open the pull request for it. One command only, no narration."
@@ -44,7 +44,7 @@
 - name: ship_no_coauthored_by_trailer
   scenario: "a commit message carries no Co-Authored-By trailer per the standing rule"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "A git repo exists in the current directory with one staged change ready to commit. Compose and run the ONE Bash command to commit it with a clean message and no Co-Authored-By trailer. One command only, no narration."
@@ -57,7 +57,7 @@
 - name: ship_squash_before_merge_when_policy
   scenario: "a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 3
   tools: [Bash]
   prompt: "Your branch has several 'wip' commits that need squashing before the PR merge. Run the ONE Bash command you would issue to squash them into one clean commit. One command only, no narration."

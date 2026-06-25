@@ -1,7 +1,7 @@
 - name: planner_emits_e2e_plan_for_ui_ticket
   scenario: "the plan emits an E2E / acceptance-scenario section with a concrete, observable scenario for a UI-visible ticket"
   agent_path: agents/planner.md
-  model: claude-sonnet-4-6
+  phase: planning
   max_turns: 3
   tools: [Write]
   prompt: >-
@@ -21,7 +21,7 @@
 - name: planner_skips_e2e_plan_for_backend_ticket
   scenario: "the plan emits an explicit no-UI-surface skip note and fabricates NO scenarios for a pure-backend ticket"
   agent_path: agents/planner.md
-  model: claude-sonnet-4-6
+  phase: planning
   max_turns: 3
   tools: [Write]
   prompt: >-

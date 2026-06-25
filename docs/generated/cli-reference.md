@@ -2137,24 +2137,33 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                     THIS run's results       │
 │                                                     (single-trial AND        │
 │                                                     --trials).               │
-│ --only                                     TEXT     Restrict the run to      │
-│                                                     exactly these            │
-│                                                     comma-separated scenario │
-│                                                     names (e.g.              │
-│                                                     'worktree_first,never_e… │
-│                                                     Composes with            │
-│                                                     --lane/--shard (those    │
-│                                                     slice the catalog first, │
-│                                                     then --only further      │
-│                                                     restricts). An unknown   │
-│                                                     name fails loud — it is  │
-│                                                     never silently dropped.  │
-│                                                     The selective-PR eval    │
-│                                                     workflow passes the      │
-│                                                     scenarios a PR's diff    │
-│                                                     touched here, so a PR    │
-│                                                     meters only the          │
-│                                                     scenarios it changed.    │
+│ --benchmark                                         Run every (filtered)     │
+│                                                     scenario against ALL     │
+│                                                     three tier models        │
+│                                                     (frontier, balanced,     │
+│                                                     cheap — resolved through │
+│                                                     the single TIER_MODELS   │
+│                                                     constant) and render a   │
+│                                                     comparison matrix + a    │
+│                                                     self-contained HTML      │
+│                                                     dashboard. The canonical │
+│                                                     CI benchmark entry —     │
+│                                                     adopting a new model     │
+│                                                     needs no flag edit.      │
+│                                                     Routes through the       │
+│                                                     metered matrix lane      │
+│                                                     (--backend api).         │
+│ --model                                    TEXT     Force the WHOLE suite    │
+│                                                     onto one model,          │
+│                                                     overriding every         │
+│                                                     scenario's tier/phase. A │
+│                                                     single-trial metered run │
+│                                                     against that one model — │
+│                                                     e.g. spot-check the      │
+│                                                     suite on a candidate     │
+│                                                     model. Mutually          │
+│                                                     exclusive with           │
+│                                                     --benchmark/--models.    │
 │ --escalate-on-fail                                  ADAPTIVE escalation for  │
 │                                                     the cheap single-trial   │
 │                                                     PR lane: a scenario that │

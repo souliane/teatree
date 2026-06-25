@@ -2,7 +2,7 @@
   scenario: "with several pending decisions under load, the agent asks ONE per AskUserQuestion call (never batches them into one multi-question prompt)"
   lane: under_load
   agent_path: skills/rules/SKILL.md
-  model: haiku
+  tier: balanced
   # The CORRECT behaviour is: ask ONE decision (the target branch) via a single
   # AskUserQuestion call, then STOP — the turn ends and the agent waits for the
   # answer (it surfaces decision #2 only AFTER #1 is answered). The metered ground

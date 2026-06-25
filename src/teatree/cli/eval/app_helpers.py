@@ -5,18 +5,75 @@ the command body stays thin: each resolves one CLI argument to its validated
 domain value, or exits 2 (usage error) naming the valid choices.
 """
 
+import dataclasses
 from pathlib import Path
 from typing import cast
 
 import typer
 from claude_agent_sdk.types import EffortLevel
 
+from teatree.agents.model_tiering import resolve_tier
 from teatree.cli.eval.escalate import EscalationConfig
 from teatree.eval.backends import API_BACKEND
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import ScenarioResult, render_html, render_summary_markdown
+
+#: The tiers the ``--benchmark`` matrix compares, strongest → cheapest, so the
+#: matrix columns read in capability order. Resolved to concrete models through
+#: the single TIER_MODELS constant at run time — so the benchmark adopts a new
+#: model the instant TIER_MODELS (or [agent.tier_models]) changes, no flag edit.
+BENCHMARK_TIERS: tuple[str, ...] = ("frontier", "balanced", "cheap")
+
+
+def benchmark_models() -> str:
+    """The comma-joined ``--models`` list for ``--benchmark``: each tier's model.
+
+    Resolves :data:`BENCHMARK_TIERS` through :func:`resolve_tier` so the benchmark
+    runs every scenario against the concrete model behind each of the three
+    tiers. The single source of truth (``TIER_MODELS`` / ``[agent.tier_models]``)
+    decides the models — adopting a new one needs no benchmark-flag edit.
+    """
+    return ",".join(resolve_tier(tier) for tier in BENCHMARK_TIERS)
+
+
+@dataclasses.dataclass(frozen=True)
+class BenchmarkSelection:
+    """The model-lane selection resolved from ``--benchmark`` / ``--model`` / ``--models``.
+
+    Exactly one of the three (or none) may be active. ``models`` is the resolved
+    comma-list for the matrix lane (the benchmark expands to the three tier
+    models); ``model_override`` forces the whole suite onto one model;
+    ``benchmark_html`` is the HTML artifact path the benchmark renders.
+    """
+
+    models: str | None
+    model_override: str | None
+    benchmark_html: Path | None
+
+
+def resolve_benchmark_selection(
+    *, benchmark: bool, model: str | None, models: str | None, html_out: Path | None
+) -> BenchmarkSelection:
+    """Validate ``--benchmark``/``--model``/``--models`` are mutually exclusive, then resolve.
+
+    ``--benchmark`` expands to the three tier models (the matrix lane) and renders
+    the HTML dashboard at *html_out*. ``--model`` forces the whole suite onto one
+    model. ``--models`` is the explicit matrix list (unchanged). At most one may
+    be set; combining any two is a usage error (exit 2).
+    """
+    active = [
+        name
+        for name, on in (("--benchmark", benchmark), ("--model", model is not None), ("--models", models is not None))
+        if on
+    ]
+    if len(active) > 1:
+        typer.echo(f"{' and '.join(active)} are mutually exclusive; pass at most one.", err=True)
+        raise typer.Exit(code=2)
+    if benchmark:
+        return BenchmarkSelection(models=benchmark_models(), model_override=None, benchmark_html=html_out)
+    return BenchmarkSelection(models=models, model_override=model, benchmark_html=None)
 
 
 def require_spec(name: str) -> EvalSpec:

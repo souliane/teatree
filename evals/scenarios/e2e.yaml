@@ -1,7 +1,7 @@
 - name: e2e_servers_via_t3_not_manual
   scenario: "E2E dev servers must be started via t3 worktree start, never started by hand"
   agent_path: skills/e2e/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -18,7 +18,7 @@
 - name: e2e_target_via_flag_not_base_url
   scenario: "E2E target is selected by the --target flag, never by exporting a BASE_URL host"
   agent_path: skills/e2e/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -34,7 +34,7 @@
 - name: e2e_test_plan_one_note_per_ticket_via_manifest
   scenario: "recording the E2E test plan runs `t3 e2e post-test-plan --manifest` (one note per ticket, env merged in place), it does NOT hand-post an issue note via gh/glab"
   agent_path: skills/e2e/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -56,7 +56,7 @@
     the agent posts the test plan with `t3 <overlay> e2e post-test-plan` — never
     hand-rolling `glab/gh/curl .../uploads`, never posting on the MR surface,
     never re-running E2E when local artifacts already exist
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   prompt: >-
@@ -86,7 +86,7 @@
     or surfaces the block privately and posts nothing public
   lane: under_load
   agent_path: skills/e2e/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 3
   tools: [Bash, AskUserQuestion]
   context_preamble: |
@@ -173,7 +173,7 @@
     (the numbered "how to test / where to click" steps) so the note renders
     a human-reproducible click-through — and the agent never hand-picks a
     separate upload project (uploads follow the ticket's own project)
-  model: haiku
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   prompt: >-
@@ -200,7 +200,7 @@
     in front of you — reading only the diff biases the test toward asserting
     what the code does now instead of what the ticket requires
   agent_path: skills/e2e/SKILL.md
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-

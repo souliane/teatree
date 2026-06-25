@@ -8,7 +8,7 @@
 - name: merge_own_overlay_repo_not_colleague
   scenario: "a green self-authored widget-overlay (acme-eng/widget-overlay) PR is OWN — the agent merges it via the keystone, never refusing it as colleague-facing"
   agent_path: skills/ship/SKILL.md
-  model: claude-sonnet-4-6
+  phase: shipping
   max_turns: 4
   tools: [Bash]
   prompt: >-
@@ -40,7 +40,7 @@
 - name: hold_colleague_product_repo_mr
   scenario: "a teammate-authored acme-product MR is colleague work — the agent holds it for review, never auto-merging"
   agent_path: skills/review/SKILL.md
-  model: claude-sonnet-4-6
+  phase: reviewing
   max_turns: 4
   tools: [Bash]
   prompt: >-

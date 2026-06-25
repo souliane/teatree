@@ -1,7 +1,7 @@
 - name: contribute_pushes_branch_never_main
   scenario: "contribution pushes go to a feature branch and open a PR, never directly to main"
   agent_path: skills/contribute/SKILL.md
-  model: haiku
+  tier: balanced
   max_turns: 6
   tools: [Bash]
   prompt: >-

@@ -24,6 +24,7 @@ from teatree.agents.headless import (
     get_result_json_schema,
     run_headless,
 )
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
@@ -849,19 +850,33 @@ class TestBuildOptions(TestCase):
     def _options_for_phase(self, phase: str) -> Any:
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
-        return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
+        absent = Path(tempfile.mkdtemp()) / "nope.toml"
+        with (
+            patch("teatree.agents.model_tiering.CONFIG_PATH", absent),
+            patch("teatree.config_agent.CONFIG_PATH", absent),
+        ):
+            return headless_mod._build_options(task, "ctx", phase=phase, skills=[])
 
-    def test_retrospecting_runs_on_haiku(self) -> None:
+    def test_retrospecting_runs_on_frontier(self) -> None:
         options = self._options_for_phase("retrospecting")
-        assert options.model == "haiku"
+        assert options.model == TIER_MODELS["frontier"]
 
-    def test_reviewing_runs_on_sonnet(self) -> None:
+    def test_reviewing_runs_on_frontier(self) -> None:
         options = self._options_for_phase("reviewing")
-        assert options.model == "sonnet"
+        assert options.model == TIER_MODELS["frontier"]
 
-    def test_coding_inherits_user_default_model(self) -> None:
+    def test_coding_runs_on_frontier(self) -> None:
+        # The redesign maps coding to the frontier tier (was inherit/None before).
         options = self._options_for_phase("coding")
-        assert options.model is None
+        assert options.model == TIER_MODELS["frontier"]
+
+    def test_requesting_review_runs_on_cheap(self) -> None:
+        options = self._options_for_phase("requesting_review")
+        assert options.model == TIER_MODELS["cheap"]
+
+    def test_testing_runs_on_balanced(self) -> None:
+        options = self._options_for_phase("testing")
+        assert options.model == TIER_MODELS["balanced"]
 
     def test_permission_mode_bypasses_prompts(self) -> None:
         options = self._options_for_phase("coding")
@@ -915,12 +930,12 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
 
     def test_sentinel_skill_floor_keeps_phase_model(self) -> None:
         options = self._options(
-            "reviewing",
+            "requesting_review",
             skills=["code-review"],
             config_body='[agent.skill_models]\ncode-review = "inherit"\n',
         )
-        # reviewing's sonnet phase default stands; the inherit floor is a no-op.
-        assert options.model == "sonnet"
+        # requesting_review's cheap phase default stands; the inherit floor is a no-op.
+        assert options.model == TIER_MODELS["cheap"]
 
     def test_never_sets_effort(self) -> None:
         # Effort is session-wide only — a headless SDK run must NEVER carry an

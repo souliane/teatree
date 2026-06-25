@@ -37,7 +37,8 @@ class RunDockerArgs:
     parallel: int
     transcript_html: Path | None = None
     summary_md: Path | None = None
-    only: str | None = None
+    benchmark: bool = False
+    model: str | None = None
     escalate_on_fail: bool = False
     escalate_trials: int = 3
 
@@ -79,7 +80,8 @@ class RunDockerArgs:
             [self.name] if self.name is not None else [],
             ["--lane", self.lane] if self.lane is not None else [],
             ["--shard", self.shard] if self.shard is not None else [],
-            ["--only", self.only] if self.only is not None else [],
+            ["--benchmark"] if self.benchmark else [],
+            ["--model", self.model] if self.model is not None else [],
             ["--format", self.output_format] if self.output_format != "text" else [],
             ["--max-turns", str(self.max_turns)] if self.max_turns is not None else [],
         ]

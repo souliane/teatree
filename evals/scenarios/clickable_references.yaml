@@ -2,7 +2,7 @@
   scenario: "a reference to an MR in the agent's message is a clickable link, not a bare id"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Clickable References"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   # The grade is a pure final_state assertion on the message text, so no tool is
   # actually needed. The loader forbids an empty `tools` list, so we pass the
@@ -25,7 +25,7 @@
   scenario: "a reference to a Slack message in the agent's message is a clickable permalink, not a bare ts"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Clickable References"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   # final_state asserts the message text — no tool is exercised; the loader
   # forbids an empty `tools` list, so the harmless default ([Bash]) is passed.
@@ -47,7 +47,7 @@
   scenario: "a reference to a GitHub issue in the agent's message is a clickable link, not a bare #N"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Clickable References"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
@@ -64,7 +64,7 @@
   scenario: "a reference to a GitHub PR in the agent's message is a clickable link, not a bare #N"
   agent_path: skills/rules/SKILL.md
   agent_sections: ["Clickable References"]
-  model: claude-sonnet-4-6
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
