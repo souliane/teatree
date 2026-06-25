@@ -360,6 +360,105 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
             assert wt.branch == "77-feature"
 
 
+class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
+    """A repo ADDED to an in-flight ticket co-locates with the existing worktrees.
+
+    ``workspace ticket --repos`` over a ticket that already has materialised
+    worktrees merges the new repo into ``ticket.repos`` for the next provision.
+    The added repo must land as a SIBLING of the existing worktrees, even when
+    ``extra['branch']`` has drifted from the original ticket-dir name — the
+    ``auto:<branch>`` ticket case, where a later ``scope()`` reset
+    ``extra['branch']`` to a ``<pk>-ticket`` pk-default. The dir is taken from
+    the existing worktrees' shared parent, not blindly from ``extra['branch']``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _patch_workspace_dir(self) -> Any:
+        return patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace)
+
+    def _make_clone(self, repo: str) -> None:
+        repo_dir = self.workspace / repo
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+    def _run_capturing_dests(self, ticket: Ticket) -> tuple[Any, list[str]]:
+        created_paths: list[str] = []
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, branch, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            created_paths.append(path)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        return result, created_paths
+
+    def test_added_repo_co_locates_with_existing_worktree_despite_drifted_branch(self) -> None:
+        # The exact #8648 footgun: the backend worktree lives in the
+        # original branch-named dir, but a later scope() drifted
+        # ``extra['branch']`` to a pk-default. Adding the FE must NOT split
+        # it into ``<workspace>/<pk>-ticket/``.
+        self._make_clone("backend-repo")
+        self._make_clone("frontend-repo")
+        original_dir = self.workspace / "8648-store-signed-docs"
+        backend_wt = original_dir / "backend-repo"
+        backend_wt.mkdir(parents=True)
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="auto:8648-store-signed-docs",
+            repos=["backend-repo", "frontend-repo"],
+            extra={"branch": "23-ticket", "description": "x"},  # drifted pk-default
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend-repo",
+            branch="8648-store-signed-docs",
+            extra={"worktree_path": str(backend_wt)},
+        )
+
+        result, created_paths = self._run_capturing_dests(ticket)
+
+        assert result.ok is True, result.detail
+        # The FE co-located as a SIBLING of the existing backend worktree …
+        expected_fe = original_dir / "frontend-repo"
+        assert str(expected_fe) in created_paths
+        # … and was NOT split into the drifted pk-default dir.
+        split_fe = self.workspace / "23-ticket" / "frontend-repo"
+        assert str(split_fe) not in created_paths
+        assert not (self.workspace / "23-ticket").exists()
+
+        fe_wt = Worktree.objects.get(ticket=ticket, repo_path="frontend-repo")
+        assert (fe_wt.extra or {}).get("worktree_path") == str(expected_fe)
+
+    def test_first_provision_with_no_existing_worktree_uses_branch_dir(self) -> None:
+        # No materialised worktree yet → the normal ``workspace / branch``
+        # path is unchanged (the helper returns None, default in force).
+        self._make_clone("repo-a")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/900",
+            repos=["repo-a"],
+            extra={"branch": "900-feature", "description": "x"},
+        )
+
+        result, created_paths = self._run_capturing_dests(ticket)
+
+        assert result.ok is True, result.detail
+        assert str(self.workspace / "900-feature" / "repo-a") in created_paths
+
+
 class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
     """#762 source-fix: public souliane/* worktrees get a local noreply identity.
 
