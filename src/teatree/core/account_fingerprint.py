@@ -8,9 +8,7 @@ its hot path without importing Django or building backends.
 
 The full detect-invalidate-reprobe recovery cycle (which needs Django and the
 network) lives in :mod:`teatree.core.account_switch`, which re-exports these
-readers; :mod:`teatree.loop.watchdog` builds its ``AccountState`` from
-:func:`current_account_identity`. No other module parses ``~/.claude.json``'s
-account identity.
+readers. No other module parses ``~/.claude.json``'s account identity.
 """
 
 import json
