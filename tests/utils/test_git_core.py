@@ -315,3 +315,80 @@ def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyP
     assert git.worktree_add("/tmp/r", "/tmp/wt2", "feat-1", create_branch=False) is True
     assert "-b" not in calls[-1]
     assert "feat-1" in calls[-1]
+
+
+def _orphan_ref_worktree(tmp_path: Path) -> tuple[Path, str]:
+    """Build a worktree whose checked-out branch ref is deleted; return (wt_path, head_sha).
+
+    Mirrors the production orphan state: ``refs/heads/feat-x`` is removed while
+    the worktree dir survives, so the worktree HEAD is a dangling symref and the
+    tip SHA lives only in the per-worktree reflog.
+    """
+    main = tmp_path / "main"
+    main.mkdir()
+    _run_git("init", "-q", "-b", "main", str(main), cwd=tmp_path)
+    _run_git("config", "user.email", "t@t", cwd=main)
+    _run_git("config", "user.name", "t", cwd=main)
+    (main / "base.txt").write_text("base\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=main)
+    _run_git("commit", "-q", "-m", "initial", cwd=main)
+    wt = tmp_path / "wt-featx"
+    _run_git("worktree", "add", "-q", "-b", "feat-x", str(wt), cwd=main)
+    _run_git("config", "user.email", "t@t", cwd=wt)
+    _run_git("config", "user.name", "t", cwd=wt)
+    (wt / "f.txt").write_text("work\n", encoding="utf-8")
+    _run_git("add", "-A", cwd=wt)
+    _run_git("commit", "-q", "-m", "feat x", cwd=wt)
+    head_sha = git.head_sha(str(wt))
+    _run_git("update-ref", "-d", "refs/heads/feat-x", cwd=main)
+    return wt, head_sha
+
+
+def test_recovered_head_sha_after_ref_gone_returns_last_head(tmp_path: Path) -> None:
+    wt, head_sha = _orphan_ref_worktree(tmp_path)
+    # The named ref is gone, so a normal HEAD probe would fail — but the reflog
+    # still records the tip the worktree pointed at.
+    assert git.recovered_head_sha_after_ref_gone(str(wt)) == head_sha
+
+
+def test_recovered_head_sha_after_ref_gone_none_when_dir_gone(tmp_path: Path) -> None:
+    assert git.recovered_head_sha_after_ref_gone(str(tmp_path / "missing")) is None
+
+
+def test_recovered_head_sha_after_ref_gone_none_when_dir_is_not_a_git_repo(tmp_path: Path) -> None:
+    # An existing dir that is NOT a git repo: ``rev-parse --absolute-git-dir``
+    # yields no git dir, so recovery returns None rather than reading a stray file.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert git.recovered_head_sha_after_ref_gone(str(plain)) is None
+
+
+def test_recovered_head_sha_after_ref_gone_none_on_malformed_reflog(tmp_path: Path) -> None:
+    wt, _ = _orphan_ref_worktree(tmp_path)
+    git_dir = Path(git.run(repo=str(wt), args=["rev-parse", "--absolute-git-dir"]))
+    (git_dir / "logs" / "HEAD").write_text("one-field-only\n", encoding="utf-8")
+    assert git.recovered_head_sha_after_ref_gone(str(wt)) is None
+
+
+def test_recovered_head_sha_after_ref_gone_none_on_empty_reflog(tmp_path: Path) -> None:
+    wt, _ = _orphan_ref_worktree(tmp_path)
+    git_dir = Path(git.run(repo=str(wt), args=["rev-parse", "--absolute-git-dir"]))
+    (git_dir / "logs" / "HEAD").write_text("", encoding="utf-8")
+    assert git.recovered_head_sha_after_ref_gone(str(wt)) is None
+
+
+def test_recovered_head_sha_after_ref_gone_none_when_no_reflog_file(tmp_path: Path) -> None:
+    wt, _ = _orphan_ref_worktree(tmp_path)
+    git_dir = Path(git.run(repo=str(wt), args=["rev-parse", "--absolute-git-dir"]))
+    (git_dir / "logs" / "HEAD").unlink()
+    assert git.recovered_head_sha_after_ref_gone(str(wt)) is None
+
+
+def test_recovered_head_sha_after_ref_gone_none_when_sha_unresolvable(tmp_path: Path) -> None:
+    wt, _ = _orphan_ref_worktree(tmp_path)
+    git_dir = Path(git.run(repo=str(wt), args=["rev-parse", "--absolute-git-dir"]))
+    deadbeef = "dead" * 10  # 40 hex chars that resolve to no object
+    (git_dir / "logs" / "HEAD").write_text(
+        f"{'0' * 40} {deadbeef} t <t@t> 1700000000 +0000\tcommit: gone\n", encoding="utf-8"
+    )
+    assert git.recovered_head_sha_after_ref_gone(str(wt)) is None

@@ -7,10 +7,13 @@ under ``tmp_path``. No Django: the snapshot helper depends only on
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.core.worktree_snapshot import capture_worktree_snapshot
+from teatree.core.worktree_snapshot import _RECOVERY_BRANCH, capture_worktree_snapshot
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -47,6 +50,17 @@ class _GitTopology:
     def push_branch_to_main(self) -> None:
         _run_git("push", "-q", "origin", f"{self.branch}:main", cwd=self.repo_main)
         _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    def commit_in_worktree(self) -> None:
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feature.txt").write_text("feature\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: work", cwd=self.wt_path)
+
+    def drop_local_branch_ref(self) -> None:
+        """Delete ``refs/heads/<branch>`` → the worktree HEAD becomes a dangling symref."""
+        _run_git("update-ref", "-d", f"refs/heads/{self.branch}", cwd=self.repo_main)
 
 
 @pytest.fixture
@@ -139,3 +153,213 @@ def test_survives_git_worktree_remove_of_the_captured_tree(topo: _GitTopology) -
         env=_clean_env(),
     ).stdout
     assert "feat: unpushed" in log
+
+
+def _capture_head(topo: _GitTopology) -> Path | None:
+    """Capture with ``branch=HEAD`` — the dangling-symref orphan path."""
+    return capture_worktree_snapshot(topo.repo_main, str(topo.wt_path), branch=git.DETACHED_HEAD, label="1764")
+
+
+def test_branch_ref_gone_in_remote_is_noop(topo: _GitTopology) -> None:
+    # Work pushed, branch ref dropped → HEAD dangling but the tip is in a remote.
+    topo.commit_in_worktree()
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is None, "dangling-HEAD worktree whose tip is in a remote has nothing to capture"
+    assert _recovery_dirs(topo.temp_root) == []
+
+
+def test_branch_ref_gone_in_remote_but_dirty_still_captures(topo: _GitTopology) -> None:
+    # The committed tip is pushed (in a remote) AND the branch ref was dropped →
+    # HEAD is a dangling symref. But the worktree ALSO carries a genuine
+    # uncommitted delta — an edit to a tracked file PLUS an untracked file. The
+    # tip being in a remote does NOT make that uncommitted work recoverable, so
+    # the no-op short-circuit must NOT fire: capture a recovery artifact (#706/
+    # #835/#1506 capture-or-refuse, never silent-destroy).
+    topo.commit_in_worktree()
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    # Genuine uncommitted work on top of the pushed tip.
+    (topo.wt_path / "base.txt").write_text("base\nUNCOMMITTED EDIT\n", encoding="utf-8")
+    (topo.wt_path / "untracked.txt").write_text("brand new uncommitted\n", encoding="utf-8")
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "dirty dangling-HEAD-in-remote worktree must NOT be a silent no-op — its uncommitted work is unrecoverable"
+    )
+    assert (rec / "branch.bundle").is_file()
+    assert (rec / "working-tree.diff").is_file()
+    # The bundle anchors the recovered tip under a per-capture-unique recovery
+    # branch (prefixed _RECOVERY_BRANCH), and the captured diff restores the
+    # uncommitted edit + the untracked file on top of it (bundling/diffing the
+    # dangling HEAD itself would fail rc=128).
+    heads = subprocess.run(
+        [_GIT, "bundle", "list-heads", str(rec / "branch.bundle")],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    ).stdout
+    recovery_branches = [
+        ref.removeprefix("refs/heads/")
+        for line in heads.splitlines()
+        if (ref := line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else "").startswith("refs/heads/")
+    ]
+    assert len(recovery_branches) == 1
+    recovery_branch = recovery_branches[0]
+    assert recovery_branch.startswith(_RECOVERY_BRANCH)
+    restore = topo.temp_root / "restore-dirty-dangling"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nUNCOMMITTED EDIT\n"
+    assert (restore / "untracked.txt").read_text(encoding="utf-8") == "brand new uncommitted\n"
+
+
+def _recovery_branch_in_bundle(bundle: Path) -> str:
+    """Return the single ``refs/heads/<recovery>`` branch name a recovery bundle holds."""
+    heads = subprocess.run(
+        [_GIT, "bundle", "list-heads", str(bundle)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+    ).stdout
+    branches = [
+        ref.removeprefix("refs/heads/")
+        for line in heads.splitlines()
+        if (ref := line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) > 1 else "").startswith("refs/heads/")
+    ]
+    assert len(branches) == 1, f"expected exactly one recovery branch, got {branches}"
+    assert branches[0].startswith(_RECOVERY_BRANCH)
+    return branches[0]
+
+
+def test_branch_ref_gone_in_remote_staged_modify_only_still_captures(topo: _GitTopology) -> None:
+    # The reviewer's missed case: a STAGED content modification with NOTHING
+    # unstaged. With a dangling HEAD there is no HEAD to diff the index against,
+    # so ``git status --porcelain`` collapses EVERY indexed path to a bare "A "
+    # — the staged edit is indistinguishable from an unmodified tracked file by
+    # porcelain shape alone. The no-op must NOT fire: the staged bytes are
+    # genuinely unrecoverable and must be captured (#706/#835/#1506).
+    topo.commit_in_worktree()  # commits feature.txt as the tip
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    # Edit a tracked file (base.txt is on the pushed tip) and STAGE it — no
+    # further unstaged change.
+    (topo.wt_path / "base.txt").write_text("base\nPRECIOUS STAGED EDIT\n", encoding="utf-8")
+    _run_git("add", "base.txt", cwd=topo.wt_path)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "staged-modify-only dangling-HEAD-in-remote worktree must NOT be a silent no-op — "
+        "the staged bytes are unrecoverable"
+    )
+    assert (rec / "branch.bundle").is_file()
+    assert (rec / "working-tree.diff").is_file()
+    recovery_branch = _recovery_branch_in_bundle(rec / "branch.bundle")
+    restore = topo.temp_root / "restore-staged-modify"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nPRECIOUS STAGED EDIT\n"
+
+
+def test_branch_ref_gone_in_remote_staged_rename_only_still_captures(topo: _GitTopology) -> None:
+    # A STAGED rename (`git mv old new`) with nothing else. With a dangling HEAD
+    # both the renamed-from (gone) and renamed-to (added) paths collapse to bare
+    # "A " in porcelain — the porcelain-shape heuristic sees them as unmodified.
+    # The rename is genuine uncommitted work and must be captured, not reaped.
+    topo.commit_in_worktree()  # commits feature.txt as the tip
+    _run_git("push", "-q", "origin", topo.branch, cwd=topo.wt_path)
+    _run_git("fetch", "-q", "origin", cwd=topo.repo_main)
+    _run_git("mv", "feature.txt", "renamed.txt", cwd=topo.wt_path)
+    topo.drop_local_branch_ref()
+
+    rec = _capture_head(topo)
+
+    assert rec is not None, (
+        "staged-rename-only dangling-HEAD-in-remote worktree must NOT be a silent no-op — "
+        "the rename is uncommitted work"
+    )
+    assert (rec / "branch.bundle").is_file()
+    diff_text = (rec / "working-tree.diff").read_text(encoding="utf-8")
+    # The rename is preserved in the recovery diff.
+    assert "rename from feature.txt" in diff_text
+    assert "rename to renamed.txt" in diff_text
+    # And it restores cleanly on top of the recovered tip.
+    recovery_branch = _recovery_branch_in_bundle(rec / "branch.bundle")
+    restore = topo.temp_root / "restore-staged-rename"
+    subprocess.run(
+        [_GIT, "clone", "-q", "-b", recovery_branch, str(rec / "branch.bundle"), str(restore)],
+        check=True,
+        capture_output=True,
+        cwd=str(topo.temp_root),
+        env=_clean_env(),
+    )
+    subprocess.run(
+        [_GIT, "-C", str(restore), "apply", str(rec / "working-tree.diff")],
+        check=True,
+        capture_output=True,
+        env=_clean_env(),
+    )
+    assert (restore / "renamed.txt").is_file()
+    assert not (restore / "feature.txt").exists()
+
+
+def test_branch_ref_gone_unrecoverable_head_falls_through_to_capture(topo: _GitTopology) -> None:
+    # HEAD is dangling and unrecoverable → fail closed to the normal capture path
+    # (which then fails open and captures), never the silent no-op.
+    topo.commit_in_worktree()
+    topo.drop_local_branch_ref()
+    # The normal path bundles the dangling HEAD, which fails — the re-raise proves
+    # we did NOT take the silent no-op shortcut on an unrecoverable HEAD.
+    with (
+        patch("teatree.core.worktree_snapshot.git.recovered_head_sha_after_ref_gone", return_value=None),
+        pytest.raises(CommandFailedError),
+    ):
+        _capture_head(topo)
+
+
+def test_branch_ref_gone_containment_probe_error_falls_through_to_capture(topo: _GitTopology) -> None:
+    # The recovered SHA's remote-containment probe errors → fail closed (not the
+    # no-op), so the normal capture path runs and re-raises on the dangling bundle.
+    topo.commit_in_worktree()
+    topo.drop_local_branch_ref()
+    with (
+        patch("teatree.core.worktree_snapshot.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"),
+        patch(
+            "teatree.core.worktree_snapshot.git.commits_absent_from_all_remotes",
+            side_effect=CommandFailedError(["git"], 128, "", "boom"),
+        ),
+        pytest.raises(CommandFailedError),
+    ):
+        _capture_head(topo)

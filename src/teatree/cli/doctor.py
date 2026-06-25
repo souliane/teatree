@@ -22,6 +22,7 @@ import typer
 from teatree.cli._doctor_checks import (
     _check_account_switch,
     _check_agent_session_pins,
+    _check_dangling_editable_pth,
     _check_dream_staleness,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
@@ -65,6 +66,7 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
+    "_check_dangling_editable_pth",
     "_check_dream_staleness",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
@@ -530,6 +532,9 @@ def check() -> bool:
     # auto-make-editable against the cwd worktree, creating the exact stale
     # worktree-anchored install this guard exists to catch (#1507).
     ok = _check_entrypoint_is_primary_clone() and ok
+    # Detect/repair a dangling editable .pth (or uv-receipt source) pointing at a
+    # reaped worktree before it wedges t3 machine-wide with ModuleNotFoundError.
+    ok = _check_dangling_editable_pth() and ok
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
