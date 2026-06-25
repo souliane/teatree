@@ -112,12 +112,15 @@ class MemoryPhaseRunner:
     def _run_phases(
         self, memory_dirs: list[Path], *, dry_run: bool
     ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]], bool]":
-        """Run phases 4 (cross-link) + 4b (merge) + 5 (re-index) then decay.
+        """Run phases 4 (cross-link) + 4b (merge) + 5 (re-index) + 6 (decay), re-indexing again after decay.
 
         Returns the summary clause, decay's archives per dir, and a
         ``maintenance_performed`` flag — True when ANY file-side phase did real work.
         Phase 4b (merge) runs AFTER cross-link and BEFORE re-index so the re-index
-        drops the absorbed file's pointer in the same pass (#2723).
+        drops the absorbed file's pointer. The decay phase reads the freshly-rendered
+        index to detect budget pressure (#2723 budget tier), then a FINAL re-index
+        drops the archived files' pointers so ``MEMORY.md`` falls back under the gate-(d)
+        budget in the SAME pass — the AFTER snapshot the gates grade is accurate.
         """
         cross_link_summary, links_added = self._phase_summary(
             "cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run
@@ -126,7 +129,12 @@ class MemoryPhaseRunner:
         reindex_summary, reindexed = self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run)
         decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
         archived = sum(len(a) for a in archived_by_dir.values())
-        maintenance_performed = links_added > 0 or merged > 0 or reindexed > 0 or archived > 0
+        post_reindexed = 0
+        if archived and not dry_run:
+            _post_summary, post_reindexed = self._phase_summary(
+                "re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run
+            )
+        maintenance_performed = links_added > 0 or merged > 0 or reindexed > 0 or archived > 0 or post_reindexed > 0
         parts = [cross_link_summary, merge_summary, reindex_summary, decay_summary]
         return "".join(part for part in parts if part), archived_by_dir, maintenance_performed
 
@@ -142,7 +150,12 @@ class MemoryPhaseRunner:
     def _decay_dirs_with_archives(
         memory_dirs: list[Path], *, dry_run: bool
     ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
-        """Run phase-6 decay per dir under fault isolation, returning its summary + archives."""
+        """Run phase-6 decay per dir under fault isolation, returning its summary + archives.
+
+        The budget tier is enabled (#2723): when ``MEMORY.md`` is over the load budget,
+        decay ALSO archives old, unreferenced, duplicated files the (empty) ledger
+        home-rail can never reach — the reachable on-disk RETIRE for the curated corpus.
+        """
         from teatree.loops.dream import decay  # noqa: PLC0415
         from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
 
@@ -150,9 +163,10 @@ class MemoryPhaseRunner:
         if not decay_enabled():
             return "", archived_by_dir
         total = 0
+        budget_policy = decay.DecayPolicy(budget_tier=decay.BudgetTier())
         for d in memory_dirs:
             try:
-                result = decay.decay_memories(d, dry_run=dry_run)
+                result = decay.decay_memories(d, dry_run=dry_run, policy=budget_policy)
             except Exception as exc:  # noqa: BLE001
                 return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
             archived_by_dir[d] = result.archived

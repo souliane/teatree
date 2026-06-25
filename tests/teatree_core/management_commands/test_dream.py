@@ -514,6 +514,44 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         assert "WARN merge raised: RuntimeError" in out
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
+    def test_budget_tier_archives_duplicates_and_index_drops_under_budget(self) -> None:
+        # #2723 anti-vacuous end-to-end: an over-budget index built from >90d
+        # near-duplicate files -> decay archives >0 AND MEMORY.md falls back under
+        # the gate-(d) load budget in the same pass.
+        import os  # noqa: PLC0415
+        from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+        from teatree.loops.dream import gates  # noqa: PLC0415
+
+        (self.memdir / "mem_a.md").unlink()
+        (self.memdir / "mem_b.md").unlink()
+        old = (datetime.now(tz=UTC) - timedelta(days=120)).timestamp()
+        topic = (
+            "the followup loop pull reminder cadence nag interval threshold escalation "
+            "stale open review request daily digest batch surfacing notify channel dm "
+            "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
+        )
+        # Many >90d near-duplicate feedback files (pairs of the same lesson) so the
+        # rendered index is well over the ~24KB / 150-line budget.
+        for i in range(120):
+            for half in ("a", "b"):
+                f = self.memdir / f"feedback_dup_{i:03d}_{half}.md"
+                f.write_text(
+                    f"---\nname: feedback_dup_{i:03d}_{half}\ntype: feedback\n---\n{topic} lesson {i}\n",
+                    encoding="utf-8",
+                )
+                os.utime(f, (old, old))
+        stdout = StringIO()
+        # Isolate the budget tier: cross-link OFF (it would link all near-duplicates
+        # and mark them referenced, which #2723 §2(d) calls out as the deadlock the
+        # tier must not be defeated by) and merge OFF (so the tier, not merge, prunes).
+        self._tick(stdout, env={"T3_DREAM_CROSS_LINK": "0", "T3_DREAM_MERGE": "0"})
+        out = stdout.getvalue()
+        assert "archived" in out
+        # MEMORY.md is now under the gate-(d) load budget.
+        snap = gates.snapshot_memory_dir(self.memdir)
+        assert gates.Gate.index_budget(snap).passed, snap.index_byte_size
+
     def test_binding_reconciliation_failure_is_warned_not_crashed(self) -> None:
         self._write_binding_conflict()
         stdout = StringIO()
