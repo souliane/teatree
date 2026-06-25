@@ -20,10 +20,7 @@ and the next tick re-dispatches it. Ownership is one Django-free record
 (``_OWNER_LOOP``) naming which session is the tick-owner; if that session
 dies, the next open session prunes it, becomes tick-owner, and keeps
 ticking (it does NOT re-spawn anything). With ZERO sessions open the loop
-is DEAD until the next session starts — accepted, not a defect;
-the optional ``t3 loop install-watchdog`` (#1139) installs a macOS
-LaunchAgent that bridges that gap by re-running ``spawn-headless`` on
-session exit and after ``/login`` account switches.
+is DEAD until the next session starts — accepted, not a defect.
 
 The ``tick`` subcommand delegates to the ``loop_tick`` Django management
 command via subprocess — anything that touches the Django ORM must be a
@@ -43,7 +40,6 @@ from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_state import register as register_loop_state
-from teatree.cli.loop_watchdog import register as register_watchdog
 from teatree.config import cadence_seconds
 from teatree.loop.statusline import default_path
 from teatree.utils.django_bootstrap import ensure_django
@@ -322,11 +318,7 @@ def start_command(
     claim-next``) and spawning one fresh bounded sub-agent for it. If
     this session dies, the next open session prunes the dead owner,
     becomes tick-owner, and keeps ticking. With no session open the loop
-    is paused until the next session start. The optional ``install-watchdog``
-    (#1139) installs a macOS LaunchAgent that re-runs ``spawn-headless`` so
-    a fresh session is started after a crash or after ``/login`` account
-    switches; absent that, the loop remains paused until the user reopens
-    Claude Code.
+    is paused until the next session start.
     """
     slots = loop_slots()
 
@@ -524,11 +516,6 @@ loop_app.add_typer(slack_answer_app, name="slack-answer")
 # ``teatree.cli.loop_claim_next`` (split for the same module-health
 # reason). Registered as a flat ``t3 loop claim-next``.
 loop_app.command("claim-next")(claim_next_command)
-
-# #1139 — laptop always-on session: `spawn-headless`, `install-watchdog`,
-# `uninstall-watchdog`. Split off so this file stays under the module-health
-# public-function cap.
-register_watchdog(loop_app)
 
 # #1744 — the read-only live loop-status view. Split off (same module-health
 # reason) and registered as a flat ``t3 loop list``.

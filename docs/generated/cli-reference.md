@@ -3021,56 +3021,46 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick                Run one tick: scan in parallel, dispatch, render         │
-│                     statusline.                                              │
-│ status              Show the loop's last-rendered statusline.                │
-│ pending-spawn       List pending Tasks (read-only probe; legacy — prefer     │
-│                     ``claim-next``).                                         │
-│ spawn-claim         Claim a Task by id (legacy — prefer atomic               │
-│                     ``claim-next``).                                         │
-│ start               Spawn a Claude Code session with the loop                │
-│                     pre-registered.                                          │
-│ stop                Print the slot id to stop in the Claude Code session.    │
-│ claim               Claim the session-scoped loop-owner slot for this Claude │
-│                     session (#1073).                                         │
-│ owner               Show which session owns the loop-owner slot AND this     │
-│                     session's own id (#1073).                                │
-│ whoami              Print this Claude session's own id — what a hand-off     │
-│                     ``--to`` targets.                                        │
-│ release             Release this session's loop-owner claim (#1073).         │
-│ claim-next          Atomically claim the oldest pending dispatchable Task,   │
-│                     then emit it.                                            │
-│ spawn-headless      Boot a Claude Code session with the loop pre-registered  │
-│                     (idempotent).                                            │
-│ install-watchdog    Install the macOS LaunchAgent that keeps the loop        │
-│                     session alive.                                           │
-│ uninstall-watchdog  Remove the macOS LaunchAgent installed by                │
-│                     ``install-watchdog``.                                    │
-│ list                Print LIVE loop status: each loop's enabled state,       │
-│                     cadence, last fire, and next tick.                       │
-│ pause               Pause a mini-loop durably (#1913) — survives restart,    │
-│                     honoured by tick + self-pump.                            │
-│ resume              Resume a paused OR disabled mini-loop — return it to the │
-│                     ENABLED state.                                           │
-│ disable             Disable a mini-loop durably — the restart-surviving      │
-│                     kill-switch.                                             │
-│ enable              Enable a disabled mini-loop — return it to the ENABLED   │
-│                     state (alias of resume).                                 │
-│ loop-state          Show a mini-loop's durable state (ENABLED when it has    │
-│                     never been touched).                                     │
-│ claude-spec         Print the native Claude `/loop` spec (slot_id, cron,     │
-│                     prompt) for one DB Loop.                                 │
-│ self-improve        Self-improving monitor — scheduled smell detection with  │
-│                     a tiered action ladder. Runs in the same loop-owner      │
-│                     session as `t3 loop tick` on a separate LoopLease so a   │
-│                     long self-improve cycle never blocks a fast regular tick │
-│                     (BLUEPRINT § 5.7).                                       │
-│ slack-answer        Reactive, token-cheap Slack-answer loop — the third      │
-│                     `/loop` slot. Runs on a tight cadence (default 20s) in   │
-│                     the same loop-owner session as `t3 loop tick`, on a      │
-│                     separate LoopLease so a long answer cycle never blocks a │
-│                     fast regular tick. Complementary to the inbound          │
-│                     prompt-drain, never a double-answer (#1014).             │
+│ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
+│ status         Show the loop's last-rendered statusline.                     │
+│ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
+│                ``claim-next``).                                              │
+│ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
+│ start          Spawn a Claude Code session with the loop pre-registered.     │
+│ stop           Print the slot id to stop in the Claude Code session.         │
+│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│                session (#1073).                                              │
+│ owner          Show which session owns the loop-owner slot AND this          │
+│                session's own id (#1073).                                     │
+│ whoami         Print this Claude session's own id — what a hand-off ``--to`` │
+│                targets.                                                      │
+│ release        Release this session's loop-owner claim (#1073).              │
+│ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
+│                emit it.                                                      │
+│ list           Print LIVE loop status: each loop's enabled state, cadence,   │
+│                last fire, and next tick.                                     │
+│ pause          Pause a mini-loop durably (#1913) — survives restart,         │
+│                honoured by tick + self-pump.                                 │
+│ resume         Resume a paused OR disabled mini-loop — return it to the      │
+│                ENABLED state.                                                │
+│ disable        Disable a mini-loop durably — the restart-surviving           │
+│                kill-switch.                                                  │
+│ enable         Enable a disabled mini-loop — return it to the ENABLED state  │
+│                (alias of resume).                                            │
+│ loop-state     Show a mini-loop's durable state (ENABLED when it has never   │
+│                been touched).                                                │
+│ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
+│                for one DB Loop.                                              │
+│ self-improve   Self-improving monitor — scheduled smell detection with a     │
+│                tiered action ladder. Runs in the same loop-owner session as  │
+│                `t3 loop tick` on a separate LoopLease so a long self-improve │
+│                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
+│ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
+│                slot. Runs on a tight cadence (default 20s) in the same       │
+│                loop-owner session as `t3 loop tick`, on a separate LoopLease │
+│                so a long answer cycle never blocks a fast regular tick.      │
+│                Complementary to the inbound prompt-drain, never a            │
+│                double-answer (#1014).                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3191,11 +3181,7 @@ Usage: t3 loop start [OPTIONS]
  claim-next``) and spawning one fresh bounded sub-agent for it. If
  this session dies, the next open session prunes the dead owner,
  becomes tick-owner, and keeps ticking. With no session open the loop
- is paused until the next session start. The optional ``install-watchdog``
- (#1139) installs a macOS LaunchAgent that re-runs ``spawn-headless`` so
- a fresh session is started after a crash or after ``/login`` account
- switches; absent that, the loop remains paused until the user reopens
- Claude Code.
+ is paused until the next session start.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --print-only           Print the /loop slot definition instead of spawning a │
@@ -3303,64 +3289,6 @@ Usage: t3 loop claim-next [OPTIONS]
 │                                   when none).                                │
 │ --json                            Emit the claimed dispatch as JSON.         │
 │ --help                            Show this message and exit.                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop spawn-headless`
-
-```
-Usage: t3 loop spawn-headless [OPTIONS]
-
- Boot a Claude Code session with the loop pre-registered (idempotent).
-
- Exits 0 without doing anything when a healthy loop session is already
- running under the currently-active Claude Code account (no respawn
- needed). Otherwise launches ``claude`` with the ``/loop`` slot
- pre-registered and pins the spawned session under the active account.
-
- Designed to be invoked by ``launchd`` (macOS) with ``KeepAlive=true``:
- the LaunchAgent re-runs this command whenever the spawned ``claude``
- process exits, so a crash, ``/exit``, or terminal close triggers a
- respawn.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop install-watchdog`
-
-```
-Usage: t3 loop install-watchdog [OPTIONS]
-
- Install the macOS LaunchAgent that keeps the loop session alive.
-
- Writes ``~/Library/LaunchAgents/<label>.plist`` and ``launchctl
- load``-s it. With ``KeepAlive=true`` and ``RunAtLoad=true``, launchd
- re-invokes ``t3 loop spawn-headless`` whenever the previous Claude
- Code session exits — including after a ``/login`` account switch.
-
- Linux is not yet supported by this command; print a cron suggestion
- for now.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --label         TEXT  LaunchAgent label (default: com.$USER.teatree-loop).   │
-│ --t3-bin        TEXT  Absolute path to the `t3` binary (default:             │
-│                       autodetect).                                           │
-│ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop uninstall-watchdog`
-
-```
-Usage: t3 loop uninstall-watchdog [OPTIONS]
-
- Remove the macOS LaunchAgent installed by ``install-watchdog``.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --label        TEXT  LaunchAgent label (default: com.$USER.teatree-loop).    │
-│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
