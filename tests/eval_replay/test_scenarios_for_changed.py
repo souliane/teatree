@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS
+from teatree.eval.changed_scenarios import names_for_changed as _core_names_for_changed
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.models import EvalSpec
 
@@ -75,6 +77,44 @@ class TestNamesForChanged:
         b = SCENARIOS_DIR / "b.yaml"
         specs = [_spec("a1", a), _spec("b1", b)]
         assert names_for_changed([b.relative_to(_REPO_ROOT).as_posix()], specs, _REPO_ROOT) == ["b1"]
+
+
+class TestSelectivePrCap:
+    """A corpus-wide mechanical edit must not blow the bounded single-job PR lane.
+
+    The selective-PR lane runs the selected scenarios SEQUENTIALLY in ONE job
+    (`eval-pr.yml`), so a PR that touches every scenario file (a `model:`→`tier:`
+    backfill, a mass rename) would select the whole catalog and exceed the 80-min
+    step cap — the cancellation that reddened PR #2726's eval job. The selector
+    caps the selection at :data:`MAX_SELECTIVE_PR_SCENARIOS`; full coverage of a
+    corpus-wide change is the weekly sharded lane's job, not the PR lane's.
+    """
+
+    def _many_specs(self, count: int) -> list[EvalSpec]:
+        # Distinct source files so each is independently "changed", names sortable.
+        return [_spec(f"s{n:04d}", SCENARIOS_DIR / f"f{n:04d}.yaml") for n in range(count)]
+
+    def test_selection_at_or_below_cap_is_unbounded(self) -> None:
+        specs = self._many_specs(MAX_SELECTIVE_PR_SCENARIOS)
+        changed = [s.source_path.relative_to(_REPO_ROOT).as_posix() for s in specs]
+        out = names_for_changed(changed, specs, _REPO_ROOT)
+        assert len(out) == MAX_SELECTIVE_PR_SCENARIOS
+        assert out == sorted(s.name for s in specs)
+
+    def test_selection_above_cap_is_truncated_deterministically(self) -> None:
+        specs = self._many_specs(MAX_SELECTIVE_PR_SCENARIOS + 50)
+        changed = [s.source_path.relative_to(_REPO_ROOT).as_posix() for s in specs]
+        out = names_for_changed(changed, specs, _REPO_ROOT)
+        # Bounded to the cap, and a deterministic sorted-name prefix (stable across runs).
+        assert len(out) == MAX_SELECTIVE_PR_SCENARIOS
+        assert out == sorted(s.name for s in specs)[:MAX_SELECTIVE_PR_SCENARIOS]
+
+    def test_whole_real_catalog_selection_is_capped(self) -> None:
+        # Every real scenario file changed → the selector caps rather than returning
+        # the full ~210-scenario catalog the PR lane cannot run in one job.
+        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in discover_specs()})
+        out = _core_names_for_changed(all_files, discover_specs(), _REPO_ROOT)
+        assert len(out) <= MAX_SELECTIVE_PR_SCENARIOS
 
 
 class TestMain:

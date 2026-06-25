@@ -13,6 +13,16 @@ that file selects all of them.
 while the diff gives repo-relative paths; both are normalized to repo-relative
 before comparing so the match is representation-independent.
 
+The selective-PR lane (``eval-pr.yml``) runs the selected scenarios SEQUENTIALLY
+in ONE job at a single trial, so the selection is capped at
+:data:`MAX_SELECTIVE_PR_SCENARIOS`: a PR that mechanically touches every scenario
+file (a ``model:``→``tier:`` backfill, a mass rename) would otherwise select the
+whole ~210-scenario catalog and blow past the 80-min step cap — the cancellation
+that reddened PR #2726's eval job. Full coverage of a corpus-wide change is the
+WEEKLY sharded lane's job (``eval-weekly-reusable.yml`` fans the catalog into
+budget-safe shards via :mod:`teatree.eval.lane_shard`); the PR lane stays "bounded
+by what changed" (BLUEPRINT §"Selective-PR eval") by capping at this ceiling.
+
 This is the shared core behind both ``t3 eval changed-scenarios`` (the reusable
 overlay-facing CLI) and ``scripts/eval/scenarios_for_changed.py`` (the thin
 script the host workflow shells out to). Both delegate here; the logic lives once.
@@ -22,9 +32,19 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
+from teatree.eval.lane_shard import MAX_SCENARIOS_PER_SHARD
 from teatree.eval.models import EvalSpec
 
 REPO_ROOT = SCENARIOS_DIR.parents[1]
+
+#: The most scenarios the single-job, single-trial selective-PR lane will run.
+#: A clean_room scenario runs in seconds-to-a-minute, so this matches the weekly
+#: lane's budget-safe per-shard ceiling (:data:`MAX_SCENARIOS_PER_SHARD`): a
+#: sequential single-trial run of this many finishes well inside the 80-min step
+#: cap. A diff that selects MORE than this (a corpus-wide mechanical edit) is
+#: truncated to a deterministic sorted-name prefix — the weekly sharded lane gives
+#: the full-catalog coverage the bounded PR lane intentionally does not.
+MAX_SELECTIVE_PR_SCENARIOS = MAX_SCENARIOS_PER_SHARD
 
 
 def _relative_to_root(path: Path, repo_root: Path) -> str:
@@ -38,7 +58,9 @@ def _relative_to_root(path: Path, repo_root: Path) -> str:
 def names_for_changed(changed: Iterable[str], specs: Iterable[EvalSpec], repo_root: Path) -> list[str]:
     wanted = {_relative_to_root(Path(line.strip()), repo_root) for line in changed if line.strip()}
     matched = {spec.name for spec in specs if _relative_to_root(spec.source_path, repo_root) in wanted}
-    return sorted(matched)
+    # Cap to keep the single-job PR lane inside its step budget; the sorted prefix
+    # is deterministic so the same diff always selects the same bounded subset.
+    return sorted(matched)[:MAX_SELECTIVE_PR_SCENARIOS]
 
 
 def select_changed_scenario_names(changed: Iterable[str]) -> list[str]:
