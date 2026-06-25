@@ -8,11 +8,10 @@ is exercised end-to-end with no mocks. ``CONFIG_PATH`` is monkeypatched to an
 isolated (unwritten) file so the real ``~/.teatree.toml`` never leaks in.
 
 The fine-grained (mode, action) → verdict matrix lives in
-``tests/test_on_behalf_post_mode.py``; this file focuses on the deprecation
-shim and the retirement of the legacy ``ask_before_post_on_behalf`` TOML alias.
+``tests/test_on_behalf_post_mode.py``; this file focuses on the retirement of
+the legacy ``ask_before_post_on_behalf`` TOML alias.
 """
 
-import warnings
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,7 @@ from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
-from teatree.on_behalf_gate import OnBehalfVerdict, ask_before_post_on_behalf_enabled, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
 
 class _OnBehalfDbBase(TestCase):
@@ -67,40 +66,6 @@ class TestPerOverlayOverride(_OnBehalfDbBase):
         ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.PROCEED
-
-
-class TestDeprecatedShim(_OnBehalfDbBase):
-    """``ask_before_post_on_behalf_enabled()`` is kept for one release."""
-
-    def test_returns_true_under_ask(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is True
-
-    def test_returns_true_under_draft_or_ask(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "draft_or_ask")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is True
-
-    def test_returns_false_under_immediate(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert ask_before_post_on_behalf_enabled() is False
-
-    def test_emits_deprecation_warning(self) -> None:
-        # Reset the module-level once-flag so this test sees the warning.
-        import teatree.on_behalf_gate as gate_mod  # noqa: PLC0415
-
-        gate_mod._DEPRECATION_EMITTED = False
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            ask_before_post_on_behalf_enabled()
-        assert any(
-            issubclass(w.category, DeprecationWarning) and "resolve_on_behalf_verdict" in str(w.message) for w in caught
-        )
 
 
 class TestRetiredLegacyTomlAlias(_OnBehalfDbBase):

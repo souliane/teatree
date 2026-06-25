@@ -115,11 +115,11 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().mode is Mode.AUTO
 
-    def test_overlay_scoped_branch_prefix_wins_over_global(self) -> None:
-        ConfigSetting.objects.set_value("branch_prefix", "ac")
-        ConfigSetting.objects.set_value("branch_prefix", "xp", scope="my-overlay")
+    def test_overlay_scoped_str_setting_wins_over_global(self) -> None:
+        ConfigSetting.objects.set_value("review_skill", "ac")
+        ConfigSetting.objects.set_value("review_skill", "xp", scope="my-overlay")
         self._activate()
-        assert get_effective_settings().branch_prefix == "xp"
+        assert get_effective_settings().review_skill == "xp"
 
     def test_env_var_beats_overlay_scoped_db_row(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto", scope="my-overlay")

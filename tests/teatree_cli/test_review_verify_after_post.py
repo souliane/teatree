@@ -31,9 +31,9 @@ pytestmark = pytest.mark.django_db
 
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The on-behalf gate is OFF when ``ask_before_post_on_behalf`` is False —
-    # derived (#1775) from the DB-home ``on_behalf_post_mode`` being IMMEDIATE.
-    # Staging it via TOML is a no-op on read, so the mode is set in the DB store.
+    # The on-behalf gate is OFF when the DB-home ``on_behalf_post_mode`` is
+    # IMMEDIATE (#1775). Staging it via TOML is a no-op on read, so the mode is
+    # set in the DB store.
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)

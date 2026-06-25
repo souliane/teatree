@@ -26,10 +26,9 @@ from the ``ConfigSetting`` store + env, never from a ``[teatree]`` /
 ``[overlays.<name>]`` TOML value (which is ignored on read and the resolver warns
 on).
 
-:data:`DERIVED_FIELDS` are the two values the resolver COMPUTES rather than
-reads (``notify_on_behalf`` derived by the autonomy collapse,
-``ask_before_post_on_behalf`` derived from ``on_behalf_post_mode``); they have
-no home and are excluded from the partition.
+:data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
+reads (``notify_on_behalf`` derived by the autonomy collapse); it has
+no home and is excluded from the partition.
 
 The fitness functions in ``tests/config/test_settings_home_partition.py`` keep
 this exhaustive and disjoint: every ``UserSettings`` field is in exactly one of
@@ -46,10 +45,9 @@ class SettingHome(StrEnum):
     TOML = "toml"
 
 
-# The two values the resolver computes rather than reads — no home, excluded
-# from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse;
-# ``ask_before_post_on_behalf`` is derived from the resolved ``on_behalf_post_mode``.
-DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf", "ask_before_post_on_behalf"})
+# The one value the resolver computes rather than reads — no home, excluded
+# from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
+DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
 # The irreducible TOML-home carve-out (exactly these ten):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):

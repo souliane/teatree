@@ -130,9 +130,8 @@ the DB is unreachable — `check_updates`, and `statusline_chain` — read
 straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
 to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
 `timezone`, `privacy`), and the nested structured `mr_reminder`
-table. The two DERIVED fields (`notify_on_behalf`, `ask_before_post_on_behalf`) are
-computed by the resolver and have no home. The resolution-tier wiring below details
-each home's chain.
+table. The one DERIVED field (`notify_on_behalf`) is computed by the resolver and
+has no home. The resolution-tier wiring below details each home's chain.
 
 The resolution chain is **per home** (first match wins) — each field reads from
 exactly the tiers its home allows:
@@ -253,14 +252,12 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates (colleague auto-approve via `on_behalf_post_mode`, auto-merge, auto-answer) and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
 | `speed` | Throughput dial `slow < medium < full < boost` (default `medium`): how many threads run at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> speed set`; `T3_SPEED` env. |
-| `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
 | `loop_cadence_seconds` | Per-overlay tick cadence (e.g. tighter on a hot overlay, looser on a maintenance one) |
 | `require_human_approval_to_merge` | Training-wheel: auto-mode overlay can publish autonomously, merge stays gated |
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
-| `ask_before_post_on_behalf` | Legacy boolean pre-gate over on-behalf posts (kept for back-compat — prefer `on_behalf_post_mode`) |
 | `on_behalf_post_mode` | Tri-state pre-gate (#960) over colleague-VISIBLE posts: `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate`. Drafts (`post-draft-note`) are colleague-invisible and exempt under every mode — they never need approval |
 | `missing_issue_ref_policy` | What to do when a commit/MR needs an issue ref and none is in hand: `find_existing_then_ask` (default) / `create` / `dummy`. Scoped per overlay so a colleague-facing client overlay stays on the never-create default while a personal one can opt into `create`. The default always recovers the original existing issue first, then ASKs on a colleague-facing repo and CREATEs on the user's own repo — never a dummy. `create` / `dummy` are opt-in and authorise auto-create / a placeholder ref on colleague repos too. Resolved by `teatree.missing_issue_policy.resolve_missing_issue_verdict`; `T3_MISSING_ISSUE_POLICY` env wins; agent prose in `skills/ship/SKILL.md` § 0a |
 | `on_behalf_auto_actions` | Allowlist of on-behalf actions that PROCEED even under `ask`/`draft_or_ask` (default `["post_e2e_evidence"]`): the user's own-ticket self-documentation, not a colleague-facing voice, so they never need per-post approval. Clear to `[]` to re-gate test plan; env `T3_ON_BEHALF_AUTO_ACTIONS` (comma-separated) wins |
@@ -370,14 +367,13 @@ is a one-line registry change picked up via `dataclasses.replace`; `speak` is
 the one non-generic override (its overlay sub-table merges onto the base
 rather than flat-replacing).
 
-`mode`, `branch_prefix`, and `autonomy` are DB-home (#1775) — they live in the
+`mode` and `autonomy` are DB-home (#1775) — they live in the
 `ConfigSetting` store, NOT in `~/.teatree.toml`. A value for one of them left in
 `[teatree]` / `[overlays.<name>]` is IGNORED on read (the resolver warns and drops
 it). Set them in the store, globally or scoped to one overlay with `--overlay`:
 
 ```bash
 t3 <overlay> config_setting set mode interactive                      # global default
-t3 <overlay> config_setting set branch_prefix ac
 t3 <overlay> config_setting set autonomy full --overlay t3-teatree    # single-author dogfooding: one switch collapses the gates + pins mode = auto
 t3 <overlay> config_setting set autonomy notify --overlay t3-client   # collaborative: autonomous + DM per on-behalf action, keeps CLEAR merge gate
 t3 <overlay> config_setting set mode interactive --overlay client-project   # stay gated on client code (autonomy defaults to babysit)

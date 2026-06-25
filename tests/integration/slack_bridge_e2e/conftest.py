@@ -193,13 +193,11 @@ class _FakeUserSettings:
     # subset of the real ``UserSettings``.
     slack_voice_classifier_mode: _VoiceClassifierMode = _VoiceClassifierMode.WARN
     # #1775 ``_resolved_identities()`` now routes through
-    # ``get_effective_settings()``, whose autonomy collapse + derived
-    # ``ask_before_post_on_behalf`` + per-overlay speak merge read these
-    # fields. Mirror them with the real ``UserSettings`` defaults so the
-    # fixture stays a structural subset.
+    # ``get_effective_settings()``, whose autonomy collapse + per-overlay
+    # speak merge read these fields. Mirror them with the real
+    # ``UserSettings`` defaults so the fixture stays a structural subset.
     autonomy: _Autonomy = _Autonomy.BABYSIT
     on_behalf_post_mode: _OnBehalfPostMode = _OnBehalfPostMode.DRAFT_OR_ASK
-    ask_before_post_on_behalf: bool = True
     speak: _SpeakConfig = field(default_factory=_SpeakConfig)
 
 
