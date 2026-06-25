@@ -1167,18 +1167,17 @@ def _claim_loop_ownership(session_id: str) -> None:
 
 
 def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, the loop OWNER registers one native Claude ``/loop`` per enabled DB Loop (#2650).
+    """On first prompt, the loop OWNER registers one ``/loop`` per enabled DB Loop (#2650).
 
-    The single fat-tick cron is GONE: the live set of native Claude ``/loop``s
-    MIRRORS the set of ENABLED ``Loop`` rows — one ``/loop`` per enabled row
-    (per-loop, not per-group), each on that loop's own cadence. Only the
-    loop-owner session (``_loop_auto_load_active`` + ``_claim_loop_ownership``)
-    registers; a non-owner registers nothing. The per-loop directive building
-    lives in the bare sibling :mod:`loop_registrations` (hooks/CLAUDE.md keeps NEW
-    logic out of this shrink-only router); this stays a thin owner-gated
-    delegator. Crash-proof / fail-open: zero enabled loops (or an unavailable
-    seam) emits nothing and writes no pending marker, so the PreToolUse nudge
-    never fires when there is nothing to register.
+    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence.  Only the
+    owner session (``_loop_auto_load_active`` + ``_claim_loop_ownership``) registers.
+    Directive building lives in the bare sibling :mod:`loop_registrations`.
+    Fail-open: zero enabled loops emits nothing, so the PreToolUse nudge never
+    fires when there is nothing to register.
+
+    ``_session_has_loop`` is the sole registration gate.  A fresh
+    ``tick-meta.json`` from a prior session (e.g. after release + claim) must
+    NOT suppress registration — that was the #2714 stall bug.
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -1191,8 +1190,6 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     pending = _state_file(session_id, "loop-pending")
     if _session_has_loop(session_id):
         pending.unlink(missing_ok=True)
-        return
-    if not _tick_meta_stale():
         return
     if emit_loop_registrations(sys.stdout):
         pending.write_text("1", encoding="utf-8")
