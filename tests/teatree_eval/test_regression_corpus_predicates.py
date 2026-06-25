@@ -48,8 +48,8 @@ class TestDbBackedPredicatesHoldOnRealCode(TestCase):
     def test_substrate_human_authorize_floor(self) -> None:
         assert predicates._check_merge_precondition_substrate_human_authorize() is True
 
-    def test_substrate_full_autonomy_carveout(self) -> None:
-        assert predicates._check_merge_precondition_substrate_full_autonomy() is True
+    def test_substrate_full_autonomy_holds(self) -> None:
+        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
 
     def test_maker_is_not_checker(self) -> None:
         assert predicates._check_merge_precondition_maker_is_not_checker() is True

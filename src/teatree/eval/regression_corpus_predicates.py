@@ -98,25 +98,27 @@ def _check_merge_precondition_substrate_human_authorize() -> bool:
 
     The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
     via the DB-home autonomy seam (#1775) so the check is deterministic
-    regardless of the developer's live config. The ``autonomy = full`` carve-out is a
-    distinct must-allow path verified by
-    :func:`_check_merge_precondition_substrate_full_autonomy`; this check is the
-    must-block direction for a below-full overlay.
+    regardless of the developer's live config. Substrate is held under EVERY tier
+    (including ``full`` — verified by
+    :func:`_check_merge_precondition_substrate_full_autonomy_holds`); this check is
+    the must-block direction for a below-full overlay.
     """
     return _exercise_substrate_authorize(autonomy="babysit", expect_cleared_without_human=False)
 
 
-def _check_merge_precondition_substrate_full_autonomy() -> bool:
-    """Carve-out: a substrate CLEAR under an ``autonomy = full`` overlay clears without a per-PR sign-off.
+def _check_merge_precondition_substrate_full_autonomy_holds() -> bool:
+    """Ping-and-hold: a substrate CLEAR under an ``autonomy = full`` overlay is HELD, never auto-merged.
 
-    The mirror of :func:`_check_merge_precondition_substrate_human_authorize`:
-    with the CLEAR's overlay pinned to ``full``, the standing grant satisfies
-    the substrate sign-off, so presenting no ``--human-authorized`` must NOT
-    raise. This is the must-allow direction the ticket-less / aliased
-    overlay-resolution fix restores; without it, a full-autonomy substrate
-    merge is wrongly blocked (the rest of the floor is unaffected).
+    The owner's directive — substrate (merge keystone, architecture spec,
+    governance doc) PINGS-and-HOLDS so they authorize every such merge. With the
+    CLEAR's overlay pinned to ``full`` and NO ``--human-authorized`` presented, the
+    standing grant does NOT cover substrate, so ``_assert_clear_authorized`` MUST
+    raise (the loop edge then pings the owner). This is the inverse of the prior
+    carve-out: substrate is excluded from the standing grant entirely, so a
+    mislabeled or genuine substrate change can never auto-merge silently under
+    full autonomy. The only path that clears it is a per-PR human authorizer.
     """
-    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=True)
+    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=False)
 
 
 def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
@@ -411,7 +413,7 @@ __all__ = [
     "_check_forge_resolves_by_host_not_token",
     "_check_loop_owner_lease_pid_anchored",
     "_check_merge_precondition_maker_is_not_checker",
-    "_check_merge_precondition_substrate_full_autonomy",
+    "_check_merge_precondition_substrate_full_autonomy_holds",
     "_check_merge_precondition_substrate_human_authorize",
     "_check_mr_description_first_line_validated",
     "_check_private_repo_allowlist_path_segment_match",
