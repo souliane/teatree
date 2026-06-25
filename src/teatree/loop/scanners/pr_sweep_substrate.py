@@ -10,9 +10,33 @@ only on a new reviewed SHA.
 import logging
 from typing import Protocol, runtime_checkable
 
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.core.merge.ci_rollup import fetch_pr_changed_paths
+from teatree.core.models.merge_clear import diff_paths_are_substrate
+from teatree.loop.scanners.pr_sweep_types import MergeAttempt, PrSummary
 
 logger = logging.getLogger(__name__)
+
+
+def pr_diff_is_substrate(pr: PrSummary) -> bool:
+    """True iff *pr*'s changed paths make it a substrate change — FAIL-SAFE (Finding 2).
+
+    The solo-overlay no-CLEAR bypass has no CLEAR row to read ``is_substrate`` from,
+    so the diff is classified live via :func:`fetch_pr_changed_paths` +
+    :func:`diff_paths_are_substrate`. The fetch is FAIL-SAFE: an exception OR an
+    empty list (a real open PR always changes >=1 file, so an empty list signals the
+    forge fetch failed) is treated conservatively as substrate so the can't-tell case
+    HOLDS rather than widening to a silent merge. Only a non-empty, confirmed-non-
+    substrate diff lets the merge proceed.
+    """
+    try:
+        paths = fetch_pr_changed_paths(pr.slug, pr.number)
+    except Exception:
+        logger.exception("pr_sweep changed-paths fetch failed for %s#%d — holding", pr.slug, pr.number)
+        return True
+    if not paths:
+        logger.warning("pr_sweep empty changed-paths for %s#%d — holding conservatively", pr.slug, pr.number)
+        return True
+    return diff_paths_are_substrate(paths)
 
 
 @runtime_checkable
@@ -56,3 +80,25 @@ def ping_substrate_hold(pinger: "SubstratePinger | None", *, pr: PrSummary, revi
         )
     except Exception:
         logger.exception("pr_sweep failed to ping substrate-hold for %s#%d", pr.slug, pr.number)
+
+
+def hold_solo_overlay_substrate(pinger: "SubstratePinger | None", *, pr: PrSummary) -> MergeAttempt:
+    """Ping-and-hold a substrate PR on the solo-overlay no-CLEAR bypass (Finding 2).
+
+    Reuses the existing substrate pinger + per-diff idempotency key (keyed on the
+    live head SHA, since there is no CLEAR ``reviewed_sha`` here) so a re-tick dedupes
+    through the BotPing ledger. The PR is held, never raw-merged.
+    """
+    ping_substrate_hold(
+        pinger,
+        pr=pr,
+        reviewed_sha=pr.head_sha,
+        error="substrate change on solo overlay, held for the owner",
+    )
+    return MergeAttempt(
+        slug=pr.slug,
+        pr_id=pr.number,
+        decision="blocked",
+        reason="solo_overlay_substrate_hold",
+        url=pr.url,
+    )

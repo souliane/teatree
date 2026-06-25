@@ -41,6 +41,24 @@ from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _non_substrate_changed_paths():
+    """Default the solo-overlay substrate gate to a non-substrate diff.
+
+    The solo-overlay no-CLEAR bypass classifies the PR's changed paths live
+    (Finding 2). With no real PR behind the fake ``gh``, an unmocked fetch
+    returns ``[]`` and the FAIL-SAFE gate holds — so every existing
+    merge-path test would now hold. Default the fetch to a known
+    non-substrate path; the substrate / fail-safe cases override it with
+    their own ``with patch(...)``.
+    """
+    with patch(
+        "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+        return_value=["src/teatree/loop/scanners/pr_sweep.py"],
+    ):
+        yield
+
+
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 STALE = "deadbeef00000000000000000000000000000000"
@@ -74,6 +92,19 @@ def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
             reviewer_identity="cold-reviewer",
             gh_verify_result="green",
             blast_class="logic",
+        )
+    )
+
+
+def _issue_substrate_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
+    return MergeClear.issue(
+        ClearRequest(
+            pr_id=pr_id,
+            slug=SLUG,
+            reviewed_sha=sha,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+            blast_class="substrate",
         )
     )
 
@@ -1472,6 +1503,53 @@ class TestSubstrateHoldPing:
 
         assert signals[0].payload["decision"] == "blocked"
 
+    def test_substrate_clear_in_uv_audit_fallback_holds_and_pings_no_raw_merge(self) -> None:
+        # Finding 1 (fail-open): a SUBSTRATE CLEAR whose only red check is uv-audit
+        # (and main is also uv-audit-red) lands on the keystone fallback path. When
+        # the keystone refuses (substrate hold), the legacy code raw-merged via
+        # ``merge_pr_squash_bound`` BEFORE the substrate-ping check — silently
+        # bypassing the hold. The fix gates the raw-merge on the CLEAR not being
+        # substrate, so a substrate PR HOLDS + pings instead.
+        clear = _issue_substrate_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=True,
+        )
+        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the raw gh fallback was NOT fired for substrate
+        assert notifier.calls == []  # no merge announcement
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        _, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
+
+    def test_non_substrate_uv_audit_fallback_still_raw_merges_on_keystone_refusal(self) -> None:
+        # Anti-vacuity twin: the NON-substrate uv-audit fallback escalation is
+        # unchanged — a logic-class CLEAR whose keystone refuses still raw-merges
+        # via gh and never pings. Guards against over-gating Finding 1.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=True,
+        )
+        keystone = FakeKeystone(merged=False, error="uv-audit failing", escalation_kind="")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still escalates
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
+        assert signals[0].payload["reason"] == "fallback_uv_audit_gh"
+        assert pinger.calls == []
+
     def test_re_tick_does_not_double_ping_real_notify_dedupe(self) -> None:
         # The anti-vacuity test (d): re-running the sweep on the SAME held head
         # does not double-ping. Uses the REAL NotifyWithFallbackSubstratePinger so
@@ -1499,3 +1577,96 @@ class TestSubstrateHoldPing:
         assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).count() == 1
         # Exactly one Slack post landed despite two ticks — the ledger deduped.
         assert backend.post_message.call_count == 1
+
+
+class TestSoloOverlaySubstrateHold:
+    """Finding 2 (fail-open): the solo-overlay no-CLEAR bypass must hold substrate.
+
+    The bypass raw-merges a green+clean+cold-reviewed own PR via
+    ``merge_pr_squash_bound`` when no CLEAR exists — with ZERO substrate gating.
+    A substrate PR on a solo overlay (cold-review, no CLEAR) would therefore
+    auto-merge with no hold and no ping, bypassing the keystone substrate
+    guarantee. The fix classifies the PR's changed paths before the direct
+    merge; a substrate diff (or an unfetchable one — fail-safe) HOLDS + pings
+    instead of merging.
+    """
+
+    def test_solo_overlay_substrate_pr_holds_and_pings_no_raw_merge(self) -> None:
+        # Cold-review recorded, no CLEAR, CI green — the bypass would merge — but
+        # the diff touches a substrate path, so it HOLDS + pings instead.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            return_value=["src/teatree/core/merge/authorization.py"],
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the raw gh merge was NOT fired for substrate
+        assert notifier.calls == []  # no merge announcement
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+        _, key = pinger.calls[0]
+        assert key == f"substrate-hold:{SLUG}#6230:{HEAD}"
+
+    def test_solo_overlay_non_substrate_pr_still_merges_via_gh_fallback(self) -> None:
+        # Anti-vacuity twin: a NON-substrate diff on the solo overlay still merges
+        # via the direct gh fallback. Guards against over-gating Finding 2.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            return_value=["src/teatree/loop/scanners/pr_sweep.py"],
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still merges
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert pinger.calls == []
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+
+    def test_solo_overlay_unfetchable_paths_fail_safe_holds(self) -> None:
+        # FAIL-SAFE: a real PR always changes >=1 file, so an empty changed-paths
+        # list signals the forge fetch failed. The bypass must treat the can't-tell
+        # case conservatively — HOLD + ping, never widen to a silent merge.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch("teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths", return_value=[]):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []  # the can't-tell case held, did not merge
+        assert notifier.calls == []
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
+
+    def test_solo_overlay_paths_fetch_raises_fail_safe_holds(self) -> None:
+        # FAIL-SAFE: a forge exception during the changed-paths fetch must also hold,
+        # never crash the sweep into the silent-merge branch.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True, substrate_pinger=pinger)
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
+            side_effect=RuntimeError("forge down"),
+        ):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["decision"] == "blocked"
+        assert len(pinger.calls) == 1
