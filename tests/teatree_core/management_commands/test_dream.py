@@ -821,6 +821,93 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         assert "no teatree code host resolved" in stdout.getvalue()
 
 
+class DreamAutomationAsksWiringTestCase(TestCase):
+    """Phase-3d automatable-ask promotion only runs when its default-OFF toggle is on (#2663)."""
+
+    def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
+        environ = {
+            "T3_DREAM_PROPOSE_EVALS": "0",
+            "T3_DREAM_CROSS_LINK": "0",
+            "T3_DREAM_REINDEX": "0",
+            "T3_DREAM_MEMORY_PROMOTE": "0",
+            "T3_DREAM_COMPLIANCE": "0",
+            **env,
+        }
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch.dict("os.environ", environ, clear=False),
+        ):
+            call_command("dream", "tick", stdout=stdout)
+
+    def test_promotion_skipped_when_toggle_off(self) -> None:
+        with patch("teatree.loops.dream.automation_ask.run_automation_asks_phase") as phase_fn:
+            self._tick(StringIO(), env={"T3_DREAM_AUTOMATION_ASKS": "0"})
+        phase_fn.assert_not_called()
+
+    def test_promotion_runs_and_reports_when_toggle_on(self) -> None:
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.loops.dream.automation_ask.run_automation_asks_phase",
+                return_value="; promoted 2 automatable-ask fix(es)",
+            ) as phase_fn,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        phase_fn.assert_called_once()
+        assert "promoted 2 automatable-ask fix(es)" in stdout.getvalue()
+
+    def test_promotion_failure_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with (
+            patch(
+                "teatree.loops.dream.automation_ask.run_automation_asks_phase",
+                side_effect=RuntimeError("ask boom"),
+            ),
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        out = stdout.getvalue()
+        assert "WARN automatable-ask phase raised: RuntimeError" in out
+        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
+
+    def test_no_code_host_is_warned_not_crashed(self) -> None:
+        stdout = StringIO()
+        with patch(
+            "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+            return_value=(None, "souliane/teatree"),
+        ):
+            self._tick(stdout, env={"T3_DREAM_AUTOMATION_ASKS": "1"})
+        assert "automatable-ask promotion skipped — no teatree code host resolved" in stdout.getvalue()
+
+    def test_full_runs_automation_asks_despite_toggle_off(self) -> None:
+        with (
+            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
+            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+            patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+            patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value="") as phase_fn,
+            patch(
+                "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                return_value=(object(), "souliane/teatree"),
+            ),
+            patch.dict(
+                "os.environ",
+                {"T3_DREAM_MEMORY_PROMOTE": "0", "T3_DREAM_DERIVE_EVALS": "0", "T3_DREAM_AUTOMATION_ASKS": "0"},
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", "--full", stdout=StringIO())
+        phase_fn.assert_called_once()
+
+
 class DreamFullFlagTestCase(TestCase):
     """``run --full`` forces every phase on for one manual pass (Gap B)."""
 

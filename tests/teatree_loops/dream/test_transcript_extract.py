@@ -2,7 +2,12 @@
 
 from django.test import TestCase
 
-from teatree.loops.dream.transcript_extract import high_signal_lines, looks_like_user_correction
+from teatree.loops.dream.transcript_extract import (
+    high_signal_lines,
+    looks_like_user_ask,
+    looks_like_user_correction,
+    user_ask_lines,
+)
 
 
 class LooksLikeUserCorrectionTestCase(TestCase):
@@ -46,6 +51,99 @@ class LooksLikeUserCorrectionTestCase(TestCase):
         assert not looks_like_user_correction('{"type":"user","text":"the reason why it works is clear"}')
 
 
+class LooksLikeUserAskTestCase(TestCase):
+    """The keyword-blind keeper for a USER directive/request the loop could automate.
+
+    The sibling of :func:`looks_like_user_correction`: a user turn that reads like a
+    manual ask t3 could take over (imperative request OR operational urgency). An
+    assistant turn echoing the same words is NOT a user ask.
+    """
+
+    def test_can_you_imperative_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"can you push the branch now"}')
+
+    def test_please_request_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"please open the PR for me"}')
+
+    def test_i_need_you_to_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"i need you to set up the worktree"}')
+
+    def test_i_want_you_to_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"i want you to merge it"}')
+
+    def test_lets_collective_imperative_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"let\'s ship this today"}')
+
+    def test_we_should_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"we should run the tests first"}')
+
+    def test_set_up_directive_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"set up the dev database again"}')
+
+    def test_make_sure_directive_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"make sure the migrations apply"}')
+
+    def test_go_ahead_and_directive_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"go ahead and deploy it"}')
+
+    def test_could_you_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"could you rebase onto main"}')
+
+    def test_operational_hotfix_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"we have a hotfix that needs to go out"}')
+
+    def test_operational_urgent_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"this is urgent, the build is red"}')
+
+    def test_operational_asap_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"merge it asap"}')
+
+    def test_operational_drop_everything_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"drop everything and look at this"}')
+
+    def test_operational_production_blocker_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"there is a production blocker on checkout"}')
+
+    def test_operational_rollback_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"we need a rollback of that change"}')
+
+    def test_operational_wedged_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"type":"user","text":"the loop is wedged again"}')
+
+    def test_role_user_shape_is_flagged(self) -> None:
+        assert looks_like_user_ask('{"role":"user","content":"please run the suite"}')
+
+    def test_assistant_echo_is_not_flagged(self) -> None:
+        # The agent's own text saying "can you" / "please" is not a user ask.
+        assert not looks_like_user_ask('{"type":"assistant","text":"can you confirm? please review the PR"}')
+
+    def test_neutral_user_statement_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"the result row was computed correctly"}')
+
+    def test_user_question_without_directive_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"what does this function return?"}')
+
+
+class UserAskLinesTestCase(TestCase):
+    """The sibling of :func:`high_signal_lines` that keeps only user-ask turns."""
+
+    def test_keeps_imperative_ask(self) -> None:
+        raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"please open the PR for me"}'
+        assert "please open the PR for me" in user_ask_lines(raw)
+
+    def test_keeps_operational_ask(self) -> None:
+        raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"hotfix needs to ship asap"}'
+        assert "hotfix needs to ship asap" in user_ask_lines(raw)
+
+    def test_drops_neutral_and_assistant_chatter(self) -> None:
+        raw = "\n".join(f'{{"type":"assistant","text":"can you do row {i}"}}' for i in range(20))
+        assert user_ask_lines(raw) == ""
+
+    def test_drops_neutral_user_statement(self) -> None:
+        raw = '{"type":"user","text":"the build finished and the row count is fine"}'
+        assert user_ask_lines(raw) == ""
+
+
 class HighSignalLinesTestCase(TestCase):
     def test_keeps_keyword_signal_line(self) -> None:
         raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"TEATREE GATE BLOCK fired"}'
@@ -68,3 +166,9 @@ class HighSignalLinesTestCase(TestCase):
         once = '{"type":"user","text":"a neutral request with no cue at all here"}'
         raw = f"{once}\n{once}"
         assert high_signal_lines(raw) == ""
+
+    def test_keeps_user_ask_prose_for_automation_clustering(self) -> None:
+        # A directive ask carries no correction cue and no keyword signal, but the
+        # automation half needs it clustered — high_signal_lines must keep it too.
+        raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"please set up the hotfix lane"}'
+        assert "please set up the hotfix lane" in high_signal_lines(raw)

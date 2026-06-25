@@ -169,6 +169,25 @@ def compliance_enabled(*, config_path: Path | None = None) -> bool:
     return _toml_phase_disabled_by_default(_COMPLIANCE[0], config_path)
 
 
+#: Phase 3d — the automatable-ask promoter (#2663), the "improve-with-new-stuff"
+#: sibling of the compliance accountant. It PROMOTES recurring manual user asks to a
+#: fix-and-merge (a checkbox + scheduled coding task), so it is default OFF and
+#: ``--full``-gated, mirroring the compliance / Pass-2 memory-promotion posture. Opt in
+#: with ``T3_DREAM_AUTOMATION_ASKS=1`` / ``[loops.dream] automation_asks = true``;
+#: absent, the dream pass never promotes an ask (no behaviour change).
+_AUTOMATION_ASKS = ("automation_asks", "T3_DREAM_AUTOMATION_ASKS")
+
+
+def automation_asks_enabled(*, config_path: Path | None = None) -> bool:
+    """Whether phase-3d automatable-ask promotion runs (default OFF, #2663)."""
+    raw_env = os.environ.get(_AUTOMATION_ASKS[1], "").strip().lower()
+    if raw_env in _TRUTHY:
+        return True
+    if raw_env in _FALSY:
+        return False
+    return _toml_phase_disabled_by_default(_AUTOMATION_ASKS[0], config_path)
+
+
 def _toml_phase_disabled_by_default(toml_key: str, config_path: Path | None) -> bool:
     """Read ``[loops.dream] <toml_key>`` from the toml; default OFF, never raise."""
     path = config_path if config_path is not None else Path.home() / ".teatree.toml"
