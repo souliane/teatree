@@ -56,7 +56,6 @@ if TYPE_CHECKING:
     from teatree.loops.dream.decay import ArchivedMemory
 
 _INDEX_NAME = "MEMORY.md"
-_HEADING_RE = re.compile(r"^#{1,6}\s")
 #: The memory-file an index line POINTS AT — the LEADING filename pointer the
 #: re-index writes at line start (``- name.md — summary``, or the legacy
 #: ``- [name.md](name.md) — summary`` markdown-link form). Anchored on the
@@ -223,15 +222,18 @@ def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
 
 
 def _signature_line(text: str) -> str:
-    """The first substantive prose line of a memory — its retention signature."""
-    for raw in text.splitlines():
-        line = raw.strip().lstrip("-*").strip()
-        if not line or _HEADING_RE.match(raw.strip()):
-            continue
-        if line.startswith(("name:", "summary:", "description:", "type:", "metadata:", "---")):
-            continue
-        return line
-    return ""
+    """The memory's retention signature — delegated to the frontmatter-aware extractor.
+
+    Routes through :func:`reindex.signature_text` (#2746 nit-4) so the hot index, the
+    cold ``MEMORY_ARCHIVE.md`` index, and the retention probe share ONE extractor that
+    prefers the frontmatter ``description:`` over the weak ``node_type: memory`` body
+    line. The returned line stays a substring of the memory's text, so
+    ``snapshot.contains(signature)`` remains True (retention/interference stay green).
+    ``reindex`` imports neither ``gates`` nor ``decay``, so this edge adds no cycle.
+    """
+    from teatree.loops.dream import reindex  # noqa: PLC0415
+
+    return reindex.signature_text(text)
 
 
 def derive_probes(snapshot: MemorySnapshot) -> list[QaProbe]:

@@ -406,6 +406,16 @@
       "subcommands": []
     },
     {
+      "help": "``t3 <overlay> memory`` group root.",
+      "name": "memory",
+      "subcommands": [
+        {
+          "help": "Print the cold-tier memory rules most relevant to *query* (top *limit*)",
+          "name": "recall"
+        }
+      ]
+    },
+    {
       "help": "",
       "name": "mr_reminder",
       "subcommands": [

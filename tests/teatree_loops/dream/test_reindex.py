@@ -162,3 +162,72 @@ class ReindexTestCase(SimpleTestCase):
         index = render_index(self.dir)
         assert "mem_a.md" in index
         assert "broken.md" not in index
+
+
+class SignatureTextTestCase(SimpleTestCase):
+    """The shared frontmatter-aware signature extractor (#2746 nit-4).
+
+    ``signature_text`` is the ONE extractor the hot index, the cold
+    ``MEMORY_ARCHIVE.md`` index, and the retention probe all share. It prefers
+    the frontmatter ``description:``/``summary:`` over a node-type body line, so a
+    node-typed memory no longer yields the near-vacuous ``node_type: memory``
+    signature.
+    """
+
+    _NODE_TYPED = (
+        "---\nname: feedback_example\n"
+        "description: the lease guard rejects an empty owner address\n"
+        "metadata:\n  type: feedback\n---\n"
+        "node_type: memory\nsome trailing body content\n"
+    )
+
+    def test_frontmatter_description_preferred_over_node_type_body(self) -> None:
+        # The bug: the old scanner returned the body ``node_type: memory`` line.
+        assert reindex.signature_text(self._NODE_TYPED) == "the lease guard rejects an empty owner address"
+        assert "node_type" not in reindex.signature_text(self._NODE_TYPED)
+
+    def test_frontmatter_summary_preferred(self) -> None:
+        text = "---\nname: m\nsummary: a tight one-line lesson\n---\n# H\nbody"
+        assert reindex.signature_text(text) == "a tight one-line lesson"
+
+    def test_body_node_type_line_is_skipped_when_no_frontmatter_summary(self) -> None:
+        # No frontmatter description: the metadata ``node_type:`` line is skipped
+        # and the next real lesson line is the signature.
+        text = "---\nname: m\n---\nnode_type: memory\nthe actual recorded lesson\n"
+        assert reindex.signature_text(text) == "the actual recorded lesson"
+
+    def test_loose_metadata_lines_are_skipped(self) -> None:
+        # A file with no fenced frontmatter, leading metadata-ish key lines.
+        text = "name: mem_a\ntype: feedback\nthe load-bearing lesson A\n"
+        assert reindex.signature_text(text) == "the load-bearing lesson A"
+
+    def test_binding_heading_is_the_last_resort_signature(self) -> None:
+        # No frontmatter, no prose — only headings, one declaring a BINDING rule.
+        text = "---\nname: m\n---\n# Context\n## Non-Negotiable: never force-push main\n"
+        assert reindex.signature_text(text) == "Non-Negotiable: never force-push main"
+
+    def test_empty_when_no_signature_anywhere(self) -> None:
+        text = "---\nname: m\n---\n# Only A Heading\n## And Another\n"
+        assert reindex.signature_text(text) == ""
+
+    def test_signature_is_uncapped(self) -> None:
+        # Unlike the hot index line, the signature is never clipped.
+        long = "a long lesson " + "x" * 400
+        text = f"---\nname: m\ndescription: {long}\n---\nbody"
+        assert reindex.signature_text(text) == long
+        assert len(reindex.signature_text(text)) > reindex._LINE_MAX_CHARS
+
+    def test_returned_signature_is_a_substring_of_the_text(self) -> None:
+        # The retention contract: the signature stays findable in the body.
+        sig = reindex.signature_text(self._NODE_TYPED)
+        assert " ".join(sig.split()).lower() in " ".join(self._NODE_TYPED.split()).lower()
+
+    def test_summary_for_shares_signature_text_then_clips(self) -> None:
+        # The hot index summary is signature_text clipped to the per-summary cap.
+        long = "y" * 400
+        text = f"---\nname: m\ndescription: {long}\n---\nbody"
+        summary = reindex._summary_for(text)
+        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
+        assert summary.endswith("…")
+        # The cold signature stays uncapped for the same text.
+        assert len(reindex.signature_text(text)) > reindex._SUMMARY_MAX_CHARS

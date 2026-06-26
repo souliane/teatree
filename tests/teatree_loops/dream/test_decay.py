@@ -464,6 +464,42 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         on = self._decay(budget_tier=True)
         assert on.archived_count > 0, "tier on must archive the lowest-signal files"
 
+    def _seed_dense_multibyte(self, count: int, *, age_days: int = 120) -> None:
+        """Seed *count* stale low-signal files whose summaries are DENSE multibyte.
+
+        With ``_LINE_MAX_CHARS = 140`` a pure-ASCII index of ~149 lines is ≈21 KB —
+        under the 24 KB byte budget — so the LINE budget always trips first and the
+        BYTE branch is unreachable by ASCII alone. A summary of 3-byte UTF-8 chars
+        (``—``) makes each clipped 140-char line ≈350 bytes, so a sub-150-line index
+        can still blow the byte budget — the only way to exercise the byte branch.
+        """
+        dense = "—" * 200  # U+2014 em-dash, 3 bytes/char
+        for i in range(count):
+            self._write(f"feedback_mb_{i:04d}", dense, age_days=age_days)
+
+    def test_over_byte_budget_under_line_budget_archives_until_under_byte_budget(self) -> None:
+        # #2723 nit-3: the byte branch of the budget tier, reachable ONLY via
+        # multibyte summaries (an ASCII index of <150 lines is always under 24 KB).
+        self._seed_dense_multibyte(90)
+        self._seed_index()
+        before = reindex.render_index(self.dir)
+        before_lines = sum(1 for line in before.splitlines() if line.strip())
+        before_bytes = len(before.encode("utf-8"))
+        assert before_lines <= gates.INDEX_LINE_BUDGET, "the LINE budget must NOT be the trigger"
+        assert before_bytes > gates.INDEX_BYTE_BUDGET, "the BYTE budget must be exceeded"
+
+        result = self._decay(budget_tier=True)
+        assert result.archived_count > 0
+
+        # Re-render the survivor index the way the re-index phase will write it.
+        after = reindex.render_index(self.dir)
+        after_lines = sum(1 for line in after.splitlines() if line.strip())
+        after_bytes = len(after.encode("utf-8"))
+        assert after_bytes <= gates.INDEX_BYTE_BUDGET, "the byte branch must archive until under the byte budget"
+        assert after_lines < gates.INDEX_LINE_BUDGET, "lines stayed under the line budget throughout"
+        after_snapshot = gates.MemorySnapshot.build(memories={}, index_text=after)
+        assert gates.Gate.index_budget(after_snapshot).passed
+
     def test_referenced_files_are_never_archived_even_when_budget_cannot_be_met(self) -> None:
         # A hub links every filler, so the filler are all referenced (inviolable). Even
         # over budget the tier archives ONLY the unreferenced hub and exhausts its walk
@@ -544,6 +580,23 @@ class SignalScoreTestCase(SimpleTestCase):
             encoding="utf-8",
         )
         assert decay._cold_index_line(headings_only) == "- feedback_headings.md"  # no prose -> pointer only
+
+    def test_cold_index_line_carries_frontmatter_description_not_node_type(self) -> None:
+        # #2746 nit-4: an archived node-typed memory's cold-index signature is its
+        # real frontmatter description, NOT the body ``node_type: memory`` line.
+        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        archived = d / "feedback_kind_marker.md"
+        archived.write_text(
+            "<!-- archived by dream decay 2026-06-16: over-budget; original mtime 2026-01-01 -->\n"
+            "---\nname: feedback_kind_marker\n"
+            "description: the lease guard rejects an empty owner address\n"
+            "metadata:\n  type: feedback\n---\n"
+            "node_type: memory\ntrailing body\n",
+            encoding="utf-8",
+        )
+        line = decay._cold_index_line(archived)
+        assert line == "- feedback_kind_marker.md — the lease guard rejects an empty owner address"
+        assert "node_type" not in line
 
     def test_rebuild_cold_index_noop_when_archive_absent_or_yields_no_lines(self) -> None:
         d = Path(self.enterContext(tempfile.TemporaryDirectory()))

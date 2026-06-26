@@ -326,4 +326,11 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "memory": DjangoGroup(
+        "Cold-tier memory recall (#2746).",
+        [
+            ("recall", "Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a query (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
 }

@@ -54,11 +54,13 @@ from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+from memory_recall import handle_recall_cold_memory
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
@@ -440,35 +442,6 @@ class _BreakerDecision:
 
     allow: bool
     reason: str
-
-
-def _teatree_bool_setting(name: str, *, default: bool = True) -> bool:
-    """Best-effort read of a ``[teatree] <name>`` boolean flag from ``~/.teatree.toml``.
-
-    The single shared shape behind every ``[teatree] <flag>_enabled`` reader:
-    fails to ``default`` on a missing/broken config, a missing ``[teatree]``
-    table, a missing key, or a non-boolean value, and returns the configured
-    value only when it is a bare TOML boolean. So only a bare boolean ``false``
-    disables a ``default=True`` flag and only a bare boolean ``true`` enables a
-    ``default=False`` one — a QUOTED ``"false"`` / ``"true"`` (a string, not a
-    bool) is ignored and the default stands. An explicit bare boolean is the
-    one-line kill-switch / opt-in, never a code edit (NEVER-LOCKOUT).
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return default
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return default
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return default
-    value = teatree.get(name)
-    return value if isinstance(value, bool) else default
 
 
 def _deny_circuit_breaker_enabled() -> bool:
@@ -8270,6 +8243,9 @@ _HANDLERS: dict[str, list] = {
         handle_inject_pending_questions,
         handle_inject_pending_chat,
         handle_user_prompt_submit,
+        # LAST: cold-tier memory recall injection (#2746) — runs after skill
+        # loading so it never delays the load-first suggestion.
+        handle_recall_cold_memory,
     ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,

@@ -216,6 +216,14 @@ List DB-configured autonomous loops (read-only; #1796).
 
 Run one master tick: run every enabled, due loop (DB-configured); render statusline.
 
+## `memory`
+
+``t3 <overlay> memory`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `recall` | Print the cold-tier memory rules most relevant to *query* (top *limit*) |
+
 ## `mr_reminder`
 
 | Subcommand | Description |
