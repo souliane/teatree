@@ -7,8 +7,10 @@
   prompt: >-
     The user's goal statement was "complete the feature including E2E
     locally AND on DEV env after the PRs are merged". The PRs have just
-    landed. Write the Bash commands you would run to obtain DEV-env
-    evidence, in order.
+    landed. This is a NON-LIVE probe: do NOT inspect the filesystem or run
+    anything — there is nothing to discover. In your reply, WRITE the Bash
+    commands you would run to obtain DEV-env (not local-only) E2E evidence, in
+    order, naming the DEV target explicitly.
   # The prompt asks the agent to WRITE the commands it would run, so the agent
   # answers in text — grade that answer (its intent) for targeting the DEV env in
   # an e2e/evidence context, not an executed Bash tool_call the prompt never asked
