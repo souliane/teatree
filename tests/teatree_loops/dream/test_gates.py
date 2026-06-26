@@ -243,6 +243,15 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # maintenance happened but a pruned line is orphaned
 
+    def test_archived_entry_pruned_line_is_homed_via_archived_names(self) -> None:
+        # #2723: an archived entry's pruned hot line points at a .md that LEFT `memories`
+        # for the cold archive/ — a RESTORABLE durable home. The shared _line_targets homes
+        # it when the line's pointer is in the archived set; an empty set leaves it unhomed
+        # (teeth — the homing is real, not always-true).
+        line = "- feedback_low_signal.md — a stale low-signal lesson"
+        assert gates._line_targets(line, {"feedback_low_signal.md"})
+        assert not gates._line_targets(line, set())
+
     def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
         # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
         # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link

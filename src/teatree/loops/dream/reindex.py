@@ -23,16 +23,23 @@ pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 _INDEX_NAME = "MEMORY.md"
 
+#: The COLD archive index (#2723), written by the decay phase in the MAIN memory dir.
+#: It is NEVER re-indexed into the hot ``MEMORY.md`` — excluded here exactly like the
+#: hot index — so its one-line-per-archived-entry signatures do not re-bloat the index.
+_ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
+
 #: Per-summary clip and per-line cap (#2723). The summary is clipped first; the
-#: whole line is then capped so a long filename plus a long summary can never
-#: blow the per-line budget. Sized so ~150 lines fit the ~24 KB index budget.
-_SUMMARY_MAX_CHARS = 120
-_LINE_MAX_CHARS = 160
+#: whole line is then capped so a long filename plus a long summary can never blow
+#: the per-line budget. Sized so even a long-filename line fits 140 chars and ~150
+#: such lines stay under the ~24 KB session-load budget gate (d) enforces.
+_SUMMARY_MAX_CHARS = 110
+_LINE_MAX_CHARS = 140
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -95,26 +102,46 @@ def _index_line(md: Path, summary: str) -> str:
     return f"- {md.name} — {summary[:keep].rstrip()}…"
 
 
+def index_line_for(name: str, text: str) -> str:
+    """The single ``MEMORY.md`` index line for one memory — the pure per-file renderer.
+
+    Exposed so the decay phase can PROJECT the post-archival index byte-for-byte the
+    way the re-index will render it (#2723), keeping the budget-tier stop condition
+    exact w.r.t. the gate-(d) line / byte budget.
+    """
+    return _index_line(Path(name), _summary_for(text))
+
+
+def render_index_lines(lines: Iterable[str]) -> str:
+    """Wrap already-rendered per-memory index *lines* with the standard preamble.
+
+    The pure tail of :func:`render_index`, exposed so the decay phase can render the
+    projected (post-archival) index exactly as it will be written.
+    """
+    body = "\n".join(lines)
+    return f"{_HEADER}{body}\n" if body else _HEADER
+
+
 def render_index(memory_dir: Path) -> str:
     """Render the full ``MEMORY.md`` text for the current memory set (deterministic).
 
     Lines are deduped by filename and stably ordered (filename sort), so the
     output is a pure function of the memory set's content — a re-run with no
-    changes renders the identical string.
+    changes renders the identical string. Both the hot ``MEMORY.md`` and the cold
+    ``MEMORY_ARCHIVE.md`` are excluded so neither index re-bloats the hot index.
     """
     seen: set[str] = set()
     lines: list[str] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name == _INDEX_NAME or md.name in seen:
+        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME} or md.name in seen:
             continue
         seen.add(md.name)
         try:
             text = md.read_text(encoding="utf-8")
         except OSError:
             continue
-        lines.append(_index_line(md, _summary_for(text)))
-    body = "\n".join(lines)
-    return f"{_HEADER}{body}\n" if body else _HEADER
+        lines.append(index_line_for(md.name, text))
+    return render_index_lines(lines)
 
 
 def reindex_memory(memory_dir: Path, *, dry_run: bool = False) -> ReindexResult:
@@ -140,4 +167,4 @@ def _count_lines(rendered: str) -> int:
     return sum(1 for line in rendered.splitlines() if line.startswith("- "))
 
 
-__all__ = ["ReindexResult", "reindex_memory", "render_index"]
+__all__ = ["ReindexResult", "index_line_for", "reindex_memory", "render_index", "render_index_lines"]

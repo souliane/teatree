@@ -47,7 +47,7 @@ the run attempted-not-succeeded (staleness keeps firing).
 
 import hashlib
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -187,15 +187,16 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).lower()
 
 
-def _line_targets_live_memory(line: str, snapshot: MemorySnapshot) -> bool:
-    """Whether a pruned index *line* still points at a memory file present after the pass.
+def _line_targets(line: str, names: Container[str]) -> bool:
+    """Whether a pruned index *line*'s leading ``.md`` pointer is one of *names*.
 
-    The re-index phase rewrites an index line whenever a curated summary is
-    clipped/reworded — the line TEXT changes but the pointer (and its memory
-    file) survives. Such a line is NOT a lost lesson, so it must count as homed;
-    only a pointer to a memory that actually vanished stays unhomed.
+    The shared homing test — a pruned line is NOT a lost lesson when its pointer targets a
+    memory still present after the pass (re-index merely reworded the summary) OR a file
+    archived this pass (a restorable durable home in ``archive/`` + the cold
+    ``MEMORY_ARCHIVE.md``, #2723, resolving the #2546 transfer-before-prune tension). Keys
+    on the line-leading pointer only, never a ``.md`` token in the free-text summary.
     """
-    return any(ref in snapshot.memories for ref in _MEMORY_REF_RE.findall(line))
+    return any(ref in names for ref in _MEMORY_REF_RE.findall(line))
 
 
 def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
@@ -341,7 +342,7 @@ class Gate:
         unhomed = sorted(
             line
             for line in pruned_lines
-            if line not in homed_index_lines and not _line_targets_live_memory(line, snapshot_after)
+            if line not in homed_index_lines and not _line_targets(line, snapshot_after.memories)
         )
         consolidated = size_reduced or schema_grew or distilled or maintenance_performed
         passed = consolidated and not unhomed
@@ -524,7 +525,8 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     BEFORE snapshot, reads the recorded prior-session pass-rate as the monotonicity
     / interference baseline, computes the durable-home set for the consolidation
     gate as the pruned index lines whose lesson is still findable in the AFTER
-    snapshot (transfer-before-prune), threads the caller's *maintenance_performed*
+    snapshot (transfer-before-prune) OR whose pointer targets a file archived this
+    pass (a restorable durable home, #2723), threads the caller's *maintenance_performed*
     signal (file-side phases did real cross-link / re-index / decay work) into the
     consolidation gate so a quiet 0-cluster maintenance pass still counts as
     consolidation, runs all seven gates, and — unless *persist* is
@@ -539,7 +541,8 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     prior_rate, had_prior = _prior_pass_rate(overlay)
     now_rate = _pass_rate(probes, snapshot_after, None)
     pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
-    homed_index_lines = {line for line in pruned_lines if snapshot_after.contains(line)}
+    archived_names = {a.source.name for a in archived}
+    homed_index_lines = {ln for ln in pruned_lines if snapshot_after.contains(ln) or _line_targets(ln, archived_names)}
     remediations = compliance_remediations if compliance_remediations is not None else _compliance_remediations(overlay)
     report = evaluate_gates(
         snapshot_before=snapshot_before,
