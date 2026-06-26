@@ -96,19 +96,23 @@ def handle_recall_cold_memory(data: dict) -> None:
     """Inject the recall block for the prompt's relevant cold-tier rules (if any).
 
     Fail-silent on every path: a disabled kill-switch, an unimportable core, no
-    resolvable cold-index dir, or any scoring error all inject nothing.
+    resolvable cold-index dir, or any scoring error all inject nothing. The WHOLE
+    body — the kill-switch read and the dir resolution included — is wrapped, so a
+    misbehaving config reader or a path resolver on a hostile payload can never
+    traceback out of this UserPromptSubmit leaf.
     """
     if not isinstance(data, dict):
         return
-    if not _memory_recall_enabled():
-        return
-    recall = _load_recall()
-    if recall is None:
-        return
-    memory_dir = _project_memory_dir(data, recall.COLD_INDEX_NAME)
-    if memory_dir is None:
-        return
+    block = ""
     try:
+        if not _memory_recall_enabled():
+            return
+        recall = _load_recall()
+        if recall is None:
+            return
+        memory_dir = _project_memory_dir(data, recall.COLD_INDEX_NAME)
+        if memory_dir is None:
+            return
         hits = recall.recall_cold_memory(memory_dir, data.get("prompt", ""))
         block = recall.render_recall_block(hits)
     except Exception:  # noqa: BLE001 — UserPromptSubmit hook must be crash-proof.

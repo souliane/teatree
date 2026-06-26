@@ -14,8 +14,11 @@ the cap), so the index stays under the session-load budget gate (d) enforces
 (#2723).
 
 The regeneration is PURE and idempotent: the summary of each memory is derived
-deterministically (its frontmatter ``summary``/``description``, else its first
-non-heading prose line, clipped), lines are deduped by target filename and
+deterministically by the shared :func:`signature_text` extractor — its
+frontmatter ``description``/``summary``, else its first substantive non-heading
+body line (metadata ``key:`` lines such as ``node_type: memory`` are skipped so
+the real lesson is lifted, not the type marker), else its first BINDING /
+Non-Negotiable line — then clipped. Lines are deduped by target filename and
 stably ordered (filename sort), and a header preamble is preserved. A re-run on
 an unchanged memory set produces a BYTE-IDENTICAL file — the property the test
 pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit

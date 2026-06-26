@@ -52,6 +52,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.loops.dream import reindex
+
 if TYPE_CHECKING:
     from teatree.loops.dream.decay import ArchivedMemory
 
@@ -229,10 +231,9 @@ def _signature_line(text: str) -> str:
     prefers the frontmatter ``description:`` over the weak ``node_type: memory`` body
     line. The returned line stays a substring of the memory's text, so
     ``snapshot.contains(signature)`` remains True (retention/interference stay green).
-    ``reindex`` imports neither ``gates`` nor ``decay``, so this edge adds no cycle.
+    ``reindex`` imports neither ``gates`` nor ``decay`` (stdlib only), so the
+    module-level import edge adds no cycle.
     """
-    from teatree.loops.dream import reindex  # noqa: PLC0415
-
     return reindex.signature_text(text)
 
 

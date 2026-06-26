@@ -92,6 +92,20 @@ class TestDedupeAgainstHot(RecallTestCase):
         self._hot("- feedback_new_name.md — always create a worktree before editing project files")
         assert recall_cold_memory(self.dir, "create a worktree before editing project files") == []
 
+    def test_long_signature_clipped_in_hot_is_still_deduped(self) -> None:
+        # A cold signature LONGER than the hot summary clip lives in the hot index
+        # under a DIFFERENT name, where the reindex phase clipped it to ~110 chars.
+        # The prefix-bounded renamed-file guard must still recognise it as already
+        # loaded and drop the cold entry (a verbatim substring check would miss it).
+        long_sig = (
+            "always create a worktree before editing any project file and never edit "
+            "on a shared branch under any circumstance whatsoever in this repository today"
+        )
+        assert len(long_sig) > recall._HOT_SUMMARY_MAX_CHARS
+        self._cold(f"- feedback_cold_name.md — {long_sig}")
+        self._hot(f"- feedback_hot_name.md — {long_sig[: recall._HOT_SUMMARY_MAX_CHARS]}")
+        assert recall_cold_memory(self.dir, "create a worktree before editing any project file") == []
+
 
 class TestCap(RecallTestCase):
     def test_at_most_recall_limit_hits(self) -> None:
@@ -99,7 +113,7 @@ class TestCap(RecallTestCase):
             *[f"- feedback_worktree_{i}.md — always create a worktree before editing files {i}" for i in range(20)]
         )
         hits = recall_cold_memory(self.dir, "create a worktree before editing project files")
-        assert len(hits) <= RECALL_LIMIT
+        assert len(hits) == RECALL_LIMIT
 
     def test_block_within_byte_budget_and_lines_clipped(self) -> None:
         long_sig = "always create a worktree before editing " + "x" * 400
@@ -112,14 +126,23 @@ class TestCap(RecallTestCase):
 
 
 class TestBindingAndUserBoost(RecallTestCase):
-    def test_binding_outranks_plain_at_equal_base_match(self) -> None:
+    def test_binding_boost_lifts_lower_base_above_higher_base_plain(self) -> None:
+        # Isolate the +3 BINDING boost: the plain entry matches MORE query tokens
+        # (strictly higher base) than the BINDING entry, yet the boost lifts the
+        # BINDING entry above it. Names carry no query token, so base == distinct
+        # signature matches only.
         self._cold(
-            "- feedback_plain_rule.md — review the worktree project layout note",
-            "- feedback_binding_rule.md — BINDING review the worktree project layout always",
+            "- feedback_plain.md — review worktree layout note",  # base 3
+            "- feedback_binding.md — BINDING review worktree directive",  # base 2, +3
         )
-        hits = recall_cold_memory(self.dir, "review the worktree project layout")
-        assert hits[0].name == "feedback_binding_rule.md"
+        hits = recall_cold_memory(self.dir, "review worktree layout config")
+        assert hits[0].name == "feedback_binding.md"
         assert hits[0].binding is True
+        plain = next(hit for hit in hits if hit.name == "feedback_plain.md")
+        # The plain entry has the strictly higher base (3 > 2); only the +3 boost
+        # flips the order, so score == base + 3 for the BINDING winner.
+        assert plain.score == 3
+        assert hits[0].score == 5
 
     def test_user_prefixed_entry_is_boosted(self) -> None:
         self._cold(
@@ -142,6 +165,16 @@ class TestRelevanceFloor(RecallTestCase):
         # One shared signature token (no name overlap) -> base 1 < floor -> dropped.
         self._cold("- feedback_misc.md — a note about reactions and colors and rendering")
         hits = recall_cold_memory(self.dir, "reactions in an otherwise totally different sentence")
+        assert hits == []
+
+    def test_single_name_token_only_overlap_is_no_hit(self) -> None:
+        # REGRESSION (#2746 blocker): the query's ONLY overlap with the entry is a
+        # single FILENAME token ("review") — the signature shares nothing. The old
+        # scorer double-counted that one name token (entry-overlap PLUS name-overlap)
+        # to fake-clear the floor of 2 and surface the rule. The floor must count
+        # DISTINCT tokens, so a single name token is below it and the entry is dropped.
+        self._cold("- feedback_review_crew.md — slack reaction rendering colors note")
+        hits = recall_cold_memory(self.dir, "review the kubernetes deployment manifest")
         assert hits == []
 
     def test_two_distinct_tokens_clear_the_floor(self) -> None:

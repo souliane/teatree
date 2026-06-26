@@ -33,6 +33,7 @@ from pathlib import Path
 # (stdlib only), so importing them keeps this core hook-importable without Django.
 from teatree.loops.dream.decay import _ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
 from teatree.loops.dream.reindex import _INDEX_NAME as HOT_INDEX_NAME
+from teatree.loops.dream.reindex import _SUMMARY_MAX_CHARS as _HOT_SUMMARY_MAX_CHARS
 
 #: Max hits surfaced per turn.
 RECALL_LIMIT = 5
@@ -76,6 +77,12 @@ _BINDING_MARKERS = ("binding", "non-negotiable")
 #: Per-match additive boosts, applied ONLY once a hit clears the relevance floor.
 _BINDING_BOOST = 3
 _USER_BOOST = 2
+
+#: Dedup-prefix length for the renamed-file guard. The hot index clips a summary to
+#: ``_HOT_SUMMARY_MAX_CHARS`` (then rstrips one trailing space), so a long cold
+#: signature is never a verbatim substring of the hot text — compare a prefix bounded
+#: just under that clip so a clipped, renamed rule is still recognised as already hot.
+_DEDUP_PREFIX_CHARS = _HOT_SUMMARY_MAX_CHARS - 2
 
 #: A small high-frequency stopword set dropped from query tokens so common words
 #: never inflate a match. Sub-3-char tokens are dropped separately.
@@ -164,6 +171,10 @@ def _strip_ambient(prompt: str) -> str:
     """Drop harness-injected ``<system-reminder>`` / ``<command-*>`` blocks from *prompt*."""
     capped = prompt[:_QUERY_MAX_CHARS]
     stripped = _AMBIENT_CONTEXT_RE.sub(" ", capped)
+    # An UNTERMINATED open tag drops from the tag to end-of-string — so an unterminated
+    # <system-reminder> mention in a genuine prompt truncates the rest of the query.
+    # Intentional, mirrors hook_router._strip_ambient_context: leaked ambient text must
+    # never reach the matcher, and genuine intent sits early (the harness appends blocks).
     return _AMBIENT_OPEN_RE.sub(" ", stripped)
 
 
@@ -210,20 +221,22 @@ def _is_binding(signature: str) -> bool:
 def _score(query_tokens: set[str], name: str, signature: str) -> tuple[int, bool]:
     """Score one cold entry against *query_tokens*; return ``(score, binding)``.
 
-    ``base`` = distinct query tokens found in the entry (name union signature)
-    PLUS ``+1`` for each that also hit a NAME token (the filename is a curated topic
-    identifier, so a name overlap weighs double). Only once ``base`` clears
-    :data:`RECALL_MIN_TOKEN_MATCHES` are the boosts added: ``+3`` for a BINDING /
-    Non-Negotiable signature and ``+2`` for a ``user_*`` name. Below the floor the
-    score is ``0`` (dropped) — an irrelevant BINDING rule is never surfaced.
+    The relevance FLOOR counts DISTINCT matched tokens across the entry (name and
+    signature): a hit needs at least :data:`RECALL_MIN_TOKEN_MATCHES` distinct tokens,
+    so a single incidental token — even one that happens to be a filename token — never
+    surfaces a rule. Below the floor the score is ``0`` (dropped). Only POST-floor does a
+    NAME-token match add weight: ``+1`` per matched name token (the filename is a curated
+    topic identifier, so it double-weights for RANKING), then ``+3`` for a BINDING /
+    Non-Negotiable signature and ``+2`` for a ``user_*`` name. The name weight and the
+    boosts affect ranking only — never whether an entry clears the floor.
     """
     name_tokens = _tokens(name)
     entry_tokens = name_tokens | _tokens(signature)
     binding = _is_binding(signature)
-    base = len(query_tokens & entry_tokens) + len(query_tokens & name_tokens)
-    if base < RECALL_MIN_TOKEN_MATCHES:
+    distinct = len(query_tokens & entry_tokens)
+    if distinct < RECALL_MIN_TOKEN_MATCHES:
         return 0, binding
-    score = base
+    score = distinct + len(query_tokens & name_tokens)
     if binding:
         score += _BINDING_BOOST
     if name.lower().startswith("user_"):
@@ -253,8 +266,25 @@ def render_recall_block(hits: Sequence[RecallHit]) -> str:
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8") if path.is_file() else ""
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A corrupt / non-UTF-8 index honors the "returns '' on error" contract —
+        # UnicodeDecodeError is a ValueError, NOT an OSError, so catch it explicitly.
         return ""
+
+
+def _signature_in_hot(normalized_sig: str, hot_norm: str) -> bool:
+    """Whether the cold *normalized_sig* is already present in the hot index text.
+
+    The renamed-file guard: a rule moved to a DIFFERENT hot filename. The hot index
+    clips its summary, so a long cold signature is never a verbatim substring of the
+    hot text — compare a :data:`_DEDUP_PREFIX_CHARS` prefix (bounded just under the hot
+    clip) so a clipped, renamed rule is still recognised as already loaded. A short
+    signature compares in full. Empty signatures never match (they would match every
+    hot text).
+    """
+    if not normalized_sig:
+        return False
+    return normalized_sig[:_DEDUP_PREFIX_CHARS] in hot_norm
 
 
 def recall_cold_memory(
@@ -294,8 +324,7 @@ def recall_cold_memory(
         score, binding = _score(query_tokens, name, signature)
         if score == 0:
             continue  # below the relevance floor
-        normalized_sig = _normalize(signature)
-        if normalized_sig and normalized_sig in hot_norm:
+        if _signature_in_hot(_normalize(signature), hot_norm):
             continue  # renamed-file guard: the lesson already lives in the hot index
         candidates.append(RecallHit(name=name, signature=signature, score=score, binding=binding))
 
