@@ -53,6 +53,28 @@ class ReindexTestCase(SimpleTestCase):
         assert reindex._SUMMARY_MAX_CHARS <= 120
         assert summary.endswith("…")
 
+    def test_line_max_chars_pinned_to_140_and_hot_lines_capped(self) -> None:
+        # #2723: the hot per-line cap is 140 (was 160) so `- <name>.md — <summary>` fits
+        # even with a long filename. The cold MEMORY_ARCHIVE.md is uncapped — that is
+        # decay's concern, pinned in test_decay.py::...::test_cold_index_signature_is_uncapped.
+        assert reindex._LINE_MAX_CHARS == 140
+        self._write("mem_long", f"---\nname: mem_long\nsummary: {'z' * 400}\n---\nbody")
+        index = render_index(self.dir)
+        hot_lines = [line for line in index.splitlines() if line.startswith("- ")]
+        assert hot_lines
+        for line in hot_lines:
+            assert len(line) <= 140
+
+    def test_archive_index_is_not_re_indexed_into_the_hot_index(self) -> None:
+        # #2723: MEMORY_ARCHIVE.md lives in the memory dir but must never appear as a
+        # hot index line (it is the cold index, excluded exactly like MEMORY.md).
+        self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
+        (self.dir / "MEMORY_ARCHIVE.md").write_text("# cold\n- archived_x.md — a signature\n", encoding="utf-8")
+        index = render_index(self.dir)
+        assert "MEMORY_ARCHIVE.md" not in index
+        assert "archived_x.md" not in index
+        assert "mem_a.md" in index
+
     def test_whole_line_is_capped(self) -> None:
         # #2723: the WHOLE line (filename + summary) is capped, so a long filename
         # plus a long summary can never blow the per-line byte budget. The pointer

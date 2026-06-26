@@ -153,8 +153,9 @@ class MemoryPhaseRunner:
         """Run phase-6 decay per dir under fault isolation, returning its summary + archives.
 
         The budget tier is enabled (#2723): when ``MEMORY.md`` is over the load budget,
-        decay ALSO archives old, unreferenced, duplicated files the (empty) ledger
-        home-rail can never reach — the reachable on-disk RETIRE for the curated corpus.
+        decay ALSO archives the LOWEST-signal files the (empty) ledger home-rail can never
+        reach — the reachable on-disk RETIRE for the curated corpus, just enough to bring
+        the hot index back under budget while their signatures persist in MEMORY_ARCHIVE.md.
         """
         from teatree.loops.dream import decay  # noqa: PLC0415
         from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
