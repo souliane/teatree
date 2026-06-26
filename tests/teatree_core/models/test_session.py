@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import QualityGateError, Session, Ticket
+from teatree.core.models import QualityGateError, Session, SessionNotFound, Ticket
 
 
 class TestSession(TestCase):
@@ -199,3 +199,9 @@ class TestSession(TestCase):
         assert session.repos_modified == ["backend", "frontend"]
         assert session.repos_tested == ["backend"]
         assert session.untested_repos() == ["frontend"]
+
+    def test_get_active_session_raises_when_no_active_session(self) -> None:
+        ticket = Ticket.objects.create()
+
+        with pytest.raises(SessionNotFound):
+            Session.objects.get_active_session(ticket.pk)

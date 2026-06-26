@@ -136,6 +136,14 @@ class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
     def for_agent(self, agent_id: str) -> models.QuerySet:
         return self.filter(agent_id=agent_id).order_by("pk")
 
+    def get_active_session(self, ticket_id: int) -> "models.Model":
+        from teatree.core.models.errors import SessionNotFound  # noqa: PLC0415
+
+        session = self.filter(ticket_id=ticket_id, ended_at__isnull=True).order_by("-pk").first()
+        if session is None:
+            raise SessionNotFound(ticket_id)
+        return session
+
 
 class IncomingEventQuerySet(models.QuerySet):
     def unprocessed(self) -> models.QuerySet:

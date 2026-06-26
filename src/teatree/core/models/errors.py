@@ -2,6 +2,10 @@ class InvalidTransitionError(ValueError):
     pass
 
 
+class SessionNotFound(LookupError):  # noqa: N818
+    pass
+
+
 class NoPlanArtifactError(InvalidTransitionError):
     """plan() was attempted without a PlanArtifact record for the ticket."""
 

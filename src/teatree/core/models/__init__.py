@@ -18,7 +18,13 @@ from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
-from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
+from teatree.core.models.errors import (
+    DirtyWorktreeError,
+    InvalidTransitionError,
+    NoPlanArtifactError,
+    QualityGateError,
+    SessionNotFound,
+)
 from teatree.core.models.eval_run import (
     CostRegression,
     EvalRunRecord,
@@ -191,6 +197,7 @@ __all__ = [
     "Session",
     "SessionAuditRecord",
     "SessionHandover",
+    "SessionNotFound",
     "Severity",
     "Task",
     "TaskAttempt",
