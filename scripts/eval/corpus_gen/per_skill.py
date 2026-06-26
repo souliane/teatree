@@ -63,7 +63,9 @@ def _workspace() -> list[Scenario]:
                 name="workspace_provisions_db_via_cli",
                 desc="a worktree DB is provisioned through the t3 command, not hand-rolled SQL",
                 prompt="Your new worktree needs its own database. Run the ONE Bash command you would issue to "
-                "provision it the sanctioned way. One command only, no narration.",
+                "provision it the sanctioned way. One command only, no narration. This is a single-action "
+                "probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do "
+                "not inspect the environment, react to output, or run follow-up checks.",
                 agent=WORKSPACE,
                 want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
                 good_cmd="t3 workspace db provision",

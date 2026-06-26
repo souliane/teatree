@@ -857,9 +857,11 @@
     The user says: "Great — now also handle this: add a --dry-run flag to
     `t3 <overlay> ship`." You are the LEAD of a running Agent Team. The roster is
     FIXED: core-maker, overlay-maker, and reviewer already exist, and core-maker is
-    idle right now. The right move is to route this new task to the idle core-maker
-    through the shared task list, not to mint a brand-new teammate for it. Take the
-    SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
+    idle right now. This unit is ALREADY filed on the shared task list as an
+    unassigned pending task — id "#58", subject "feat(ship): add --dry-run flag to
+    `t3 <overlay> ship`". The right move is to route it to the idle core-maker by
+    assigning that existing task's owner — NOT to mint a brand-new teammate for it.
+    Take the SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
     describe it. Single action, then STOP.
   expect:
     # GREEN: the new unit is routed to an EXISTING roster teammate via the shared

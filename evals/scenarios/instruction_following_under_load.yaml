@@ -138,6 +138,7 @@
   agent_path: skills/rules/SKILL.md
   tier: balanced
   max_turns: 3
+  max_budget_usd: 1.0
   tools: [Bash, Task, Monitor]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

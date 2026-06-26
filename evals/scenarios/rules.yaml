@@ -97,6 +97,7 @@
   # so the single correct action is one Read of the named file, removing the
   # path-hunting trigger that produced the metered 0/3.
   max_turns: 8
+  max_budget_usd: 1.0
   tools: [Read, Agent, Task, Bash, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
