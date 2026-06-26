@@ -281,9 +281,12 @@ class BudgetDecayTierTestCase(SimpleTestCase):
     files. This tier fires only when ``MEMORY.md`` is over the session-load budget and
     then archives the LOWEST-:func:`~decay._signal_score` files first — just enough to
     bring the projected hot index back under budget. A user / BINDING entry scores
-    highest and is archived only if the budget forces it; a referenced file is never
-    archived; every archived entry keeps its full signature in the cold
-    ``MEMORY_ARCHIVE.md`` (restorable). Exercised DB-free with a no-ledger-home resolver.
+    highest and is archived only if the budget forces it. A referenced file is NOT
+    hard-retained by this tier (#2753) — the +40-per-inbound-link signal ranks it higher
+    so it is archived LAST, but it IS archived when the budget genuinely forces it (the
+    cross-link phase references most of the corpus, so a hard skip could never converge);
+    every archived entry keeps its full signature in the cold ``MEMORY_ARCHIVE.md``
+    (restorable). Exercised DB-free with a no-ledger-home resolver.
     """
 
     def setUp(self) -> None:
@@ -434,15 +437,23 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         assert fresh.name not in self._archived_sources(result)
         assert fresh.exists()
 
-    def test_referenced_file_is_retained_even_over_budget(self) -> None:
-        # A file another memory [[link]]s is never archived even when low-signal + over budget.
+    def test_referenced_file_is_archived_when_budget_forces_it(self) -> None:
+        # #2753: a [[link]]ed file is no longer HARD-retained by the budget tier — the +40
+        # inbound-link signal ranks it higher (archived last), but it IS archived when the
+        # budget genuinely forces it. Here the referenced target is the OLDEST (recency
+        # floored to 0), so even with its inbound link it is the lowest signal and is
+        # archived first — its full signature survives in the cold MEMORY_ARCHIVE.md.
         self._seed_low_signal(160)
         target = self._write("feedback_referenced", "an old but referenced lesson", age_days=400)
         self._write("feedback_linker", "see [[feedback_referenced]] for the detail", age_days=1)
         self._seed_index()
         result = self._decay(budget_tier=True)
-        assert target.name not in self._archived_sources(result)
-        assert target.exists()
+        assert target.name in self._archived_sources(result)
+        assert not target.exists()
+        assert self._rendered_line_count() <= gates.INDEX_LINE_BUDGET  # converged under budget
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8")
+        assert "feedback_referenced.md" in cold
+        assert "an old but referenced lesson" in cold
 
     def test_malformed_lesson_updated_falls_back_to_mtime(self) -> None:
         # A garbage lesson_updated value falls back to st_mtime -> low recency -> archivable.
@@ -500,18 +511,78 @@ class BudgetDecayTierTestCase(SimpleTestCase):
         after_snapshot = gates.MemorySnapshot.build(memories={}, index_text=after)
         assert gates.Gate.index_budget(after_snapshot).passed
 
-    def test_referenced_files_are_never_archived_even_when_budget_cannot_be_met(self) -> None:
-        # A hub links every filler, so the filler are all referenced (inviolable). Even
-        # over budget the tier archives ONLY the unreferenced hub and exhausts its walk
-        # without touching a referenced file — references win over the budget.
+    def test_referenced_files_are_archived_to_converge_when_every_entry_is_linked(self) -> None:
+        # #2753 regression: a hub links every filler, so EVERY filler is referenced. Pre-fix
+        # the budget tier hard-skipped referenced files and could NEVER converge (the real
+        # corpus bug). The fix archives referenced low-signal files too — just enough to
+        # bring the index back under budget — so the tier always converges.
         self._seed_low_signal(160)
         links = " ".join(f"[[feedback_filler_{i:04d}]]" for i in range(160))
         self._write("feedback_hub", f"a hub that links everything {links}", age_days=400)
         self._seed_index()
         result = self._decay(budget_tier=True)
         archived = self._archived_sources(result)
-        assert "feedback_hub.md" in archived  # the unreferenced hub is archivable
-        assert not any(name.startswith("feedback_filler") for name in archived)  # every referenced file survives
+        assert result.archived_count > 0
+        assert any(name.startswith("feedback_filler") for name in archived)  # referenced fillers ARE archived now
+        assert self._rendered_line_count() <= gates.INDEX_LINE_BUDGET  # converged (RED pre-fix: stayed over)
+
+    def _seed_cross_linked_corpus(self) -> tuple[Path, Path, Path, Path]:
+        """Seed a >150-file over-budget corpus where MOST entries are [[ ]]-cross-link-referenced.
+
+        200 plain feedback fillers form a reference RING (each links the next, the last
+        links the first) so EVERY filler is referenced; the first 30 also link a hub, so
+        the hub is the MOST-LINKED entry. A user memory and a BINDING memory are the
+        highest-signal entries (unreferenced — to make the pre-fix bug stark: the old
+        budget tier could only archive the unreferenced high-signal entries, the exact
+        wrong ones, and still never converge). Ages are spread so recency strictly
+        decreases (no ties), making the OLDEST ring filler the lowest signal. Returns
+        ``(user, binding, hub, oldest_filler)``.
+        """
+        n = 200
+        for i in range(n):
+            nxt = (i + 1) % n
+            hub_link = " [[feedback_popular_hub]]" if i < 30 else ""
+            self._write(
+                f"feedback_chain_{i:04d}",
+                f"lesson keyword{i:04d} a niche low-signal note see [[feedback_chain_{nxt:04d}]]{hub_link}",
+                age_days=31 + i,  # ages 31..230 -> recency 199..0, strictly decreasing (no ties)
+            )
+        user = self._write("user_special_preference", "the user's own durable editor preference", mtype="user")
+        binding = self._write("feedback_binding_doctrine", "BINDING the load-bearing doctrine")
+        hub = self._write("feedback_popular_hub", "a popular hub many memories point at", age_days=300)
+        oldest = self.dir / f"feedback_chain_{n - 1:04d}.md"
+        self._seed_index()
+        return user, binding, hub, oldest
+
+    def test_over_budget_archives_referenced_entries_until_under_budget(self) -> None:
+        # #2753 regression (the real-corpus convergence bug): with MOST entries
+        # cross-link-referenced, the pre-fix budget tier hard-skipped them and the index
+        # stayed PERMANENTLY over budget (it could only archive the few UNREFERENCED
+        # high-signal entries — the user + BINDING ones — and still never reached budget).
+        # The fix archives the lowest-signal REFERENCED entries until the index fits, while
+        # the highest-signal entries (user / BINDING / most-linked hub) survive.
+        #
+        # RED before the fix: referenced entries skipped -> the survivor index stays > 150
+        # lines AND the user + BINDING entries are wrongly archived. GREEN after: the index
+        # converges <= 150 lines / <= 24 KB and the high-signal entries survive.
+        user, binding, hub, oldest = self._seed_cross_linked_corpus()
+        result = self._decay(budget_tier=True)
+
+        rendered = reindex.render_index(self.dir)
+        line_count = sum(1 for line in rendered.splitlines() if line.strip())
+        assert line_count <= gates.INDEX_LINE_BUDGET  # DID archive referenced entries to fit (lines)
+        assert len(rendered.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET  # ... and bytes
+
+        archived = self._archived_sources(result)
+        assert oldest.name in archived  # the lowest-signal REFERENCED filler is archived
+        assert any(name.startswith("feedback_chain") for name in archived)  # referenced entries archived
+        # the highest-signal entries survive — archived LAST, only under genuine pressure.
+        assert user.exists()
+        assert binding.exists()
+        assert hub.exists()
+        assert user.name not in archived
+        assert binding.name not in archived
+        assert hub.name not in archived
 
 
 class SignalScoreTestCase(SimpleTestCase):
@@ -693,3 +764,52 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         report2 = self._run_gates(before2, after2, result2.archived)
         mono = next(g for g in report2.gate_results if g.name == "monotonicity")
         assert mono.passed
+
+    def test_over_budget_cross_linked_corpus_archives_referenced_and_all_gates_pass(self) -> None:
+        # #2753 end-to-end: MOST entries are cross-link-referenced (a ring), so the pre-fix
+        # budget tier could never converge. The fix archives REFERENCED low-signal entries;
+        # after re-index the index_budget gate PASSES and retention / consolidation /
+        # no_loss_audit stay GREEN — the archived referenced entries' pruned index lines are
+        # homed via the archived-names path in gates.py, and their signatures live in the
+        # cold MEMORY_ARCHIVE.md (so retention can still answer them).
+        n = 175
+        for i in range(n):
+            nxt = (i + 1) % n
+            self._write(
+                f"feedback_ring_{i:04d}",
+                f"lesson token{i:04d} a niche low-signal ring note see [[feedback_ring_{nxt:04d}]]",
+                age_days=31 + i,  # recency strictly decreasing -> oldest ring fillers archived first
+            )
+        self._write("feedback_binding_rule", "the load-bearing binding doctrine", age_days=80, binding=True)
+        self._write("user_durable_pref", "the user's own durable preference", age_days=120, mtype="user")
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+        before = gates.snapshot_memory_dir(self.dir)
+        assert not gates.Gate.index_budget(before).passed  # over budget -> gate (d) FAILS
+
+        # Which entries are referenced BEFORE the pass — to prove the fix archived some.
+        files = decay._load_memory_files(self.dir)
+        index_text = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
+        referenced_before = {f.name for f in files if decay._is_referenced(f, files, index_text)}
+        assert len(referenced_before) > gates.INDEX_LINE_BUDGET  # MOST of the corpus is referenced
+
+        result = self._decay()
+        assert result.archived_count > 0
+        archived_names = {a.name for a in result.archived}
+        assert archived_names & referenced_before  # referenced entries WERE archived (the #2753 fix)
+
+        reindex.reindex_memory(self.dir)  # final re-index drops the archived pointers
+        after = gates.snapshot_memory_dir(self.dir)
+        assert gates.Gate.index_budget(after).passed  # now under budget
+        assert after.index_line_count <= gates.INDEX_LINE_BUDGET
+
+        report = self._run_gates(before, after, result.archived)
+        failed = {g.name for g in report.gate_results if not g.passed}
+        assert {"index_budget", "retention", "consolidation", "no_loss_audit"}.isdisjoint(failed), [
+            g.detail for g in report.gate_results if not g.passed
+        ]
+        assert report.passed
+
+        # The high-signal entries survive; the user/BINDING signatures stay answerable.
+        assert (self.dir / "feedback_binding_rule.md").exists()
+        assert (self.dir / "user_durable_pref.md").exists()
