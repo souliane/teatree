@@ -44,7 +44,7 @@ carve-out and the destination skip.
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
@@ -107,6 +107,16 @@ _GH_API_REPOS_RE: Final[re.Pattern[str]] = re.compile(r"^/?repos/([^/]+/[^/]+)")
 # single URL-encoded path segment (``ns%2Frepo`` or ``ns%2Fsub%2Frepo``).
 # ``%2F`` decodes back to ``/`` so the slug matches the allowlist shape.
 _GLAB_API_PROJECTS_RE: Final[re.Pattern[str]] = re.compile(r"^/?projects/([^/?]+)")
+
+# A leading ``https?://<host>/`` and an ``api/vN/`` REST-version segment that a
+# full-URL or version-prefixed endpoint carries before the ``repos/`` /
+# ``projects/`` path the slug patterns above match. ``glab``/``gh api`` accept
+# the endpoint as a bare relative path (``projects/...``), a version-prefixed
+# path (``api/v4/projects/...``), or a full URL
+# (``https://gitlab.com/api/v4/projects/...``); stripping this optional prefix
+# normalises all three to the bare relative form. Both groups are optional, so a
+# bare ``[/]repos/...`` / ``[/]projects/...`` endpoint is returned unchanged.
+_API_ENDPOINT_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^(?:https?://[^/]+/)?(?:/?api/v\d+/)?")
 
 # The ``owner/repo`` of a forge URL positional, before the resource segment
 # (GitLab ``/-/`` infix and nested group paths handled; ``.git`` suffix stripped).
@@ -216,11 +226,24 @@ def _api_url_arg(words: list[str]) -> str | None:
     return None
 
 
+def _normalize_api_endpoint(url: str) -> str:
+    """Strip a leading ``https?://<host>/`` and ``api/vN/`` prefix from an endpoint.
+
+    The ``repos/...`` / ``projects/...`` slug patterns match a RELATIVE endpoint,
+    but ``gh``/``glab api`` also accept a version-prefixed (``api/v4/projects/...``)
+    or full-URL (``https://gitlab.com/api/v4/projects/...``) endpoint. Removing the
+    optional host + ``api/vN/`` prefix collapses all three forms to the bare
+    relative path the patterns expect; a bare endpoint is returned unchanged.
+    """
+    return _API_ENDPOINT_PREFIX_RE.sub("", url, count=1)
+
+
 def _destination_from_api(words: list[str], tool: str) -> Destination | None:
     """Resolve the destination of a ``gh api`` / ``glab api`` raw REST call."""
     url = _api_url_arg(words)
     if url is None:
         return None
+    url = _normalize_api_endpoint(url)
     forge = _forge_for_tool(tool)
     if tool == "gh":
         match = _GH_API_REPOS_RE.match(url)
@@ -274,6 +297,52 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     return None
 
 
+# ``t3 [overlay] review post-comment`` / ``... post-draft-note`` -- the
+# GitLab-only review-post verbs. The FIRST positional after the verb is the
+# project slug (confirmed at ``cli/review/commands.py`` ``post_comment`` /
+# ``post_draft_note``: ``repo`` is the leading ``typer.Argument``).
+_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
+
+
+def _first_positional(words: list[str]) -> str | None:
+    """Return the first token in ``words`` that is not a flag, or ``None``.
+
+    A flag is any token starting with ``-`` (``--body-file``, ``--live``, ``-m``).
+    Taking the first NON-FLAG token rather than strictly the first one tolerates
+    an interleaved leading flag (``--live <repo>``) before the repo positional.
+    """
+    for word in words:
+        if word.startswith("-"):
+            continue
+        return word
+    return None
+
+
+def _destination_from_t3_review(words: list[str]) -> Destination | None:
+    """Resolve the destination of a ``t3 [overlay] review post-comment/post-draft-note``.
+
+    ``t3 review`` posts a GitLab MR comment / draft note on the user's behalf; its
+    destination is the project-slug positional. The resolver never extracted it
+    (``_destination_from_words`` only knew ``gh``/``glab``), so a ``t3``-led
+    segment resolved to no destination -- and ``t3`` is not a recognised inert
+    leader -- so a post to an allowlisted-private repo fell through to the
+    fail-closed leak scan and over-fired.
+
+    The leader is canonicalised up to the ``t3`` basename so a path-form leader
+    (``./t3``, ``/usr/local/bin/t3``) is recognised the same as a bare ``t3``, and
+    the arbitrary overlay token between ``t3`` and ``review`` is tolerated --
+    mirroring :func:`_command_parser._segment_is_t3_publish`. The forge is pinned
+    to ``gitlab`` because ``t3 review`` is GitLab-only.
+    """
+    if PurePosixPath(words[0]).name != "t3":
+        return None
+    for i in range(1, len(words) - 1):
+        if words[i] == "review" and words[i + 1] in _T3_REVIEW_POST_VERBS:
+            slug = _first_positional(words[i + 2 :])
+            return Destination(slug=slug, via="t3", forge="gitlab") if slug else None
+    return None
+
+
 def _destination_from_words(words: list[str], cwd: Path | None) -> Destination | None:
     """Resolve the publish destination of one command segment's word list.
 
@@ -282,7 +351,12 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
     PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
     the first segment.
     """
-    if not words or words[0] not in {"gh", "glab"}:
+    if not words:
+        return None
+    t3_dest = _destination_from_t3_review(words)
+    if t3_dest is not None:
+        return t3_dest
+    if words[0] not in {"gh", "glab"}:
         return None
     explicit = _extract_repo_flag(words)
     if explicit:
@@ -297,9 +371,15 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
 
     - ``glab ... -R <ns>/<repo>`` / ``gh ... -R <owner>/<repo>`` -- the
         explicit ``--repo``/``-R`` flag (LAST-WINS, mirroring gh/glab).
-    - ``gh api repos/<owner>/<repo>/...`` -- the ``repos/`` path segment.
-    - ``glab api projects/<url-encoded ns%2Frepo>/...`` -- the ``projects/``
-        path segment, ``%2F``-decoded.
+    - ``gh api [https://<host>/][api/vN/]repos/<owner>/<repo>/...`` -- the
+        ``repos/`` path segment, after stripping an optional full-URL host and
+        ``api/vN/`` REST-version prefix.
+    - ``glab api [https://<host>/][api/vN/]projects/<url-encoded ns%2Frepo>/...``
+        -- the ``projects/`` path segment, ``%2F``-decoded, after the same
+        host + ``api/vN/`` prefix strip.
+    - ``t3 [overlay] review post-comment``/``post-draft-note <ns>/<repo> ...``
+        -- the project-slug positional (forge pinned to gitlab; ``t3 review`` is
+        GitLab-only).
     - ``gh``/``glab`` ``pr``/``issue``/``mr`` ``create``/``comment``/``note``
         with no ``--repo`` flag -- the CURRENT repo, via the git remote of
         ``cwd``.

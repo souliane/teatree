@@ -517,3 +517,175 @@ class TestForgeAwareVisibility:
 
         cmd = "gh pr create -R souliane/teatree --title x --body y"
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+
+class TestT3ReviewDestination:
+    """Fix A: ``t3 [overlay] review post-comment/post-draft-note`` resolves to its repo slug.
+
+    The destination resolver early-returned ``None`` for any non-``gh``/``glab``
+    leader, so a ``t3 review post-comment <repo> ...`` segment resolved to no
+    destination -- and ``t3`` is not a recognised inert leader either, so the
+    whole command fell through to the fail-closed scan. A post to an
+    allowlisted-private repo via ``t3 review`` therefore over-fired the
+    banned-terms gate. The resolver now extracts the repo positional (the first
+    non-flag token after the verb) and classifies it against the internal
+    allowlist; ``t3 review`` is GitLab-only, so the forge is pinned to gitlab.
+    """
+
+    def test_resolve_post_comment_records_slug_via_and_forge(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-comment internalcorp/svc 6378 --body-file /x --live"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "t3"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_post_draft_note_records_slug(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-draft-note internalcorp/svc 6378 --body-file /x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "t3"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_tolerates_interleaved_leading_flag_before_repo(self) -> None:
+        # The repo is the first NON-FLAG positional after the verb, so a leading
+        # boolean flag interleaved before it does not derail resolution.
+        dest = publish_destination.resolve_publish_destination(
+            "t3 review post-comment --live internalcorp/svc 6378 --body-file /x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+
+    def test_non_review_t3_verb_is_none(self) -> None:
+        # A ``t3`` sub-command that is not a review post verb resolves to no
+        # destination via this path (the resolver only knows the review posts).
+        assert publish_destination.resolve_publish_destination("t3 review list internalcorp/svc") is None
+
+    def test_internal_post_comment_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "t3 review post-comment internalcorp/svc 6378 --body-file /x --live", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_internal_post_draft_note_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "t3 review post-draft-note internalcorp/svc 6378 --body-file /x", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_overlay_token_between_t3_and_review_is_tolerated(self, tmp_path: Path) -> None:
+        # The arbitrary overlay token between ``t3`` and ``review`` must not
+        # break detection (e.g. ``t3 acme-internal review post-comment ...``).
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "t3 acme-internal review post-comment internalcorp/svc 6378 --body-file /x --live",
+                None,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_path_form_t3_leader_is_canonicalised(self, tmp_path: Path) -> None:
+        # A path-form leader (``./t3``) canonicalises to the ``t3`` basename, the
+        # same as ``_segment_is_t3_publish`` does.
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "./t3 review post-comment internalcorp/svc 6378 --body-file /x --live", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_chained_cd_then_post_comment_is_skipped(self, tmp_path: Path) -> None:
+        # A leading ``cd <wt>`` is a recognised inert leader, and the trailing
+        # ``t3 review post-comment`` segment resolves to a provably-internal repo.
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = "cd /wt && t3 review post-comment internalcorp/svc 6378 --body-file /x --live"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_public_repo_post_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # MUST-FIRE: a ``t3 review`` post to a NON-allowlisted repo the probe
+        # cannot prove private stays PUBLIC and is scanned -- recognising the
+        # destination must not relax the public-surface default.
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        cmd = "t3 review post-comment public-org/app 6378 --body-file /x --live"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+
+class TestApiEndpointNormalization:
+    """Fix B: ``api/vN/`` and full-URL ``gh``/``glab api`` endpoints resolve to a slug.
+
+    ``_destination_from_api`` matched only a RELATIVE ``repos/...`` /
+    ``projects/...`` path, so an ``api/v4/projects/<ns>%2F<repo>/...`` endpoint
+    or a full ``https://gitlab.com/api/v4/projects/...`` URL yielded ``None`` and
+    the gate over-blocked an internal-MR update. The endpoint is now normalised
+    (a leading ``https?://<host>/`` and an ``api/vN/`` segment stripped) before
+    the existing relative patterns -- purely additive, a public endpoint still
+    resolves public and still scans.
+    """
+
+    def test_resolve_versioned_projects_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api --method POST api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_resolve_full_url_projects_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_resolve_gh_full_url_repos_path(self) -> None:
+        # The same normalisation strips the GitHub API host so a full-URL ``gh
+        # api`` endpoint resolves its ``repos/owner/repo`` slug too.
+        dest = publish_destination.resolve_publish_destination(
+            "gh api --method POST https://api.github.com/repos/internalcorp/svc/issues -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/svc"
+        assert dest.via == "api"
+
+    def test_internal_versioned_write_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = "glab api --method POST api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_internal_full_url_write_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = (
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/internalcorp%2Fsvc/merge_requests/6378/notes -f body=x"
+        )
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
+
+    def test_public_versioned_write_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        cmd = "glab api --method POST api/v4/projects/public-org%2Fapp/merge_requests/6378/notes -f body=x"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+    def test_public_full_url_write_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        cmd = (
+            "glab api --method POST "
+            "https://gitlab.com/api/v4/projects/public-org%2Fapp/merge_requests/6378/notes -f body=x"
+        )
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
