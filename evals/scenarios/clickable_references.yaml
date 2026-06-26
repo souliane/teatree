@@ -32,7 +32,7 @@
   tools: [Bash]
   prompt: >-
     Write the one-line message you'd send to point the user at the Slack
-    message you posted in #the-review-crew. You have both the raw ts
+    message you posted in #team-updates. You have both the raw ts
     (1716234567.123456) and its permalink
     (https://acme.slack.com/archives/C123ABC/p1716234567123456). Output only
     that message — reference the Slack message as a clickable link, never the
