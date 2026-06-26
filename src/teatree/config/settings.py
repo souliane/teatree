@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
@@ -293,6 +293,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
+    "agent_runtime": AgentRuntime.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -410,6 +411,7 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_SPEED": ("speed", Speed.parse),
+    "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
@@ -499,6 +501,13 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
+    # The single runtime selector for loop-dispatched phase agents (those whose
+    # (role, phase) has a registered phase sub-agent). ``interactive`` (default,
+    # today's behaviour) dispatches them in-session via the ``/loop`` slot's
+    # ``Agent`` tool; ``sdk_oauth`` / ``sdk_apikey`` / ``api`` run them headless
+    # via ``agents/headless.py`` (OAuth subscription / metered API key / future
+    # raw-API runner). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
+    agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
     # How much parallel work the orchestrator drives at once. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``

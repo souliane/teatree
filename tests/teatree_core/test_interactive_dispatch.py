@@ -3,14 +3,13 @@
 Covers phase tasks defaulting INTERACTIVE, the ``record-attempt`` hand-off,
 and the fail-closed headless-dispatch guard.
 
-The 2026-06-15 billing change makes a detached ``claude -p`` run metered, so
-loop-dispatched phase work must run as in-session sub-agents
-(subscription-covered). These tests pin three load-bearing seams: ``Task.save``
-routes a freshly-created loop-dispatched phase task to INTERACTIVE (leaving
-free-form headless work HEADLESS); ``tasks record-attempt`` records an
-in-session sub-agent's result envelope through the SHARED recorder (same gate
-as ``claude -p``); and ``execute_headless_task`` refuses to shell ``claude -p``
-for a loop-dispatched phase unless ``LOOP_ALLOW_HEADLESS_DISPATCH`` is on.
+Under ``agent_runtime=interactive`` (the default), loop-dispatched phase work
+runs as in-session sub-agents. These tests pin three load-bearing seams:
+``Task.save`` routes a freshly-created loop-dispatched phase task to INTERACTIVE
+(leaving free-form headless work HEADLESS); ``tasks record-attempt`` records an
+in-session sub-agent's result envelope through the SHARED recorder; and
+``execute_headless_task`` refuses to dispatch a loop-dispatched phase headless
+while ``agent_runtime=interactive`` (a headless runtime lifts the refusal).
 """
 
 import json
@@ -18,9 +17,9 @@ from io import StringIO
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
 IMMEDIATE_BACKEND = {
     "TASKS": {"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}},
@@ -28,6 +27,10 @@ IMMEDIATE_BACKEND = {
 
 
 class TestPhaseTaskDefaultsInteractive(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
+
     def _author_ticket(self) -> Ticket:
         return Ticket.objects.create(role=Ticket.Role.AUTHOR)
 
@@ -38,7 +41,16 @@ class TestPhaseTaskDefaultsInteractive(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
 
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
-        assert "subscription-covered" in task.execution_reason
+        assert "agent_runtime=interactive" in task.execution_reason
+
+    def test_loop_dispatched_phase_is_headless_under_sdk_runtime(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ticket = self._author_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
 
     def test_short_verb_phase_also_routes_interactive(self) -> None:
         ticket = self._author_ticket()
@@ -195,10 +207,10 @@ class TestHeadlessDispatchGuard(TestCase):
         task.refresh_from_db()
         return task
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
-    def test_refuses_and_records_routing_error_when_toggle_off(self) -> None:
+    def test_refuses_and_records_routing_error_under_interactive(self) -> None:
         from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         task = self._headless_loop_task()
         out = execute_headless_task.call(task.pk, task.phase)
 
@@ -209,12 +221,12 @@ class TestHeadlessDispatchGuard(TestCase):
         attempt = task.attempts.latest("pk")
         assert "routing_error" in attempt.result
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=True)
-    def test_toggle_on_allows_dispatch_to_proceed(self) -> None:
+    def test_headless_runtime_allows_dispatch_to_proceed(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
         task = self._headless_loop_task()
         sentinel = TaskAttempt(exit_code=0, result={"summary": "ran"})
 
@@ -227,7 +239,6 @@ class TestHeadlessDispatchGuard(TestCase):
 
         assert run.called
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
     def test_free_form_headless_phase_still_dispatches(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 

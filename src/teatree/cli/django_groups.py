@@ -148,12 +148,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("start", "Claim and run the next interactive task in the current terminal."),
             (
                 "work-next-sdk",
-                (
-                    "Claim and execute a headless task; refuses loop-dispatched "
-                    "phases unless LOOP_ALLOW_HEADLESS_DISPATCH."
-                ),
+                ("Claim and execute a headless task; refuses loop-dispatched phases while agent_runtime=interactive."),
             ),
-            ("work-next-user-input", "Claim and execute a user input task."),
         ],
     ),
     "queue": DjangoGroup(

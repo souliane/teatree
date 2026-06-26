@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
+from teatree.core.headless_dispatch import runs_in_session
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -173,21 +174,20 @@ def _add_approval_reaction_on_transition(
         logger.exception("Failed to mark ReviewAssignment approved for PR %s", instance.pk)
 
 
-def _is_loop_dispatched(instance: Task) -> bool:
-    """True when the loop is the SOLE dispatcher for this task's ``(role, phase)``.
+def _runs_in_session(instance: Task) -> bool:
+    """True when the in-session ``/loop`` is the SOLE dispatcher for this task.
 
-    A task whose ``(ticket.role, phase)`` has a registered phase agent is
-    dispatched per-phase by the in-session ``/loop`` slot (``loop_dispatch``
-    ``claim-next`` → the phase sub-agent via the ``Agent`` tool). Such a task
-    now defaults to INTERACTIVE at creation (``Task.save`` chokepoint), so the
-    ``execution_target`` guard below already skips it; this remains as
-    defense-in-depth for a row that reaches HEADLESS some other way, so a
-    queue drainer never launches a metered detached headless-SDK run for loop
-    phase work. A
-    pair with NO registered agent is free-form headless and still rides the
-    ``execute_headless_task`` path — never zero dispatch.
+    Delegates to ``headless_dispatch.runs_in_session``: a ``(ticket.role, phase)``
+    with a registered phase agent runs in-session ONLY under
+    ``agent_runtime=interactive`` (the default), where it defaults to INTERACTIVE
+    at creation (``Task.save`` chokepoint) and the ``execution_target`` guard below
+    already skips it — this remains as defense-in-depth for a row that reaches
+    HEADLESS some other way. Under a headless ``agent_runtime`` the same pair runs
+    headless, so this returns ``False`` and the auto-enqueue ships it to
+    ``execute_headless_task``. A pair with NO registered agent is free-form
+    headless and is never in-session — never zero dispatch.
     """
-    return Task.loop_dispatched(role=instance.ticket.role, phase=instance.phase)
+    return runs_in_session(role=instance.ticket.role, phase=instance.phase)
 
 
 def _auto_enqueue_headless_task(
@@ -197,11 +197,13 @@ def _auto_enqueue_headless_task(
 ) -> None:
     """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
 
-    Loop-dispatched phase tasks (those with a registered phase agent) default
-    to INTERACTIVE at creation and so fail the ``execution_target`` guard;
-    ``_is_loop_dispatched`` stays as a belt-and-braces skip for any HEADLESS
-    row of such a pair, so a ``db_worker`` draining the queue never
-    double-runs (or meters) loop phase work.
+    Under ``agent_runtime=interactive`` (default), loop-dispatched phase tasks
+    default to INTERACTIVE at creation and so fail the ``execution_target`` guard;
+    ``_runs_in_session`` stays as a belt-and-braces skip for any HEADLESS row of
+    such a pair, so a ``db_worker`` draining the queue never double-runs loop phase
+    work the in-session ``/loop`` owns. Under a headless ``agent_runtime`` the same
+    phase tasks ARE headless and ``_runs_in_session`` is ``False``, so they are
+    enqueued here like any other headless work.
 
     A task whose ticket names a non-empty unknown overlay is never enqueued
     (souliane/teatree#1959): dispatching it would crash ``execute_headless_task``
@@ -212,7 +214,7 @@ def _auto_enqueue_headless_task(
         return
     if instance.status != Task.Status.PENDING:
         return
-    if _is_loop_dispatched(instance):
+    if _runs_in_session(instance):
         return
     if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)

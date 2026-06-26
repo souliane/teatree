@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -18,14 +19,15 @@ from teatree.agents.headless import (
     _get_resume_session_id,
     _limit_signature,
     _parse_result,
-    _safe_float,
-    _safe_int,
+    _runtime_child_env,
     _validate_result,
     get_result_json_schema,
     run_headless,
 )
+from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_MODELS
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.config import AgentRuntime
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import result_message as _result_message
@@ -202,10 +204,10 @@ class TestRunHeadlessRoutingRefusal(TestCase):
         task.route_to_headless(reason="forced headless for the test")
         return task
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
     def test_registered_phase_refused_before_sdk_client_built(self) -> None:
         from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         task = self._make_headless_task(phase="answering")
         with patch.object(
             headless_mod,
@@ -491,7 +493,7 @@ def test_collect_ignores_messages_that_are_neither_assistant_nor_result() -> Non
 
 def test_attempt_usage_for_missing_message_is_empty() -> None:
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
-    from teatree.agents.headless import _attempt_usage  # noqa: PLC0415
+    from teatree.agents.headless_usage import _attempt_usage  # noqa: PLC0415
 
     assert _attempt_usage(None) == AttemptUsage()
 
@@ -949,3 +951,44 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
             ),
         )
         assert options.effort is None
+
+
+class TestRuntimeChildEnv:
+    """``_runtime_child_env`` pins the credential for the chosen headless runtime."""
+
+    def test_sdk_oauth_pins_subscription_and_strips_api_key(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
+            env = _runtime_child_env(AgentRuntime.SDK_OAUTH)
+
+        assert env is not None
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_sdk_apikey_pins_key_and_strips_oauth(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
+            env = _runtime_child_env(AgentRuntime.SDK_APIKEY)
+
+        assert env is not None
+        assert env["ANTHROPIC_API_KEY"] == "key-y"
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_interactive_and_api_use_ambient_env(self) -> None:
+        assert _runtime_child_env(AgentRuntime.INTERACTIVE) is None
+        assert _runtime_child_env(AgentRuntime.API) is None
+
+
+class TestAgentRuntimeApiGuard(TestCase):
+    """``run_headless`` refuses the not-yet-built raw-API runtime, loud and early."""
+
+    def test_api_runtime_records_not_implemented_failure(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "api")
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code == 1
+        assert "not implemented" in attempt.error
+        assert task.status == Task.Status.FAILED
