@@ -1252,8 +1252,9 @@ Supported matcher operators:
   positive matcher that pairs with a `no_tool_call_matching` line to
   prevent the scenario from being satisfied vacuously by a no-op
   transcript.
-- `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` — no matching
-  tool call may exist. A negative matcher MUST be paired with a positive
+- `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` (regex) or
+  `no_tool_call_matching: { <tool>.<arg>: contains "<substring>" }` (substring) —
+  no matching tool call may exist. A negative matcher MUST be paired with a positive
   anchor (a `tool_call` / `any_of` / `final_state` matcher) in the same
   `expect` list — a negative-only scenario is satisfied by a no-op agent and
   guards nothing. `tests/eval_replay/test_scenarios_anti_vacuous.py`

@@ -74,6 +74,19 @@ def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex
     raise AssertionError(msg)
 
 
+def assert_no_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, substring: str) -> None:
+    for call in run.tool_calls:
+        if canonicalize_tool(call.name) != tool_name:
+            continue
+        value = _as_text(_get_arg(call, arg_path))
+        if value is not None and substring in value:
+            msg = (
+                f"Did not expect any {tool_name} tool call with {arg_path} containing {substring!r}, "
+                f"but found:\n  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"
+            )
+            raise AssertionError(msg)
+
+
 def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
     pattern = re.compile(regex)
     for call in run.tool_calls:
