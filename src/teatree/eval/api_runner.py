@@ -50,6 +50,7 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
+from teatree.eval.git_fixture import provision_git_fixture
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_eval_model
@@ -615,6 +616,10 @@ class ApiInProcessRunner:
         destructive git work on it — the corruption this isolation prevents.
         """
         with isolated_claude_env() as (env, cwd):
+            if spec.fixture:
+                with provision_git_fixture(spec.fixture) as repo:
+                    yield repo, str(repo), env
+                return
             if not scenario_exposes_subagent_spawn(spec):
                 yield self._workspace, cwd, env
                 return
