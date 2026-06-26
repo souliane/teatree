@@ -21,7 +21,7 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config.homes import DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
     CONFIG_PATH,
@@ -70,6 +70,7 @@ __all__ = [
     "OVERLAY_OVERRIDABLE_SETTINGS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
+    "AgentRuntime",
     "Autonomy",
     "E2ERepo",
     "MissingIssuePolicy",

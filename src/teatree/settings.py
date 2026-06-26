@@ -152,15 +152,12 @@ TASKS = {
     },
 }
 
-# Single auditable kill-switch for the metered detached headless-SDK phase
-# dispatch (``execute_headless_task``). Default OFF: post the 2026-06-15
-# billing change a detached headless-SDK run is metered, so loop-dispatched
-# phase tasks run INTERACTIVE (subscription-covered) via the in-session
-# ``/loop`` slot. When OFF, ``execute_headless_task`` refuses to launch a
-# metered headless-SDK run for any ``(role, phase)`` with a registered phase
-# agent and records a ``routing_error`` instead. Flip to ``True`` only to
-# deliberately re-enable metered headless dispatch for loop-dispatched phases.
-LOOP_ALLOW_HEADLESS_DISPATCH = False
+# Whether a loop-dispatched phase task runs in-session or headless is the
+# ``agent_runtime`` user setting (config/enums.py ``AgentRuntime``), resolved by
+# ``core.headless_dispatch.runs_in_session`` — there is no separate Django
+# kill-switch. ``interactive`` (default) keeps phase work in the in-session
+# ``/loop`` slot; ``sdk_oauth`` / ``sdk_apikey`` / ``api`` run it headless via
+# ``agents/headless.py``.
 
 # Repair-loop per-phase iteration budget (#2009). A ticket-phase may re-queue at
 # most this many attempts before the re-queue chokepoint

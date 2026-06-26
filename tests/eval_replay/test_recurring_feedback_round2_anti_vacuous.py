@@ -9,7 +9,7 @@ Two scenarios pin this session's two new post-mortems:
     layer. (Source: a ticket whose display banner was built while the config-portal
     authoring UI the linked spec defined was missed.)
 *   ``followup_loop_scan_only_never_auto_implement`` (``skills/followup``) — the cron
-    follow-up tick is scan-only (``LOOP_ALLOW_HEADLESS_DISPATCH=0``); it never
+    follow-up tick is scan-only (``agent_runtime=interactive``); it never
     auto-dispatches a headless coder to implement a ticket, and never dispatches for a
     CLOSED ticket. (Source: a ``*/12`` tick that spent ~13 min implementing an
     already-CLOSED ticket.)

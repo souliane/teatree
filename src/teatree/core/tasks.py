@@ -107,11 +107,12 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 def drain_headless_queue() -> dict[str, list[int]]:
     """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
 
-    Loop-dispatched phase tasks (those whose ``(ticket.role, phase)`` has a
-    registered phase agent) are skipped — the loop is their sole dispatcher,
-    so draining them here would double-run them (the same guard the
-    ``_auto_enqueue_headless_task`` post_save applies). Only genuinely
-    headless tasks with no registered phase agent are drained.
+    Tasks the in-session ``/loop`` owns (``runs_in_session`` — a loop-dispatched
+    phase pair under ``agent_runtime=interactive``) are skipped, so draining them
+    here never double-runs work the loop is dispatching (the same guard the
+    ``_auto_enqueue_headless_task`` post_save applies). Under a headless
+    ``agent_runtime`` those phase tasks are headless and ``runs_in_session`` is
+    ``False``, so they drain like any other headless work.
 
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
@@ -119,7 +120,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
     """
-    from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
+    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415
 
     pending = (
         Task.objects.filter(
@@ -132,7 +133,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     enqueued: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
-        if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
+        if runs_in_session(role=task_obj.ticket.role, phase=task_obj.phase):
             continue
         if not task_obj.ticket.has_dispatchable_overlay():
             reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"

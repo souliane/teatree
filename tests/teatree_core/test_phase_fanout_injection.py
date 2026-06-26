@@ -11,7 +11,8 @@ carries ``fanout_directive == ""`` (byte-identical to today). The PRESENT tests
 prove the opt-in renders the directive; the slot-prose literal test proves the
 ``/loop`` slot is instructed to append ``entry.fanout_directive``; the headless
 parity tests prove ``build_system_context`` carries the same directive so
-flipping ``LOOP_ALLOW_HEADLESS_DISPATCH`` does not lose it.
+switching ``agent_runtime`` between interactive and a headless runtime does not
+lose it.
 """
 
 import json
@@ -186,8 +187,8 @@ class TestHeadlessParity(_FanoutDispatchTest):
     """Secondary headless-composer parity for the fan-out directive.
 
     ``build_system_context`` (the headless composer) carries the same directive
-    as the interactive composer, so flipping ``LOOP_ALLOW_HEADLESS_DISPATCH``
-    keeps it.
+    as the interactive composer, so switching ``agent_runtime`` between
+    interactive and a headless runtime keeps it.
     """
 
     def _context(self, task: Task, cfg: Path | None) -> str:

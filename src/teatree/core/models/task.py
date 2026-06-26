@@ -73,12 +73,13 @@ class Task(models.Model):
     def loop_dispatched(cls, *, role: str, phase: str) -> bool:
         """True iff ``(role, phase)`` has a registered phase sub-agent.
 
-        Such a task is dispatched per-phase by the in-session ``/loop`` slot
-        (``loop_dispatch claim-next`` → the ``Agent`` tool), never via a
-        detached headless-SDK run. Post the 2026-06-15 billing change
-        a detached headless-SDK dispatch is metered, so a loop-dispatched phase
-        task must run INTERACTIVE (subscription-covered). A pair with no
-        registered agent is free-form headless work and is left HEADLESS.
+        Pure registry membership (``SUBAGENT_BY_PHASE``). Whether such a task
+        runs in-session or headless is the ``agent_runtime`` setting's call,
+        resolved by ``headless_dispatch.runs_in_session``: under ``interactive``
+        (default) it is dispatched per-phase by the in-session ``/loop`` slot
+        (``loop_dispatch claim-next`` → the ``Agent`` tool); under a headless
+        runtime it runs via ``agents/headless.py``. A pair with no registered
+        agent is free-form headless work and always runs headless.
         """
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
@@ -87,22 +88,34 @@ class Task(models.Model):
     def _default_loop_dispatched_to_interactive(self) -> None:
         """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
 
-        The single chokepoint for "phase tasks default to interactive": the
-        loop is their sole dispatcher, so every ``schedule_*`` / scanner / CLI
-        creation site inherits the rule here without each having to know it.
-        Only an insert-time HEADLESS row is touched; an explicit
-        ``route_to_interactive`` / ``route_to_headless`` after creation goes
-        through ``_route`` (not an insert) and is never overridden here.
+        The single chokepoint for "phase tasks default to interactive": when the
+        ``agent_runtime`` setting selects ``interactive`` (the default) the loop
+        is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
+        site inherits the rule here without each having to know it. Under a
+        headless ``agent_runtime`` (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the
+        row is left HEADLESS so the headless lane takes it. Only an insert-time
+        HEADLESS row is touched; an explicit ``route_to_interactive`` /
+        ``route_to_headless`` after creation goes through ``_route`` (not an insert)
+        and is never overridden here.
+
+        Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
+        drain / refusal gates share). It is inlined here rather than called because
+        ``core.models`` may not depend on the parent ``teatree.core`` node where
+        ``headless_dispatch`` lives (tach); the ``teatree.config`` edge is allowed.
         """
+        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
+
         try:
             role = self.ticket.role
         except Task.ticket.RelatedObjectDoesNotExist:
+            return
+        if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
             return
         if not self.loop_dispatched(role=role, phase=self.phase):
             return
         self.execution_target = self.ExecutionTarget.INTERACTIVE
         if not self.execution_reason:
-            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (subscription-covered)"
+            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
         now = timezone.now()

@@ -46,34 +46,49 @@ def get_headless_runner() -> HeadlessRunner:
     return _runner
 
 
+def runs_in_session(*, role: str, phase: str) -> bool:
+    """True iff a loop-dispatched phase task must run INTERACTIVE in the ``/loop`` slot.
+
+    The single predicate every dispatch gate consults (the save-time routing
+    chokepoint, the auto-enqueue signal, the queue-drain safety net, and
+    :func:`loop_dispatch_refusal`): a ``(role, phase)`` with a registered phase
+    agent (``Task.loop_dispatched``) runs in-session ONLY when the
+    ``agent_runtime`` setting selects ``interactive`` (the default). Under any
+    headless runtime (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the SAME phase work
+    runs headless via ``agents/headless.py``, so this returns ``False`` and the
+    headless lane (auto-enqueue → ``execute_headless_task`` / ``work-next-sdk``)
+    takes it. Free-form work (no registered agent) is never in-session.
+    """
+    from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
+    from teatree.core.models import Task  # noqa: PLC0415
+
+    if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
+        return False
+    return Task.loop_dispatched(role=role, phase=phase)
+
+
 def loop_dispatch_refusal(task: "Task") -> str | None:
     """Reason a headless dispatch of ``task`` is refused, or ``None`` to proceed.
 
-    The single fail-closed billing guard both headless entry points consult
-    (souliane/teatree#1375): a loop-dispatched phase task — one whose
-    ``(ticket.role, phase)`` has a registered phase agent (``Task.loop_dispatched``)
-    — must run INTERACTIVE in the in-session ``/loop`` slot, never as a metered
-    detached headless-SDK run (post-2026-06-15 billing). Unless the single
-    ``LOOP_ALLOW_HEADLESS_DISPATCH`` toggle is explicitly enabled, return a
-    ``routing_error`` reason so the caller records a refusal instead of shelling
-    out. Free-form headless work (no registered phase agent) returns ``None`` and
-    proceeds.
+    The single guard both headless entry points consult (souliane/teatree#1375):
+    when ``agent_runtime`` selects ``interactive``, a loop-dispatched phase task —
+    one whose ``(ticket.role, phase)`` has a registered phase agent — must run
+    INTERACTIVE in the in-session ``/loop`` slot, never as a detached headless-SDK
+    run, so this returns a ``routing_error`` reason and the caller records a
+    refusal instead of shelling out. Under a headless ``agent_runtime``
+    (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the same work is meant to run
+    headless, so this returns ``None`` and dispatch proceeds. Free-form headless
+    work (no registered phase agent) always returns ``None``.
 
     Both ``core.tasks.execute_headless_task`` (the django-tasks worker) and
     ``core.management.commands.tasks.Command._execute_sdk`` (the ``work-next-sdk``
     CLI path) call this so the guard cannot drift between the two seams.
     """
-    from django.conf import settings  # noqa: PLC0415
-
-    from teatree.core.models import Task  # noqa: PLC0415
-
-    if getattr(settings, "LOOP_ALLOW_HEADLESS_DISPATCH", False):
-        return None
-    if not Task.loop_dispatched(role=task.ticket.role, phase=task.phase):
+    if not runs_in_session(role=task.ticket.role, phase=task.phase):
         return None
     return (
-        f"refused headless dispatch for loop-dispatched phase "
+        f"refused headless dispatch for in-session phase "
         f"(role={task.ticket.role!r}, phase={task.phase!r}): "
-        "this task must run INTERACTIVE via the /loop slot "
-        "(set LOOP_ALLOW_HEADLESS_DISPATCH=True to override)"
+        "this task runs INTERACTIVE in the /loop slot under agent_runtime=interactive "
+        "(set agent_runtime to a headless runtime — sdk_oauth / sdk_apikey — to run it headless)"
     )

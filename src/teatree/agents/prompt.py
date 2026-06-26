@@ -348,11 +348,11 @@ def _phase_fanout_directive(task: Task) -> str:
 
     Headless parity with the interactive composer
     (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
-    ``core.phases.resolve_fanout_directive`` so flipping
-    ``LOOP_ALLOW_HEADLESS_DISPATCH`` keeps the directive identical. Empty by
-    default — ``resolve_fanout_directive`` renders nothing until the user opts
-    the pair in via ``[agent.phase_fanout]`` — so a headless dispatch is
-    byte-identical to today out of the box.
+    ``core.phases.resolve_fanout_directive`` so switching ``agent_runtime``
+    between interactive and a headless runtime keeps the directive identical.
+    Empty by default — ``resolve_fanout_directive`` renders nothing until the
+    user opts the pair in via ``[agent.phase_fanout]`` — so a headless dispatch
+    is byte-identical to today out of the box.
     """
     return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
 
