@@ -1,8 +1,9 @@
 """Phase 5 — regenerate the ``MEMORY.md`` index from the memory set (#1933 § 6).
 
 Fixture-only: tmp dir, never the real ``~/.claude``. The contract: one line per
-memory (clickable link + a ≤200-char summary), deduped, stably ordered, no
-content moved into the index, and BYTE-IDENTICAL on a re-run with no changes.
+memory (a bare ``name.md`` pointer + a brief ≤45-char hook), deduped, stably
+ordered, no content moved into the index, and BYTE-IDENTICAL on a re-run with no
+changes.
 """
 
 import tempfile
@@ -42,28 +43,29 @@ class ReindexTestCase(SimpleTestCase):
         assert "[mem_a.md]" not in index
         assert index.count("mem_a.md") == 1
 
-    def test_summary_is_clipped_to_120_chars(self) -> None:
-        # #2723: the summary clip is shortened to ~120 chars to keep lines tight.
+    def test_hook_is_clipped_to_45_chars(self) -> None:
+        # #2755: the hook is clipped to a SHORT 45 chars (was 110) so many more bare
+        # pointers fit the ~24 KB byte budget.
         long = "x" * 500
         self._write("mem_long", f"---\nname: mem_long\nsummary: {long}\n---\nbody")
         index = render_index(self.dir)
         line = next(line for line in index.splitlines() if "mem_long.md" in line)
         summary = line.split(" — ", 1)[1]
+        assert reindex._SUMMARY_MAX_CHARS == 45
         assert len(summary) <= reindex._SUMMARY_MAX_CHARS
-        assert reindex._SUMMARY_MAX_CHARS <= 120
         assert summary.endswith("…")
 
-    def test_line_max_chars_pinned_to_140_and_hot_lines_capped(self) -> None:
-        # #2723: the hot per-line cap is 140 (was 160) so `- <name>.md — <summary>` fits
-        # even with a long filename. The cold MEMORY_ARCHIVE.md is uncapped — that is
-        # decay's concern, pinned in test_decay.py::...::test_cold_index_signature_is_uncapped.
-        assert reindex._LINE_MAX_CHARS == 140
+    def test_line_max_chars_pinned_to_130_and_hot_lines_capped(self) -> None:
+        # #2755: the hot per-line cap is 130 (was 140) so `- <name>.md — <hook>` stays
+        # tight. The cold MEMORY_ARCHIVE.md is uncapped — that is decay's concern, pinned
+        # in test_decay.py::...::test_cold_index_signature_is_uncapped.
+        assert reindex._LINE_MAX_CHARS == 130
         self._write("mem_long", f"---\nname: mem_long\nsummary: {'z' * 400}\n---\nbody")
         index = render_index(self.dir)
         hot_lines = [line for line in index.splitlines() if line.startswith("- ")]
         assert hot_lines
         for line in hot_lines:
-            assert len(line) <= 140
+            assert len(line) <= 130
 
     def test_archive_index_is_not_re_indexed_into_the_hot_index(self) -> None:
         # #2723: MEMORY_ARCHIVE.md lives in the memory dir but must never appear as a

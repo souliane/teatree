@@ -1,17 +1,18 @@
 """Phase 5 of the dream pass — regenerate the ``MEMORY.md`` index (#1933 § 6).
 
 ``MEMORY.md`` is the index of the memory set: one line per memory file, a bare
-filename pointer plus a tight one-line summary, so a reader scans the index and
-opens the topic file for detail. This phase REGENERATES that index from the
-current ``*.md`` set under a ``memory_dir`` — it never moves content INTO the
-index (the body stays in the topic file), only re-derives the one-line pointers.
+filename pointer plus a tight one-line summary (a brief hook), so a reader scans
+the index and opens the topic file for detail. This phase REGENERATES that index
+from the current ``*.md`` set under a ``memory_dir`` — it never moves content INTO
+the index (the body stays in the topic file), only re-derives the one-line pointers.
 
-Each line is ``- name.md — summary`` — a SINGLE bare filename pointer, not the
-former ``[name.md](name.md)`` markdown link that listed the filename twice and
-inflated the index. The summary is clipped to ``_SUMMARY_MAX_CHARS`` and the
-WHOLE line is capped at ``_LINE_MAX_CHARS`` (filename intact, summary absorbing
-the cap), so the index stays under the session-load budget gate (d) enforces
-(#2723).
+Each line is ``- name.md — summary`` — a SINGLE bare filename pointer, not the former
+``[name.md](name.md)`` markdown link that listed the filename twice and inflated
+the index. The summary is a SHORT terse reminder clipped to ``_SUMMARY_MAX_CHARS`` and
+the WHOLE line is capped at ``_LINE_MAX_CHARS`` (filename intact, summary absorbing the
+cap): the descriptive filename slug carries most of the meaning, so a brief summary
+lets MANY more short pointers fit the ~24 KB session-load BYTE budget gate (d)
+enforces (#2723, #2755).
 
 The regeneration is PURE and idempotent: the summary of each memory is derived
 deterministically by the shared :func:`signature_text` extractor — its
@@ -37,12 +38,13 @@ _INDEX_NAME = "MEMORY.md"
 #: hot index — so its one-line-per-archived-entry signatures do not re-bloat the index.
 _ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
 
-#: Per-summary clip and per-line cap (#2723). The summary is clipped first; the
-#: whole line is then capped so a long filename plus a long summary can never blow
-#: the per-line budget. Sized so even a long-filename line fits 140 chars and ~150
-#: such lines stay under the ~24 KB session-load budget gate (d) enforces.
-_SUMMARY_MAX_CHARS = 110
-_LINE_MAX_CHARS = 140
+#: Per-summary clip and per-line cap (#2723, #2755). The summary is clipped first; the
+#: whole line is then capped so a long filename plus a long summary can never blow the
+#: per-line budget. Kept SHORT on purpose: the descriptive filename slug carries most
+#: of the meaning and the summary is a brief reminder, so many more short pointers fit
+#: the ~24 KB session-load BYTE budget gate (d) enforces.
+_SUMMARY_MAX_CHARS = 45
+_LINE_MAX_CHARS = 130
 
 _HEADER = (
     "# Auto Memory — Index\n\n"
@@ -161,7 +163,7 @@ def index_line_for(name: str, text: str) -> str:
 
     Exposed so the decay phase can PROJECT the post-archival index byte-for-byte the
     way the re-index will render it (#2723), keeping the budget-tier stop condition
-    exact w.r.t. the gate-(d) line / byte budget.
+    exact w.r.t. the gate-(d) byte budget.
     """
     return _index_line(Path(name), _summary_for(text))
 
