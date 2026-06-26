@@ -177,7 +177,7 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 
 **Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
 (ticket → code → test → review → ship) drive corresponding ticket states. The
-full `Ticket.State` set is `not_started → scoped → started → coded → tested →
+full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
 reviewed → shipped → in_review → merged → retrospected → delivered`, plus
 `ignored` for work that is consciously skipped.
 
@@ -565,7 +565,7 @@ extension point is what any other consumer would use.
 
 Teatree reads its config from `~/.teatree.toml`. Every key is optional; the
 table below lists the ones most users touch. The full set and their defaults
-live in `UserSettings` in `src/teatree/config.py`.
+live in `UserSettings` in `src/teatree/config/settings.py`.
 
 ```toml
 [teatree]
@@ -627,8 +627,8 @@ to a less-safe mode.
 
 A subset of `[teatree]` keys can be **overridden per-overlay** in
 `[overlays.<name>]`. The overridable set lives in
-`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config.py`: `mode`,
-`privacy`, `contribute`, `excluded_skills`,
+`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`: `mode`,
+`agent_runtime`, `contribute`, `excluded_skills`,
 `loop_cadence_seconds`, `require_human_approval_to_merge`, and
 `require_human_approval_to_answer`. For example, run `auto` mode on a personal
 dogfooding overlay while keeping `interactive` on a client project:
