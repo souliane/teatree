@@ -4201,6 +4201,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
 │ honesty         Situational honesty-critical escalation (#2263).             │
+│ memory          Cold-tier memory recall (#2746).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4333,6 +4334,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                   (self-rescue).                                             │
 │ completion-claim  Completion-claim gate (on-target evidence before done)     │
 │                   kill-switch (self-rescue).                                 │
+│ memory-recall     Cold-tier memory recall injector kill-switch               │
+│                   (self-rescue).                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4577,6 +4580,59 @@ Usage: t3 teatree gate completion-claim disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate completion-claim enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate memory-recall`
+
+```
+Usage: t3 teatree gate memory-recall [OPTIONS] COMMAND [ARGS]...
+
+ Cold-tier memory recall injector kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall status`
+
+```
+Usage: t3 teatree gate memory-recall status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall disable`
+
+```
+Usage: t3 teatree gate memory-recall disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall enable`
+
+```
+Usage: t3 teatree gate memory-recall enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -8002,5 +8058,47 @@ Usage: t3 teatree honesty escalate [OPTIONS]
 │ --task           INTEGER  Optional task id to scope the escalation to.       │
 │ --session        TEXT     Session id (defaults to the active session).       │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree memory`
+
+```
+Usage: t3 teatree memory [OPTIONS] COMMAND [ARGS]...
+
+ Cold-tier memory recall (#2746).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ recall  Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a   │
+│         query (read-only).                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree memory recall`
+
+```
+Usage: t3 teatree memory recall [OPTIONS] QUERY
+
+ Print the cold-tier memory rules most relevant to *query* (top *limit*).
+
+ Resolves the memory dir from ``--memory-dir`` else the current project's
+ default, scores the cold index, and echoes one line per hit — or a single
+ "no relevant cold-tier entries" line (exit 0) when nothing clears the
+ relevance floor. A missing memory dir / cold index is reported as an error
+ (exit 1) so a mistyped ``--memory-dir`` is loud, not a silent empty result.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    query      TEXT  The text whose relevant cold-tier rules to surface.    │
+│                       [required]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --memory-dir        TEXT     Memory dir to search; defaults to the current   │
+│                              project's.                                      │
+│ --limit             INTEGER  Max number of cold-tier rules to surface.       │
+│                              [default: 5]                                    │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

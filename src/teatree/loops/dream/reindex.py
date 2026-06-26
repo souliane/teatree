@@ -14,8 +14,11 @@ the cap), so the index stays under the session-load budget gate (d) enforces
 (#2723).
 
 The regeneration is PURE and idempotent: the summary of each memory is derived
-deterministically (its frontmatter ``summary``/``description``, else its first
-non-heading prose line, clipped), lines are deduped by target filename and
+deterministically by the shared :func:`signature_text` extractor — its
+frontmatter ``description``/``summary``, else its first substantive non-heading
+body line (metadata ``key:`` lines such as ``node_type: memory`` are skipped so
+the real lesson is lifted, not the type marker), else its first BINDING /
+Non-Negotiable line — then clipped. Lines are deduped by target filename and
 stably ordered (filename sort), and a header preamble is preserved. A re-run on
 an unchanged memory set produces a BYTE-IDENTICAL file — the property the test
 pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit
@@ -50,6 +53,14 @@ _HEADER = (
 _FRONTMATTER_SUMMARY_RE = re.compile(r"^(?:summary|description):\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _HEADING_RE = re.compile(r"^#{1,6}\s")
 
+#: Body lines whose leading ``key:`` is metadata, not a lesson. A node-typed
+#: memory whose body leads with ``node_type: memory`` must NOT have that line
+#: lifted as its signature (#2746 nit-4) — skip these and take the next real
+#: line. ``node_type:`` is included precisely because the bare ``type:`` prefix
+#: does not match it (``node_type`` starts with ``node_``).
+_METADATA_LINE_PREFIXES = ("name:", "summary:", "description:", "type:", "node_type:", "metadata:", "---")
+_BINDING_MARKERS = ("binding", "non-negotiable")
+
 
 @dataclass(frozen=True, slots=True)
 class ReindexResult:
@@ -70,19 +81,62 @@ def _strip_frontmatter(text: str) -> tuple[str, str]:
     return text[3:end], text[end + 3 :]
 
 
-def _first_prose_line(body: str) -> str:
+def _first_substantive_line(body: str) -> str:
+    """First non-empty, non-heading, non-metadata body line (whitespace-collapsed).
+
+    Metadata-ish ``key:`` lines (:data:`_METADATA_LINE_PREFIXES`) are skipped so a
+    node-typed memory whose body leads with ``node_type: memory`` yields the real
+    lesson that follows, not the type marker (#2746 nit-4). A genuine lesson never
+    leads with one of those reserved metadata keys.
+    """
     for raw in body.splitlines():
         line = raw.strip().lstrip("-*").strip()
-        if line and not _HEADING_RE.match(raw.strip()):
-            return line
+        if not line or _HEADING_RE.match(raw.strip()):
+            continue
+        if line.lower().startswith(_METADATA_LINE_PREFIXES):
+            continue
+        return " ".join(line.split())
     return ""
 
 
-def _summary_for(text: str) -> str:
+def _first_binding_line(body: str) -> str:
+    """First BINDING / Non-Negotiable body line (headings allowed), else ``""``.
+
+    The last-resort signature when a memory carries no frontmatter summary and no
+    substantive prose — a body of headings where one declares a BINDING rule still
+    has a recoverable lesson.
+    """
+    for raw in body.splitlines():
+        line = raw.strip().lstrip("#-*").strip()
+        if line and any(marker in line.lower() for marker in _BINDING_MARKERS):
+            return " ".join(line.split())
+    return ""
+
+
+def signature_text(text: str) -> str:
+    """The memory's UNCLIPPED signature — the canonical lesson line (#2746 nit-4).
+
+    The single frontmatter-aware extractor shared by the hot index
+    (:func:`_summary_for`), the cold ``MEMORY_ARCHIVE.md`` index, and the
+    retention probe (both via :func:`gates._signature_line`). Resolution order:
+    the frontmatter ``description:``/``summary:`` value, else the first
+    substantive body prose line (metadata ``key:`` lines skipped), else the first
+    BINDING line, else ``""``. NEVER clipped — the verbatim line is what retention
+    needs to stay findable, and the returned text is always a (whitespace-collapsed)
+    substring of *text* so ``snapshot.contains(signature)`` stays True.
+    """
     front, body = _strip_frontmatter(text)
     match = _FRONTMATTER_SUMMARY_RE.search(front)
-    summary = match.group(1).strip() if match else _first_prose_line(body)
-    summary = " ".join(summary.split())  # collapse whitespace
+    if match:
+        return " ".join(match.group(1).split())
+    prose = _first_substantive_line(body)
+    if prose:
+        return prose
+    return _first_binding_line(body)
+
+
+def _summary_for(text: str) -> str:
+    summary = signature_text(text)
     if len(summary) > _SUMMARY_MAX_CHARS:
         summary = summary[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
     return summary
@@ -167,4 +221,11 @@ def _count_lines(rendered: str) -> int:
     return sum(1 for line in rendered.splitlines() if line.startswith("- "))
 
 
-__all__ = ["ReindexResult", "index_line_for", "reindex_memory", "render_index", "render_index_lines"]
+__all__ = [
+    "ReindexResult",
+    "index_line_for",
+    "reindex_memory",
+    "render_index",
+    "render_index_lines",
+    "signature_text",
+]

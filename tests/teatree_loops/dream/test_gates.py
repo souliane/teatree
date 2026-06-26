@@ -90,6 +90,44 @@ class TestDeriveAndReplay(SimpleTestCase):
         assert probe_answerable(probe, snap) is True
 
 
+class TestSignatureIsDescriptionAware(SimpleTestCase):
+    """``gates._signature_line`` delegates to the frontmatter-aware extractor (#2746 nit-4).
+
+    The old inline scanner returned the body ``node_type: memory`` line for a
+    node-typed memory, near-vacuating its retention probe. The signature now
+    prefers the frontmatter ``description:`` so the hot index, the cold index, and
+    the probe all carry the SAME real lesson.
+    """
+
+    _NODE_TYPED = (
+        "---\nname: feedback_x\n"
+        "description: the lease guard rejects an empty owner address\n"
+        "metadata:\n  type: feedback\n---\n"
+        "node_type: memory\ntrailing body\n"
+    )
+
+    def test_signature_line_returns_description_not_node_type(self) -> None:
+        signature = gates._signature_line(self._NODE_TYPED)
+        assert signature == "the lease guard rejects an empty owner address"
+        assert "node_type" not in signature
+
+    def test_signature_line_agrees_with_reindex_signature_text(self) -> None:
+        # ONE extractor: hot index (reindex) and cold/probe (gates) must agree.
+        assert gates._signature_line(self._NODE_TYPED) == reindex.signature_text(self._NODE_TYPED)
+
+    def test_derive_probes_expected_answer_is_the_description(self) -> None:
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert len(probes) == 1
+        assert probes[0].expected_answer == "the lease guard rejects an empty owner address"
+
+    def test_probe_for_node_typed_memory_stays_answerable(self) -> None:
+        # The description is a substring of the body, so retention stays green.
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert probe_answerable(probes[0], snap) is True
+
+
 class TestGateA(SimpleTestCase):
     def test_passes_when_every_pre_answerable_probe_still_answerable(self) -> None:
         before = _snapshot({"m.md": "name: m\nfact ONE and fact TWO\n"})
