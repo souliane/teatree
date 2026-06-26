@@ -185,7 +185,7 @@ def _test() -> list[Scenario]:
                 "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
                 "the environment, react to output, or run follow-up checks.",
                 agent=TEST,
-                want=r"(uv run pytest|t3 test run|pytest)",
+                want=r"(uv run pytest|t3 (\S+ )?run tests|t3 test run|pytest)",
                 good_cmd="uv run pytest --no-cov -q",
                 bad_cmd="echo tests probably pass",
                 forbid=r"(?i)echo .*(probably|should) (pass|be fine)",
