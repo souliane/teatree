@@ -10,6 +10,7 @@ from teatree.eval.discovery import find_spec
 from teatree.eval.matchers import (
     assert_final_state_contains,
     assert_final_state_matching,
+    assert_no_tool_call_contains,
     assert_no_tool_call_matching,
     assert_tool_call_contains,
     assert_tool_call_matching,
@@ -127,6 +128,9 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
         return
     if matcher.kind == "negative" and matcher.operator == "~":
         assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
+        return
+    if matcher.kind == "negative" and matcher.operator == "contains":
+        assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
         return
     msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
     raise NotImplementedError(msg)

@@ -3,6 +3,7 @@ import pytest
 from teatree.eval.matchers import (
     assert_final_state_contains,
     assert_final_state_matching,
+    assert_no_tool_call_contains,
     assert_no_tool_call_matching,
     assert_tool_call_contains,
     assert_tool_call_matching,
@@ -123,6 +124,35 @@ class TestAssertNoToolCallMatching:
         with pytest.raises(AssertionError) as exc_info:
             assert_no_tool_call_matching(run, "Bash", "command", r"Edit.*README\.md")
         assert "Edit" in str(exc_info.value)
+
+
+class TestAssertNoToolCallContains:
+    """The substring sibling of ``assert_no_tool_call_matching`` (regex).
+
+    Also the logical negation of ``assert_tool_call_contains``: PASS when NO
+    matching call has its arg value containing the substring; raise when at least
+    one does.
+    """
+
+    def test_passes_when_substring_absent(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": "git commit -m fix"}, turn=1)])
+        assert_no_tool_call_contains(run, "Bash", "command", "--no-verify")
+
+    def test_passes_when_only_other_tool_contains_substring(self) -> None:
+        run = _run([EvalToolCall(name="Read", input={"command": "git commit --no-verify"}, turn=1)])
+        assert_no_tool_call_contains(run, "Bash", "command", "--no-verify")
+
+    def test_passes_when_matching_tool_has_a_different_arg_value(self) -> None:
+        # Bash IS called, but its command does not contain the forbidden substring.
+        run = _run([EvalToolCall(name="Bash", input={"command": "git commit -m fix"}, turn=1)])
+        assert_no_tool_call_contains(run, "Bash", "command", "--no-verify")
+
+    def test_raises_when_substring_present(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": "git commit --no-verify -m fix"}, turn=1)])
+        with pytest.raises(AssertionError) as exc_info:
+            assert_no_tool_call_contains(run, "Bash", "command", "--no-verify")
+        assert "--no-verify" in str(exc_info.value)
+        assert "git commit --no-verify -m fix" in str(exc_info.value)
 
 
 class TestAssertFinalStateMatching:
