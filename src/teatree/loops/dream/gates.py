@@ -15,8 +15,8 @@ The seven gates (#1933 § 4; gate (g) added by #2663):
     schema/cluster count INCREASED, AND every pruned index line has a confirmed
     durable home. A no-op pass (size unchanged, schema unchanged) fails; a prune
     with no durable home fails.
-*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under its line /
-    byte load-warning threshold.
+*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under its ~24 KB
+    session-load BYTE budget (harness truncates by bytes; line count irrelevant; #2755).
 *   (e) **monotonicity** — two passes over a stable corpus must not LOWER the
     retention pass-rate.
 *   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
@@ -69,13 +69,14 @@ _INDEX_NAME = "MEMORY.md"
 _MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
 
 #: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one
-#: short line per memory and is read WHOLE at every session load; past the
-#: ~24 KB / ~150-line truncation point the loader clips it, so the tail of the
-#: index never reaches the agent and the consolidation pass has silently failed
-#: to keep memory loadable. These track that real session-load limit — NOT a
-#: 10x regression alarm — so an over-budget index trips gate (d) RED while it is
-#: still recoverable (#2723).
-INDEX_LINE_BUDGET = 150
+#: short line per memory and is read WHOLE at every session load; the harness
+#: truncates it by BYTES at ~24 KB, so past that point the tail of the index never
+#: reaches the agent and the consolidation pass has silently failed to keep memory
+#: loadable. Bytes are the ONLY constraint — line count is irrelevant to what
+#: reaches the agent, so a fixed line cap was a pessimistic proxy that forced
+#: needless archival while byte headroom went unused (#2755). This tracks that real
+#: session-load byte limit — NOT a 10x regression alarm — so an over-budget index
+#: trips gate (d) RED while it is still recoverable (#2723).
 INDEX_BYTE_BUDGET = 24 * 1024
 
 
@@ -359,15 +360,17 @@ class Gate:
 
     @staticmethod
     def index_budget(snapshot_after: MemorySnapshot) -> GateResult:
-        """(d) The rendered ``MEMORY.md`` is back under its line + byte load-warning budget."""
-        over_lines = snapshot_after.index_line_count > INDEX_LINE_BUDGET
+        """(d) The rendered ``MEMORY.md`` is back under its ~24 KB session-load BYTE budget.
+
+        Bytes are the only constraint — the harness truncates by bytes, so line count is
+        irrelevant; a fixed line cap was a pessimistic proxy that wasted byte headroom (#2755).
+        """
         over_bytes = snapshot_after.index_byte_size > INDEX_BYTE_BUDGET
-        passed = not (over_lines or over_bytes)
         detail = (
-            f"index {snapshot_after.index_line_count} line(s) / {snapshot_after.index_byte_size} byte(s) "
-            f"(budget {INDEX_LINE_BUDGET} / {INDEX_BYTE_BUDGET})"
+            f"index {snapshot_after.index_byte_size} byte(s) / {snapshot_after.index_line_count} line(s) "
+            f"(budget {INDEX_BYTE_BUDGET} bytes)"
         )
-        return GateResult(name="index_budget", passed=passed, detail=detail)
+        return GateResult(name="index_budget", passed=not over_bytes, detail=detail)
 
     @staticmethod
     def monotonicity(*, pass_rate_first: float, pass_rate_second: float) -> GateResult:
@@ -595,7 +598,6 @@ def _compliance_remediations(overlay: str) -> list[ComplianceRemediationView]:
 
 __all__ = [
     "INDEX_BYTE_BUDGET",
-    "INDEX_LINE_BUDGET",
     "ComplianceRemediationView",
     "DreamQaReport",
     "Gate",

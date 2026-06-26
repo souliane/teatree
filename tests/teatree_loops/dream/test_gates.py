@@ -312,23 +312,28 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert result.passed
 
-    def test_fails_over_line_budget(self) -> None:
-        big_index = "\n".join(f"- line {i}" for i in range(gates.INDEX_LINE_BUDGET + 5))
+    def test_many_short_lines_under_byte_budget_passes(self) -> None:
+        # #2755 core behavioral win: an index of MANY short lines (300, FAR over the
+        # retired 150-line cap) that totals WELL under 24 KB now PASSES. The old line cap
+        # FAILED this needlessly; bytes are the only constraint. Anti-vacuous —
+        # reintroduce a 150-line cap and this goes RED.
+        big_index = "\n".join(f"- m{i}.md — s" for i in range(300))
         after = _snapshot({}, index=big_index)
+        assert after.index_line_count == 300  # well over the retired 150-line cap
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... yet under the byte budget
         result = Gate.index_budget(after)
-        assert not result.passed
+        assert result.passed
 
     def test_fails_over_byte_budget(self) -> None:
         after = _snapshot({}, index="- " + "x" * (gates.INDEX_BYTE_BUDGET + 10))
         result = Gate.index_budget(after)
         assert not result.passed
 
-    def test_budget_tracks_the_real_session_load_limit(self) -> None:
-        # #2723: the budget must track the ~24KB session-load truncation point,
-        # not a 10x regression alarm. Pin the load limit explicitly so a future
-        # widening of the threshold past loadability fails here.
+    def test_budget_tracks_the_real_session_load_byte_limit(self) -> None:
+        # #2723/#2755: the budget tracks the ~24 KB session-load BYTE truncation point,
+        # not a line cap or a 10x regression alarm. Pin the byte load limit explicitly so
+        # a future widening past loadability fails here.
         assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
-        assert gates.INDEX_LINE_BUDGET <= 160
 
 
 class TestGateDLoadability(SimpleTestCase):

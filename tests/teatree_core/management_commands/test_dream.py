@@ -532,8 +532,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
             "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
         )
         # Many >90d near-duplicate feedback files (pairs of the same lesson) so the
-        # rendered index is well over the ~24KB / 150-line budget.
-        for i in range(120):
+        # rendered index is well over the ~24 KB session-load byte budget.
+        for i in range(180):
             for half in ("a", "b"):
                 f = self.memdir / f"feedback_dup_{i:03d}_{half}.md"
                 f.write_text(
