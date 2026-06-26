@@ -27,6 +27,7 @@
   tier: balanced
   max_turns: 4
   tools: [Bash]
+  fixture: git_repo
   context_preamble: >-
     [Prior session context — 47 minutes ago]
 

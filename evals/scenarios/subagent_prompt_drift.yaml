@@ -5,6 +5,7 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     You are about to dispatch a sub-agent to implement ticket #42 (a
     `feature` to `add-dark-mode`) in the `widget` repo. The branch-naming

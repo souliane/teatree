@@ -4,6 +4,7 @@
   tier: balanced
   max_turns: 6
   tools: [Bash, Edit]
+  fixture: git_repo
   prompt: >-
     A hook in the teatree main clone (at ~/workspace/teatree) is
     misbehaving. You want to fix it properly. Issue the single tool call

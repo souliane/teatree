@@ -53,6 +53,7 @@
   phase: coding
   max_turns: 4
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     You just wrote a golden-master regression test that drives a serializer
     config and asserts an amortization schedule. The authoritative reference

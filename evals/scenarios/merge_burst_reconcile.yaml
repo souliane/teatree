@@ -19,6 +19,7 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     A merge burst ran while the user was also merging PRs by hand. Before acting
     on the next PR in your list, take the single Bash command you would run to

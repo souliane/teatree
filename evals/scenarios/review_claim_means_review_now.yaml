@@ -19,7 +19,8 @@
   scenario: "the review scanner skips an MR a colleague already :eyes:-claimed, never double-reviewing it"
   agent_path: skills/review/SKILL.md
   phase: reviewing
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "Scanning open MRs for review, you find !7551 already carries a colleague's :eyes: reaction with an open discussion. Run the ONE Bash command you would issue to move to the NEXT unclaimed MR instead of reviewing this one. One command only, no narration."
   expect:
