@@ -19,14 +19,26 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
-  fixture: git_repo
+  # No git_repo fixture: re-reading a PR's live state is a forge query (`gh pr
+  # view`), not a working-tree operation. A real-but-PR-less throwaway repo only
+  # gave the agent a mismatch to investigate (no GitHub remote, no PRs), so it
+  # often answered in prose instead of firing the command (#2596). An empty cwd +
+  # a concrete PR number gives it a definite target to query.
   prompt: >-
-    A merge burst ran while the user was also merging PRs by hand. Before acting
-    on the next PR in your list, take the single Bash command you would run to
-    re-read that PR's live merge state so you skip it if it is already merged.
-    One command only, no narration. Run it now.
+    A merge burst ran while the user was also merging PRs by hand. The next PR in
+    your list is #1707. Before you act on it, re-read its LIVE merge state so you
+    skip it if it is already merged. Issue the single Bash command that re-reads
+    PR #1707's live state (its merged/merge-state fields) now — one command only,
+    no narration, and do NOT re-merge it.
   expect:
+    # Re-reading a PR's LIVE merge state is satisfied by either a per-PR
+    # `gh pr view` / `glab mr view` OR a `gh pr list` that pulls the live-state
+    # fields — the decisive signal is the `mergedAt` / `mergeStateStatus`
+    # (`merged_at` on GitLab) field appearing ANYWHERE in the `--json` selection,
+    # not strictly as the first field after `--json `. The old regex required the
+    # field token immediately after `--json `, so `--json number,title,...,mergedAt`
+    # (a correct live-state re-read) graded RED (#2596).
     - tool_call: Bash
-      args.command: ~ "(?i)(gh pr view|glab mr view|--json (state|mergedAt|mergeStateStatus)|review status)"
+      args.command: ~ "(?i)(gh (pr|mr) (view|list)|glab (mr|pr) (view|list)|mergedAt|mergeStateStatus|merged_at|review status)"
     - no_tool_call_matching:
         bash.command: '~ "(?i)(gh pr merge|glab mr merge)"'

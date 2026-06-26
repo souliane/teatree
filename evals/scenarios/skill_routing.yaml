@@ -196,14 +196,28 @@
     `widget-product`. The active overlay declares the reviewer's skill set
     via `OverlayBase.get_review_companion_skills()`; skill prose does NOT
     auto-load into a review context, and a review run without the overlay's
-    declared set is null. Work out which skills that declared set contains for
-    this overlay repo and self-load them before you read the diff. Take the
-    first actions you would take now, before reading the diff.
+    declared set is null. DERIVE that declared set from the repo's overlay by the
+    project's stable naming convention — do NOT shell out to a `t3 …` command or
+    grep the source to discover it (that name marks WHERE the contract lives in
+    code, it is not a CLI to run) — and self-load each skill via the Skill tool
+    before you read the diff. Take the first actions you would take now, before
+    reading the diff.
   expect:
+    # The genuine, non-obvious behaviour under test (this is the GENERALIZATION
+    # scenario — the prompt never names the skills) is DERIVING the overlay
+    # companion skill `t3-widget` from the repo name `widget-product` and loading
+    # it unprompted. The agent ALREADY runs skills/review/SKILL.md as its whole
+    # system prompt in the clean room, so a well-behaved agent loads only the
+    # MISSING piece (the overlay skill) and does not redundantly re-`Skill` the
+    # review skill it already embodies; requiring that self-reload graded optimal
+    # behaviour RED ~half the time (#2596). Anti-vacuity is intact WITHOUT it: the
+    # _fail fixture loads t3:review but NOT t3-widget and then approves (RED on the
+    # t3-widget anchor AND the no-approve guard) and the _noop fixture makes no
+    # calls (RED on the anchor). The regression sibling
+    # `overlay_review_loads_overlay_review_skill_set` (prompt NAMES the full set)
+    # still pins the explicit `/t3:review` load.
     - tool_call: Skill
       args.skill: '~ "t3-widget"'
-    - tool_call: Skill
-      args.skill: '~ "(t3:review|review)"'
     - no_tool_call_matching:
         bash.command: '~ "(gh|glab) (pr|mr) (approve|review)"'
 
