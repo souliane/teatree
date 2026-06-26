@@ -42,9 +42,14 @@ projected hot index back under budget — so the top ~150 by signal stay HOT and
 move to a COLD tier: ``archive/`` holds the full restorable body and the cold
 ``MEMORY_ARCHIVE.md`` index holds one signature line per archived entry. The cold index
 lives in the main memory dir (so the gate snapshot still finds the signature — retention
-stays green) but is NEVER re-indexed into the hot ``MEMORY.md``. A referenced file is
-never budget-archived; the universal "signature preserved in the cold index" rail
-replaces the old duplicate-only safety rail.
+stays green) but is NEVER re-indexed into the hot ``MEMORY.md``. Referenced entries are
+NOT hard-retained by the budget tier (#2753): the cross-link phase runs before decay and
+references most of the corpus, so a hard skip floored the tier above budget and it could
+never converge. Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so
+referenced entries rank HIGHER and are archived LAST — only when the budget genuinely
+forces it — staying restorable in ``archive/`` and recall-able via the cold
+``MEMORY_ARCHIVE.md``. (The conservative stale/ledger tier keeps its reference skip; only
+the budget tier drops it.)
 
 PURE w.r.t. the real ``~/.claude``: the caller passes an explicit ``memory_dir``
 and a ``now``/``retention`` policy; tests pass a tmp fixture and a fixed clock.
@@ -407,14 +412,22 @@ def _budget_tier_candidates(
     """Yield budget-tier archival candidates lowest-signal first, just enough to fit budget.
 
     Fires only when the live ``MEMORY.md`` is over budget. Each file is scored by
-    :func:`_signal_score` and the lowest-signal files are archived first; a referenced
-    file (a live consumer still ``[[link]]``s it) is never archived. After each removal
-    the survivor set's PROJECTED index — rendered exactly as the re-index will render it —
-    is re-measured, and the walk STOPS as soon as it is under both the line and byte
-    budgets, so the MINIMUM number of (lowest-signal) files is archived and as much
-    high-signal memory as fits stays hot. user / BINDING entries score highest and are
-    archived only if the budget forces it — their full body is archived (restorable) and
-    their signature is preserved in the cold ``MEMORY_ARCHIVE.md``.
+    :func:`_signal_score` and the lowest-signal files are archived first. A referenced
+    file (a live consumer still ``[[link]]``s it) is NOT hard-retained here (#2753): the
+    cross-link phase runs before decay and references most of the corpus, so a hard skip
+    floored the tier above the referenced count and the index could never reach budget.
+    Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so referenced
+    entries rank HIGHER and are archived LAST — only when the budget genuinely forces it.
+    After each removal the survivor set's PROJECTED index — rendered exactly as the
+    re-index will render it — is re-measured, and the walk STOPS as soon as it is under
+    both the line and byte budgets, so the MINIMUM number of (lowest-signal) files is
+    archived and as much high-signal memory as fits stays hot. user / BINDING entries
+    score highest and are archived only if the budget forces it. Every archived entry
+    stays restorable (full body in ``archive/`` with provenance) and recall-able (its
+    signature in the cold ``MEMORY_ARCHIVE.md``); a now-dangling ``[[link]]`` in a
+    surviving body is cosmetic, not data loss — the hot index uses bare ``- name.md``
+    pointers, which never dangle. The conservative stale/ledger tier
+    (:func:`_stale_candidates`) keeps its reference skip — only the budget tier drops it.
     """
     if not _index_over_budget(index_text):
         return
@@ -436,8 +449,6 @@ def _budget_tier_candidates(
         projected_bytes = header_bytes + survivor_bytes + survivor_count
         if not _over_budget(header_lines + survivor_count, projected_bytes):
             break  # projected survivor index is back under budget — archive no more
-        if _is_referenced(memory, files, index_text):
-            continue  # referenced — retained (a live consumer still links it)
         survivor_count -= 1
         survivor_bytes -= line_bytes[memory.path]
         yield memory
