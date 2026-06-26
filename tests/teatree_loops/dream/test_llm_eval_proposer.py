@@ -443,8 +443,15 @@ class SdkSynthesizerParseTestCase(TestCase):
             _parse_synthesized("the model refused", {"scenario_name": "x"})
 
     def test_missing_required_key_raises(self) -> None:
-        with pytest.raises(ValueError, match="missing required keys"):
+        with pytest.raises(ValueError, match="missing required key"):
             _parse_synthesized('{"scenario_name": "x", "prompt": "p"}', {"scenario_name": "x"})
+
+    def test_missing_required_key_error_names_the_key(self) -> None:
+        # missing context_preamble, expect, fail_tool_call, pass_tool_call — the error
+        # must name them so a dropped candidate is debuggable, not a silent loss.
+        raw = '{"scenario_name": "x", "prompt": "p"}'
+        with pytest.raises(ValueError, match=r"context_preamble"):
+            _parse_synthesized(raw, {"scenario_name": "x"})
 
     def test_empty_expect_list_raises(self) -> None:
         raw = (
@@ -530,6 +537,20 @@ class SynthPromptGrammarTestCase(TestCase):
         normalized = " ".join(self._rendered_prompt().lower().split())
         assert "exactly one json object" in normalized
         assert "no surrounding prose" in normalized
+
+    def test_prompt_separates_required_keys_from_optional_keys(self) -> None:
+        # An under-specified prompt that listed required + optional keys in one unmarked
+        # list let haiku omit a required key. The prompt now names each group explicitly.
+        normalized = " ".join(self._rendered_prompt().lower().split())
+        required_marker = normalized.index("required keys")
+        optional_marker = normalized.index("optional keys")
+        assert required_marker < optional_marker
+        required_section = normalized[required_marker:optional_marker]
+        for key in ("scenario_name", "context_preamble", "prompt", "expect", "fail_tool_call", "pass_tool_call"):
+            assert key in required_section, key
+        optional_section = normalized[optional_marker:]
+        for key in ("scenario_description", "agent_path", "judge_rubric"):
+            assert key in optional_section, key
 
 
 class DerivationDropsLoaderRejectedMatchersTestCase(TestCase):
