@@ -235,6 +235,7 @@ class ArchitecturalReviewScanner:
                     session=session,
                     phase=ARCHITECTURAL_REVIEW_PHASE,
                     execution_target=task_model.ExecutionTarget.HEADLESS,
+                    subject=f"Architectural review: {self.overlay_name}",
                     execution_reason=(f"Periodic architectural review ({trigger}) via skill: {self.skill}"),
                 )
         except Exception:

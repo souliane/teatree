@@ -102,5 +102,6 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
         session=session,
         phase="short_describe",
         execution_target=Task.ExecutionTarget.HEADLESS,
+        subject=f"Summarize #{ticket.ticket_number}",
         execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",
     )

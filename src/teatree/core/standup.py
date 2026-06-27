@@ -20,7 +20,7 @@ from typing import TypedDict
 
 from django.db.models import Count, Q
 
-from teatree.core.models.task import TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.ref_render import render_ref
