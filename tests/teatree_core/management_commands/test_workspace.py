@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
@@ -32,7 +33,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
 from tests.teatree_core.management_commands._overlays import (
@@ -3755,6 +3756,72 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert wt_path.is_dir(), "DATA LOSS: worktree dir was removed"
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
             assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
+
+    def test_keeps_busy_squash_merged_worktree(self) -> None:
+        """A squash-merged worktree whose ticket has live work is KEPT, not reaped (#2243).
+
+        ``test_reaps_merged_worktree_fully`` proves the same row IS reaped when
+        idle, so a live :class:`Session` flipping it to KEEP is a non-vacuous
+        red-first guard: clean-all must never tear down a squash-merged
+        follow-up worktree an agent is mid-task in.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp)
+            wt_path = Path(wt.extra["worktree_path"])
+            Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
+            assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
+            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
+
+    def test_keeps_busy_created_worktree_reaps_idle(self) -> None:
+        """The CREATED-state loop keeps a busy worktree while still reaping an idle one."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+
+            busy_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243a")
+            busy = Worktree.objects.create(
+                overlay="test",
+                ticket=busy_ticket,
+                repo_path="backend",
+                branch="busy",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": str(workspace / "busy" / "backend")},
+            )
+            session = Session.objects.create(ticket=busy_ticket, overlay="test")
+            session.ended_at = timezone.now()
+            session.save(update_fields=["ended_at"])
+            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.PENDING)
+
+            idle_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243b")
+            idle = Worktree.objects.create(
+                overlay="test",
+                ticket=idle_ticket,
+                repo_path="backend",
+                branch="idle",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": str(workspace / "idle" / "backend")},
+            )
+
+            reaped_pks: list[int] = []
+
+            def _record(worktree: Worktree, **_kw: object) -> str:
+                reaped_pks.append(worktree.pk)
+                return f"Cleaned: {worktree.repo_path} ({worktree.branch})"
+
+            with (
+                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(ws_reap_mod, "cleanup_worktree", side_effect=_record),
+            ):
+                call_command("workspace", "clean-all")
+
+            assert busy.pk not in reaped_pks, "DATA LOSS: busy CREATED worktree handed to teardown"
+            assert idle.pk in reaped_pks, "idle CREATED worktree should still be reaped (safe-reap preserved)"
 
     def test_foreign_overlay_merged_row_is_reaped_overlay_free_not_skipped(self) -> None:
         """A merged row whose overlay is unregistered is REAPED overlay-free, not skipped.

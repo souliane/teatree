@@ -44,7 +44,7 @@ from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
-from teatree.core.models import Session, Task, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.types import validated_worktree_extra
 from teatree.core.worktree_env import compose_project
@@ -100,9 +100,16 @@ def _is_currently_active(worktree: Worktree, active_path: Path | None) -> bool:
     return active_path == resolved or resolved in active_path.parents
 
 
-def _ticket_is_busy(worktree: Worktree) -> bool:
-    """True iff the worktree's ticket has a live session or an active/claimed task."""
-    ticket = worktree.ticket
+def ticket_is_busy(ticket: Ticket) -> bool:
+    """True iff *ticket* has a live session or an active/claimed task.
+
+    The shared liveness predicate every destructive reaper/teardown path
+    consults before deleting filesystem or DB state: a busy ticket's worktree is
+    live work and must be KEPT, never reaped (#291/#2243 data-loss discipline).
+    The idle-stack reaper, the clean-all worktree reaper
+    (:func:`teatree.core.management.commands._workspace_reap.reap_one_worktree`),
+    and the orphan-isolated-root reaper all route through it.
+    """
     if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
         return True
     return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
@@ -127,7 +134,7 @@ def _structural_keep_reason(worktree: Worktree, *, cutoff: datetime, active_path
         return "never started (last_used_at is null) — cannot confirm idle"
     if worktree.last_used_at > cutoff:
         return "recently used (within the idle window)"
-    if _ticket_is_busy(worktree):
+    if ticket_is_busy(worktree.ticket):
         return "ticket has a live session or active/claimed task"
     if _is_currently_active(worktree, active_path):
         return "the currently-active worktree (CWD)"
@@ -216,4 +223,4 @@ def reapable_worktrees(
             yield worktree
 
 
-__all__ = ["classify_running_worktrees", "preserve_reason", "reapable_worktrees"]
+__all__ = ["classify_running_worktrees", "preserve_reason", "reapable_worktrees", "ticket_is_busy"]

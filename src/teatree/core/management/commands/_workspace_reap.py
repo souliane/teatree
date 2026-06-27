@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from teatree.core.cleanup import cleanup_worktree
+from teatree.core.gates.idle_stack import ticket_is_busy
 from teatree.core.models import Worktree
 from teatree.utils.run import run_allowed_to_fail
 
@@ -70,7 +71,17 @@ def reap_one_worktree(worktree: Worktree, *, interactive: bool, strict_hygiene: 
     their docker/DB behind). :func:`cleanup_worktree` resolves the overlay
     tolerantly and runs the overlay-agnostic teardown so the row is actually
     reaped, with the same data-loss guards in force.
+
+    Liveness guard (#291/#2243): the shared ``ticket_is_busy`` predicate is
+    consulted FIRST — a worktree whose ticket has a live session or an
+    active/claimed task is live work and is KEPT before any destructive step,
+    never handed to :func:`cleanup_worktree`. This covers both clean-all worktree
+    loops (the CREATED-state loop and the squash-merged reaper) since both funnel
+    through here, so a squash-merged follow-up worktree an agent is mid-task in is
+    never torn down out from under it.
     """
+    if ticket_is_busy(worktree.ticket):
+        return f"SKIPPED '{worktree.branch}': ticket has a live session or active/claimed task — keeping (live work)"
     try:
         return str(cleanup_worktree(worktree, strict_hygiene=strict_hygiene, keep_if_dirty=True))
     except RuntimeError as exc:

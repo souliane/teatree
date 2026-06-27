@@ -13,8 +13,27 @@ import shutil
 from pathlib import Path
 
 from teatree import paths
+from teatree.core.gates.idle_stack import ticket_is_busy
 from teatree.core.management.commands._workspace_cleanup import is_clean_ignored
 from teatree.core.models import Worktree
+
+
+def _has_unmappable_live_worktree() -> bool:
+    """True iff a busy worktree row lacks a recorded checkout path (#291 data-loss).
+
+    A busy worktree WITH a checkout path already contributes its slug to the
+    keep-set (:func:`_referenced_isolated_slugs`), so its env dir is kept. But a
+    busy worktree whose canonical row LOST its ``worktree_path`` (the stale-row
+    class the resolver tolerates) cannot be hashed to a slug, so its in-use
+    isolated DB looks like an orphan. When any such row exists, no unreferenced
+    dir can be proven dead — fail safe and keep them all rather than reap a live
+    isolated DB out from under a mid-task agent.
+    """
+    for worktree in Worktree.objects.select_related("ticket"):
+        extra = worktree.extra if isinstance(worktree.extra, dict) else {}
+        if not str(extra.get("worktree_path", "")) and ticket_is_busy(worktree.ticket):
+            return True
+    return False
 
 
 def _referenced_isolated_slugs() -> set[str]:
@@ -64,11 +83,18 @@ def reap_orphan_isolated_worktree_roots() -> list[str]:
     a live row's slug, a ``clean_ignore`` glob, or any git work is skipped with
     a one-line outcome. Only immediate child *directories* of the root are
     considered; loose files (seed locks) are ignored.
+
+    Liveness guard (#291/#2243): when a BUSY worktree row has no recorded
+    checkout path (:func:`_has_unmappable_live_worktree`), its in-use isolated DB
+    cannot be mapped to a slug, so no unreferenced dir can be proven dead. Every
+    such dir is then KEPT — fail safe rather than reap a live isolated DB out
+    from under a mid-task agent.
     """
     root = paths.auto_isolated_worktrees_dir()
     if not root.is_dir():
         return []
     referenced = _referenced_isolated_slugs()
+    keep_unmappable_live = _has_unmappable_live_worktree()
     outcomes: list[str] = []
     for env_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         slug = env_dir.name
@@ -79,6 +105,12 @@ def reap_orphan_isolated_worktree_roots() -> list[str]:
             continue
         if _holds_git_checkout(env_dir):
             outcomes.append(f"SKIPPED '{slug}': holds a git checkout (uncommitted/unpushed work) — keeping")
+            continue
+        if keep_unmappable_live:
+            outcomes.append(
+                f"SKIPPED '{slug}': a live worktree has no recorded checkout path "
+                "— cannot prove this env dir is orphan, keeping (live work)"
+            )
             continue
         shutil.rmtree(env_dir)
         outcomes.append(f"Removed orphan isolated worktree root: {slug}")
