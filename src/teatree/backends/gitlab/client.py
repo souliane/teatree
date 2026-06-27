@@ -568,6 +568,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
 
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
