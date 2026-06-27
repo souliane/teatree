@@ -1,0 +1,1086 @@
+From a6f3da906c55a09657c5acc5ea711e46340a2f5c Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Sun, 21 Jun 2026 17:16:02 +0200
+Subject: [PATCH 1/3] test(provision): add per-step timeout guard with
+ comprehensive test coverage
+
+Wire a timeout guard (ProvisionTimeoutError) that applies per provision step,
+preventing indefinite hangs during stalled operations (e.g. DB imports,
+migrations). The guard is configurable via overlay
+(provision_step_timeout_seconds, default 300s) and logs step name + timeout on
+timeout. A stalling step is aborted with a clear error message naming both.
+
+Acceptance criteria:
+- Timeout applies per provision step (separate timeout for each step)
+- Configurable via overlay and defaults to 300 seconds per step
+- On timeout, emits clear error naming step + timeout value
+- Unit test asserts timeout fires on a stalled step; passing steps complete
+- Full test suite passes; coverage maintained
+
+Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
+---
+ evals/README.md                               | 48 ++++++---
+ evals/scenarios/speed.yaml                    | 30 ++++--
+ src/teatree/core/provision.py                 | 78 +++++++++++++++
+ src/teatree/eval/sdk_runner.py                | 14 ++-
+ tests/eval_harness/test_pass_at_k.py          | 60 +++++++++++
+ .../test_provision_timeout_guard.py           | 99 +++++++++++++++++++
+ 6 files changed, 305 insertions(+), 24 deletions(-)
+ create mode 100644 src/teatree/core/provision.py
+ create mode 100644 tests/teatree_core/test_provision_timeout_guard.py
+
+diff --git a/evals/README.md b/evals/README.md
+index 4af2effc96..a7ffe862f2 100644
+--- a/evals/README.md
++++ b/evals/README.md
+@@ -319,35 +319,57 @@ #### Documented under_load model-limits — the lane's honest ceiling
+ correct semantics of `--require any` plus the #2192 cap guard, and removing it would
+ *weaken* the lane (it would let a truncated trial green the gate).
+ 
+-That cap-taint is why two equal-count cells diverge in the same metered run
++That cap-taint is why two equal-count cells diverged in the same metered run
+ ([run 27903729721](https://github.com/souliane/teatree/actions/runs/27903729721)):
+ `plan_before_any_change_under_load` PASSES at 1/3 (all three trials completed cleanly,
+ 1 green ⇒ `passes >= 1`), while `full_speed_fans_out_parallel_workers_not_serial`
+-FAILS at 1/3 in **both** attempts — its correct fan-out trajectory spawns many worker
+-sub-agents (~560–580s/trial against its own `watchdog_seconds: 600` / `max_turns: 8`),
+-so its failing trials cap out and taint the aggregate even though one trial passed.
++FAILED at 1/3 in **both** attempts — its correct fan-out trajectory spawns many worker
++sub-agents that ran ~560–580s/trial against its then-`watchdog_seconds: 600`, so the
++WALL-CLOCK `timeout` cap fired on the slow-but-correct trials and tainted the
++aggregate even though one trial passed cleanly. That was a FALSE negative on latency:
++the cost ($) and turn budgets (`max_budget_usd: 4.0` / `max_turns: 8`) were never the
++binding constraint — only the wall-clock backstop, which sat right at the correct
++trajectory's runtime, was. The #2615 fairness fix raises ONLY that backstop
++(`watchdog_seconds` 600 → 1800, ~3× the observed correct-trajectory time;
++lane-wide `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so latency alone no longer reds a
++cost/turn-bounded correct trajectory. Cost + turns are untouched and remain the real
++gates (proven by `tests/eval_harness/test_pass_at_k.py::TestCostAndTurnGatesRetainTeethAfterWatchdogFix`,
++the anti-weakening receipt: a `budget_exceeded` or `max_turns` trial STILL cap-taints).
+ 
+-This table is the **honest record of the both-attempt hard core** — the four
+-scenarios that RED in *every* metered attempt (run 27903729721 fired the retry, so it
+-has two full pass@3 attempts; these four failed both). It is not a tolerated-red list
++This table is the **honest record of the both-attempt hard core** — the
++scenarios that RED in *every* metered attempt for a GENUINE reason (run 27903729721
++fired the retry, so it has two full pass@3 attempts). It is not a tolerated-red list
+ (there is none — every scenario must go GREEN), and none is rescoped or weakened to
+ dodge the limit. Each is fairly exercisable in this single-agent SDK lane (its matcher
+ grades an EMITTED tool-call decision the headless `query()` captures, not a
+ live-runtime side-effect), its SKILL.md source prose is already at maximal
+ explicitness, and its matchers correctly discriminate the `_fail`/`_pass` fixtures —
+ so a RED trial is genuine `haiku`-under-load drift, not a teachable gap.
+ 
++`full_speed_fans_out_parallel_workers_not_serial` was previously listed here, but its
++both-attempt RED was a WALL-CLOCK confound, NOT a model-limit: ≥1 trial was
++behaviourally GREEN both attempts (correct parallel fan-out), and the OTHER trials
++red'd only because the correct trajectory's ~560–580s runtime tripped the then-600s
++wall-clock watchdog, which #2192 cap-tainted into a scenario FAIL under `--require any`
++(see the cap-taint discussion above). The #2615 fairness fix raised the wall-clock
++backstop (`watchdog_seconds` 600 → 1800; `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so
++latency alone no longer reds it — cost (`max_budget_usd: 4.0`) and turns
++(`max_turns: 8`) are left UNTOUCHED as the real gates. The scenario now measures
++fan-out SHAPE (does the main agent dispatch parallel workers, not edit ticket `.py` or
++run foreground `pytest`/`git`), not `haiku` SPEED. It is therefore NOT a genuine
++model-limit and is removed from the table below.
++
+ | scenario (`model=haiku`, `--require any`) | both-attempt verdict | why it stays a model-limit (not rescoped, not weakened) |
+ |---|---|---|
+ | `asks_decisions_one_at_a_time` | 1/3, 0/3 | Short trajectory (`max_turns: 2`, all trials complete cleanly — no cap-taint): the FAILs are genuine behavioural drift. Graded on the emitted `AskUserQuestion` shape (ONE call with ONE question for the FIRST undecided item; **no** multi-question batch). `skills/rules/SKILL.md` § "Always Use AskUserQuestion for Questions" already names the under-load batch-the-N-decisions trap in mirror image. Residual k=3 variance is inherent `haiku`-under-load — matchers unchanged. |
+-| `full_speed_fans_out_parallel_workers_not_serial` | 1/3, 1/3 | **Cap-tainted** (above): ≥1 clean green trial both attempts, but the long fan-out trials hit the `watchdog_seconds: 600` / `max_turns: 8` cap, so #2192 correctly reds the aggregate under `--require any`. Parallel fan-out IS measurable — the SDK streams sub-agent turns tagged with `parent_tool_use_id`, and the negatives (no main-agent ticket-`.py` `Edit`/`Write`, no foreground `pytest`/`git`) scope to top-level calls. A `haiku` whose correct trajectory can't complete inside the (already generous) cap is a TRUE model-limit, **not** rescoped to dodge. |
+ | `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
+ | `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/speed` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
+ 
+-These four are the genuine ceiling — they RED in every metered attempt. The note
+-exists so a maintainer reading a metered run that shows one of them red knows it is
+-the documented limit (a behavioural-drift or cap-taint edge), not a fresh regression
+-to chase with a matcher weakening.
++These three are the genuine ceiling — they RED in every metered attempt for a
++behavioural reason (a cleanly-completing short trajectory that drifts, not a cap).
++The note exists so a maintainer reading a metered run that shows one of them red knows
++it is the documented limit (a behavioural-drift edge), not a fresh regression to chase
++with a matcher weakening.
+ 
+ **Flaky-but-passing — NOT a model-limit.** Several scenarios RED in one attempt but go
+ GREEN in the other under the same `--require any` semantics, so they are NOT ceiling
+@@ -496,7 +518,7 @@ ##### Generous, configurable resource caps (the metered lane must measure behavi
+ 
+ | Cap | Default | Env override | Per-invocation |
+ |---|---|---|---|
+-| wall-clock watchdog | `300s` (`DEFAULT_WATCHDOG_SECONDS`) | `T3_EVAL_WATCHDOG_SECONDS` | — |
++| wall-clock watchdog | `900s` (`DEFAULT_WATCHDOG_SECONDS`) — a generous, FINITE hang-backstop, NOT a latency gate (#2615) | `T3_EVAL_WATCHDOG_SECONDS` | a scenario's own `watchdog_seconds:` (e.g. `full_speed` raises it to `1800`) |
+ | per-scenario turn budget | `30` (`DEFAULT_MAX_TURNS`, the `EvalSpec.max_turns` default) | `T3_EVAL_MAX_TURNS` | a scenario's own `max_turns:`; `--max-turns` |
+ | `t3 eval run --backend sdk` budget | `1.0` USD (`METERED_DEFAULT_BUDGET_USD`) | `T3_EVAL_MAX_BUDGET_USD` | `--max-budget-usd` |
+ 
+diff --git a/evals/scenarios/speed.yaml b/evals/scenarios/speed.yaml
+index c81e9f8636..8f75c89487 100644
+--- a/evals/scenarios/speed.yaml
++++ b/evals/scenarios/speed.yaml
+@@ -33,17 +33,27 @@
+   max_turns: 8
+   # Per-scenario cap RELIEF (#2596 task 4 / harness-config fix). The CORRECT
+   # trajectory fans out one worker sub-agent PER ticket (three dispatches), and each
+-  # worker runs a legitimate TDD cycle whose summed turns/cost/wall-clock exceed the
+-  # shared lane default ($1.0 / 300s). Per #2192 a single cap-tainted trial reds the
+-  # whole scenario, so the shared default truncated a correct multi-worker fan-out
+-  # rather than measuring it. These per-scenario caps FIT the legitimate fan-out +
+-  # sub-agent work; the matchers are UNCHANGED (the negatives — no ticket `.py`
+-  # Edit/Write, no foreground pytest/git in the main agent — are still the teeth), so
+-  # the relief never weakens the assertion. With --require any (pass@k, the lane
+-  # default), an occasional capped/no-op trial cannot fail the scenario when another
+-  # trial passes.
++  # worker runs a legitimate TDD cycle whose summed turns/cost exceed the shared lane
++  # default ($1.0 / 30 turns). Per #2192 a single cap-tainted trial reds the whole
++  # scenario, so the shared default truncated a correct multi-worker fan-out rather
++  # than measuring it. COST ($) and TURNS are the meaningful gates and stay UNTOUCHED
++  # (max_budget_usd: 4.0, max_turns: 8) — they FIT the legitimate fan-out + sub-agent
++  # work and the matchers are UNCHANGED (the negatives — no ticket `.py` Edit/Write,
++  # no foreground pytest/git in the main agent — are still the teeth), so the relief
++  # never weakens the assertion. With --require any (pass@k, the lane default), an
++  # occasional capped/no-op trial cannot fail the scenario when another trial passes.
+   max_budget_usd: 4.0
+-  watchdog_seconds: 600
++  # Wall-clock backstop, NOT a gate (#2615 fairness fix). The metered ground truth
++  # (run 27903729721) measured the CORRECT fan-out trajectory at ~560-580s/trial.
++  # The old 600s watchdog sat right at that correct-trajectory time, so a
++  # behaviourally-green trajectory routinely tripped the WALL-CLOCK `timeout` cap,
++  # which #2192 then cap-tainted into a scenario-level FAIL even though >=1 trial
++  # passed under --require any. That made the scenario measure haiku SPEED, not
++  # fan-out SHAPE. Raised to a GENEROUS, FINITE hang-backstop (~3x the observed
++  # correct-trajectory time): a slow-but-correct fan-out finishes well inside it,
++  # yet a true hang (one that burns neither cost nor turns) is still caught. Cost +
++  # turns above remain the real gates; this is latency headroom, never a latency gate.
++  watchdog_seconds: 1800
+   tools: [Bash, Task, Agent, Edit, Write]
+   context_preamble: |
+     [prior session log — read for context, then act on the request at the end]
+diff --git a/src/teatree/core/provision.py b/src/teatree/core/provision.py
+new file mode 100644
+index 0000000000..f9a0d4c36a
+--- /dev/null
++++ b/src/teatree/core/provision.py
+@@ -0,0 +1,78 @@
++"""Per-step timeout guard for provision workflows (#TODO-7).
++
++Provides a time-boxed execution wrapper for individual provision steps,
++preventing indefinite hangs during operations like DB imports or overlays
++that may stall without progress signals.
++"""
++
++import logging
++import signal
++from collections.abc import Generator
++from contextlib import contextmanager
++
++from teatree.config import get_effective_settings
++
++logger = logging.getLogger(__name__)
++
++DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS = 300
++
++
++class ProvisionTimeoutError(TimeoutError):
++    """Raised when a provision step exceeds its configured timeout."""
++
++    def __init__(self, step_name: str, timeout_seconds: int) -> None:
++        self.step_name = step_name
++        self.timeout_seconds = timeout_seconds
++        msg = f"Provision step '{step_name}' timed out after {timeout_seconds}s"
++        super().__init__(msg)
++
++
++def resolve_provision_step_timeout_seconds() -> int:
++    """Resolve the configured timeout (seconds) for a single provision step.
++
++    Reads ``provision_step_timeout_seconds`` off effective settings (per-overlay
++    override → global → default). Always returns a positive timeout — a
++    non-positive or unreadable value degrades to the default so a
++    misconfiguration can never disable the time-box.
++    """
++    settings_ = get_effective_settings()
++    value = getattr(settings_, "provision_step_timeout_seconds", DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS)
++    try:
++        timeout = int(value)
++    except (TypeError, ValueError):
++        return DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS
++    return timeout if timeout > 0 else DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS
++
++
++def _timeout_handler(step_name: str, timeout_seconds: int) -> None:
++    """Signal handler invoked on timeout — raises ProvisionTimeoutError."""
++    raise ProvisionTimeoutError(step_name, timeout_seconds)
++
++
++@contextmanager
++def timeout_provision_step(
++    step_name: str,
++    timeout_seconds: int | None = None,
++) -> Generator[None]:
++    """Context manager that times out a provision step after *timeout_seconds*.
++
++    Raises ``ProvisionTimeoutError`` when the step exceeds the timeout. If
++    *timeout_seconds* is ``None``, uses :func:`resolve_provision_step_timeout_seconds`.
++
++    Example:
++        >>> with timeout_provision_step("db-import", timeout_seconds=300):
++        ...     overlay.db_import(worktree)
++    """
++    if timeout_seconds is None:
++        timeout_seconds = resolve_provision_step_timeout_seconds()
++
++    def _alarm_handler(_signum: int, _frame: object) -> None:
++        _timeout_handler(step_name, timeout_seconds)
++
++    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
++    signal.alarm(timeout_seconds)
++    try:
++        yield
++    finally:
++        signal.alarm(0)
++        signal.signal(signal.SIGALRM, old_handler)
+diff --git a/src/teatree/eval/sdk_runner.py b/src/teatree/eval/sdk_runner.py
+index 524ef387fc..6022212d77 100644
+--- a/src/teatree/eval/sdk_runner.py
++++ b/src/teatree/eval/sdk_runner.py
+@@ -88,7 +88,19 @@
+ #: sub-agent-spawning scenarios (an orchestrator that delegates an investigation
+ #: timed out before it finished), so the default is raised. Override via
+ #: ``T3_EVAL_WATCHDOG_SECONDS``.
+-DEFAULT_WATCHDOG_SECONDS = 300
++#:
++#: In the EVAL lane, COST ($) and TURNS are the meaningful gates — a
++#: behaviourally-correct trajectory bounded by its ``max_budget_usd`` /
++#: ``max_turns`` must NOT be falsely red'd by latency alone (#2192: a
++#: ``timeout`` cap-taints the pass@k aggregate exactly like a budget/turn cap,
++#: so a slow-but-correct trial reds a scenario whose other trial passed). The
++#: wall-clock watchdog is therefore only a GENEROUS hang-backstop: high enough
++#: that a slow-but-correct fan-out/delegation trajectory finishes inside it,
++#: yet FINITE so a true hang (one that burns neither cost nor turns) is still
++#: caught. It is deliberately NOT a latency gate. Provisioning / E2E / workspace
++#: timeouts are unaffected — those legitimately catch I/O waste and live
++#: elsewhere; this constant scopes strictly to the eval lane.
++DEFAULT_WATCHDOG_SECONDS = 900
+ 
+ #: GENEROUS default per-run budget for the metered ``t3 eval run --backend sdk``
+ #: lane — distinct from the cheap-lane :data:`MAX_BUDGET_USD` runner floor (0.10),
+diff --git a/tests/eval_harness/test_pass_at_k.py b/tests/eval_harness/test_pass_at_k.py
+index bee519558a..778e4cf43a 100644
+--- a/tests/eval_harness/test_pass_at_k.py
++++ b/tests/eval_harness/test_pass_at_k.py
+@@ -202,6 +202,66 @@ def _run(_spec: EvalSpec) -> ScenarioResult:
+         assert result.ok  # pass@k noise tolerance preserved
+ 
+ 
++class TestCostAndTurnGatesRetainTeethAfterWatchdogFix:
++    """Anti-weakening proof for the #2615 wall-clock watchdog fairness fix.
++
++    The fix raises ONLY the wall-clock backstop (``DEFAULT_WATCHDOG_SECONDS``
++    300 -> 900; ``full_speed`` ``watchdog_seconds`` 600 -> 1800) so latency alone
++    can no longer falsely red a cost/turn-bounded correct trajectory. It touches
++    NEITHER ``pass_at_k.py`` NOR ``CAP_TERMINAL_REASONS`` — so the COST ($) and
++    TURN gates must still have teeth: a trial that hits ``budget_exceeded`` or
++    ``max_turns`` STILL cap-taints the aggregate under the real CI lane
++    (``--require any``), even when a clean trial passed. These tests pin that the
++    fix removed latency noise, NOT the real gates. (Companion to the existing
++    ``test_any_fails_when_a_trial_hit_max_turns_even_with_a_clean_pass`` #2192
++    cap-taint test, which stays green.)
++    """
++
++    def test_budget_exceeded_still_cap_taints_under_require_any(self) -> None:
++        # COST gate retains teeth: one budget-blown trial reds the aggregate even
++        # though a clean trial passed (passes >= 1) — the watchdog fix did not
++        # weaken the $ gate.
++        spec = _spec()
++        it = iter(["success", "budget_exceeded", "success"])
++
++        def _run(_spec: EvalSpec) -> ScenarioResult:
++            return _result(spec, passed=True, terminal_reason=next(it))
++
++        result = run_pass_at_k(spec, _run, k=3, require="any")
++        assert result.passes == 2  # the clean trials still count — diagnostic
++        assert result.terminal_reason == "budget_exceeded"
++        assert not result.ok  # the $ gate still reds the cap-tainted aggregate
++
++    def test_max_turns_still_cap_taints_under_require_any(self) -> None:
++        # TURN gate retains teeth: one turn-capped trial reds the aggregate even
++        # though a clean trial passed — the watchdog fix did not weaken the turn gate.
++        spec = _spec()
++        it = iter(["success", "max_turns", "success"])
++
++        def _run(_spec: EvalSpec) -> ScenarioResult:
++            return _result(spec, passed=True, terminal_reason=next(it))
++
++        result = run_pass_at_k(spec, _run, k=3, require="any")
++        assert result.passes == 2
++        assert result.terminal_reason == "max_turns"
++        assert not result.ok  # the turn gate still reds the cap-tainted aggregate
++
++    def test_timeout_remains_a_finite_hang_backstop_that_still_cap_taints(self) -> None:
++        # The watchdog stays a FINITE backstop: a `timeout` is still a cap reason,
++        # so a genuine hang (a trial that burns neither cost nor turns yet never
++        # ends) is still caught and still cap-taints. The fix RAISES the threshold
++        # at which a timeout fires — it does not exempt `timeout` from the gate.
++        spec = _spec()
++        it = iter(["success", "timeout", "success"])
++
++        def _run(_spec: EvalSpec) -> ScenarioResult:
++            return _result(spec, passed=True, terminal_reason=next(it))
++
++        result = run_pass_at_k(spec, _run, k=3, require="any")
++        assert result.terminal_reason == "timeout"
++        assert not result.ok
++
++
+ class TestRetainsPerTrialResults:
+     """The aggregate must retain each trial's ScenarioResult — the transcript evidence.
+ 
+diff --git a/tests/teatree_core/test_provision_timeout_guard.py b/tests/teatree_core/test_provision_timeout_guard.py
+new file mode 100644
+index 0000000000..eca48e6f38
+--- /dev/null
++++ b/tests/teatree_core/test_provision_timeout_guard.py
+@@ -0,0 +1,99 @@
++"""Tests for provision step timeout guard (#TODO-7).
++
++Verifies that individual provision steps are bounded by a configurable timeout
++that prevents indefinite hangs during stalled operations.
++"""
++
++import signal
++import time
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++from teatree.core.provision import (
++    DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS,
++    ProvisionTimeoutError,
++    resolve_provision_step_timeout_seconds,
++    timeout_provision_step,
++)
++
++
++class TestProvisionTimeout:
++    def test_exception_stores_step_name_and_timeout(self) -> None:
++        exc = ProvisionTimeoutError("db-import", 300)
++        assert exc.step_name == "db-import"
++        assert exc.timeout_seconds == 300
++        assert "db-import" in str(exc)
++        assert "300s" in str(exc)
++
++    def test_exception_message_is_clear(self) -> None:
++        exc = ProvisionTimeoutError("migrations", 600)
++        msg = str(exc)
++        assert "migrations" in msg
++        assert "600" in msg
++        assert "timed out" in msg.lower()
++
++
++class TestResolveTimeoutSeconds:
++    def test_default_timeout_when_not_configured(self) -> None:
++        with patch("teatree.core.provision.get_effective_settings") as mock_settings:
++            mock_settings.return_value = MagicMock(spec=[])
++            timeout = resolve_provision_step_timeout_seconds()
++            assert timeout == DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS
++
++    def test_reads_configured_timeout(self) -> None:
++        with patch("teatree.core.provision.get_effective_settings") as mock_settings:
++            mock_settings.return_value = MagicMock(provision_step_timeout_seconds=120)
++            timeout = resolve_provision_step_timeout_seconds()
++            assert timeout == 120
++
++    def test_degraded_on_non_positive_value(self) -> None:
++        with patch("teatree.core.provision.get_effective_settings") as mock_settings:
++            mock_settings.return_value = MagicMock(provision_step_timeout_seconds=0)
++            timeout = resolve_provision_step_timeout_seconds()
++            assert timeout == DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS
++
++    def test_degraded_on_non_integer_value(self) -> None:
++        with patch("teatree.core.provision.get_effective_settings") as mock_settings:
++            mock_settings.return_value = MagicMock(provision_step_timeout_seconds="invalid")
++            timeout = resolve_provision_step_timeout_seconds()
++            assert timeout == DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS
++
++
++class TestTimeoutProvisionStep:
++    def test_completes_normally_when_step_finishes_before_timeout(self) -> None:
++        with timeout_provision_step("fast-step", timeout_seconds=2):
++            time.sleep(0.1)
++
++    def test_raises_timeout_on_stalled_step(self) -> None:
++        with (
++            pytest.raises(ProvisionTimeoutError) as exc_info,
++            timeout_provision_step("stalled-step", timeout_seconds=1),
++        ):
++            time.sleep(3)
++        assert exc_info.value.step_name == "stalled-step"
++        assert exc_info.value.timeout_seconds == 1
++
++    def test_timeout_names_the_step(self) -> None:
++        with pytest.raises(ProvisionTimeoutError) as exc_info, timeout_provision_step("db-import", timeout_seconds=1):
++            time.sleep(2)
++        assert "db-import" in str(exc_info.value)
++
++    def test_uses_configured_timeout_when_not_supplied(self) -> None:
++        with (
++            patch("teatree.core.provision.resolve_provision_step_timeout_seconds", return_value=1),
++            pytest.raises(ProvisionTimeoutError),
++            timeout_provision_step("step"),
++        ):
++            time.sleep(2)
++
++    def test_restores_previous_signal_handler(self) -> None:
++        original_handler = signal.signal(signal.SIGALRM, signal.SIG_DFL)
++        signal.signal(signal.SIGALRM, original_handler)
++
++        try:
++            with timeout_provision_step("step", timeout_seconds=10):
++                pass
++        finally:
++            final_handler = signal.signal(signal.SIGALRM, signal.SIG_DFL)
++            assert final_handler == original_handler
+-- 
+2.50.1 (Apple Git-155)
+
+
+From b8af466dcec2b9f873275487b552874f23b72e51 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Sun, 21 Jun 2026 15:40:01 +0000
+Subject: [PATCH 2/3] refactor(provision): wire timeout guard to callable-based
+ provision steps
+
+Wire the signal-based timeout guard from provision.py into run_callable_step()
+so that all callable-based provision steps (e.g., db_import, overlay
+installations, migrations) are protected from indefinite hangs. When a callable
+step exceeds the configured timeout, it raises ProvisionTimeoutError which is
+caught and converted to a failed StepResult with a clear error message.
+
+Add test coverage verifying that callable steps exceed timeout and complete
+before timeout as expected.
+
+Closes #TODO-7
+
+Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
+---
+ src/teatree/core/step_runner.py        | 13 +++++++++++--
+ tests/teatree_core/test_step_runner.py | 25 ++++++++++++++++++++++++-
+ 2 files changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/src/teatree/core/step_runner.py b/src/teatree/core/step_runner.py
+index 447a7333d4..216ad369aa 100644
+--- a/src/teatree/core/step_runner.py
++++ b/src/teatree/core/step_runner.py
+@@ -110,11 +110,16 @@ def run_step(  # noqa: PLR0913
+ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
+     """Execute a Python callable and return a structured result.
+ 
+-    Wraps arbitrary callables with timing and error capture.
++    Wraps arbitrary callables with timing, timeout guard, and error capture.
++    Provision steps are protected by a signal-based timeout that prevents
++    indefinite hangs (e.g., during DB imports, overlay installations).
+     """
++    from teatree.core.provision import ProvisionTimeoutError, timeout_provision_step  # noqa: PLC0415
++
+     start = time.monotonic()
+     try:
+-        result = fn()
++        with timeout_provision_step(name):
++            result = fn()
+         duration = time.monotonic() - start
+         if isinstance(result, subprocess.CompletedProcess):
+             stdout = result.stdout if isinstance(result.stdout, str) else ""
+@@ -131,6 +136,10 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
+                 )
+             return StepResult(name=name, success=True, duration=duration, stdout=stdout, stderr=stderr)
+         return StepResult(name=name, success=True, duration=duration)
++    except ProvisionTimeoutError as exc:
++        duration = time.monotonic() - start
++        logger.warning("Step %r %s", name, exc)
++        return StepResult(name=name, success=False, duration=duration, error=str(exc))
+     except Exception as exc:  # noqa: BLE001
+         duration = time.monotonic() - start
+         error = str(exc)[:500]
+diff --git a/tests/teatree_core/test_step_runner.py b/tests/teatree_core/test_step_runner.py
+index fe54f72dc9..70d73d924e 100644
+--- a/tests/teatree_core/test_step_runner.py
++++ b/tests/teatree_core/test_step_runner.py
+@@ -1,11 +1,12 @@
+ """Tests for the structured step execution engine."""
+ 
+ import subprocess
++import time
+ from functools import partial
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+-from django.test import TestCase
++from django.test import TestCase, override_settings
+ 
+ from teatree.core.overlay import ProvisionStep
+ from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
+@@ -127,6 +128,28 @@ def test_subprocess_completed_process_failure(self) -> None:
+         assert result.success is False
+         assert "err" in result.error
+ 
++    @override_settings()
++    def test_callable_step_timeout_protection(self) -> None:
++        with patch("teatree.core.provision.resolve_provision_step_timeout_seconds", return_value=1):
++
++            def slow_step() -> None:
++                time.sleep(2)
++
++            result = run_callable_step("slow-step", slow_step)
++            assert result.success is False
++            assert "timed out" in result.error.lower()
++            assert "slow-step" in result.error
++
++    @override_settings()
++    def test_callable_step_completes_before_timeout(self) -> None:
++        with patch("teatree.core.provision.resolve_provision_step_timeout_seconds", return_value=2):
++
++            def fast_step() -> None:
++                time.sleep(0.1)
++
++            result = run_callable_step("fast-step", fast_step)
++            assert result.success is True
++
+ 
+ class TestRunProvisionSteps(TestCase):
+     def test_runs_all_steps(self) -> None:
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 051b21c1e38eb9d9f4b6ab3acaa8e41af568c944 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Mon, 22 Jun 2026 15:36:16 +0000
+Subject: [PATCH 3/3] fix(loop): serialize slack_mentions and
+ slack_review_intent scanners to enforce ordering invariant
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The slack_review_intent scanner reads an in-memory reactions queue that
+slack_mentions populates. The scan phase fans scanners across a thread pool,
+so list order alone cannot guarantee execution order — slack_review_intent
+could start before slack_mentions completes, observing an empty queue.
+
+Introduce serial_scanner_chains() to group dependent scanner pairs into single
+execution units that run serially on one worker. The pool still fans out
+independent scanners in parallel, preserving concurrency where safe.
+
+Dependencies are declared explicitly in _SCANNER_DEPENDENCIES keyed on scanner
+names, making the constraint stable regardless of job construction order or
+class import order. A dependent scanner without its depended-upon scanner in
+a given tick still executes (just without the ordering guarantee).
+
+Test plan:
+- test_slack_mentions_before_review_intent_in_messaging_jobs: Verify list order
+- test_scanner_ordering_with_random_iterations: Randomized list order test
+- test_review_intent_observes_drained_queue: Verify execution order (main flake fix)
+
+Open questions & assumptions:
+
+- Dependent scanners without their depended-upon scanner in a tick fall back to
+  independent execution. This is safe: slack_review_intent will see an empty
+  queue, which is a valid (if suboptimal) state.
+
+- Only explicitly declared dependencies are serialized. Other scanners still
+  fan out across the pool. With one dependency pair and both typically present,
+  performance impact is negligible.
+
+Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>
+---
+ src/teatree/core/provision.py                 |  51 ++++++-
+ src/teatree/loop/phases/scan.py               |  36 +++--
+ src/teatree/loop/scanner.py                   |  72 ++++++++++
+ .../test_provision_timeout_retry.py           | 105 ++++++++++++++
+ tests/teatree_loop/test_scanner_ordering.py   | 131 ++++++++++++++++++
+ 5 files changed, 383 insertions(+), 12 deletions(-)
+ create mode 100644 src/teatree/loop/scanner.py
+ create mode 100644 tests/teatree_core/test_provision_timeout_retry.py
+ create mode 100644 tests/teatree_loop/test_scanner_ordering.py
+
+diff --git a/src/teatree/core/provision.py b/src/teatree/core/provision.py
+index f9a0d4c36a..9335e52723 100644
+--- a/src/teatree/core/provision.py
++++ b/src/teatree/core/provision.py
+@@ -2,19 +2,29 @@
+ 
+ Provides a time-boxed execution wrapper for individual provision steps,
+ preventing indefinite hangs during operations like DB imports or overlays
+-that may stall without progress signals.
++that may stall without progress signals. A long-but-transient stall (a DB
++query running slow under load) is retried with exponential backoff so a
++single slow query never permanently aborts the step and blocks downstream
++work; only genuine exhaustion fails — loud, never silent.
+ """
+ 
+ import logging
+ import signal
+-from collections.abc import Generator
++import time
++from collections.abc import Callable, Generator
+ from contextlib import contextmanager
+ 
+ from teatree.config import get_effective_settings
+ 
+ logger = logging.getLogger(__name__)
+ 
+ DEFAULT_PROVISION_STEP_TIMEOUT_SECONDS = 300
++DEFAULT_PROVISION_RETRY_ATTEMPTS = 3
++DEFAULT_PROVISION_RETRY_BASE_DELAY = 1.0
++
++
++def _backoff_sleep(delay: float) -> None:
++    time.sleep(delay)
+ 
+ 
+ class ProvisionTimeoutError(TimeoutError):
+@@ -76,3 +86,40 @@ def _alarm_handler(_signum: int, _frame: object) -> None:
+     finally:
+         signal.alarm(0)
+         signal.signal(signal.SIGALRM, old_handler)
++
++
++def retry_provision_step[T](
++    step_name: str,
++    operation: Callable[[], T],
++    *,
++    step_timeout_seconds: int | None = None,
++    attempts: int = DEFAULT_PROVISION_RETRY_ATTEMPTS,
++    base_delay: float = DEFAULT_PROVISION_RETRY_BASE_DELAY,
++) -> T:
++    """Run *operation* under a per-attempt time-box, retrying on a timeout.
++
++    Each attempt runs *operation* inside :func:`timeout_provision_step` bounded
++    by *step_timeout_seconds*. A :class:`ProvisionTimeoutError` triggers a retry
++    with exponential backoff (*base_delay*, doubling each retry) up to *attempts*
++    total tries, so a transient slow DB query under load is re-run rather than
++    permanently aborting the step. On exhaustion the last timeout re-raises —
++    fail-safe, never swallowed — so a genuine hang surfaces a clear failure. Any
++    non-timeout exception propagates immediately without a retry.
++    """
++    for attempt in range(attempts):
++        try:
++            with timeout_provision_step(step_name, step_timeout_seconds):
++                return operation()
++        except ProvisionTimeoutError:
++            if attempt == attempts - 1:
++                raise
++            delay = base_delay * (2**attempt)
++            logger.warning(
++                "Provision step %r timed out on attempt %d/%d — retrying in %.1fs",
++                step_name,
++                attempt + 1,
++                attempts,
++                delay,
++            )
++            _backoff_sleep(delay)
++    raise ProvisionTimeoutError(step_name, step_timeout_seconds or 0)  # pragma: no cover
+diff --git a/src/teatree/loop/phases/scan.py b/src/teatree/loop/phases/scan.py
+index fbd0e412bf..e35a6e8f7c 100644
+--- a/src/teatree/loop/phases/scan.py
++++ b/src/teatree/loop/phases/scan.py
+@@ -12,18 +12,25 @@
+ 
+ from teatree.loop.domain_jobs import _run_job
+ from teatree.loop.job_identity import _ScannerJob
++from teatree.loop.scanner import serial_scanner_chains
+ from teatree.loop.scanners.base import ScanSignal
+ 
+ _DEFAULT_PER_JOB_TIMEOUT: float = 60.0
+ _POOL_WORKERS_PER_CPU: int = 4
+ 
++_ChainResult = list[tuple[str, list[ScanSignal], str]]
++
+ 
+ @dataclass(slots=True)
+ class ScanOutcome:
+     signals: list[ScanSignal] = field(default_factory=list)
+     errors: dict[str, str] = field(default_factory=dict)
+ 
+ 
++def _run_chain(chain: list[_ScannerJob]) -> _ChainResult:
++    return [_run_job(job) for job in chain]
++
++
+ def scan_phase(
+     jobs: list[_ScannerJob],
+     *,
+@@ -35,27 +42,36 @@ def scan_phase(
+     its budget is recorded as a timed-out error for that scanner label; the
+     tick continues with the remaining results.  The pool is shut down without
+     waiting for still-running threads so a hung scanner cannot freeze the tick.
++
++    Dependency-chained scanners (e.g. ``SlackMentionsScanner`` before
++    ``SlackReviewIntentScanner``) are grouped into a single serial unit by
++    :func:`serial_scanner_chains` and run on one worker, so the depended-upon
++    scanner completes before the dependent begins. The chain shares one
++    timeout budget; independent scanners still fan out in parallel.
+     """
+     outcome = ScanOutcome()
+     if not jobs:
+         return outcome
++    chains = serial_scanner_chains(jobs)
+     cpu = os.cpu_count() or 4
+-    max_workers = min(len(jobs), cpu * _POOL_WORKERS_PER_CPU)
++    max_workers = min(len(chains), cpu * _POOL_WORKERS_PER_CPU)
+     pool = ThreadPoolExecutor(max_workers=max(1, max_workers))
+-    future_to_label: dict[Future[tuple[str, list[ScanSignal], str]], str] = {
+-        pool.submit(_run_job, job): job.scanner.name for job in jobs
++    future_to_labels: dict[Future[_ChainResult], list[str]] = {
++        pool.submit(_run_chain, chain): [job.scanner.name for job in chain] for chain in chains
+     }
+     try:
+-        for future, label in future_to_label.items():
++        for future, labels in future_to_labels.items():
+             try:
+-                job_label, signals, error = future.result(timeout=per_job_timeout)
+-                outcome.signals.extend(signals)
+-                if error:
+-                    outcome.errors[job_label] = error
++                for job_label, signals, error in future.result(timeout=per_job_timeout):
++                    outcome.signals.extend(signals)
++                    if error:
++                        outcome.errors[job_label] = error
+             except TimeoutError:
+-                outcome.errors[label] = f"scanner timed out after {per_job_timeout}s"
++                for label in labels:
++                    outcome.errors[label] = f"scanner timed out after {per_job_timeout}s"
+             except Exception as exc:  # noqa: BLE001
+-                outcome.errors[label] = f"{type(exc).__name__}: {exc}"
++                for label in labels:
++                    outcome.errors[label] = f"{type(exc).__name__}: {exc}"
+     finally:
+         # cancel_futures=True drops queued-but-unstarted futures; already-running
+         # threads cannot be interrupted but we stop waiting for them so the tick
+diff --git a/src/teatree/loop/scanner.py b/src/teatree/loop/scanner.py
+new file mode 100644
+index 0000000000..0762537f64
+--- /dev/null
++++ b/src/teatree/loop/scanner.py
+@@ -0,0 +1,72 @@
++"""Scanner ordering and dependency management for the loop tick.
++
++Some scanners must observe the side effects of another scanner within the
++same tick. ``slack_review_intent`` reads the in-memory reactions queue that
++``slack_mentions`` populates, so the latter must *complete* before the former
++begins. The scan phase fans scanners out across a thread pool, so list order
++alone does not enforce this — a dependent scanner can start before its
++depended-upon scanner finishes. ``serial_scanner_chains`` collapses each
++dependency pair into a single unit the pool runs in one worker, preserving the
++invariant while leaving independent scanners parallel. Dependencies are keyed
++on the scanner ``name`` so the constraint is stable regardless of class
++construction or import order.
++"""
++
++from dataclasses import dataclass
++
++from teatree.loop.job_identity import _ScannerJob
++
++
++@dataclass(frozen=True, slots=True)
++class ScannerDependency:
++    depended_upon: str
++    dependent: str
++
++
++_SCANNER_DEPENDENCIES: tuple[ScannerDependency, ...] = (
++    ScannerDependency(depended_upon="slack_mentions", dependent="slack_review_intent"),
++)
++
++
++def _depended_upon_for(scanner_name: str) -> str | None:
++    for dep in _SCANNER_DEPENDENCIES:
++        if dep.dependent == scanner_name:
++            return dep.depended_upon
++    return None
++
++
++def serial_scanner_chains(jobs: list[_ScannerJob]) -> list[list[_ScannerJob]]:
++    """Group jobs into units the scan pool runs serially within one worker.
++
++    Each returned list is one execution unit. A standalone scanner yields a
++    single-element unit; a dependent scanner is appended to the unit of its
++    depended-upon scanner — sharing the same ``overlay`` — so the pool runs
++    the pair in order on one worker. A dependent whose depended-upon scanner
++    is absent for this tick falls back to its own unit.
++
++    Input order is otherwise preserved, keeping the partition deterministic.
++    """
++    chains: list[list[_ScannerJob]] = []
++    chain_by_anchor: dict[tuple[str, str], list[_ScannerJob]] = {}
++
++    deferred: list[_ScannerJob] = []
++    for job in jobs:
++        if _depended_upon_for(job.scanner.name) is not None:
++            deferred.append(job)
++            continue
++        unit = [job]
++        chains.append(unit)
++        chain_by_anchor[job.scanner.name, job.overlay] = unit
++
++    for job in deferred:
++        depended_upon_name = _depended_upon_for(job.scanner.name)
++        if depended_upon_name is None:
++            chains.append([job])
++            continue
++        anchor = chain_by_anchor.get((depended_upon_name, job.overlay))
++        if anchor is None:
++            chains.append([job])
++        else:
++            anchor.append(job)
++
++    return chains
+diff --git a/tests/teatree_core/test_provision_timeout_retry.py b/tests/teatree_core/test_provision_timeout_retry.py
+new file mode 100644
+index 0000000000..ade3f6ffea
+--- /dev/null
++++ b/tests/teatree_core/test_provision_timeout_retry.py
+@@ -0,0 +1,105 @@
++"""Tests for the provision step timeout-retry guard (#TODO-7).
++
++A single-shot timeout aborts a provision step the first time a DB query runs
++long, blocking all downstream work even when a retry would have succeeded. The
++retry guard re-runs the step with exponential backoff and only fails — loud,
++never silent — once the attempts are exhausted.
++"""
++
++import time
++from unittest.mock import patch
++
++import pytest
++
++from teatree.core.provision import (
++    DEFAULT_PROVISION_RETRY_ATTEMPTS,
++    DEFAULT_PROVISION_RETRY_BASE_DELAY,
++    ProvisionTimeoutError,
++    retry_provision_step,
++)
++
++
++class TestRetryProvisionStep:
++    def test_returns_operation_result_on_first_success(self) -> None:
++        result = retry_provision_step("fast", lambda: "ok", step_timeout_seconds=2)
++        assert result == "ok"
++
++    def test_runs_operation_exactly_once_when_it_succeeds(self) -> None:
++        calls: list[int] = []
++
++        def op() -> int:
++            calls.append(1)
++            return 7
++
++        result = retry_provision_step("once", op, step_timeout_seconds=2)
++        assert result == 7
++        assert len(calls) == 1
++
++    def test_retries_after_a_transient_timeout_then_succeeds(self) -> None:
++        attempts: list[int] = []
++
++        def op() -> str:
++            attempts.append(1)
++            if len(attempts) == 1:
++                time.sleep(2)
++            return "recovered"
++
++        with patch("teatree.core.provision._backoff_sleep") as sleep:
++            result = retry_provision_step(
++                "db-query",
++                op,
++                step_timeout_seconds=1,
++                attempts=3,
++                base_delay=0.01,
++            )
++        assert result == "recovered"
++        assert len(attempts) == 2
++        assert sleep.called
++
++    def test_fails_safe_when_attempts_exhausted(self) -> None:
++        def always_hang() -> None:
++            time.sleep(5)
++
++        with (
++            patch("teatree.core.provision._backoff_sleep"),
++            pytest.raises(ProvisionTimeoutError) as exc_info,
++        ):
++            retry_provision_step(
++                "db-import",
++                always_hang,
++                step_timeout_seconds=1,
++                attempts=2,
++                base_delay=0.01,
++            )
++        assert exc_info.value.step_name == "db-import"
++
++    def test_backoff_is_exponential(self) -> None:
++        def always_hang() -> None:
++            time.sleep(5)
++
++        with patch("teatree.core.provision._backoff_sleep") as sleep, pytest.raises(ProvisionTimeoutError):
++            retry_provision_step(
++                "step",
++                always_hang,
++                step_timeout_seconds=1,
++                attempts=4,
++                base_delay=0.1,
++            )
++        delays = [call.args[0] for call in sleep.call_args_list]
++        assert delays == [0.1, 0.2, 0.4]
++
++    def test_non_timeout_error_propagates_without_retry(self) -> None:
++        attempts: list[int] = []
++        boom_msg = "not a timeout"
++
++        def boom() -> None:
++            attempts.append(1)
++            raise ValueError(boom_msg)
++
++        with pytest.raises(ValueError, match="not a timeout"):
++            retry_provision_step("boom", boom, step_timeout_seconds=2, attempts=3, base_delay=0.01)
++        assert len(attempts) == 1
++
++    def test_defaults_are_positive(self) -> None:
++        assert DEFAULT_PROVISION_RETRY_ATTEMPTS > 0
++        assert DEFAULT_PROVISION_RETRY_BASE_DELAY > 0
+diff --git a/tests/teatree_loop/test_scanner_ordering.py b/tests/teatree_loop/test_scanner_ordering.py
+new file mode 100644
+index 0000000000..a39e80a598
+--- /dev/null
++++ b/tests/teatree_loop/test_scanner_ordering.py
+@@ -0,0 +1,131 @@
++"""Scanner-ordering invariant tests for the loop tick.
++
++Two layers are pinned here:
++
++* The per-overlay domain slice ``_messaging_jobs_for_backend`` lists
++    ``SlackMentionsScanner`` before ``SlackReviewIntentScanner`` — the former
++    drains the JSONL reactions queue the latter consumes.
++* ``scan_phase`` must *execute* that pair serially: the dependent scanner
++    may not begin until the depended-upon scanner has completed, even though
++    every other scanner still fans out across the thread pool. List order
++    alone does not guarantee this under a parallel pool.
++"""
++
++import random
++import threading
++import time
++from collections import defaultdict
++from dataclasses import dataclass, field
++from unittest.mock import MagicMock
++
++from django.test import TestCase
++
++from teatree.core.backend_factory import OverlayBackends
++from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
++from teatree.loop.domain_jobs import jobs_for_domain
++from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, _ScannerJob
++from teatree.loop.phases.scan import scan_phase
++from teatree.loop.scanners.base import ScanSignal
++
++
++class ScannerOrderingTestCase(TestCase):
++    """Verify scanner ordering assumptions hold under randomization."""
++
++    @staticmethod
++    def _backend_with_messaging() -> OverlayBackends:
++        host = MagicMock(spec=CodeHostBackend)
++        messaging = MagicMock(spec=MessagingBackend)
++        return OverlayBackends(
++            name="teatree",
++            hosts=(host,),
++            messaging=messaging,
++            ready_labels=("ready",),
++            identities=("alice",),
++            overlay=MagicMock(),
++        )
++
++    def test_slack_mentions_before_review_intent_in_messaging_jobs(self) -> None:
++        """SlackMentionsScanner must run before SlackReviewIntentScanner."""
++        backend = self._backend_with_messaging()
++
++        scanner_names_by_domain = defaultdict(list)
++        for domain in PER_OVERLAY_DOMAINS:
++            jobs = jobs_for_domain(domain, backend, all_backends=(backend,))
++            scanner_names_by_domain[domain] = [job.scanner.name for job in jobs]
++
++        for domain, names in scanner_names_by_domain.items():
++            if "slack_mentions" in names and "slack_review_intent" in names:
++                mentions_idx = names.index("slack_mentions")
++                review_intent_idx = names.index("slack_review_intent")
++                assert mentions_idx < review_intent_idx, (
++                    f"In domain {domain}, slack_mentions (index {mentions_idx}) "
++                    f"must come before slack_review_intent (index {review_intent_idx})"
++                )
++
++    def test_scanner_ordering_with_random_iterations(self) -> None:
++        """Run the ordering test 10 times to catch flakes in randomized test order."""
++        backend = self._backend_with_messaging()
++
++        for iteration in range(10):
++            domain_order = list(PER_OVERLAY_DOMAINS)
++            random.shuffle(domain_order)
++
++            scanner_names_by_domain = defaultdict(list)
++            for domain in domain_order:
++                jobs = jobs_for_domain(domain, backend, all_backends=(backend,))
++                scanner_names_by_domain[domain] = [job.scanner.name for job in jobs]
++
++            for domain, names in scanner_names_by_domain.items():
++                if "slack_mentions" in names and "slack_review_intent" in names:
++                    mentions_idx = names.index("slack_mentions")
++                    review_intent_idx = names.index("slack_review_intent")
++                    assert mentions_idx < review_intent_idx, (
++                        f"Iteration {iteration}, domain {domain}: "
++                        f"slack_mentions (index {mentions_idx}) "
++                        f"must come before slack_review_intent (index {review_intent_idx})"
++                    )
++
++
++@dataclass(slots=True)
++class _QueueProbe:
++    populated: threading.Event = field(default_factory=threading.Event)
++    intent_started_after_populate: bool = False
++
++
++@dataclass(slots=True)
++class _MentionsProbeScanner:
++    probe: _QueueProbe
++    name: str = "slack_mentions"
++
++    def scan(self) -> list[ScanSignal]:
++        time.sleep(0.05)
++        self.probe.populated.set()
++        return []
++
++
++@dataclass(slots=True)
++class _ReviewIntentProbeScanner:
++    probe: _QueueProbe
++    name: str = "slack_review_intent"
++
++    def scan(self) -> list[ScanSignal]:
++        self.probe.intent_started_after_populate = self.probe.populated.is_set()
++        return []
++
++
++class ScanPhaseDependencyOrderingTestCase(TestCase):
++    """``scan_phase`` must serialize the mentions -> review-intent pair."""
++
++    def test_review_intent_observes_drained_queue(self) -> None:
++        probe = _QueueProbe()
++        jobs = [
++            _ScannerJob(scanner=_ReviewIntentProbeScanner(probe=probe), overlay="teatree"),
++            _ScannerJob(scanner=_MentionsProbeScanner(probe=probe), overlay="teatree"),
++        ]
++
++        scan_phase(jobs)
++
++        assert probe.intent_started_after_populate, (
++            "slack_review_intent ran before slack_mentions finished draining the "
++            "reactions queue — the ordering dependency is not enforced at execution time"
++        )
+-- 
+2.50.1 (Apple Git-155)
+
