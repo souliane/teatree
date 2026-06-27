@@ -34,7 +34,7 @@ def loop_held_in_db(name: str) -> bool:
 
         return not LoopState.objects.is_runnable(name)
     except Exception:
-        logger.debug("LoopState read failed for %r — falling through to env kill-switch", name, exc_info=True)
+        logger.debug("LoopState read failed for %r — failing safe to no-hold (loop runs)", name, exc_info=True)
         return False
 
 

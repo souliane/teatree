@@ -58,7 +58,7 @@ class LoopStateManager(models.Manager["LoopState"]):
         """Return the durable status of *name*, or ``ENABLED`` when no row exists.
 
         ``ENABLED`` is the fall-through default: an empty table leaves every
-        loop resolving exactly as the env kill-switch / cadence dictate (the
+        loop resolving exactly as its cadence dictates (the
         #1913 no-regression invariant; #2702 removed the toml tier).
         """
         row = self.filter(name=name).first()

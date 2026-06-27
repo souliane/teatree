@@ -1168,7 +1168,7 @@ def _loop_registration_exempt(data: dict) -> bool:
         (``_loop_auto_load_active`` False — no teatree marker OR auto-load not
         enabled, #256), so a colleague who merely cloned the repo is never
         nagged to register a cron; default OFF until the owner opts in via
-        ``[loops] auto_load = true``;
+        ``[teatree] autoload = true``;
     - the tool is a cron-management / skill tool the agent uses to register the
         loop (no point blocking the very tools that satisfy the gate);
     - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has

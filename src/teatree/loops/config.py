@@ -94,7 +94,7 @@ class LoopsConfig:
         *path* override is for tests. Missing file, missing tables, or
         unreadable toml all degrade to defaults — never raise. Only
         cadence/parallel/summary settings are read; loop-disabled state
-        is resolved by :meth:`is_enabled` (env → DB → default), not here.
+        is resolved by :meth:`is_enabled` (DB → default), not here.
         """
         toml_path = path if path is not None else Path.home() / ".teatree.toml"
         try:
