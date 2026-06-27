@@ -22,7 +22,9 @@ need effective values must use ``get_effective_settings``, not the bare
 """
 
 import logging
+import os
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -256,7 +258,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     _warn_retired_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
-    workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
+    # ``workspace_dir`` is DB-home (#regroup): its ``[teatree]`` value is ignored on
+    # read (migrate it with ``config_setting import``); the field keeps its dataclass
+    # default here and ``workspace_dir()`` resolves the per-overlay value.
     worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
 
     # The hard partition (#1775): ``load_config`` builds ONLY the TOML-home fields
@@ -268,7 +272,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # is ignored on read (its home is the DB); migrate it into the store with
     # ``t3 <overlay> config_setting import``.
     user = UserSettings(
-        workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
@@ -307,13 +310,68 @@ def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
     return repos
 
 
+def _default_workspace_dir(overlay_name: str) -> Path:
+    """The sound per-overlay default: ``~/workspace/t3-workspaces/<overlay>/``.
+
+    Worktrees regroup under a dedicated dir PER OVERLAY so a multi-overlay host
+    keeps each overlay's worktrees apart. With no resolvable overlay the base
+    ``~/workspace/t3-workspaces`` stands (no overlay subdir).
+
+    The dir is created on first resolution (``mkdir(parents=True, exist_ok=True)``,
+    matching ``get_data_dir`` / ``default_logging``): it is teatree's own managed
+    home, so establishing it keeps the workspace walkers (clean-all's
+    ``remove_empty_ticket_dirs``, the landscape survey) from crashing on a
+    not-yet-created per-overlay dir. ``OSError`` is suppressed so a read-only /
+    unwritable FS still resolves the path rather than raising in the hot resolver.
+    """
+    base = Path.home() / "workspace" / "t3-workspaces"
+    default = base / overlay_name if overlay_name else base
+    with suppress(OSError):
+        default.mkdir(parents=True, exist_ok=True)
+    return default
+
+
 def workspace_dir() -> Path:
-    """Canonical workspace directory (where main repo clones live)."""
+    """Canonical per-overlay workspace directory (where worktrees are created).
+
+    Resolution precedence, first match wins:
+
+    1.  ``T3_WORKSPACE_DIR`` — the env var, then the ``settings.T3_WORKSPACE_DIR``
+        Django setting: an explicit, highest-precedence override kept for
+        back-compat (an operator who pinned a workspace dir keeps it).
+    2.  the DB-home ``ConfigSetting`` ``workspace_dir`` row — the active overlay's
+        scope first (a per-overlay opinion), then the global scope (a workspace
+        default for every overlay). Set with
+        ``t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]``.
+    3.  the sound default ``~/workspace/t3-workspaces/<overlay>/``.
+
+    The active overlay is resolved exactly as every other per-overlay setting
+    (``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay). The DB
+    tier is read through the resolution helpers (the deferred loader → resolution
+    edge the module docstring describes) so it stays fail-safe to "no row" when
+    Django is unconfigured.
+    """
     from django.conf import settings  # noqa: PLC0415
 
+    from teatree.config.resolution import (  # noqa: PLC0415
+        _db_global_overrides,
+        _db_overlay_overrides,
+        _resolved_overlay_name,
+    )
+
+    env_override = os.environ.get("T3_WORKSPACE_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
     if hasattr(settings, "T3_WORKSPACE_DIR"):
         return Path(settings.T3_WORKSPACE_DIR)
-    return _facade.load_config().user.workspace_dir
+
+    overlay_name = _resolved_overlay_name(None)
+    stored = _db_overlay_overrides(overlay_name).get("workspace_dir")
+    if stored is None:
+        stored = _db_global_overrides().get("workspace_dir")
+    if stored is not None:
+        return Path(str(stored)).expanduser()
+    return _default_workspace_dir(overlay_name)
 
 
 def worktrees_dir() -> Path:

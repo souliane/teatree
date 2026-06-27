@@ -4,14 +4,9 @@ from typing import ClassVar, cast
 from django.db import models
 from django_fsm import FSMField, transition
 
-from teatree.config import load_config as _load_config
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
-
-
-def _workspace_dir() -> Path:
-    return _load_config().user.workspace_dir
 
 
 class Worktree(models.Model):

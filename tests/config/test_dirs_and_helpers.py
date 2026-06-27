@@ -33,7 +33,13 @@ class TestWorkspaceDir:
         result = workspace_dir()
         assert result == custom
 
-    def test_falls_back_to_config_file(self, tmp_path: Path, config_file: Path, settings) -> None:
+    def test_falls_back_to_per_overlay_default(
+        self, tmp_path: Path, config_file: Path, settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # workspace_dir is DB-home now: a ``[teatree] workspace_dir`` value is
+        # IGNORED on read; with no env/Django override and no DB row the per-overlay
+        # default ``~/workspace/t3-workspaces/<overlay>/`` stands. The DB and env
+        # tiers are covered in test_workspace_dir_per_overlay.py.
         del config_file
         _write_toml(
             tmp_path / ".teatree.toml",
@@ -41,8 +47,10 @@ class TestWorkspaceDir:
         )
         if hasattr(settings, "T3_WORKSPACE_DIR"):
             del settings.T3_WORKSPACE_DIR
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "myoverlay")
 
-        assert workspace_dir() == Path("/from/config")
+        assert workspace_dir() == Path.home() / "workspace" / "t3-workspaces" / "myoverlay"
 
 
 class TestWorktreesDir:

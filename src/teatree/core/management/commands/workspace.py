@@ -11,7 +11,7 @@ from django.db import transaction
 from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
-from teatree.config import load_config
+from teatree.config import workspace_dir as _config_workspace_dir
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
@@ -72,7 +72,10 @@ def _warn_orphans(write: Callable[[str], None]) -> None:
 
 
 def _workspace_dir() -> Path:
-    return load_config().user.workspace_dir
+    # The per-overlay resolver (env → DB ConfigSetting → default), NOT the raw
+    # ``load_config().user.workspace_dir`` global — so NEW ticket worktrees land
+    # under the resolved per-overlay dir.
+    return _config_workspace_dir()
 
 
 def _resolve_workspace_ticket(path: str) -> Ticket:

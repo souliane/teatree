@@ -65,6 +65,9 @@ class WorkspaceTicketContextWiringTest(TestCase):
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
+        # workspace_dir() now defaults to the per-overlay dir; pin the back-compat
+        # T3_WORKSPACE_DIR env override to the seeded clone root so provisioning resolves.
+        self.enterContext(patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace)}))
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

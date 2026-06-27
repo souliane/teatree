@@ -24,8 +24,10 @@ from ._shared import _write_toml
 
 
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # workspace_dir + privacy are TOML-home; review_skill is DB-home and keeps
-    # its dataclass default at the file tier (resolved from the DB store).
+    # privacy is TOML-home (read off the file). workspace_dir is DB-home now:
+    # its ``[teatree]`` value is ignored on read so the field keeps its dataclass
+    # default at the file tier (resolved per-overlay via workspace_dir()).
+    # review_skill is DB-home too and keeps its default at the file tier.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
@@ -36,7 +38,7 @@ privacy = "strict"
 """,
     )
     config = load_config(config_path)
-    assert config.user.workspace_dir == Path("/custom/workspace")
+    assert config.user.workspace_dir == Path.home() / "workspace"
     assert config.user.privacy == "strict"
     assert config.user.review_skill == ""
     assert "teatree" in config.raw

@@ -155,11 +155,11 @@ class TestBuildBranchName(TestCase):
 
 
 class TestWorkspaceDirHelper(TestCase):
-    def test_uses_config_workspace_dir(self) -> None:
-        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
-
-        cfg = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/tmp/ws-test")))
-        with patch.object(workspace_mod, "load_config", return_value=cfg):
+    def test_delegates_to_per_overlay_resolver(self) -> None:
+        # The worktree-creation path resolves through config.workspace_dir()
+        # (the per-overlay env → DB → default resolver), NOT the raw
+        # load_config().user.workspace_dir global.
+        with patch.object(workspace_mod, "_config_workspace_dir", return_value=Path("/tmp/ws-test")):
             result = _workspace_dir()
             assert result == Path("/tmp/ws-test")
 
@@ -180,6 +180,10 @@ class TestWorkspaceTicket(TestCase):
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend", "api", "web"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
+        # workspace_dir() now defaults to the per-overlay dir; pin the back-compat
+        # T3_WORKSPACE_DIR env override to the seeded clone root so the provisioner
+        # finds these clones (the operator path for clones kept under ~/workspace).
+        self.enterContext(patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace)}))
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
