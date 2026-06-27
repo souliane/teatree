@@ -17,7 +17,7 @@ from teatree.agents.headless import (
     TicketBudget,
     _drive_with_heartbeat,
     _get_resume_session_id,
-    _limit_signature,
+    _limit_match,
     _parse_result,
     _runtime_child_env,
     _validate_result,
@@ -28,6 +28,7 @@ from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.config import AgentRuntime
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.llm.anthropic_limits import LimitCause
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import result_message as _result_message
@@ -244,8 +245,9 @@ class TestRunHeadlessUsageLimit(TestCase):
 
         task.refresh_from_db()
         assert attempt.exit_code != 0
-        assert "usage_limit" in attempt.error
+        assert "subscription_weekly" in attempt.error
         assert "weekly limit" in attempt.error
+        assert "credit" not in attempt.error.casefold()
         assert task.status == Task.Status.FAILED
 
     def test_usage_limit_phrase_recorded(self) -> None:
@@ -260,8 +262,69 @@ class TestRunHeadlessUsageLimit(TestCase):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
 
         task.refresh_from_db()
-        assert "usage_limit" in attempt.error
+        assert "subscription_session" in attempt.error
         assert "usage limit" in attempt.error
+        assert task.status == Task.Status.FAILED
+
+    def test_credit_balance_too_low_is_api_credit_not_subscription(self) -> None:
+        # The billed ANTHROPIC_API_KEY at $0 surfaces HTTP 400 "credit balance
+        # is too low" — an API-CREDIT exhaustion, NOT a subscription quota. The
+        # operator fix is to add credits at console.anthropic.com.
+        credit_message = _result_message(
+            subtype="error_during_execution",
+            is_error=True,
+            api_error_status=400,
+            result="Your credit balance is too low to access the Anthropic API.",
+        )
+        with _fake_sdk([_assistant_text("starting"), credit_message]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert "api_credit" in attempt.error
+        assert "console.anthropic.com" in attempt.error
+        assert "subscription" not in attempt.error.casefold()
+        assert "weekly" not in attempt.error.casefold()
+        assert task.status == Task.Status.FAILED
+
+    def test_out_of_credits_is_api_credit_not_subscription(self) -> None:
+        # "out of credits" is an API-CREDIT signal — it must NOT be laundered into
+        # the generic "subscription quota exhausted" message (the original bug).
+        credit_message = _result_message(
+            subtype="error_during_execution",
+            is_error=True,
+            result="The request failed: you are out of credits.",
+        )
+        with _fake_sdk([credit_message]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert "api_credit" in attempt.error
+        assert "console.anthropic.com" in attempt.error
+        assert "subscription" not in attempt.error.casefold()
+        assert task.status == Task.Status.FAILED
+
+    def test_session_limit_classified_distinctly_from_weekly(self) -> None:
+        # The ~5h rolling SESSION limit resets same-day — it must report a session
+        # cause, never the weekly one and never a credit one.
+        session_message = _result_message(
+            subtype="error_during_execution",
+            is_error=True,
+            result="Claude 5-hour limit reached for this session.",
+        )
+        with _fake_sdk([session_message]):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert "subscription_session" in attempt.error
+        assert "weekly" not in attempt.error.casefold()
+        assert "credit" not in attempt.error.casefold()
         assert task.status == Task.Status.FAILED
 
     def test_non_error_result_mentioning_limit_is_not_a_limit_failure(self) -> None:
@@ -313,23 +376,35 @@ class TestRunHeadlessUsageLimit(TestCase):
         assert task.status == Task.Status.FAILED
 
 
-def test_limit_signature_matches_known_phrases() -> None:
+def test_limit_match_classifies_weekly_distinctly() -> None:
     msg = _result_message(is_error=True, result="You've hit your weekly limit.")
-    assert _limit_signature(msg) == "weekly limit"
+    match = _limit_match(msg)
+    assert match is not None
+    assert match.cause is LimitCause.SUBSCRIPTION_WEEKLY
+    assert match.phrase == "weekly limit"
 
 
-def test_limit_signature_ignores_non_error_results() -> None:
+def test_limit_match_classifies_credit_as_api_credit_not_subscription() -> None:
+    msg = _result_message(is_error=True, result="Your credit balance is too low.")
+    match = _limit_match(msg)
+    assert match is not None
+    assert match.cause is LimitCause.API_CREDIT
+    assert "console.anthropic.com" in match.remediation
+    assert "subscription" not in match.as_reason().casefold()
+
+
+def test_limit_match_ignores_non_error_results() -> None:
     msg = _result_message(is_error=False, result="weekly limit discussed in passing")
-    assert _limit_signature(msg) == ""
+    assert _limit_match(msg) is None
 
 
-def test_limit_signature_ignores_unrelated_error() -> None:
+def test_limit_match_ignores_unrelated_error() -> None:
     msg = _result_message(is_error=True, result="some other failure")
-    assert _limit_signature(msg) == ""
+    assert _limit_match(msg) is None
 
 
-def test_limit_signature_handles_missing_message() -> None:
-    assert _limit_signature(None) == ""
+def test_limit_match_handles_missing_message() -> None:
+    assert _limit_match(None) is None
 
 
 # --- Pure function tests (no DB) ---

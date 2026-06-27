@@ -36,6 +36,7 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentRuntime, get_effective_settings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.llm.anthropic_limits import LimitMatch, classify_limit
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
@@ -171,21 +172,6 @@ class TicketBudget:
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
-_USAGE_LIMIT_PREFIX = "usage_limit: "
-
-# Phrases the SDK surfaces on a subscription quota / weekly-limit exhaustion
-# (dogfood-surfaced). A ``ResultMessage(is_error=True)`` carrying any of these
-# is a limit condition the operator must wait out — not a generic crash and not
-# a silent success.
-_USAGE_LIMIT_PHRASES = (
-    "usage limit",
-    "weekly limit",
-    "rate limit",
-    "out of credits",
-    "quota exceeded",
-)
-
-
 _RESULT_ERROR_PREFIX = "result_error: "
 
 
@@ -197,7 +183,7 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     are both genuine FAILED runs (#1764 class): they must record a failed attempt
     carrying the CLI's own ``result`` / ``errors`` / ``api_error_status``, never
     be laundered into a completion that advances the ticket FSM over a failed run.
-    Called only AFTER :func:`_limit_signature` has already claimed a limit error,
+    Called only AFTER :func:`_limit_match` has already claimed a limit error,
     so a limit message never reaches here.
     """
     if message is None:
@@ -216,20 +202,19 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     return _RESULT_ERROR_PREFIX + " — ".join(parts)
 
 
-def _limit_signature(message: ResultMessage | None) -> str:
-    """Return the matched usage-limit phrase, or ``""`` when not a limit error.
+def _limit_match(message: ResultMessage | None) -> LimitMatch | None:
+    """Return the classified :class:`LimitMatch`, or ``None`` when not a limit error.
 
     Keyed on ``is_error`` so a healthy result whose text merely discusses limits
     is never flagged. The agent's final ``result`` string is the haystack — the
-    SDK puts the limit message there on a quota-exhausted run.
+    SDK puts the limit message there on an exhausted run — and
+    :func:`~teatree.llm.anthropic_limits.classify_limit` sorts it into its
+    distinct cause (API-credit / subscription-session / subscription-weekly /
+    rate-limit), so a credit-empty key is never reported as a subscription quota.
     """
     if message is None or not message.is_error:
-        return ""
-    haystack = str(message.result or "").casefold()
-    for phrase in _USAGE_LIMIT_PHRASES:
-        if phrase in haystack:
-            return phrase
-    return ""
+        return None
+    return classify_limit(str(message.result or ""))
 
 
 @dataclass(frozen=True)
@@ -303,10 +288,10 @@ def _outcome_failure(task: Task, outcome: _SdkOutcome) -> TaskAttempt | None:
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
-    limit = _limit_signature(outcome.result_message)
-    if limit:
-        reason = f"{_USAGE_LIMIT_PREFIX}{limit} — subscription quota exhausted; retry after the limit resets"
-        logger.warning("Task %s hit a usage limit: %s", task.pk, reason)
+    limit = _limit_match(outcome.result_message)
+    if limit is not None:
+        reason = limit.as_reason()
+        logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
         return _record_failure(task, error=reason)
     error_reason = _error_result_reason(outcome.result_message)
     if error_reason is not None:
