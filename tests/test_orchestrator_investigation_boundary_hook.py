@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives the orchestrator-investigation PreToolUse gate in hooks/; no src/teatree/ mirror.
 """Tests for the orchestrator-investigation-boundary WARN nudge (#1442).
 
 The heavy-Bash gate (#115) DENIES only the load-bearing slice of the
