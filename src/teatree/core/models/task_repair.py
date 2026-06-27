@@ -10,7 +10,8 @@ functions take a ``Task`` so they stay free of model-class state.
 
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.task import Task, TaskAttempt
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.repair_loop import IterationStalled, requeue_verdict
 
 
