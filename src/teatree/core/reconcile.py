@@ -20,6 +20,7 @@ from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
+from teatree.core.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.db import db_exists
 from teatree.utils.run import run_allowed_to_fail
@@ -229,11 +230,9 @@ def _reconcile_overlay_dependent_stores(drift: Drift, wt: Worktree) -> None:
 
 def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket: Ticket, workspace: Path) -> None:
     """Append :class:`StaleWorktreeDir` findings for unclaimed git worktrees."""
-    seen_paths: set[str] = {
-        Path(wt.extra.get("worktree_path", "")).resolve().as_posix()
-        for wt in worktrees
-        if (wt.extra or {}).get("worktree_path")
-    }
+    stored_paths: list[str] = [
+        str(wt.extra["worktree_path"]) for wt in worktrees if (wt.extra or {}).get("worktree_path")
+    ]
     # Anchor the ticket-number match on path segments so ``/9`` no longer
     # matches ``/90``: the number must be a whole segment, bounded by ``/`` or
     # ``-`` (or the string ends), never a substring of a longer number.
@@ -241,10 +240,10 @@ def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket
     for wt in worktrees:
         repo_main = resolve_clone_path(workspace, wt) or workspace / wt.repo_path
         for path_str in _find_worktree_paths_on_disk(repo_main):
-            resolved = Path(path_str).resolve().as_posix()
-            if resolved == str(repo_main.resolve()):
+            if paths_match(path_str, repo_main):
                 continue
-            if ticket_anchor.search(path_str) and resolved not in seen_paths:
+            already_tracked = any(paths_match(path_str, stored) for stored in stored_paths)
+            if ticket_anchor.search(path_str) and not already_tracked:
                 drift.stale_worktree_dirs.append(StaleWorktreeDir(path=Path(path_str)))
 
 

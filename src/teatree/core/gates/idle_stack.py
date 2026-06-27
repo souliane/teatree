@@ -48,6 +48,7 @@ from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.types import validated_worktree_extra
 from teatree.core.worktree_env import compose_project
+from teatree.core.worktree_paths import paths_match
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -96,8 +97,7 @@ def _is_currently_active(worktree: Worktree, active_path: Path | None) -> bool:
     wt_path = worktree.worktree_path
     if not wt_path:
         return False
-    resolved = Path(wt_path).resolve()
-    return active_path == resolved or resolved in active_path.parents
+    return paths_match(active_path, wt_path) or Path(wt_path).resolve() in active_path.parents
 
 
 def ticket_is_busy(ticket: Ticket) -> bool:

@@ -23,6 +23,7 @@ ticket for a unit someone else is already provisioning.
 from pathlib import Path
 
 from teatree.core.models import Worktree
+from teatree.core.worktree_paths import paths_match
 
 
 def _issue_dir_glob(issue_number: str) -> str:
@@ -55,12 +56,11 @@ def find_foreign_issue_worktrees(
     keys purely on the issue number, so a cross-overlay clash on the same issue
     number is a rare false-positive that ``--take-over`` covers.
     """
-    own = own_path.resolve()
     foreign: dict[Path, None] = {}
 
     if workspace_dir.is_dir():
         for candidate in sorted(workspace_dir.glob(_issue_dir_glob(issue_number))):
-            if candidate.is_dir() and candidate.resolve() != own:
+            if candidate.is_dir() and not paths_match(candidate, own_path):
                 foreign[candidate.resolve()] = None
 
     prefix = f"{issue_number}-"
@@ -69,7 +69,7 @@ def find_foreign_issue_worktrees(
         if not raw:
             continue
         issue_dir = _issue_dir_root(Path(raw).resolve(), workspace_dir.resolve())
-        if issue_dir is not None and issue_dir.name.startswith(prefix) and issue_dir != own:
+        if issue_dir is not None and issue_dir.name.startswith(prefix) and not paths_match(issue_dir, own_path):
             foreign[issue_dir] = None
 
     return list(foreign)

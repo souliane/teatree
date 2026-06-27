@@ -39,6 +39,7 @@ from teatree.core.runners import (
     WorktreeStartRunner,
     WorktreeTeardownRunner,
 )
+from teatree.core.worktree_paths import ticket_dir_for
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -184,7 +185,7 @@ class Command(TyperCommand):
             return 0
 
         branch = cast("TicketExtra", ticket.extra)["branch"]
-        ticket_dir = _workspace_dir() / branch
+        ticket_dir = ticket_dir_for(_workspace_dir(), branch)
 
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it

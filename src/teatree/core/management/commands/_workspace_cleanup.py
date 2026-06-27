@@ -20,9 +20,11 @@ from teatree.core.cleanup import (
     _remote_tracking_ref_exists,
     cleanup_worktree,
 )
+from teatree.core.cleanup_busy_guards import guard_live_worktree
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.management.commands._workspace_reap import reap_one_worktree
 from teatree.core.models import Ticket, Worktree
+from teatree.core.resolve import match_worktree_by_path
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -345,8 +347,24 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str) -> str:
     worktree, never removes it.
 
     Returns a one-line outcome — a removal, or a SKIPPED line when the worktree
-    is kept (uncommitted changes / genuinely-ahead work) or the removal failed.
+    is kept (live work / uncommitted changes / genuinely-ahead work) or the
+    removal failed.
+
+    Liveness funnel (#291/#2243 rider): an OPPORTUNISTIC reaper must KEEP a
+    worktree under live work, so this routes the row through
+    :func:`guard_live_worktree` — the same liveness guard
+    :func:`teatree.core.cleanup.cleanup_worktree` fronts — before the removal. It
+    deliberately does NOT call the full ``cleanup_worktree`` teardown, which would
+    delete the branch ref this pass keeps for recoverability (and trip the #706
+    data-loss refusal for a gone-remote squash branch with no forge CLI). A raw
+    worktree with no ``Worktree`` row has no ticket liveness to consult.
     """
+    row = match_worktree_by_path(wt_path)
+    if row is not None:
+        try:
+            guard_live_worktree(row, respect_liveness=True, force=False)
+        except WorktreeBusyError as exc:
+            return f"SKIPPED '{name}': {exc}"
     if not _worktree_clean(wt_path):
         return f"SKIPPED '{name}': worktree has uncommitted changes — keeping {wt_path}"
     unsynced = git.unsynced_commits(repo, name)
