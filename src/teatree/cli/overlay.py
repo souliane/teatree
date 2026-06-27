@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING
 
 import typer
 
+from teatree.agents.skill_injection import build_subagent_skill_preamble
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.speed import register_speed_commands
 from teatree.cli.teatree_gate import register_gate_commands
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import run_streamed, spawn
 from teatree.utils.singleton import AlreadyRunningError, singleton
@@ -49,6 +51,29 @@ CLI reference generator to swap the proxy's stub help for the underlying
 reassigned per-leaf (``_run_{group}_{sub}``); object identity is not stable
 across Typer's ``get_command`` conversion.
 """
+
+
+def _split_skill_args(values: list[str]) -> list[str]:
+    """Flatten repeated and comma-separated ``--skills`` values, order-preserving."""
+    names: list[str] = []
+    for value in values:
+        names.extend(part.strip() for part in value.split(",") if part.strip())
+    return names
+
+
+def _overlay_skills_dir(project_path: Path | None) -> Path | None:
+    """The active overlay's own ``skills/`` directory, when it ships one.
+
+    The overlay generator writes each skill to ``<project>/skills/<name>/SKILL.md``
+    (``overlay_init.generator``), so an overlay's skill bodies resolve under
+    ``<project>/skills``. Returns ``None`` when the overlay ships no ``skills/``
+    dir (e.g. a path-less invocation), in which case only the framework skills
+    dir is searched.
+    """
+    if project_path is None:
+        return None
+    candidate = project_path / "skills"
+    return candidate if candidate.is_dir() else None
 
 
 def _base_env() -> dict[str, str]:
@@ -231,6 +256,7 @@ class OverlayAppBuilder:
         self._register_resetdb_command()
         self._register_worker_command()
         self._register_shortcut_commands()
+        self._register_skill_preamble_command()
         self._register_config_commands()
         register_gate_commands(self.overlay_app)
         register_speed_commands(self.overlay_app)
@@ -390,6 +416,48 @@ class OverlayAppBuilder:
                 skills=selection.skills,
                 ask_user_which_skill=selection.ask_user,
             )
+
+    def _register_skill_preamble_command(self) -> None:
+        """Register ``t3 <overlay> skill-preamble`` — the sub-agent dispatch preamble.
+
+        A sub-agent spawned through the raw harness Agent tool inherits none of
+        the orchestrator's loaded skills, so the orchestrator must prepend the
+        skill bodies to the brief. This command emits the concatenated framework
+        + overlay ``SKILL.md`` preamble for a requested skill set, resolving
+        overlay skills from the active overlay's own ``skills/`` directory.
+        """
+        project_path = self.project_path
+        overlay_app = self.overlay_app
+
+        @overlay_app.command(name="skill-preamble")
+        def skill_preamble(
+            skills: list[str] = typer.Option(
+                None,
+                "--skills",
+                "--skill",
+                help="Skills to embed, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
+            ),
+        ) -> None:
+            """Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry."""
+            names = _split_skill_args(skills or [])
+            if not names:
+                typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)
+                raise typer.Exit(code=1)
+
+            skills_dirs = [DEFAULT_SKILLS_DIR]
+            overlay_dir = _overlay_skills_dir(project_path)
+            if overlay_dir is not None and overlay_dir not in skills_dirs:
+                skills_dirs.append(overlay_dir)
+
+            preamble = build_subagent_skill_preamble(names, skills_dirs=skills_dirs)
+            if preamble.missing:
+                searched = ", ".join(str(d) for d in skills_dirs)
+                typer.echo(
+                    f"Could not resolve skill(s): {', '.join(preamble.missing)} (searched: {searched}).",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            typer.echo(preamble.text)
 
     def _register_config_commands(self) -> None:
         """Register the empty ``config`` subgroup so overlay commands hang off it."""

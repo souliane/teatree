@@ -1077,7 +1077,7 @@ def _worktree_tracked_dirty_path(worktree: "Worktree") -> str | None:
     """Return the worktree's on-disk path iff it has uncommitted *tracked* changes.
 
     Reuses the existing :func:`git.status_porcelain` helper (the same one
-    ``cleanup`` / ``worktree_recovery`` use) and applies the #925
+    ``cleanup`` uses) and applies the #925
     tracked-vs-untracked distinction: ``git status --porcelain`` prefixes
     an untracked entry with ``"?? "``, so lines that do *not* start with
     ``??`` are the tracked modifications a transition must refuse. Untracked

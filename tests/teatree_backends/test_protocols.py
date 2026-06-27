@@ -178,6 +178,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return []
 
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
+        _ = (slug, pr_id)
+        return []
+
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         _ = (slug, pr_id)
         return []

@@ -725,8 +725,15 @@ class TestToolAndCleanCommands(TestCase):
         assert "check_translations" in mock_popen.call_args.args[0]
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_clean_only_removes_created_worktrees(self) -> None:
-        """Verify clean-all only removes worktrees in CREATED state."""
+    def test_clean_all_keeps_not_done_worktrees(self) -> None:
+        """clean-all no longer reaps non-done worktrees — only done+redundant ones are wiped.
+
+        Both worktrees belong to a not-done (NOT_STARTED) ticket, so the
+        consolidated done-reaper KEEPS them with a reported reason rather than
+        destroying a provisioned/abandoned row on a state guess. Done-worktree
+        reaping itself is covered against real git by ``test_worktree_done.py`` and
+        ``TestCleanAllReapsAndSurvivesForeignOverlay``.
+        """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30")
 
         created_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="stale", branch="old")
@@ -744,9 +751,9 @@ class TestToolAndCleanCommands(TestCase):
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 
-        assert len(result) == 1
-        assert "stale" in result[0]
-        assert Worktree.objects.filter(pk=created_wt.pk).count() == 0
+        assert any("KEPT" in line and "old" in line for line in result), result
+        assert any("KEPT" in line and "current" in line for line in result), result
+        assert Worktree.objects.filter(pk=created_wt.pk).count() == 1
         assert Worktree.objects.filter(pk=active_wt.pk).count() == 1
 
 

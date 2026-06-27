@@ -39,6 +39,25 @@ _CLONE_ORIGIN = "souliane/teatree"
 _OVERLAY_REPO = "downstream-org/downstream-overlay"
 
 
+def _cross_repo_probe(joined: str, *, head: str) -> tuple[int, str, str] | None:
+    """The §17.4.3 read-only probes (head / draft / checks / branch-protection).
+
+    The branch-protection required-context set is reported EMPTY (no gate) so a
+    green rollup stays green; returns ``None`` when *joined* is none of them.
+    """
+    if "headRefOid" in joined:
+        return (0, head, "")
+    if "isDraft" in joined:
+        return (0, "false", "")
+    if "statusCheckRollup" in joined:
+        return (0, _GREEN, "")
+    if "baseRefName" in joined:
+        return (0, "main", "")
+    if "required_status_checks" in joined:
+        return (0, '{"contexts": []}', "")
+    return None
+
+
 def _cross_repo_clear() -> MergeClear:
     """A CLEAR shaped like CLEAR 22 from the #1335 incident.
 
@@ -71,12 +90,8 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str = _OVERLAY_REPO):
         joined = " ".join(argv)
         repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
         head = _RIGHT_SHA if repo == right_repo else _WRONG_SHA
-        if "headRefOid" in joined:
-            return (0, head, "")
-        if "isDraft" in joined:
-            return (0, "false", "")
-        if "statusCheckRollup" in joined:
-            return (0, _GREEN, "")
+        if (probe := _cross_repo_probe(joined, head=head)) is not None:
+            return probe
         if "state,mergeCommit" in joined:
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
@@ -222,14 +237,11 @@ class TestCrossRepoCandidateProbe(TestCase):
             calls.append(argv)
             joined = " ".join(argv)
             repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
-            if "headRefOid" in joined:
-                # The clone-origin repo has NO PR #159 -> empty head; only the
-                # overlay repo owns the reviewed PR at _RIGHT_SHA.
-                return (0, _RIGHT_SHA if repo == _OVERLAY_REPO else "", "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            # The clone-origin repo has NO PR #159 -> empty head; only the
+            # overlay repo owns the reviewed PR at _RIGHT_SHA.
+            head = _RIGHT_SHA if repo == _OVERLAY_REPO else ""
+            if (probe := _cross_repo_probe(joined, head=head)) is not None:
+                return probe
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:

@@ -112,6 +112,13 @@ ROLLUP_QUERY_FAILED: "RawAPIDict" = {_ROLLUP_QUERY_FAILED_KEY: True}
 query itself failed (non-zero rc / malformed / non-list payload), distinct from
 an empty list (no required checks → green). Core's classifier treats the sentinel
 as ``failed`` so a transport failure is never mistaken for "no checks to satisfy".
+
+``fetch_required_status_check_contexts`` reuses the same sentinel for the
+branch-protection lookup: ``[ROLLUP_QUERY_FAILED]`` when the required-status-check
+contexts could not be read (the base branch or the protection endpoint errored —
+fail CLOSED so an indeterminate required set never falls open), distinct from an
+empty list (the base branch has no required-status-check protection → no gate →
+green).
 """
 
 
@@ -289,6 +296,13 @@ class CodeHostBackend(Protocol):
     def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no branch
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def fetch_required_status_check_contexts(  # pragma: no branch
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+    ) -> list[RawAPIDict]: ...
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
 
