@@ -13,7 +13,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from teatree.core.banned_terms_tree import scan_committed_tree
+from teatree.core.banned_terms_tree import BannedTermsUnsetError, scan_committed_tree
 
 banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop scans.")
 _console = Console()
@@ -48,14 +48,23 @@ def scan_tree(
     require_brands: bool = typer.Option(
         False,
         "--require-brands",
-        help="HARD-FAIL (exit 2) when no brands are configured, instead of warning and "
-        "exiting 0. CI passes this so a missing TEATREE_BANNED_BRANDS secret reds the "
-        "job loudly; local dev omits it and stays green.",
+        help="HARD-FAIL (exit 2) on an explicit-empty brand list (`banned_brands = []`), "
+        "instead of warning and exiting 0. A genuinely-unset list always fails loud "
+        "regardless of this flag; --require-brands additionally rejects the deliberate "
+        "empty list. CI passes it; local dev omits it.",
     ),
 ) -> None:
     """Scan every git-tracked file for committed banned terms."""
     root = repo_root if repo_root is not None else Path.cwd()
-    result = scan_committed_tree(root, config_path=config)
+    try:
+        result = scan_committed_tree(root, config_path=config)
+    except BannedTermsUnsetError as exc:
+        # A genuinely-unset brand list (no config, no env, a missing key) is
+        # refused LOUD (exit 2) — never a silent inert scan that hides a load
+        # bug. An explicit empty list does not raise; it flows to the
+        # INERT warning below.
+        _console.print(f"[red]banned-terms scan-tree: MISCONFIGURED — {exc}[/]")
+        raise typer.Exit(_MISCONFIGURED_EXIT_CODE) from exc
 
     if not result.brands_configured:
         if require_brands:
