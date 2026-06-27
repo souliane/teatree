@@ -203,6 +203,47 @@ class Test706GuardKeepsGenuinelyAheadOnDoneTicket(_ReaperFixture):
         assert self.wt_path.exists()
 
 
+class TestMergedPrDoesNotWipePostMergeWork(_ReaperFixture):
+    """A merged PR does NOT authorise wiping post-merge commits not on origin/main.
+
+    The deletion gate is content-based on the CURRENT tip (CORRECTION 1: every
+    change PROVEN redundant by patch-id), so a branch that shipped a PR and then
+    grew NEW commits — content absent from origin/main — is KEPT for salvage to a
+    fresh PR, never wiped on the stale forge-merged signal alone. Regression: the
+    ``_branch_pr_is_merged`` short-circuit used to return "redundant" here even when
+    the current tip carried unique post-merge content, destroying that work.
+    """
+
+    def _land_original_on_main_then_add_post_merge_commit(self) -> None:
+        # Squash the branch's original commit onto origin/main (the PR merge), so its
+        # content is patch-id-present upstream …
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: ship the feature (#2761)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        # … then add NEW post-merge work whose content is NOT on origin/main.
+        (self.wt_path / "post.txt").write_text("post-merge continued work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: continued work after the merge", cwd=self.wt_path)
+
+    def test_post_merge_commit_with_merged_pr_is_kept(self) -> None:
+        self._land_original_on_main_then_add_post_merge_commit()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        # The forge genuinely reports the branch merged (probe_host_cli yields a PR id),
+        # so the REAL _branch_pr_is_merged returns True however it is imported — proving
+        # the keep is content-on-current-tip, not the absence of a merged signal.
+        with patch("teatree.core.branch_classification.probe_host_cli", return_value="42"):
+            analysis = analyze_worktree_changes(worktree, workspace=self.workspace)
+            outcome = self._reap(worktree)
+
+        assert analysis.proven_redundant is False, analysis.kept_reasons
+        assert any("not provably on origin/main" in r for r in analysis.kept_reasons)
+        assert outcome.action == "kept", outcome.label
+        assert self.wt_path.exists(), "post-merge work must never be wiped on a stale merged-PR signal"
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
+
 class TestDoneWipeTearsDownDockerVolumes(_ReaperFixture):
     """The done-wipe runs ``docker compose down --volumes`` for the worktree's stack."""
 

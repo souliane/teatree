@@ -15,10 +15,11 @@ failure that left ~76 merged worktrees stranded when teardown relied on git alon
 (the #706 data-loss guard hoisted to an explicit, named step). Even on a done
 ticket, EVERY unpushed commit AND every uncommitted change must be PROVEN
 redundant — content-equivalent on a remote / ``origin/main`` by **patch-id**
-(not subject), shipped via a merged PR, or superseded by a squash. Any change
-NOT proven redundant marks the worktree potentially-needed: it is KEPT and
-reported, never wiped (salvage — push-to-PR via ``t3 pr create`` — is a separate
-action). The analysis fails CLOSED: an inconclusive git probe keeps the worktree.
+(not subject) on the CURRENT tip, or the tip's tree equals the squash/merge
+commit's tree. A merged-PR signal alone is NOT proof — post-merge commits are
+kept. Any change NOT proven redundant marks the worktree potentially-needed: it
+is KEPT and reported, never wiped (salvage — push-to-PR via ``t3 pr create`` — is
+a separate action). The analysis fails CLOSED: an inconclusive git probe keeps it.
 
 :func:`reap_done_worktree` (one row) and :func:`reap_done_worktrees` (a workspace
 sweep) are the single consolidated pass that replaces the three former clean-all
@@ -35,7 +36,6 @@ from pathlib import Path
 
 from teatree.config import load_config
 from teatree.core.branch_classification import (
-    _branch_pr_is_merged,
     _branch_tree_matches_squash,
     content_equivalence_blockers,
     is_squash_merged,
@@ -147,10 +147,11 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
 
     - **Uncommitted changes** (ignoring the regenerable env cache) are never on
     any remote, so any real dirt marks the worktree potentially-needed.
-    - **Unpushed commits** are proven redundant by patch-id content-equivalence
-    with ``origin/main`` (``git cherry``), a superseding squash tree, or a merged
-    PR. A branch-ref-gone (rc=128) worktree is decided from its recovered HEAD SHA
-    — contained in a remote, or patch-id-equivalent to ``origin/main``.
+    - **Unpushed commits** are proven redundant only by CURRENT-tip content:
+    patch-id content-equivalence with ``origin/main`` (``git cherry``) or a
+    superseding squash tree — never a merged-PR signal alone, which would destroy
+    post-merge work. A branch-ref-gone (rc=128) worktree is decided from its
+    recovered HEAD SHA — contained in a remote, or patch-id-equivalent to ``origin/main``.
 
     Fails CLOSED: every inconclusive probe contributes a kept-reason, so the
     worktree is kept rather than wiped on uncertainty.
@@ -196,7 +197,17 @@ def _uncommitted_reasons(wt_path: str) -> list[str]:
 
 
 def _unpushed_commit_reasons(repo_main: Path, target: _EffectiveTarget) -> list[str]:
-    """Kept-reasons for unpushed commits not proven redundant; empty when all redundant."""
+    """Kept-reasons for unpushed commits not proven redundant; empty when all redundant.
+
+    Redundancy is decided by the CONTENT of the CURRENT tip, never by a "the branch
+    once merged a PR" signal: people keep committing on a branch AFTER its PR merged,
+    and those post-merge commits are NEW work bound for a fresh PR. So only two
+    content-on-current-tip proofs authorise a wipe — every unique commit is patch-id
+    present on ``origin/main`` (``git cherry``), or the tip's whole tree equals the
+    squash/merge commit's tree. A merged PR whose source branch has since grown
+    unique content is NOT sufficient (it would destroy the post-merge delta), so it
+    is no longer consulted here — the worktree is kept and reported for salvage.
+    """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
     except CommandFailedError as exc:
@@ -209,8 +220,6 @@ def _unpushed_commit_reasons(repo_main: Path, target: _EffectiveTarget) -> list[
     if not content_equivalence_blockers(content_repo, content_ref):
         return []
     if branch is not None and _branch_tree_matches_squash(str(repo_main), branch):
-        return []
-    if branch is not None and _branch_pr_is_merged(str(repo_main), branch):
         return []
     preview = ", ".join(unpushed[:_PREVIEW_LIMIT]) + (", …" if len(unpushed) > _PREVIEW_LIMIT else "")
     return [f"{len(unpushed)} commit(s) not provably on origin/main (content not upstream): {preview}"]
