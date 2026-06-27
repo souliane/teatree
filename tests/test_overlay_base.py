@@ -120,6 +120,13 @@ def test_get_e2e_env_extras_returns_empty_dict_by_default():
     assert overlay.get_e2e_env_extras({"WT_VARIANT": "acme"}) == {}
 
 
+def test_get_e2e_playwright_args_returns_empty_list_by_default():
+    """No overlay adds Playwright args unless it opts in — keeps the prior command shape."""
+    overlay = _MinimalOverlay()
+    assert overlay.get_e2e_playwright_args("") == []
+    assert overlay.get_e2e_playwright_args("playwright/api-flow/foo.spec.ts") == []
+
+
 def test_get_db_import_strategy_returns_none():
     overlay = _MinimalOverlay()
     assert overlay.get_db_import_strategy(_make_worktree()) is None

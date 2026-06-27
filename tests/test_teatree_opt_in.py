@@ -23,7 +23,6 @@ from hooks.scripts.hook_router import (
     _OWNER_LOOP,
     _loop_auto_load_active,
     _loop_registration_exempt,
-    _loops_auto_load_enabled,
     _read_loop_registry,
     _t3_engaged,
     _teatree_active,
@@ -58,19 +57,18 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # Hermetic HOME: ``_autoload_enabled`` / ``_loops_auto_load_enabled`` read
-    # ``~/.teatree.toml``; a clean home keeps the default-OFF (#256) path
-    # deterministic regardless of the developer's own config. T3_AUTOLOAD off by
-    # default so autoload is exercised only where a test sets it explicitly.
+    # Hermetic HOME: ``_autoload_enabled`` reads ``~/.teatree.toml``; a clean home
+    # keeps the default-OFF (#256) path deterministic regardless of the
+    # developer's own config.
     clean_home = tmp_path / "home"
     clean_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(clean_home))
-    monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-    # Model the opted-in loop OWNER for the marker-mechanism tests below — the
-    # session-start auto-load opt-in (#256) is exercised on its own in
-    # ``TestLoopAutoLoadOptInGate``. Default OFF would otherwise gate every
-    # marker-only must-fire assertion. The opt-in-gate class deletes this var.
-    monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+    # ``autoload`` is the ONE owner flag — it both engages the session AND arms
+    # its loops (the former separate ``[loops] auto_load`` arming flag is
+    # subsumed). Model the opted-in loop OWNER for the marker-mechanism tests
+    # below by setting ``T3_AUTOLOAD``; classes that exercise the default-OFF
+    # engagement / arming path delete this var in their own fixtures.
+    monkeypatch.setenv("T3_AUTOLOAD", "1")
 
 
 def _mark_active(session_id: str) -> None:
@@ -108,10 +106,13 @@ class TestTeatreeActiveHelper:
 
 
 class TestSessionStartBootstrapGating:
-    def test_fresh_session_without_marker_emits_how_to_advisory(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # #256 default-OFF: a fresh, not-engaged session no longer returns
-        # silently — it surfaces the one-line how-to-start advisory and never the
-        # loop bootstrap directive.
+    def test_fresh_session_without_marker_emits_how_to_advisory(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #256 default-OFF: a fresh, not-engaged session (autoload OFF) no longer
+        # returns silently — it surfaces the one-line how-to-start advisory and
+        # never the loop bootstrap directive.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
         handle_session_start_bootstrap({"session_id": "no-teatree"})
         out = capsys.readouterr().out
         assert out != ""
@@ -119,7 +120,8 @@ class TestSessionStartBootstrapGating:
         assert "run /teatree" in ctx
         assert "t3 loop tick" not in ctx
 
-    def test_fresh_session_without_marker_does_not_claim_ownership(self) -> None:
+    def test_fresh_session_without_marker_does_not_claim_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
         handle_session_start_bootstrap({"session_id": "no-teatree"})
         assert _read_loop_registry() == {}
 
@@ -424,7 +426,11 @@ class TestRisk6MidSessionOwnershipClaim:
 
         assert _read_loop_registry() == {}
 
-    def test_env_loops_disabled_all_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_env_loops_disabled_all_no_longer_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``T3_LOOPS_DISABLED`` is removed — it is INERT and no longer prunes the
+        # ownership claim. Loop pause/disable lives in the DB ``LoopState`` tier;
+        # the in-process ``T3_LOOP_DISOWN`` knob is the orthogonal mitigation
+        # (test_loop_disown_prevents_ownership_claim).
         _mark_active("mid-sess-env-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
@@ -432,7 +438,9 @@ class TestRisk6MidSessionOwnershipClaim:
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-env-disabled"})
 
-        assert _read_loop_registry() == {}
+        owner = _read_loop_registry().get(_OWNER_LOOP)
+        assert owner is not None
+        assert owner["session_id"] == "mid-sess-env-disabled"
 
     def test_loop_disown_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mark_active("mid-sess-disown")
@@ -452,66 +460,24 @@ class TestRisk6MidSessionOwnershipClaim:
 # ── #256: session-start auto-load is opt-in (default OFF, colleague-friendly) ──
 
 
-class TestLoopAutoLoadEnabledHelper:
-    """``_loops_auto_load_enabled`` — env-first, then ``[loops] auto_load``, default OFF."""
-
-    @pytest.fixture(autouse=True)
-    def _no_env_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The file-level _isolation fixture opts in via the env var; this gate's
-        # own tests control the env/toml directly, so drop the inherited opt-in.
-        monkeypatch.delenv("T3_LOOPS_AUTO_LOAD", raising=False)
-
-    def test_default_off_with_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path / "no-config-home"))
-        assert _loops_auto_load_enabled() is False
-
-    def test_env_truthy_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
-        assert _loops_auto_load_enabled() is True
-
-    def test_env_falsey_disables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # An explicit env false wins even when the toml would enable.
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "false")
-        assert _loops_auto_load_enabled() is False
-
-    def test_toml_auto_load_true_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-        assert _loops_auto_load_enabled() is True
-
-    def test_toml_loops_without_auto_load_stays_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A [loops] section that only sets the kill-switch must NOT auto-load.
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[loops]\nenabled = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-        assert _loops_auto_load_enabled() is False
-
-
 class TestLoopAutoLoadOptInGate:
-    """A teatree-marked session that did NOT opt into auto-load is silent (#256).
+    """A teatree-marked session that did NOT enable autoload is silent (#256).
 
     Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and each of
     the three injection points it now gates (bootstrap claim, prompt-time cron
-    nag, registration nudge exemption). The marker is always present here, so
-    the ONLY variable is the opt-in — revert the ``_loop_auto_load_active``
+    nag, registration nudge exemption). The marker is always present here, so the
+    ONLY variable is the ``autoload`` opt-in — revert the ``_loop_auto_load_active``
     gate at any call site and the matching ``*_silent`` assertion goes RED.
     """
 
     @pytest.fixture(autouse=True)
     def _marked_colleague(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mark_active("colleague")
-        # Drop the file-level env opt-in so the default-OFF path is exercised.
-        monkeypatch.delenv("T3_LOOPS_AUTO_LOAD", raising=False)
+        # Drop the file-level autoload opt-in so the default-OFF path is exercised.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
 
     def _opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
 
     # combined predicate ───────────────────────────────────────────────
     def test_active_predicate_off_without_opt_in(self) -> None:
@@ -616,12 +582,12 @@ class TestStatuslineGating:
     def test_no_marker_produces_no_output(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
-        out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_LOOPS_AUTO_LOAD": "1"})
+        out = self._run_statusline("no-teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
         assert out == ""
 
     def test_marker_present_but_auto_load_off_produces_no_output(self, tmp_path: Path) -> None:
         # The #256 colleague case: a session that loaded teatree (marker
-        # present) but never opted into auto-load stays silent.
+        # present) but never enabled autoload stays silent.
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
@@ -632,7 +598,7 @@ class TestStatuslineGating:
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
-        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_LOOPS_AUTO_LOAD": "1"})
+        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
         assert out != ""
 
     def test_marker_and_toml_opt_in_produces_output(self, tmp_path: Path) -> None:
@@ -641,7 +607,7 @@ class TestStatuslineGating:
         (state_dir / "teatree-sess.teatree-active").touch()
         home = tmp_path / "opted-in-home"
         home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
+        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
         out = self._run_statusline("teatree-sess", state_dir, home=home)
         assert out != ""
 
@@ -698,6 +664,12 @@ class TestAutoloadEnabledHelper:
 class TestTeatreeEngagedSeam:
     """``_teatree_engaged`` = autoload OR ``.teatree-active`` OR ``.t3-engaged`` (#256)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The file fixture models the opted-in owner via T3_AUTOLOAD; drop it so
+        # the default-OFF engagement seam is exercised here.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+
     def test_not_engaged_by_default(self) -> None:
         assert _teatree_engaged("fresh") is False
 
@@ -722,11 +694,16 @@ class TestTeatreeEngagedSeam:
 class TestAutoloadSessionStart:
     """#256 (a): autoload ON flips ``.teatree-active`` + fires the loop bootstrap, not the how-to."""
 
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Drop the file fixture's autoload opt-in; the on-tests re-enable it.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+
     def test_autoload_on_touches_teatree_active_and_emits_tick_directive(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # T3_LOOPS_AUTO_LOAD=1 from the isolation fixture; autoload supplies the
-        # teatree-active half so the existing loop bootstrap fires unchanged.
+        # autoload is the single owner flag: it flips ``.teatree-active`` AND arms
+        # the loop bootstrap, so the existing loop bootstrap fires unchanged.
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         handle_session_start_bootstrap({"session_id": "owner-default"})
         assert _is_marked_active("owner-default")
@@ -756,6 +733,11 @@ class TestAutoloadSessionStart:
 
 class TestDefaultOffUserPromptSubmit:
     """#256: UserPromptSubmit suppresses the suggester + reminder + .pending write until engaged."""
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Drop the file fixture's autoload opt-in; the engaged tests re-enable it.
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
 
     @pytest.fixture(autouse=True)
     def suggester_calls(self, monkeypatch: pytest.MonkeyPatch) -> list:
@@ -806,6 +788,9 @@ class TestOption1T3EngagedMarker:
     @pytest.fixture(autouse=True)
     def _identity_closure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(router, "_resolve_skill_closure", lambda skills: skills)
+        # Drop the file fixture's autoload opt-in so engagement is driven only by
+        # the skill markers under test (not by autoload).
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
 
     def test_t3_code_sets_t3_engaged_not_teatree_active(self) -> None:
         handle_track_skill_usage({"session_id": "o1", "tool_name": "Skill", "tool_input": {"skill": "t3:code"}})
@@ -831,6 +816,9 @@ class TestExplicitTeatreeEngages:
     @pytest.fixture(autouse=True)
     def _identity_closure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(router, "_resolve_skill_closure", lambda skills: skills)
+        # Drop the file fixture's autoload opt-in so engagement is driven only by
+        # the skill markers under test (not by autoload).
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
 
     def test_teatree_skill_engages_session(self) -> None:
         assert _teatree_engaged("tt-explicit") is False
@@ -843,6 +831,12 @@ class TestExplicitTeatreeEngages:
 
 class TestDefaultOffNeverLockout:
     """#256: a default-off, not-engaged session never hard-blocks a .py Edit or a Bash command."""
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Drop the file fixture's autoload opt-in so the session stays not-engaged
+        # (the empty .pending is what keeps the gate from ever hard-blocking).
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
 
     def test_py_edit_not_blocked_after_default_off_prompt(self, tmp_path: Path) -> None:
         handle_user_prompt_submit({"session_id": "ll-edit", "prompt": "fix the bug in foo.py and run ruff"})
@@ -857,3 +851,49 @@ class TestDefaultOffNeverLockout:
             {"session_id": "ll-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
         )
         assert blocked is False
+
+
+class TestMaybeEngageT3Normalization:
+    """Nit A: ``_maybe_engage_t3`` canonicalizes the token through the SAME identity seam.
+
+    The bug: ``_maybe_engage_t3`` engaged on a raw ``name.startswith("t3:")`` while
+    its sibling ``_skill_load_activates_teatree`` normalized every token through the
+    ``normalize_skill_name`` identity seam — so a bare / path-form ``t3:`` skill was
+    detected by one but not the other. The fix routes ``_maybe_engage_t3`` through
+    ``normalize_skill_name`` (normalize UP), so bare and qualified forms engage
+    identically while a foreign namespace keeps its qualifier and never matches.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _snapshot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Deterministic owned-set + namespace so the seam resolves without a live
+        # skill-tree scan: ``code``/``teatree``/``review`` are owned in ``t3``.
+        monkeypatch.setattr(router, "_skill_canon_snapshot", lambda: (frozenset({"code", "teatree", "review"}), "t3"))
+
+    @staticmethod
+    def _engaged(session_id: str) -> bool:
+        return (router.STATE_DIR / f"{session_id}.t3-engaged").is_file()
+
+    def test_qualified_t3_token_engages(self) -> None:
+        router._maybe_engage_t3("q", ["t3:code"])
+        assert self._engaged("q")
+
+    def test_bare_owned_token_engages_like_qualified(self) -> None:
+        # RED before the fix: ``"code".startswith("t3:")`` is False.
+        router._maybe_engage_t3("b", ["code"])
+        assert self._engaged("b")
+
+    def test_path_form_token_engages(self) -> None:
+        # RED before the fix: the ``/SKILL.md`` path form does not start with ``t3:``.
+        router._maybe_engage_t3("p", ["teatree/SKILL.md"])
+        assert self._engaged("p")
+
+    def test_foreign_namespace_does_not_engage(self) -> None:
+        # Identity-correct: a foreign-namespaced token keeps its qualifier and is
+        # never promoted to ``t3:`` (no qualifier-stripping conflation).
+        router._maybe_engage_t3("f", ["other:review"])
+        assert not self._engaged("f")
+
+    def test_non_owned_skill_does_not_engage(self) -> None:
+        router._maybe_engage_t3("a", ["ac-python"])
+        assert not self._engaged("a")

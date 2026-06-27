@@ -15,11 +15,12 @@ from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
+from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
-from teatree.core.management.commands._workspace_finalize import refuse_finalize_on_main_clone_default
+from teatree.core.management.commands._workspace_finalize import run_finalize
 from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
 from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
+from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     RawTicketInputs,
@@ -32,16 +33,16 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import reconcile_all, reconcile_ticket
-from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
+from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.runners import (
     WorktreeProvisioner,
     WorktreeProvisionRunner,
     WorktreeStartRunner,
     WorktreeTeardownRunner,
 )
+from teatree.core.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -62,28 +63,20 @@ def _resolve_workspace_ticket(path: str) -> Ticket:
     worktree in a ticket, so they should be runnable both from inside a
     worktree subdir and from the ticket workspace root that holds those
     subdirs. First try the normal worktree resolution; if that fails
-    because we're at the workspace root, match child worktree dirs back
-    to their ticket.
+    because we're at the workspace root, attribute the workspace dir to its
+    owning ticket through the single fail-loud resolver
+    (:func:`workspace_owner_ticket`) — the same symlink-tolerant, multi-owner
+    policy the auto-register chain uses, never a second hand-rolled check.
     """
     try:
         anchor = resolve_worktree(path)
         return Ticket.objects.get(pk=anchor.ticket.pk)
     except WorktreeNotFoundError:
         base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
-        ticket_pks: set[int] = set()
-        for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
-            wt_path = (wt.extra or {}).get("worktree_path", "")
-            if wt_path and Path(wt_path).resolve().parent == base:
-                ticket_pks.add(wt.ticket_id)
-        if len(ticket_pks) == 1:
-            return Ticket.objects.get(pk=ticket_pks.pop())
-        if len(ticket_pks) > 1:
-            msg = (
-                f"{base} holds worktrees from multiple tickets ({sorted(ticket_pks)}).\n"
-                "Run the command from a specific worktree subdir."
-            )
-            raise WorktreeNotFoundError(msg) from None
-        raise
+        owner = workspace_owner_ticket(base)
+        if owner is None:
+            raise
+        return Ticket.objects.get(pk=owner.pk)
 
 
 def _report_worktree_probes(
@@ -377,56 +370,19 @@ class Command(TyperCommand):
     def finalize(self, ticket_id: int, *, message: str = "") -> str:
         """Squash worktree commits into one, then rebase on the default branch."""
         ticket = Ticket.objects.get(pk=ticket_id)
-        results: list[str] = []
-        for worktree in ticket.worktrees.all():
-            repo = worktree.repo_path
-            repo_dir = (worktree.extra or {}).get("worktree_path") or repo
-            default_br = git.default_branch(repo)
-            try:
-                status = git.status_porcelain(repo_dir)
-                if status:
-                    results.append(f"{repo}: SKIPPED — uncommitted changes:\n{status}")
-                    continue
-
-                refuse_finalize_on_main_clone_default(repo_dir, default_br)
-
-                git.fetch(repo_dir, "origin", default_br)
-
-                base = git.merge_base(repo_dir, f"origin/{default_br}")
-                count = git.rev_count(repo_dir, f"{base}..HEAD")
-                log = git.log_oneline(repo_dir, f"{base}..HEAD")
-                if log:
-                    self.stdout.write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
-
-                if count > 1:
-                    message = message or (log.splitlines()[0] if log else f"Squash {count} commits")
-                    git.soft_reset(repo_dir, base)
-                    git.commit(repo_dir, message)
-                    results.append(f"{repo}: squashed {count} commits")
-                else:
-                    results.append(f"{repo}: single commit, no squash needed")
-
-                git.rebase(repo_dir, f"origin/{default_br}")
-                results.append(f"{repo}: rebased on {default_br}")
-            except CommandFailedError as exc:
-                results.extend(
-                    [
-                        f"{repo}: rebase failed — {exc}",
-                        f"  To abort: git -C {repo_dir} rebase --abort",
-                        f"  To resolve: fix conflicts, git add, then: git -C {repo_dir} rebase --continue",
-                    ]
-                )
-        return "\n".join(results)
+        return run_finalize(ticket, message=message, write=self.stdout.write)
 
     @command(name="clean-merged")
     def clean_merged(self) -> list[str]:
-        """Tear down every worktree whose ticket is already MERGED.
+        """Tear down every done worktree (analyze-then-wipe) on demand.
 
-        On-demand reconciler for the daily followup sync. Use when merged-PR
-        cleanup silently failed and stale docker containers, branches, or
-        databases linger. Errors are surfaced inline — no suppression.
+        On-demand reconciler for the daily followup sync — the same consolidated
+        done+redundant reaper ``clean-all`` and the FSM teardown use. Use when
+        merged-PR cleanup silently failed and stale docker stacks, branches, or
+        databases linger. A not-done or potentially-needed worktree is KEPT with a
+        reported reason; nothing unproven is destroyed.
         """
-        return clean_merged_worktrees()
+        return reap_done_worktrees(_worktree_root(), dry_run=False)
 
     @command()
     def doctor(
@@ -469,11 +425,17 @@ class Command(TyperCommand):
 
         Fixes public souliane/* clones/worktrees created before the
         provisioner source-fix (new worktrees are stamped at creation).
-        Idempotent. Refuses non-souliane / private remotes so the private overlay's
-        legitimate real-identity attribution is never touched.
+        Idempotent. Refuses non-github / private remotes so a private
+        overlay's (or a GitLab clone's) legitimate real-identity
+        attribution is never touched.
         """
+        # #2655: the visibility gate must see the FULL remote URL (host
+        # intact) — a host-stripped slug would resolve a GitLab clone's
+        # bare ``owner/repo`` against github.com. ``slug`` is kept only
+        # for the human-readable result.
+        url = git.remote_url(repo)
         slug = git.remote_slug(repo)
-        if not is_public_github_remote(slug):
+        if not is_public_github_remote(url):
             return StampResult(
                 stamped=False,
                 reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",
@@ -538,32 +500,26 @@ class Command(TyperCommand):
     def clean_all(
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
-        reap_unsynced: str = typer.Option(
-            "keep",
-            "--reap-unsynced",
-            help="Disposition for orphaned RAW worktrees with unpushed work (#2361): "
-            "'keep' (default, safe — leave them) or 'snapshot' (write a recovery artifact, THEN reap).",
-        ),
         *,
-        interactive: bool = typer.Option(
+        dry_run: bool = typer.Option(
             default=False,
-            help="Prompt push/abandon/skip per worktree with unsynced work (#2361). "
-            "Default is fully unattended — uncertain worktrees are kept with a warning, never prompted.",
+            help="Preview only: list each worktree that WOULD WIPE (with its done-signal source) "
+            "or be KEPT, removing nothing.",
         ),
     ) -> list[str]:
-        """Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots.
+        """Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR.
 
-        Unattended by default (#2361): never blocks on stdin; an uncertain worktree
-        is kept with a warning, not prompted. ``--interactive`` opts into the
-        per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
-        loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
-        the deterministic squash signal are unchanged.
+        The consolidated done-worktree reaper runs first: a worktree is wiped only
+        when its ticket is done (MERGED/DELIVERED/IGNORED, or a forge squash-merge)
+        AND every unpushed commit and uncommitted change is PROVEN redundant. A
+        not-done or potentially-needed worktree is KEPT with a reported reason — the
+        #706 data-loss guard, surfaced as the primary analyze-before-wipe step.
+        There is no recovery snapshot: unproven work is kept, never destroyed.
 
-        Orphaned RAW worktrees (#2361): a ``git worktree`` with no teatree
-        ``Worktree`` row (created by a sub-agent's bare ``git worktree add``) is
-        discovered and disposed of. A merged/gone orphan is reaped; one with
-        unpushed work is reaped only under ``--reap-unsynced=snapshot`` AND only
-        after a recovery artifact is captured — ``keep`` (default) leaves it.
+        Fully unattended (#2361 / CORRECTION 3): never blocks on stdin and never
+        prompts — an uncertain worktree is kept with a warning, salvage is the
+        separate explicit ``t3 <overlay> pr create``. ``--dry-run`` previews the
+        reaper (would-wipe/keep) and removes nothing.
 
         The ordered passes live in :func:`run_clean_all`; this method is the thin
         CLI wrapper that supplies the worktree dir and the command's IO sinks.
@@ -572,8 +528,7 @@ class Command(TyperCommand):
             _worktree_root(),
             CleanAllIO(write_out=self.stdout.write, write_err=self.stderr.write),
             keep_dslr=keep_dslr,
-            reap_unsynced=reap_unsynced,
-            interactive=interactive,
+            dry_run=dry_run,
         )
 
     @command()
@@ -590,3 +545,40 @@ class Command(TyperCommand):
         """
         io = RelocateIO(write_out=self.stdout.write, write_err=self.stderr.write)
         return run_relocate(active_overlay_name(), _config_worktree_root(), io, dry_run=dry_run).render()
+
+    @command(name="emit")
+    def emit(self) -> str:
+        """Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763).
+
+        The read-only structured EMIT the judgment skill consumes: a JSON array of
+        records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
+        banned_terms_status, liveness, last_commit_date, owner — schema in
+        ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+        auto-deletion of provably-redundant items; this surfaces the rest for the
+        skill to route (superseded / salvage-to-fresh-PR / defer-live).
+        """
+        rendered = emit_records_json(_worktree_root())
+        self.stdout.write(rendered)
+        return rendered
+
+    @command(name="salvage")
+    def salvage(
+        self,
+        source_ref: str,
+        *,
+        salvage_branch: str = typer.Option("", help="Fresh branch to capture onto (default: salvage/<source_ref>)."),
+        target: str = typer.Option("origin/main", help="Base the salvage PR opens against."),
+        allow_banned: bool = typer.Option(
+            default=False, help="Skip the final banned-terms safety gate (the skill cleaned the content)."
+        ),
+    ) -> str:
+        """Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763).
+
+        The salvage primitive the judgment skill calls once it has decided an
+        emitted item is worth keeping and cleaned any banned terms. Fail-safe: the
+        source branch is deleted ONLY after the forge confirms the PR — a failed
+        push / open / verify leaves it intact. Operates on the current repo (cwd).
+        """
+        line = run_salvage(source_ref, salvage_branch=salvage_branch, target=target, allow_banned=allow_banned)
+        self.stdout.write(line)
+        return line

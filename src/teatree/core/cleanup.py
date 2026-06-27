@@ -31,12 +31,12 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     probe_host_cli,
 )
+from teatree.core.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree_env import compose_project, worktree_pg_connection
-from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -46,6 +46,7 @@ __all__ = [
     "BranchClassification",
     "BranchCommit",
     "CleanupResult",
+    "WorktreeBusyError",
     "_branch_pr_is_merged",
     "_branch_tree_matches_squash",
     "_pr_merge_commit_sha",
@@ -416,36 +417,11 @@ def _remove_git_worktree(
         if strict_hygiene:
             _raise_if_genuinely_ahead(str(repo_main), worktree, target)
     errors: list[str] = []
-    # #835 — capture before the destructive remove. When force=True the guards
-    # above are skipped (the clean-all / abandon reaping path that destroyed a
-    # completed-but-uncommitted change set): a dirty or unpushed worktree gets a
-    # restorable bundle + working-tree diff under the system temp dir first. A
-    # clean, fully-pushed worktree captures nothing — the hard-delete path is
-    # unchanged. The captured branch is the EFFECTIVE one (not the drifted slug),
-    # so the bundle holds the work removal would actually orphan.
-    try:
-        capture_recovery_artifact(repo_main, wt_path, worktree, branch=target.label)
-    except Exception as exc:
-        # #1506 — under force the recovery artifact is the ONLY protection, so a
-        # capture failure must not silently fall through to the destructive
-        # remove. Re-check (with the fail-closed probe) whether this worktree
-        # actually had work to lose; if so, refuse the teardown for it just like
-        # the non-force #706 guard does — raise before the destructive
-        # remove + the ``worktree.delete()`` DB-row drop, so the worktree is
-        # left intact on disk AND still tracked (no orphaned-on-disk row). #835's
-        # non-blocking intent is preserved for the safe case: a clean +
-        # fully-pushed worktree (where the failed capture was a no-op anyway)
-        # falls through and is still reaped.
-        logger.exception("recovery capture failed for %s (%s)", worktree.repo_path, target.label)
-        if _worktree_has_work_to_lose(wt_path, target):
-            msg = (
-                f"{worktree.repo_path} ({target.label}): "
-                f"refused teardown — recovery capture failed ({exc}) and the worktree has "
-                f"unrecoverable work (dirty or unpushed). Kept it on disk at {wt_path}; "
-                f"restore or push it, then re-run cleanup."
-            )
-            raise RuntimeError(msg) from exc
-        errors.append(f"recovery capture failed for {target.label}: {exc}")
+    # The data-loss guards above (the #706 unpushed guard, plus the explicit
+    # analyze-before-wipe step in ``worktree_done`` that fronts the reaper) are the
+    # only protection: there is no recovery snapshot. ``force=True`` reaches here
+    # only after redundancy was PROVEN (the done-worktree reaper) or a human chose
+    # to abandon (the interactive abandon path) — both deliberate destroys.
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
     # Delete the REAL checked-out branch, not the possibly-phantom DB slug. A
@@ -454,39 +430,6 @@ def _remove_git_worktree(
         errors.append(f"git branch -D failed for {target.branch_to_delete}")
     prek_hook.remove_stale_hooks(str(repo_main), wt_path)
     return errors
-
-
-def _worktree_has_work_to_lose(wt_path: str, target: _EffectiveTarget) -> bool:
-    """Whether removing this worktree would destroy unrecoverable work.
-
-    Re-evaluates the same dirty/unpushed criteria :func:`capture_recovery_artifact`
-    uses, but **fails closed** at every step: this guards an irreversible
-    ``branch -D`` + ``worktree remove`` after the recovery capture already
-    failed, so "couldn't determine" must mean "might lose work", not "safe".
-
-    Operates on ``target`` (the effective branch/HEAD resolved from git), not the
-    drifted DB slug. Unpushed commits are checked first via the same fail-open
-    probe the capture uses (it returns ``True`` on an inconclusive ``git log``),
-    against the worktree-dir ``HEAD`` when present (or the slug in the main clone
-    when the dir is gone). Those commits live in the object store, so a missing
-    worktree dir does not make them safe — the branch is the only copy.
-
-    The dirty working-tree check runs only when the dir is present and uses the
-    strict porcelain probe; an inconclusive ``git status`` (lock contention,
-    corrupt index) raises and is treated as "might be dirty".
-
-    Returns ``False`` only when both checks positively confirm there is nothing
-    to lose — a clean (or already-gone) worktree whose branch is fully pushed,
-    the safe case #835's non-blocking intent still reaps.
-    """
-    if _has_unpushed_commits(Path(target.probe_repo), target.ref):
-        return True
-    if not Path(wt_path).is_dir():
-        return False
-    try:
-        return bool(git.status_porcelain_strict(wt_path))
-    except CommandFailedError:
-        return True
 
 
 def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_dirty: bool, force: bool) -> None:
@@ -561,27 +504,32 @@ def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree
     if ticket is None:
         return
     try:
-        remove_postgres_pass_entry(ticket.ticket_number)
+        # Keyed on the ticket pk (the canonical, unique key), matching
+        # ``Worktree.pass_key`` the env render wrote into the cache.
+        remove_postgres_pass_entry(ticket.pk)
     except Exception as exc:
         logger.exception("pass-entry removal failed for %s", worktree.repo_path)
-        step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
+        step_errors.append(f"pass-entry removal failed for ticket #{ticket.pk}: {exc}")
 
 
 def cleanup_worktree(
-    worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, keep_if_dirty: bool = False
+    worktree: Worktree,
+    *,
+    force: bool = False,
+    strict_hygiene: bool = True,
+    keep_if_dirty: bool = False,
+    respect_liveness: bool = True,
 ) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a
-    :class:`CleanupResult`. Individual teardown-step failures (overlay
-    hook, git worktree/branch removal, DB drop, pass-entry removal,
-    recovery capture) are captured into ``result.errors`` and the
-    remaining steps still run — collect-and-surface, never crash
-    mid-teardown leaving other resources orphaned (#877). The caller is
-    responsible for routing ``result.errors`` to its visible channel
-    (``SyncResult.errors`` for sync backends, runner detail for runners).
+    :class:`CleanupResult`. Individual teardown-step failures are captured into
+    ``result.errors`` and the remaining steps still run — collect-and-surface,
+    never crash mid-teardown leaving other resources orphaned (#877). The caller
+    routes ``result.errors`` to its visible channel (``SyncResult.errors`` for
+    sync backends, runner detail for runners).
 
-    Two guards protect against losing work, both bypassed only by an explicit
+    Several guards protect against losing work; all are bypassed by an explicit
     ``force=True``.
 
     Data-loss guard (#706, always on): raises ``RuntimeError`` when the branch
@@ -589,46 +537,49 @@ def cleanup_worktree(
     irrecoverably.
 
     Hygiene gate (``strict_hygiene``, default on): additionally raises when the
-    branch is genuinely ahead of ``origin/main`` and not squash-merged. Sync
-    backends and interactive ``clean-all`` keep this on; the automated FSM
-    teardown path passes ``strict_hygiene=False`` (the ticket is MERGED and the
-    branch is already on its remote).
+    branch is genuinely ahead of ``origin/main`` and not squash-merged — see
+    :func:`_raise_if_genuinely_ahead`. Sync backends and interactive
+    ``clean-all`` keep it on; the FSM teardown path passes ``strict_hygiene=False``.
 
     Dirty-worktree guard (``keep_if_dirty``, default off): when set, a worktree
     with uncommitted changes is KEPT — ``RuntimeError`` is raised before any
-    destructive step rather than bundle-and-reaping it. ``clean-all`` passes
-    this so a live worktree an agent is mid-task in is never deleted on a merged
-    signal (#2243); the automated FSM teardown of a genuinely-MERGED ticket
-    leaves it off (the recovery-bundle reap of a dirty merged worktree is
-    intentional there). ``force=True`` overrides it — the explicit-abandon path
-    still bundles and reaps.
+    destructive step rather than reaping it — see
+    :func:`_guard_or_warn_dirty_worktree`. ``clean-all`` passes this so a live
+    worktree an agent is mid-task in is never deleted on a merged signal (#2243).
+    ``force=True`` overrides it.
 
-    Recovery-capture backstop (#1506, ``force=True`` only): when the #706/#835
-    guards are bypassed by force, the recovery capture is the only protection.
-    If that capture *fails* and the worktree still has work to lose (dirty or
-    unpushed, determined fail-closed), this raises ``RuntimeError`` too — before
-    the destructive remove and the DB-row delete — so the worktree is left
-    intact and tracked rather than silently destroyed. A proven clean+pushed
-    worktree whose (no-op) capture failed is still reaped, with the failure in
-    ``result.errors``.
+    There is NO recovery snapshot: ``force=True`` hard-deletes. It is reached only
+    from a deliberate destroy — the done-worktree reaper after the
+    analyze-before-wipe step PROVED every change redundant, or the interactive
+    abandon path after a human chose to discard. Potentially-needed work is KEPT by
+    those callers, never force-destroyed. Pass ``force=True`` only from such
+    trusted callers (the proven reaper, an explicit operator override, tests).
 
-    Pass ``force=True`` only from trusted callers (explicit operator override,
-    tests, programmatic API).
+    Liveness guard (``respect_liveness``, default on, #291/#2243): OPPORTUNISTIC
+    reapers KEEP a worktree under live work (raising :class:`WorktreeBusyError`),
+    so the irreversible teardown never protects LESS than the reversible
+    idle-stack reaper — see :func:`guard_live_worktree`. FSM teardown passes
+    ``respect_liveness=False``; ``force=True`` bypasses it.
     """
+    # Liveness FIRST: a busy worktree short-circuits before resolving paths,
+    # overlay, or touching docker — the cheapest possible KEEP for live work.
+    guard_live_worktree(worktree, respect_liveness=respect_liveness, force=force)
+
     workspace = clone_root()
     wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = _resolve_overlay_or_none(worktree)
 
     _guard_or_warn_dirty_worktree(worktree, wt_path, keep_if_dirty=keep_if_dirty, force=force)
 
-    # Stop the docker compose project FIRST so containers don't leak when
-    # this path is reached outside the WorktreeTeardownRunner (#1306) —
-    # the auto-merged-ticket teardown, `clean-merged`, `clean-all`, and
-    # sync backends all funnel through here. Idempotent: docker compose
-    # down on a project with no containers is a no-op.
+    # Stop the docker compose project FIRST so containers don't leak when this
+    # path is reached outside the WorktreeTeardownRunner (#1306) — the FSM
+    # teardown, `clean-all`, and sync backends all funnel through here. The
+    # done-wipe owns the worktree's docker resources, so it removes the VOLUMES
+    # too (a reaped worktree's volumes are a slow disk leak). Idempotent: down on
+    # a project with no containers is a no-op.
     from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415
 
-    docker_compose_down(compose_project(worktree))
+    docker_compose_down(compose_project(worktree), remove_volumes=True)
 
     step_errors: list[str] = []
     run_overlay_cleanup_steps(overlay, worktree, step_errors)

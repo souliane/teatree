@@ -13,10 +13,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree import paths
 from teatree.core.management.commands import _workspace_isolated_roots as reaper
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 from tests._git_repo import make_git_repo
 
 _REAP = "teatree.core.management.commands._workspace_isolated_roots"
@@ -95,15 +97,107 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         assert env_dir.exists()
         assert any("SKIPPED" in line and slug in line for line in result)
 
-    def test_row_without_checkout_path_does_not_protect_a_dir(self) -> None:
+    def test_busy_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A BUSY worktree whose row lost its checkout path protects every env dir (#291 data-loss).
+
+        The data-loss bug this pins: a live worktree whose canonical row is
+        missing ``worktree_path`` (the stale-row class the resolver tolerates)
+        cannot be hashed to a slug, so its in-use isolated DB looks like an
+        orphan and was reaped out from under the mid-task agent. With a live
+        :class:`Session` on its ticket, no unreferenced dir can be proven dead,
+        so the reaper must KEEP them all.
+
+        This is the documented red-first inversion: the prior test asserted the
+        pathless row's would-be dir is reaped — the wrong, data-losing behavior.
+        """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291b")
-        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="no-path", extra={})
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="busy-no-path", extra={})
+        Session.objects.create(ticket=ticket, overlay="test")  # live: ended_at is null
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a busy pathless worktree's env dir was reaped"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_dead_pathless_row_still_reaps_orphan_dirs(self) -> None:
+        """A pathless row whose ticket has NO live work does not protect an orphan dir.
+
+        Preserves the safe-reap path: only LIVE work blocks reaping. A genuinely
+        idle pathless row (no live session, no active/claimed task) cannot be
+        mapped to a dir, so the unmatchable orphan is reaped as before.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291c")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="idle-no-path", extra={})
         orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
 
         result = reaper.reap_orphan_isolated_worktree_roots()
 
         assert not orphan.exists()
         assert any("Removed orphan isolated worktree root" in line for line in result)
+
+    def test_busy_via_claimed_task_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A claimed-Task (no live session) on a pathless row also protects env dirs."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291d")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="task-no-path", extra={})
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        session.ended_at = timezone.now()
+        session.save(update_fields=["ended_at"])
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.CLAIMED)
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a worktree with an active task lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_external_delivery_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row under a live external-delivery lease protects env dirs (#2227).
+
+        The widened predicate: the destructive isolated-root reaper must not
+        protect LESS than the reversible idle-stack reaper, which honors the
+        external-delivery lease.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291e")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="lease-no-path", extra={})
+        mark_external_delivery(ticket)
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a worktree under external delivery lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_recent_e2e_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row with a recent E2E run protects env dirs (widened predicate, #2227)."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291f")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="e2e-no-path",
+            extra={},
+            last_e2e_run=timezone.now(),
+        )
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a worktree with a recent E2E run lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_reaper_pinned_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row explicitly pinned protects env dirs (widened predicate, #2227)."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291g")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch="pinned-no-path", extra={"reaper_pinned": True}
+        )
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: an explicitly-pinned worktree lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
 
     def test_missing_root_returns_empty(self) -> None:
         shutil.rmtree(self.root)

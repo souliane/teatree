@@ -22,7 +22,6 @@ def _loop(
     cadence: int = 60,
     jobs: list[object] | None = None,
     error: Exception | None = None,
-    always_on: bool = False,
 ) -> MiniLoop:
     def build(**_: object) -> list[object]:
         if error is not None:
@@ -33,7 +32,6 @@ def _loop(
         name=name,
         default_cadence_seconds=cadence,
         build_jobs=build,
-        always_on=always_on,
     )
 
 
@@ -117,25 +115,26 @@ class OrchestratorTestCase(TestCase):
         assert "scanner exploded" in report.errors["inbox"]
         assert "review" in report.dispatched_loops
 
-    def test_always_on_runs_when_env_disabled_all(self) -> None:
-        # The env kill-switch disables every non-always_on loop but never an
-        # always_on one; only a DB hold can stop an always_on loop.
+    def test_env_kill_switch_all_is_inert(self) -> None:
+        # ``T3_LOOPS_DISABLED`` is removed — a set env var has NO effect: every
+        # loop still dispatches. (DB-disable is the control outcome — pinned by
+        # test_only_enabled_loops_dispatch.)
         old = os.environ.get("T3_LOOPS_DISABLED")
         try:
             os.environ["T3_LOOPS_DISABLED"] = "all"
-            always = _loop("dispatch", always_on=True, jobs=["a"])
+            dispatch = _loop("dispatch", jobs=["a"])
             normal = _loop("inbox", jobs=["b"])
-            orch = self._orchestrator(loops=(always, normal))
+            orch = self._orchestrator(loops=(dispatch, normal))
             report = orch.tick(TickRequest())
             assert "dispatch" in report.dispatched_loops
-            assert "inbox" not in report.dispatched_loops
+            assert "inbox" in report.dispatched_loops
         finally:
             if old is None:
                 os.environ.pop("T3_LOOPS_DISABLED", None)
             else:
                 os.environ["T3_LOOPS_DISABLED"] = old
 
-    def test_t3_loops_disabled_env_honored(self) -> None:
+    def test_t3_loops_disabled_env_named_is_inert(self) -> None:
         # TestCase doesn't get pytest's monkeypatch fixture; restore manually.
         old = os.environ.get("T3_LOOPS_DISABLED")
         try:
@@ -144,7 +143,7 @@ class OrchestratorTestCase(TestCase):
             other = _loop("review")
             orch = self._orchestrator(loops=(loop, other))
             report = orch.tick(TickRequest())
-            assert "inbox" not in report.dispatched_loops
+            assert "inbox" in report.dispatched_loops  # env inert
             assert "review" in report.dispatched_loops
         finally:
             if old is None:

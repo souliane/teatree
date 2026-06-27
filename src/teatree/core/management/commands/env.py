@@ -183,14 +183,15 @@ class Command(TyperCommand):
         ticket = worktree.ticket
         if ticket is None:
             return _MigrationOutcome(ok=False, message="no ticket attached — cannot derive pass key")
-        ticket_number = ticket.ticket_number
 
         if not literal:
             write_env_cache(worktree)
             return _MigrationOutcome(ok=True, message="already migrated (no literal in cache)")
 
         try:
-            pass_key = ensure_postgres_pass_entry(ticket_number, literal)
+            # Keyed on the ticket pk (the canonical, unique key), matching
+            # ``Worktree.pass_key`` the env render writes into the cache.
+            pass_key = ensure_postgres_pass_entry(ticket.pk, literal)
         except PostgresPasswordUnavailableError as exc:
             return _MigrationOutcome(ok=False, message=str(exc))
 

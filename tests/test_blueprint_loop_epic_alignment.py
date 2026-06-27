@@ -163,10 +163,17 @@ class TestNoStaleRosterVocabularyAsCurrentDesign:
         )
 
     def test_roster_mentions_are_retirement_framed(self, loop_topology: str) -> None:
-        # Every "roster" mention in the loop topology must sit next to a
-        # retirement word — no bare present-tense roster description.
+        # The RETIRED immortal-singleton loop roster may only appear
+        # retirement-framed — no bare present-tense description of it. The
+        # CURRENT Agent-Team fixed roster (Track-B, #1838) is a live design
+        # concept, so a "roster" mention qualified as the Agent-Team roster
+        # is exempt; every other mention still requires retirement framing,
+        # so the retired-loop-roster invariant keeps biting.
+        retirement = ("retire", "no roster", "nothing to re-spawn", "no fixed", "replaced", "no longer")
         for m in re.finditer(r"roster", loop_topology, re.IGNORECASE):
             window = loop_topology[max(0, m.start() - 120) : m.end() + 120].lower()
-            assert any(
-                w in window for w in ("retire", "no roster", "nothing to re-spawn", "no fixed", "replaced", "no longer")
-            ), f"bare/current-tense 'roster' mention without retirement framing near: …{window}…"
+            if "agent-team" in window:
+                continue  # the live Track-B Agent-Team roster, not the retired loop roster
+            assert any(w in window for w in retirement), (
+                f"bare/current-tense 'roster' mention without retirement framing near: …{window}…"
+            )

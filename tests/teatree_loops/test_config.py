@@ -1,10 +1,11 @@
 """LoopsConfig — parses ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml``.
 
 Covers: missing tables → defaults; per-loop cadence override; bad cadence →
-fallback; env override; cadence parser (``30s``/``5m``/``1h``). Loop-disabled
-state is env → DB ``LoopState`` → default (#2702 — no ``[loops] enabled`` toml
-fallback); the DB tier is pinned in ``test_loop_state_gating.py`` and the toml
-non-read in ``test_loops_disabled_db_not_toml_2702.py``.
+fallback; cadence parser (``30s``/``5m``/``1h``). Loop-disabled state is DB-only
+(``LoopState``); the DB tier is pinned in ``test_loop_state_gating.py``, the toml
+non-read in ``test_loops_disabled_db_not_toml_2702.py``, and the env-inertness in
+``test_loops_disabled_db_not_toml_2702.py`` / the review chokepoint's
+``test_review_loop_db_only_control.py``.
 """
 
 from pathlib import Path
@@ -30,7 +31,6 @@ def loop_dispatch() -> MiniLoop:
         name="dispatch",
         default_cadence_seconds=300,
         build_jobs=_build_jobs,
-        always_on=True,
     )
 
 
@@ -137,22 +137,20 @@ class TestLoopsConfigEnable:
         cfg = LoopsConfig()
         assert cfg.is_enabled(loop_inbox) is True
 
-    def test_env_disables_named_loops(
+    def test_env_kill_switch_is_inert(
         self,
         loop_inbox: MiniLoop,
         loop_dispatch: MiniLoop,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "inbox,review")
-        cfg = LoopsConfig()
-        assert cfg.is_enabled(loop_inbox) is False
-        # always_on respects the env list too — env is the user's hard kill switch.
-        assert cfg.is_enabled(loop_dispatch) is True
-
-    def test_env_kills_global_when_all(self, loop_inbox: MiniLoop, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``T3_LOOPS_DISABLED`` is removed — loop control is DB-only. A set env
+        # value (named or the ``all`` sentinel) has NO effect; with no DB hold
+        # every loop stays enabled. (DB-disable is the control outcome — pinned
+        # in test_loop_state_gating.py / test_loops_disabled_db_not_toml_2702.py.)
         monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
         cfg = LoopsConfig()
-        assert cfg.is_enabled(loop_inbox) is False
+        assert cfg.is_enabled(loop_inbox) is True
+        assert cfg.is_enabled(loop_dispatch) is True
 
 
 class TestLoopsConfigCadence:

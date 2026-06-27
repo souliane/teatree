@@ -1141,14 +1141,13 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
     ``execute_teardown`` which removes the git worktree, deletes the branch,
     drops the per-worktree DB, and reaps the Worktree row.
 
-    The shape modelled here is the real post-squash-merge state: the source
-    branch carries commits on NO remote (a squash-merge lands a new SHA on main
-    and the forge deletes the source ref), so the #706 data-loss guard would
-    refuse a plain teardown. Because the work is provably merged at this point,
-    the keystone tears down with the force-equivalent bypass so the
-    squash-merged/deleted-remote branch never blocks cleanup. Best-effort: a
-    teardown that errors must never fail or roll back the already-successful
-    merge.
+    The shape modelled here is the real post-squash-merge state: the branch's
+    work is landed on origin/main as a new squash SHA (the forge squash-merge),
+    while the source ref is never pushed. The analyze-before-wipe step proves the
+    branch redundant by patch-id against origin/main and tears it down — no force
+    bypass (CORRECTION 1): teardown wipes only because redundancy is PROVEN, never
+    because a transition demanded it. Best-effort: a teardown that errors must
+    never fail or roll back the already-successful merge.
 
     Only the ``gh`` merge subprocess is stubbed; the git worktree, the FSM, the
     signal wiring, and the teardown worker are all real.
@@ -1185,6 +1184,15 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         _run_git("config", "user.email", "t@t", cwd=self.wt_path)
         _run_git("config", "user.name", "t", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "merged work", cwd=self.wt_path)
+        # Land the same content on origin/main as a distinct squash SHA (the forge
+        # squash-merge), then leave the source ref unpushed: the branch's commit is
+        # on NO remote, yet patch-id-equivalent to origin/main, so analyze-before-wipe
+        # proves it redundant and the keystone tears it down without any force bypass.
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+        _run_git("merge", "-q", "--squash", self.branch, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: merged work (#859)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
 
     def _merged_ticket_with_worktree(self) -> Ticket:
         ticket = Ticket.objects.create(
@@ -1209,10 +1217,12 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
             override_settings(**_IMMEDIATE_BACKEND),
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.teardown.load_config") as teardown_config,
             patch("teatree.core.cleanup.get_overlay_for_worktree") as cleanup_overlay,
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
             self.captureOnCommitCallbacks(execute=True),
         ):
+            teardown_config.return_value.user.workspace_dir = self.workspace
             cleanup_overlay.return_value.get_cleanup_steps.return_value = []
             cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
             return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")

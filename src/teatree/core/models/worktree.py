@@ -7,6 +7,16 @@ from django_fsm import FSMField, transition
 from teatree.core.managers import WorktreeManager
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
+from teatree.utils.postgres_secret import postgres_pass_key
+
+
+class WorktreeDbNameConflictError(RuntimeError):
+    """Raised when another live worktree of a different ticket owns a computed db_name.
+
+    ``db_name`` is keyed on the immutable, unique Ticket pk so a collision
+    cannot arise through the normal flow; this guards a hand-built or legacy
+    row from clobbering another ticket's database before ``db_import``.
+    """
 
 
 class Worktree(models.Model):
@@ -67,6 +77,17 @@ class Worktree(models.Model):
         """True if this row claims a worktree path that no longer exists on disk."""
         path = self.worktree_path
         return bool(path) and not Path(path).exists()
+
+    @property
+    def pass_key(self) -> str:
+        """Canonical, collision-free ``pass`` key for this worktree's postgres password.
+
+        Keyed on the immutable, unique Ticket pk (NOT the derived, non-unique
+        ``ticket_number``), so two tickets sharing a trailing issue number never
+        share one secret entry. Ticket-scoped — the same canonical key the
+        db_name uses — so a ticket's sibling repos share one database password.
+        """
+        return postgres_pass_key(self.ticket_id)  # ty: ignore[unresolved-attribute]  # Django FK accessor
 
     @transition(field=state, source=[State.CREATED, State.PROVISIONED], target=State.PROVISIONED)
     def provision(self) -> None:
@@ -185,7 +206,37 @@ class Worktree(models.Model):
     def _build_db_name(self) -> str:
         ticket = cast("Ticket", self.ticket)
         variant_suffix = f"_{ticket.variant}" if ticket.variant else ""
-        return f"wt_{ticket.ticket_number}{variant_suffix}"
+        # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
+        # ``ticket_number``): two tickets sharing a trailing issue number must
+        # never resolve to one database. Ticket-scoped (not worktree-scoped) so a
+        # ticket's sibling repos share one database, as the per-ticket env cache
+        # requires.
+        return f"wt_{ticket.pk}{variant_suffix}"
+
+    def assert_db_name_unclaimed(self) -> None:
+        """Fail loud if another LIVE worktree of a DIFFERENT ticket owns ``db_name``.
+
+        Defense-in-depth guard the provision runner calls before ``db_import``:
+        ``db_name`` is ticket-pk-keyed so a collision cannot arise through the
+        normal flow, but a hand-built or legacy row could still clobber another
+        ticket's database. CREATED rows own no database yet and are excluded.
+        """
+        if not self.db_name:
+            return
+        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        conflict = (
+            Worktree.objects.exclude(pk=self.pk)
+            .exclude(ticket_id=ticket_pk)
+            .exclude(state=Worktree.State.CREATED)
+            .filter(db_name=self.db_name)
+            .first()
+        )
+        if conflict is not None:
+            msg = (
+                f"db_name {self.db_name!r} is owned by another live worktree "
+                f"(#{conflict.pk}); refusing db_import for worktree #{self.pk} to avoid clobber."
+            )
+            raise WorktreeDbNameConflictError(msg)
 
     def get_extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)

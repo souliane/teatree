@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 
 from teatree.core.models import PullRequest, SelfImproveFiring, Ticket
+from teatree.loop.self_improve import ActionRung
 from teatree.loop.self_improve.actions import run_action_ladder
 from teatree.loop.self_improve.detectors import StaleStatuslineEntryDetector
 
@@ -60,28 +61,34 @@ class StaleStatuslineEntryDetectorTests(TestCase):
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").count() == 1
         assert SelfImproveFiring.objects.get(detector="stale_statusline_entry").action_count == 1
 
-    def test_action_ladder_ceiling_is_statusline(self) -> None:
-        """Ceiling is ``statusline`` per the issue plan — never escalates to slack."""
+    def test_action_ladder_ceiling_is_auto_fix(self) -> None:
+        """Ceiling is ``auto_fix`` (#2625 Part B) so the idempotent self-heal is reachable.
+
+        The prior ``statusline`` ceiling capped the ladder one rung below
+        ``auto_fix``, so the whitelisted self-heal could never run.
+        """
         url = "https://github.com/acme/repo/pull/4"
         self._merged_pr(url)
         reports = StaleStatuslineEntryDetector(statusline_reader=_reader(f"line {url}")).detect()
         assert reports
-        assert reports[0].max_rung == SelfImproveFiring.Action.STATUSLINE.value
+        assert reports[0].max_rung == SelfImproveFiring.Action.AUTO_FIX.value
 
-    def test_auto_fix_executes_rerender_callable(self) -> None:
-        """Detector-specific edge: auto_fix wires through to the rerender callable."""
+    def test_detection_drives_ladder_to_auto_fix_and_invokes_rerender(self) -> None:
+        """End-to-end: a stale-statusline detection reaches AUTO_FIX and runs the heal.
+
+        Anti-vacuous: it drives ``detect() -> run_action_ladder`` with NO manual
+        rung seeding and NO direct call to the callable. On the wired-but-unreachable
+        code (ceiling == ``statusline``) the ladder resolves to the statusline rung
+        and the callable is never invoked, so this fails RED there; it passes only
+        once the detector actually reaches the ``auto_fix`` rung on first observation.
+        """
         url = "https://github.com/acme/repo/pull/5"
         self._merged_pr(url)
         rerender = MagicMock()
         detector = StaleStatuslineEntryDetector(statusline_reader=_reader(f"line {url}"), rerender=rerender)
-        reports = detector.detect()
-        assert reports
-        # Detector marks auto_fix=True even on first observation; the
-        # ladder still ramps from statusline -> ... so we drive it past
-        # the ceiling by simulating the auto_fix rung directly through
-        # the ladder's callable.
-        assert reports[0].auto_fix is True
-        # The schedule wires `detector.rerender` as the auto_fix
-        # callable; verify the wiring works when invoked.
-        detector.rerender()
+        results = [run_action_ladder(report, auto_fix_callable=lambda _r: rerender()) for report in detector.detect()]
+        assert len(results) == 1
+        assert results[0] is not None
+        assert results[0].rung == ActionRung.AUTO_FIX
+        assert results[0].auto_fix_executed is True
         rerender.assert_called_once()

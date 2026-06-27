@@ -2,9 +2,10 @@
 
 Extracted from :mod:`hook_router` (it is over the module-health LOC cap and may
 only shrink): the in-session Stop self-pump must honour a durable DB pause of
-the always-on ``dispatch`` loop exactly as it honours ``T3_LOOPS_DISABLED=all``.
-Keeping it in a sibling helper means the Stop hook gains the behaviour without
-growing the god-module.
+the core ``dispatch`` loop. This DB ``LoopState`` tier is the SINGLE control
+plane the self-pump consults (loop control is ``/loops`` + the DB only; there is
+no env kill-switch). Keeping it in a sibling helper means the Stop hook gains the
+behaviour without growing the god-module.
 
 The read is **stdlib-only** (#2559). The harness invokes the Stop hook as a bare
 ``python3`` that has NO ``uv`` env — teatree's dependencies (Django et al.) are
@@ -20,11 +21,10 @@ import json
 import shutil
 import subprocess  # noqa: S404 — reads a trusted local ``t3`` binary, fixed argv, never shell
 
-# The always-on loop the in-session Stop self-pump exists to drive. The
+# The core loop the in-session Stop self-pump exists to drive. The
 # self-pump re-fires ``t3 loop tick`` + ``claim-next``, which run this loop's
 # dispatch fan-out; a durable DB hold on it IS the restart-surviving
-# 'pause everything' the env ``T3_LOOPS_DISABLED=all`` kill-switch could only do
-# within a process (#1913). Mirrors :data:`teatree.loops.dispatch.loop.MINI_LOOP`'s name.
+# 'pause everything' (#1913). Mirrors :data:`teatree.loops.dispatch.loop.MINI_LOOP`'s name.
 _DISPATCH_LOOP_NAME = "dispatch"
 
 # A short bound — the Stop hook is timeout-capped (8s in hooks.json) and a
@@ -41,11 +41,11 @@ _RUNNABLE_STATUS = "enabled"
 def db_loop_state_suppresses_self_pump() -> bool:
     """True when the durable DB ``LoopState`` pauses/disables the loop (#1913).
 
-    The DB-backed control tier is the restart-surviving counterpart of
-    ``T3_LOOPS_DISABLED=all``: a ``PAUSED`` / ``DISABLED`` row on the always-on
-    ``dispatch`` loop (the loop the self-pump drives) means the operator has
-    durably paused the control plane, so the in-session Stop self-pump must
-    suppress exactly as it does for the env kill-switch.
+    The DB-backed control tier is the SINGLE control plane: a ``PAUSED`` /
+    ``DISABLED`` row on the core ``dispatch`` loop (the loop the self-pump
+    drives) means the operator has durably paused the control plane, so the
+    in-session Stop self-pump must suppress. Loop control is ``/loops`` + the DB
+    only; there is no env kill-switch.
 
     The read is stdlib-only (#2559): it shells out to ``t3 loop loop-state
     dispatch --json`` (a read-only probe on the ``loop`` top-level group — no
@@ -55,9 +55,9 @@ def db_loop_state_suppresses_self_pump() -> bool:
 
     FAIL OPEN — a Stop hook must be crash-proof: an absent ``t3`` binary, a
     non-zero exit, unparsable output, or any subprocess error resolves to
-    ``False`` (do NOT suppress), so the env / availability / ownership gates
-    still decide and the pump can never crash the session on an unreadable
-    control plane.
+    ``False`` (do NOT suppress), so the availability / ownership gates still
+    decide and the pump can never crash the session on an unreadable control
+    plane.
     """
     status = _dispatch_loop_status()
     # An empty status means "unreadable" — fail OPEN (do not suppress).

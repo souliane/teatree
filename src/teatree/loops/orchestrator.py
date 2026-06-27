@@ -4,9 +4,9 @@ Each tick walks the registry (or the injected ``registry_fn``) in
 alphabetical order. An ``off_live_tick`` mini-loop (the heavy ``dream``
 consolidation pass, #1933) is skipped here — it is driven by its own
 low-frequency cron, not the work loop. For each remaining mini-loop, the
-orchestrator consults :class:`LoopsConfig` (env/per-loop/global) to decide
-enable/disable — always-on loops bypass the user disable but honour the
-env kill-switch. For enabled loops it asks the cadence ledger whether the
+orchestrator consults :meth:`LoopsConfig.is_enabled` (the DB ``LoopState``
+control tier) to decide enable/disable. For enabled loops it asks the
+cadence ledger whether the
 cadence has elapsed (``None`` from no marker is treated as elapsed so
 a fresh install fires immediately), builds the loop's jobs (the legacy
 ``_ScannerJob`` shape) and passes them to ``dispatch_fn`` — the test

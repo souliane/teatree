@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.core.gates.dod_gate import record_terminal_dod_violation
 from teatree.core.models import Ticket, Worktree
 from teatree.types import PREntryDict, RawAPIDict, SyncResult
@@ -143,6 +143,8 @@ def _cleanup_merged_worktrees(ticket: Ticket, result: SyncResult) -> None:
             cleanup_result = cleanup_worktree(worktree)
             result.worktrees_cleaned += 1
             result.errors.extend(cleanup_result.errors)
+        except WorktreeBusyError as exc:
+            logger.info("Keeping worktree %s (live work): %s", worktree.repo_path, exc)
         except Exception as exc:
             logger.exception("Failed to clean worktree %s", worktree.repo_path)
             result.errors.append(f"Worktree cleanup failed for {worktree.repo_path} ({worktree.branch}): {exc}")

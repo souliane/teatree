@@ -496,8 +496,13 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
 
     A worktree created off a PUBLIC souliane/* clone must get a
     worktree-local noreply git identity (so no path can author with the
-    inherited identity). Non-souliane / private clones must NOT be stamped
+    inherited identity). Non-github / private clones must NOT be stamped
     — their legitimate real-identity attribution is untouched.
+
+    #2655: the gate sees the FULL remote URL (host intact), not the
+    host-stripped slug, so a GitLab clone whose bare ``owner/repo`` might
+    collide with a public github.com repo is never queried — nor stamped
+    — as github. The provisioner now passes ``git.remote_url``.
     """
 
     @pytest.fixture(autouse=True)
@@ -546,7 +551,9 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
             patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
-            patch("teatree.core.runners.provision.git.remote_slug", return_value=remote_url),
+            # #2655: the call site now reads the FULL remote URL (host
+            # intact); the gate refuses a non-github host before any gh call.
+            patch("teatree.core.runners.provision.git.remote_url", return_value=remote_url),
             patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
             patch(
                 "teatree.core.runners.provision.set_local_noreply_identity",
@@ -559,7 +566,7 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
     def test_public_souliane_clone_worktree_is_stamped_noreply(self) -> None:
         from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
 
-        stamped = self._run("teatree", "ac-teatree-77-x", "souliane/teatree", visibility="PUBLIC")
+        stamped = self._run("teatree", "ac-teatree-77-x", "git@github.com:souliane/teatree.git", visibility="PUBLIC")
 
         assert len(stamped) == 1, "public souliane worktree was not identity-stamped (#762 source-fix)"
         wt_path, name, email = stamped[0]
@@ -573,16 +580,64 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
         # it, then the reactive hook hard-failed at push).
         from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
 
-        stamped = self._run("sample-repo", "ac-sample-repo-77-x", "octo-contrib/sample-repo", visibility="PUBLIC")
+        stamped = self._run(
+            "sample-repo",
+            "ac-sample-repo-77-x",
+            "git@github.com:octo-contrib/sample-repo.git",
+            visibility="PUBLIC",
+        )
 
         assert len(stamped) == 1, "public non-souliane worktree was not identity-stamped (#785)"
         _, _, email = stamped[0]
         assert is_noreply_email(email), email
 
+    def test_github_ssh_alias_host_worktree_is_stamped_noreply(self) -> None:
+        # #2655: the souliane/teatree clone on this machine uses an
+        # ssh-alias host (``github.com-work``) so the github identity is
+        # still recognised and the public souliane noreply is stamped.
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+
+        stamped = self._run(
+            "teatree",
+            "ac-teatree-alias-x",
+            "git@github.com-work:souliane/teatree.git",
+            visibility="PUBLIC",
+        )
+
+        assert len(stamped) == 1, "ssh-alias github host worktree was not stamped (#2655)"
+        _, _, email = stamped[0]
+        assert is_noreply_email(email), email
+
     def test_private_clone_worktree_is_not_stamped(self) -> None:
-        stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc", visibility="PRIVATE")
+        stamped = self._run(
+            "internal-svc",
+            "ac-internal-svc-77-x",
+            "git@github.com:acme-private/internal-svc.git",
+            visibility="PRIVATE",
+        )
 
         assert stamped == [], "private clone must NOT be identity-stamped — visibility scope error (#785)"
+
+    def test_gitlab_clone_worktree_keeps_inherited_identity(self) -> None:
+        # #2655 — the reported bug class: a GitLab clone
+        # (``gitlab.com/<owner>/*``) must NEVER be stamped with the github
+        # noreply identity, EVEN IF a public github.com repo happened to
+        # exist at the same host-stripped ``owner/repo`` slug. The gh mock
+        # answers PUBLIC, but the non-github host short-circuits the gate
+        # to False BEFORE any gh call, so the GitLab worktree keeps its
+        # inherited (real, deliverable-domain) identity.
+        stamped = self._run(
+            "widget",
+            "2655-widget",
+            "git@gitlab.com:acme-eng/widget.git",
+            visibility="PUBLIC",
+        )
+
+        assert stamped == [], (
+            "GitLab worktree was stamped with the github identity — "
+            "host-blind slug footgun (#2655). It must keep the inherited "
+            "real-domain identity."
+        )
 
 
 class TestWorktreeProvisionerGuardsWrongRepo(TestCase):

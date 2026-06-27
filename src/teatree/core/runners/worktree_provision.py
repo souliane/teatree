@@ -146,6 +146,10 @@ class WorktreeProvisionRunner(RunnerBase):
         worktree = self.worktree
         overlay = self.overlay
 
+        # Fail loud before importing into a db_name another ticket's live
+        # worktree already owns — never clobber a foreign database (#WT-PR-D).
+        worktree.assert_db_name_unclaimed()
+
         if worktree.db_name:
             user, host, env = worktree_pg_connection(worktree, overlay=overlay)
             try:

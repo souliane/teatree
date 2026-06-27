@@ -33,3 +33,18 @@ class PendingTasksScannerTests(TestCase):
             Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
         signals = PendingTasksScanner(limit=2).scan()
         assert len(signals) == 2
+
+    def test_summary_uses_human_subject_not_bare_phase(self) -> None:
+        ticket = self._ticket("https://example.com/issues/3")
+        session = self._session(ticket)
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="short_describe",
+            subject="Provision smoke: t3-teatree",
+            status=Task.Status.PENDING,
+        )
+        signals = PendingTasksScanner().scan()
+        assert signals[0].payload["subject"] == "Provision smoke: t3-teatree"
+        assert "(short_describe)" not in signals[0].summary
+        assert "Provision smoke: t3-teatree" in signals[0].summary
