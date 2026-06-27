@@ -19,7 +19,7 @@ from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
 
-_patch_config = patch("teatree.core.cleanup.load_config")
+_patch_config = patch("teatree.core.cleanup.clone_root")
 _patch_git = patch("teatree.core.cleanup.git")
 _patch_overlay = patch("teatree.core.cleanup.get_overlay_for_worktree")
 # The origin/main hygiene gate is now authorized by the CONTENT gate (#2609),
@@ -49,7 +49,7 @@ def _no_unpushed(mock_git: MagicMock) -> None:
 
 
 def _mock_workspace(mock_config: MagicMock) -> None:
-    mock_config.return_value.user.workspace_dir.__truediv__ = lambda self, x: MagicMock(is_dir=lambda: True)
+    mock_config.return_value.__truediv__ = lambda self, x: MagicMock(is_dir=lambda: True)
 
 
 class TestCleanupWorktree(TestCase):
@@ -987,7 +987,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
             extra={"worktree_path": "/tmp/wt/org/repo"},
         )
 
-    @patch("teatree.core.cleanup.load_config")
+    @patch("teatree.core.cleanup.clone_root")
     @patch("teatree.core.cleanup.git")
     def test_cleanup_worktree_resolves_overlay_from_worktree_field(
         self,
@@ -1019,7 +1019,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         result = cleanup_worktree(wt)
         assert result.clean is True
 
-    @patch("teatree.core.cleanup.load_config")
+    @patch("teatree.core.cleanup.clone_root")
     @patch("teatree.core.cleanup.git")
     def test_cleanup_worktree_selects_correct_overlay(
         self,

@@ -184,7 +184,7 @@ class TestBranchToTicketUrl(TestCase):
             return Path("/c1") if wt.branch == "feat-a" else None
 
         with (
-            patch("teatree.core.recover.load_config"),
+            patch("teatree.core.recover.clone_root"),
             patch("teatree.core.recover.resolve_clone_path", side_effect=_resolve),
         ):
             mapping = _branch_to_ticket_url()
@@ -255,7 +255,7 @@ class TestForceCaptureSnapshots(TestCase):
             return None if wt_path == "/clean/wt" else Path("/tmp/t3-recover-77")
 
         with (
-            patch("teatree.core.recover.load_config"),
+            patch("teatree.core.recover.clone_root"),
             patch("teatree.core.recover.resolve_clone_path", side_effect=_resolve),
             patch("teatree.core.recover.capture_worktree_snapshot", side_effect=_capture) as cap,
         ):

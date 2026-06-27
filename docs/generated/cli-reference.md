@@ -5207,9 +5207,10 @@ Usage: t3 teatree workspace relocate [OPTIONS]
  Move this overlay's teatree-managed worktrees under the per-overlay dir
  (regroup).
 
- Thin wrapper supplying the resolved overlay + per-overlay ``workspace_dir``
- to :func:`run_relocate` (the engine, with the full locked/dirty/active
- skip doctrine + idempotency + ``--dry-run``); see ``/t3:workspace``.
+ Thin wrapper supplying the resolved overlay + per-overlay WORKTREE root
+ (``config.worktree_root()``) to :func:`run_relocate` (the engine, with the
+ full locked/dirty/active skip doctrine + idempotency + ``--dry-run``); see
+ ``/t3:workspace``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dry-run    --no-dry-run      List the moves without moving anything.       │
