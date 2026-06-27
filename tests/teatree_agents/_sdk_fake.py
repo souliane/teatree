@@ -14,7 +14,8 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Self
 from unittest.mock import patch
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock
+from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.headless as headless_mod
 from teatree.agents.headless import TaskUsage
@@ -45,6 +46,18 @@ def result_message(**overrides: Any) -> ResultMessage:
 
 def assistant_text(text: str) -> AssistantMessage:
     return AssistantMessage(content=[TextBlock(text=text)], model="claude-opus-4-8[1m]")
+
+
+def rate_limit_event(rate_limit_type: RateLimitType, *, status: RateLimitStatus = "rejected") -> RateLimitEvent:
+    """A typed :class:`RateLimitEvent` carrying the SDK's unambiguous window.
+
+    ``status="rejected"`` is the hard-limit-hit signal the classifier acts on.
+    """
+    return RateLimitEvent(
+        rate_limit_info=RateLimitInfo(status=status, rate_limit_type=rate_limit_type),
+        uuid="rl-1",
+        session_id="s1",
+    )
 
 
 def success_stream(result: dict[str, Any], **result_kwargs: Any) -> list[Any]:

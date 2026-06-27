@@ -26,7 +26,7 @@ from ._shared import _write_toml
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
     # privacy is TOML-home (read off the file). workspace_dir is DB-home now:
     # its ``[teatree]`` value is ignored on read so the field keeps its dataclass
-    # default at the file tier (resolved per-overlay via workspace_dir()).
+    # default at the file tier (resolved per-overlay via config.worktree_root()).
     # review_skill is DB-home too and keeps its default at the file tier.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
@@ -82,10 +82,13 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
     # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
+    # ``workspace_dir`` is deliberately ABSENT here — it is DB-home now and warns
+    # on presence (see TestDbHomeTomlConflictWarning); this fixture covers only
+    # the keys that must STAY silent.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n'
+        '[teatree]\nprivacy = "strict"\n'
         'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
         '[overlays.myproj]\npath = "~/p"\n',
     )
@@ -125,8 +128,31 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("repo_mode", "solo")
         ConfigSetting.objects.set_value("contribute", value=True)
-        _write_toml(self.config_path, '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n')
+        # ``workspace_dir`` omitted: it is the one DB-home key that warns on
+        # presence (it silently relocates worktrees) — covered separately below.
+        _write_toml(self.config_path, '[teatree]\nprivacy = "strict"\n')
         assert self._load_and_collect() == []
+
+    def test_retired_workspace_dir_in_toml_warns_to_migrate(self) -> None:
+        # workspace_dir moved to the DB store (the per-overlay WORKTREE root); a
+        # leftover ``[teatree] workspace_dir`` is ignored on read AND would
+        # silently change where worktrees are created, so it ALWAYS warns (not
+        # only on a value conflict) with the config_setting import migrate path.
+        _write_toml(self.config_path, '[teatree]\nworkspace_dir = "/custom/ws"\n')
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "workspace_dir" in warnings[0]
+        assert "config_setting import" in warnings[0]
+
+    def test_overlay_scoped_workspace_dir_in_toml_warns(self) -> None:
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nworkspace_dir = "/srv/ws"\n',
+        )
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "workspace_dir" in warnings[0]
+        assert "myproj" in warnings[0]
 
     def test_db_home_key_in_toml_without_db_row_is_silent(self) -> None:
         # A DB-home key still in the TOML but with NO DB row is being migrated
@@ -316,6 +342,54 @@ def test_billing_cycle_defaults(tmp_path: Path) -> None:
     user = load_config(config_path).user
     assert user.billing_cycle_anchor_day == 0
     assert user.sdk_monthly_credit_usd == pytest.approx(200.0)
+
+
+class TestAutoloadSetting:
+    """``autoload`` is TOML-home (#256): default OFF, ``[teatree] autoload`` enables, env wins.
+
+    Mirrors ``check_updates`` — a cold-hook-readable TOML-home bool resolved from
+    the ``[teatree]`` table + ``T3_AUTOLOAD`` env, never the DB store.
+    """
+
+    def test_default_is_off_with_empty_teatree_table(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.autoload is False
+
+    def test_default_is_off_with_no_config_file(self, tmp_path: Path) -> None:
+        assert load_config(tmp_path / "nonexistent.toml").user.autoload is False
+
+    def test_toml_true_enables(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nautoload = true\n")
+        assert load_config(config_path).user.autoload is True
+
+    def test_env_override_enables_over_empty_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``T3_AUTOLOAD`` is the operational fast-toggle (env wins over the file tier)."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\n")
+        monkeypatch.setenv("T3_AUTOLOAD", "true")
+        assert get_effective_settings().autoload is True
+
+    def test_env_false_disables_over_toml_true(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\nautoload = true\n")
+        monkeypatch.setenv("T3_AUTOLOAD", "false")
+        assert get_effective_settings().autoload is False
 
 
 class TestIssueImplementerSettings:

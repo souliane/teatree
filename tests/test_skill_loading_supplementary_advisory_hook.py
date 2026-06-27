@@ -124,6 +124,9 @@ class TestPendingExcludesAdvisory:
         original = router.STATE_DIR
         router.STATE_DIR = tmp_path / "state"
         router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # #256: the suggester is gated on teatree engagement; opt in via autoload
+        # so this test exercises the pending-writer split, not the default-off gate.
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.gates.orphan_guard import BranchStatus, find_orphans_in_workspace
 from teatree.core.models import Task, Worktree
@@ -190,7 +190,7 @@ class RecoverReport:
 
 def _branch_to_ticket_url() -> dict[tuple[str, str], str]:
     """Map ``(clone_path, branch)`` to the ticket issue_url that owns it."""
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     mapping: dict[tuple[str, str], str] = {}
     for wt in Worktree.objects.select_related("ticket"):
         clone = resolve_clone_path(workspace, wt)
@@ -286,7 +286,7 @@ def requeue_failed_tasks(report: RecoverReport) -> list[int]:
 
 def force_capture_snapshots() -> list[Path]:
     """Capture a snapshot of every dirty/unpushed tracked worktree. Returns artifact dirs."""
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     captured: list[Path] = []
     for wt in Worktree.objects.select_related("ticket"):
         clone = resolve_clone_path(workspace, wt)

@@ -400,11 +400,13 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 │                               current directory).                            │
 │ --config                PATH  Override the ~/.teatree.toml term-list config  │
 │                               (else resolved as the gate does).              │
-│ --require-brands              HARD-FAIL (exit 2) when no brands are          │
-│                               configured, instead of warning and exiting 0.  │
-│                               CI passes this so a missing                    │
-│                               TEATREE_BANNED_BRANDS secret reds the job      │
-│                               loudly; local dev omits it and stays green.    │
+│ --require-brands              HARD-FAIL (exit 2) on an explicit-empty brand  │
+│                               list (`banned_brands = []`), instead of        │
+│                               warning and exiting 0. A genuinely-unset list  │
+│                               always fails loud regardless of this flag;     │
+│                               --require-brands additionally rejects the      │
+│                               deliberate empty list. CI passes it; local dev │
+│                               omits it.                                      │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -85,12 +85,9 @@ def _parse_on_behalf_auto_actions(raw: object) -> list[str]:
 
 
 def _parse_env_bool(raw: str) -> bool:
-    """Coerce a ``T3_*`` env-var string to a bool for ``ENV_SETTING_OVERRIDES``.
+    """Coerce a ``T3_*`` env string to a bool for ``ENV_SETTING_OVERRIDES``.
 
-    Conservative truthy set (``1``/``true``/``yes``/``on``, case-insensitive);
-    everything else — including ``false``/``0``/``no`` — resolves to ``False``.
-    A kill-switch env var is meant to *disable*, so any value that is not an
-    explicit enable reads as off.
+    Truthy set ``1``/``true``/``yes``/``on`` (case-insensitive); else ``False``.
     """
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -287,7 +284,7 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # fitness test asserts this registry covers exactly the DB-home set (no TOML-home
 # key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    # Stored as a path STRING (JSONField holds no Path); config.workspace_dir() is
+    # Stored as a path STRING (JSONField holds no Path); config.worktree_root() is
     # the typed accessor that expanduser()-wraps it and applies the per-overlay default.
     "workspace_dir": _parse_strict_str,
     "mode": Mode.parse,
@@ -426,6 +423,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_TEAMS_DISPLAY": ("teams_display", _parse_env_teams_display),
     "T3_CONTRIBUTE": ("contribute_plugin_dir", _parse_env_bool),
     "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
+    "T3_AUTOLOAD": ("autoload", _parse_env_bool),
 }
 
 
@@ -496,6 +494,16 @@ class UserSettings:
     worktrees_dir: Path = field(default_factory=lambda: DATA_DIR / "worktrees")
     privacy: str = ""
     check_updates: bool = True
+    # #256 Default-OFF teatree engagement. When false (the default) a fresh
+    # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
+    # PreToolUse load-block, no loop scheduling — and SessionStart shows a
+    # one-line how-to-start advisory instead. The owner flips it true to
+    # auto-activate every session. TOML-home like ``check_updates`` (the cold
+    # SessionStart / UserPromptSubmit hooks read it pre-Django, so it can never
+    # move into the DB store); ``T3_AUTOLOAD`` env wins. A DB row is ignored on
+    # read. Explicitly calling ``/teatree`` — or loading any ``t3:`` skill —
+    # engages teatree for the session regardless of this default.
+    autoload: bool = False
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)

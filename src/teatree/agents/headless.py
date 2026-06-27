@@ -22,8 +22,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
-from claude_agent_sdk.types import SystemPromptPreset
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    RateLimitEvent,
+    ResultMessage,
+    TextBlock,
+)
+from claude_agent_sdk.types import RateLimitInfo, SystemPromptPreset
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
@@ -36,6 +43,7 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentRuntime, get_effective_settings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
@@ -171,21 +179,6 @@ class TicketBudget:
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
-_USAGE_LIMIT_PREFIX = "usage_limit: "
-
-# Phrases the SDK surfaces on a subscription quota / weekly-limit exhaustion
-# (dogfood-surfaced). A ``ResultMessage(is_error=True)`` carrying any of these
-# is a limit condition the operator must wait out — not a generic crash and not
-# a silent success.
-_USAGE_LIMIT_PHRASES = (
-    "usage limit",
-    "weekly limit",
-    "rate limit",
-    "out of credits",
-    "quota exceeded",
-)
-
-
 _RESULT_ERROR_PREFIX = "result_error: "
 
 
@@ -197,7 +190,7 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     are both genuine FAILED runs (#1764 class): they must record a failed attempt
     carrying the CLI's own ``result`` / ``errors`` / ``api_error_status``, never
     be laundered into a completion that advances the ticket FSM over a failed run.
-    Called only AFTER :func:`_limit_signature` has already claimed a limit error,
+    Called only AFTER :func:`_limit_match` has already claimed a limit error,
     so a limit message never reaches here.
     """
     if message is None:
@@ -216,20 +209,26 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     return _RESULT_ERROR_PREFIX + " — ".join(parts)
 
 
-def _limit_signature(message: ResultMessage | None) -> str:
-    """Return the matched usage-limit phrase, or ``""`` when not a limit error.
+def _limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | None = None) -> LimitMatch | None:
+    """Return the classified :class:`LimitMatch`, or ``None`` when not a limit error.
 
     Keyed on ``is_error`` so a healthy result whose text merely discusses limits
-    is never flagged. The agent's final ``result`` string is the haystack — the
-    SDK puts the limit message there on a quota-exhausted run.
+    is never flagged. When the run IS an error and the stream carried a rejected
+    :class:`~claude_agent_sdk.types.RateLimitInfo`, classify from its TYPED
+    ``rate_limit_type`` window (unambiguous structured data — a ``seven_day_opus``
+    is the WEEKLY cause, never a 5-hour one); otherwise fall back to phrase-matching
+    the agent's final ``result`` string. Either way
+    :func:`~teatree.llm.anthropic_limits.classify_limit` sorts it into its distinct
+    cause (API-credit / subscription-session / subscription-weekly / rate-limit),
+    so a credit-empty key is never reported as a subscription quota.
     """
     if message is None or not message.is_error:
-        return ""
-    haystack = str(message.result or "").casefold()
-    for phrase in _USAGE_LIMIT_PHRASES:
-        if phrase in haystack:
-            return phrase
-    return ""
+        return None
+    if rate_limit_info is not None and rate_limit_info.status == "rejected":
+        typed = classify_rate_limit_type(rate_limit_info.rate_limit_type)
+        if typed is not None:
+            return typed
+    return classify_limit(str(message.result or ""))
 
 
 @dataclass(frozen=True)
@@ -245,6 +244,11 @@ class _SdkOutcome:
     agent_text: str
     result_message: ResultMessage | None
     stuck_reason: str | None
+    #: The last REJECTED rate-limit window the stream carried (a ``RateLimitEvent``
+    #: with ``status == "rejected"``), used to classify a limit failure from the
+    #: SDK's unambiguous typed field. ``None`` when the stream named no rejected
+    #: window — the classifier then falls back to phrase-matching the result text.
+    rate_limit_info: RateLimitInfo | None = None
 
 
 def run_headless(
@@ -303,10 +307,10 @@ def _outcome_failure(task: Task, outcome: _SdkOutcome) -> TaskAttempt | None:
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
-    limit = _limit_signature(outcome.result_message)
-    if limit:
-        reason = f"{_USAGE_LIMIT_PREFIX}{limit} — subscription quota exhausted; retry after the limit resets"
-        logger.warning("Task %s hit a usage limit: %s", task.pk, reason)
+    limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
+    if limit is not None:
+        reason = limit.as_reason()
+        logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
         return _record_failure(task, error=reason)
     error_reason = _error_result_reason(outcome.result_message)
     if error_reason is not None:
@@ -483,21 +487,40 @@ async def _drive_with_heartbeat(
             heartbeat_task.cancel()
 
     if breach:
-        return _SdkOutcome(agent_text=outcome.agent_text, result_message=outcome.result_message, stuck_reason=breach[0])
+        return _SdkOutcome(
+            agent_text=outcome.agent_text,
+            result_message=outcome.result_message,
+            stuck_reason=breach[0],
+            rate_limit_info=outcome.rate_limit_info,
+        )
     return outcome
 
 
 async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
-    """Send *prompt* and collect the agent's text + terminal ``ResultMessage``."""
+    """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window.
+
+    A ``RateLimitEvent`` with ``status == "rejected"`` carries the SDK's typed
+    ``rate_limit_type`` window — the unambiguous source the limit classifier
+    prefers over prose-grep. The LAST rejected one is kept so a hard limit hit at
+    the end of the stream classifies the failure precisely.
+    """
     await client.query(prompt)
     text_parts: list[str] = []
     result_message: ResultMessage | None = None
+    rate_limit_info: RateLimitInfo | None = None
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
         elif isinstance(message, ResultMessage):
             result_message = message
-    return _SdkOutcome(agent_text="\n".join(text_parts), result_message=result_message, stuck_reason=None)
+        elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
+            rate_limit_info = message.rate_limit_info
+    return _SdkOutcome(
+        agent_text="\n".join(text_parts),
+        result_message=result_message,
+        stuck_reason=None,
+        rate_limit_info=rate_limit_info,
+    )
 
 
 def _record_success(task: Task, outcome: _SdkOutcome, *, phase: str = "") -> TaskAttempt:

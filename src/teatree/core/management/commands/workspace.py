@@ -11,7 +11,7 @@ from django.db import transaction
 from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
-from teatree.config import workspace_dir as _config_workspace_dir
+from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
@@ -48,11 +48,11 @@ if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 
-def _workspace_dir() -> Path:
-    # The per-overlay resolver (env → DB ConfigSetting → default), NOT the raw
-    # ``load_config().user.workspace_dir`` global — so NEW ticket worktrees land
-    # under the resolved per-overlay dir.
-    return _config_workspace_dir()
+def _worktree_root() -> Path:
+    # The per-overlay WORKTREE root (env → DB ConfigSetting → default) where NEW
+    # ticket worktrees land — NOT the CLONE root (``config.clone_root()``,
+    # ``~/workspace``) where source clones are discovered.
+    return _config_worktree_root()
 
 
 def _resolve_workspace_ticket(path: str) -> Ticket:
@@ -167,12 +167,12 @@ class Command(TyperCommand):
         raw = RawTicketInputs(issue_url, repos, variant, description, take_over)
         intake = build_intake(overlay, raw)
         try:
-            ticket = build_ticket(self.stderr.write, overlay, intake, _workspace_dir())
+            ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
         except ForeignIssueWorktreeRefusedError:
             return 0
 
         branch = cast("TicketExtra", ticket.extra)["branch"]
-        ticket_dir = _workspace_dir() / branch
+        ticket_dir = _worktree_root() / branch
 
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it
@@ -505,7 +505,7 @@ class Command(TyperCommand):
         JSON-serialisable survey so the planner plans against reality instead of
         re-deriving it.
         """
-        return run_landscape(_workspace_dir())
+        return run_landscape(_worktree_root())
 
     @command(name="reap-stale")
     def reap_stale(
@@ -569,7 +569,7 @@ class Command(TyperCommand):
         CLI wrapper that supplies the worktree dir and the command's IO sinks.
         """
         return run_clean_all(
-            _workspace_dir(),
+            _worktree_root(),
             CleanAllIO(write_out=self.stdout.write, write_err=self.stderr.write),
             keep_dslr=keep_dslr,
             reap_unsynced=reap_unsynced,
@@ -583,9 +583,10 @@ class Command(TyperCommand):
     ) -> list[str]:
         """Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup).
 
-        Thin wrapper supplying the resolved overlay + per-overlay ``workspace_dir``
-        to :func:`run_relocate` (the engine, with the full locked/dirty/active
-        skip doctrine + idempotency + ``--dry-run``); see ``/t3:workspace``.
+        Thin wrapper supplying the resolved overlay + per-overlay WORKTREE root
+        (``config.worktree_root()``) to :func:`run_relocate` (the engine, with the
+        full locked/dirty/active skip doctrine + idempotency + ``--dry-run``); see
+        ``/t3:workspace``.
         """
         io = RelocateIO(write_out=self.stdout.write, write_err=self.stderr.write)
-        return run_relocate(active_overlay_name(), _config_workspace_dir(), io, dry_run=dry_run).render()
+        return run_relocate(active_overlay_name(), _config_worktree_root(), io, dry_run=dry_run).render()

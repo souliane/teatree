@@ -287,8 +287,15 @@ class WorktreeReaper:
         itself, so the single-level ``not any(iterdir())`` check kept it. This
         prunes empty leaf subdirs first, then the ticket dir if it is now empty.
         A subdir holding any real file or nested content is left untouched.
+
+        The per-overlay WORKTREE root (``config.worktree_root()``) is resolved
+        purely — it is created at the point of USE (ticket provisioning), not by
+        the getter — so a fresh setup may have no dir yet. A missing root is "no
+        ticket dirs to prune", never a crash.
         """
         removed: list[str] = []
+        if not self.workspace.is_dir():
+            return removed
         for entry in self.workspace.iterdir():
             if not entry.is_dir():
                 continue

@@ -618,8 +618,9 @@ class TestRunBackend(TestCase):
                 "run",
                 side_effect=fake_subprocess_run,
             ),
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch("teatree.core.runners.provision._workspace_dir", return_value=workspace),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
         ):
             ticket_id = cast(
                 "int",

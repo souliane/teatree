@@ -26,6 +26,7 @@ from teatree.eval.api_runner import (
     BudgetExceededError,
     ClaudeCliMissingError,
     CleanRoomConfig,
+    CreditExhaustedError,
     build_sdk_options,
     classify_terminal_error,
     is_success_result_error,
@@ -857,6 +858,43 @@ class TestApiInProcessRunnerBudgetExceeded:
         assert result.passed is False
         assert result.verdict == "fail"
         assert result.run.cost_usd == pytest.approx(0.1)
+
+
+class TestApiInProcessRunnerCreditExhausted:
+    """A metered-key $0 balance surfaces a distinct, actionable CreditExhaustedError."""
+
+    def _run_with_raising_query(self, spec: EvalSpec, query):
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            return ApiInProcessRunner(workspace=spec.source_path.parent).run(spec)
+
+    def test_credit_balance_too_low_raises_credit_exhausted_not_generic(self, tmp_path: Path) -> None:
+        # The billed ANTHROPIC_API_KEY at $0 surfaces HTTP 400 "credit balance is
+        # too low". The metered lane must fail LOUD with the console remediation,
+        # not bubble an opaque error result that reds every remaining scenario.
+        spec = _spec(tmp_path)
+        query = _budget_raising_query(
+            "Claude Code returned an error result: Your credit balance is too low to access the Anthropic API."
+        )
+        with pytest.raises(CreditExhaustedError, match=r"console\.anthropic\.com"):
+            self._run_with_raising_query(spec, query)
+
+    def test_credit_exhausted_message_does_not_claim_subscription(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: credit balance too low")
+        with pytest.raises(CreditExhaustedError) as exc_info:
+            self._run_with_raising_query(spec, query)
+        assert "subscription" not in str(exc_info.value).casefold()
+
+    def test_non_credit_error_still_propagates_unchanged(self, tmp_path: Path) -> None:
+        # Anti-vacuity: the credit catch is targeted, NOT a blanket swallow. A
+        # generic error must still surface as itself.
+        spec = _spec(tmp_path)
+        query = _budget_raising_query("Claude Code returned an error result: error_during_execution")
+        with pytest.raises(Exception, match="error_during_execution"):
+            self._run_with_raising_query(spec, query)
 
 
 def _yield_then_raise_query(messages: list[Any], message: str):

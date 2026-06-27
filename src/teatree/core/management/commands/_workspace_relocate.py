@@ -23,6 +23,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from django.db import DatabaseError
+
 from teatree.config import OverlayEntry
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Session, Task, Worktree
@@ -76,6 +78,10 @@ def _is_active_cwd(old_resolved: Path, active_path: Path | None) -> bool:
 
 
 def _active_cwd() -> Path | None:
+    # Residual gap (acknowledged): this only sees THIS process's cwd, so a
+    # concurrent agent process whose cwd is inside the worktree is not caught
+    # here — the session/task liveness checks (``_ticket_is_busy``) cover that
+    # real agent case, so a live mid-task worktree is still skipped.
     try:
         return Path.cwd().resolve()
     except OSError:
@@ -145,7 +151,7 @@ def _matches_overlay(worktree_overlay: str, overlay_name: str) -> bool:
 
 
 def active_overlay_name() -> str:
-    """The active overlay name, resolved exactly as ``config.workspace_dir()`` does.
+    """The active overlay name, resolved exactly as ``config.worktree_root()`` does.
 
     ``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay, so the
     relocate scope and the per-overlay ``target_root`` always agree on the overlay.
@@ -158,11 +164,14 @@ def active_overlay_name() -> str:
 def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_run: bool) -> RelocateResult:
     """Relocate *overlay_name*'s teatree-managed worktrees under *target_root*.
 
-    *target_root* is the resolved per-overlay dir (``config.workspace_dir()``).
-    Each movable worktree is moved with ``git worktree move`` and its row's
-    ``extra['worktree_path']`` rewritten; locked/dirty/active worktrees are
-    skipped (reported), the run is idempotent, ``dry_run`` plans without
-    touching anything, and one failed move never aborts the rest.
+    *target_root* is the resolved per-overlay WORKTREE root
+    (``config.worktree_root()``). Each movable worktree is moved with
+    ``git worktree move`` and its row's ``extra['worktree_path']`` rewritten;
+    locked/dirty/active worktrees are skipped (reported), the run is idempotent,
+    ``dry_run`` plans without touching anything, and one failed move never aborts
+    the rest. A row whose recorded path is gone but whose worktree already sits
+    under *target_root* (a prior run's git move succeeded then the DB save threw)
+    is self-healed — see :func:`_reconcile_half_move`.
     """
     result = RelocateResult(dry_run=dry_run)
     target_root_resolved = target_root.resolve()
@@ -180,7 +189,15 @@ def run_relocate(overlay_name: str, target_root: Path, io: RelocateIO, *, dry_ru
             continue
         old = Path(wt_path)
         if not old.exists():
-            _record_skip(result, io, f"{old}: worktree path missing on disk (stale row)")
+            # A recorded path gone from disk is normally a stale row — but if the
+            # worktree already sits under target_root, a prior run's git move
+            # succeeded then its DB save failed (the #regroup half-move). Heal the
+            # row instead of skipping it forever.
+            target = _half_move_target(old, target_root_resolved)
+            if target is None:
+                _record_skip(result, io, f"{old}: worktree path missing on disk (stale row)")
+            else:
+                _reconcile_half_move(result, io, worktree, target, dry_run=dry_run)
             continue
         candidate = _Candidate(
             worktree=worktree, old=old, old_resolved=old.resolve(), clone=_resolve_clone(worktree, old)
@@ -216,9 +233,55 @@ def _move_one(result: RelocateResult, io: RelocateIO, candidate: _Candidate, tar
     extra = dict(worktree.extra or {})
     extra["worktree_path"] = str(target)
     worktree.extra = extra
-    worktree.save(update_fields=["extra"])
+    try:
+        worktree.save(update_fields=["extra"])
+    except DatabaseError as exc:
+        # Git + disk are NOW at `target`, but the row save failed, so it still
+        # records the OLD (now-gone) path. Report it (never silently lost, never
+        # aborts the run); a subsequent run's reconcile step (recorded path gone +
+        # a worktree present under the target root) self-heals the row.
+        msg = f"moved on disk but DB row not updated ({exc}); re-run to reconcile"
+        result.failed.append(f"{line}: {msg}")
+        io.write_err(f"  FAILED {candidate.old}: {msg}")
+        return
     result.moved.append(line)
     io.write_out(f"  moved {line}")
+
+
+def _half_move_target(old: Path, target_root_resolved: Path) -> Path | None:
+    """The moved location of a half-moved worktree, or ``None`` when there is none.
+
+    A worktree row records ``<old_ws>/<branch>/<repo>``; its post-move home is
+    ``<target_root>/<branch>/<repo>``. When ``old`` is gone from disk but that
+    target exists AS a git worktree (a ``.git`` entry), a prior run moved it on
+    disk + git but failed to save the row — return the target so the caller heals
+    the row. Pure check: no DB write, no filesystem mutation.
+    """
+    target = target_root_resolved / old.parent.name / old.name
+    return target if (target / ".git").exists() else None
+
+
+def _reconcile_half_move(
+    result: RelocateResult, io: RelocateIO, worktree: Worktree, target: Path, *, dry_run: bool
+) -> None:
+    """Heal a #regroup half-move: re-point the stale row at its already-moved worktree.
+
+    The row's recorded path is gone but the worktree already sits under
+    ``target_root`` (a prior run's git move succeeded, then its DB save threw).
+    Under ``dry_run`` it plans the reconcile without touching the DB. The row
+    still records the OLD path, so ``worktree.worktree_path`` is the move source.
+    """
+    line = f"{worktree.worktree_path} -> {target}"
+    if dry_run:
+        result.moved.append(line)
+        io.write_out(f"  would reconcile {line}")
+        return
+    extra = dict(worktree.extra or {})
+    extra["worktree_path"] = str(target)
+    worktree.extra = extra
+    worktree.save(update_fields=["extra"])
+    result.moved.append(line)
+    io.write_out(f"  reconciled {line}")
 
 
 def _record_skip(result: RelocateResult, io: RelocateIO, line: str) -> None:

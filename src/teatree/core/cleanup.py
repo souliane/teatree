@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core import prek_hook
 from teatree.core._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
 from teatree.core.branch_classification import (
@@ -615,7 +615,7 @@ def cleanup_worktree(
     Pass ``force=True`` only from trusted callers (explicit operator override,
     tests, programmatic API).
     """
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = _resolve_overlay_or_none(worktree)
 

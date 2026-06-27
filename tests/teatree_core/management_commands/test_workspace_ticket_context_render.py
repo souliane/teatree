@@ -61,13 +61,13 @@ class WorkspaceTicketContextWiringTest(TestCase):
         super().setUp()
         mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
         self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # Seed clones under the CLONE root (``clone_root()`` → ``$HOME/workspace``,
+        # HOME sandboxed). NO ``T3_WORKSPACE_DIR`` pin — clone discovery resolves
+        # these via clone_root() while worktrees land under worktree_root().
         workspace = Path(os.environ["HOME"]) / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         for repo in ("backend", "frontend"):
             (workspace / repo / ".git").mkdir(parents=True, exist_ok=True)
-        # workspace_dir() now defaults to the per-overlay dir; pin the back-compat
-        # T3_WORKSPACE_DIR env override to the seeded clone root so provisioning resolves.
-        self.enterContext(patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace)}))
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

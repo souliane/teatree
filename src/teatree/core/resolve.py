@@ -245,7 +245,7 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
     ``auto:<branch>`` ticket (#641).
 
     Stored ``worktree_path`` values are written unresolved (provision uses
-    ``config.workspace_dir()`` verbatim) while ``cwd_path`` here is
+    ``config.worktree_root()`` verbatim) while ``cwd_path`` here is
     ``.resolve()``-d, so a symlinked workspace root (macOS ``/tmp`` →
     ``/private/tmp``) would otherwise miss. Comparison goes through
     ``_candidate_paths`` — the same symlink-variant set

@@ -60,6 +60,8 @@ from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from teatree_settings import autoload_enabled as _autoload_enabled
+from teatree_settings import section_bool_setting as _section_bool_setting
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -745,6 +747,21 @@ def _teatree_active(session_id: str) -> bool:
     return _state_file(session_id, "teatree-active").is_file()
 
 
+def _t3_engaged(session_id: str) -> bool:
+    # #256 Option-1 marker: any ``t3:`` skill loaded this session engages the
+    # SUGGESTER (set by :func:`handle_track_skill_usage`). Distinct from
+    # ``.teatree-active`` — the loop machinery still consults only that one, so a
+    # plain lifecycle skill never arms loops.
+    return bool(session_id) and _state_file(session_id, "t3-engaged").is_file()
+
+
+def _teatree_engaged(session_id: str) -> bool:
+    # #256 engagement seam: teatree is engaged when the owner enabled autoload,
+    # a teatree-requiring skill was loaded (``.teatree-active``), OR any ``t3:``
+    # skill was loaded (``.t3-engaged``). Gates the suggester + T3 CLI reminder.
+    return _autoload_enabled() or _teatree_active(session_id) or _t3_engaged(session_id)
+
+
 def _loop_auto_load_active(session_id: str) -> bool:
     """Whether this session may auto-arm the loop/statusline machinery (#256).
 
@@ -882,6 +899,14 @@ def handle_user_prompt_submit(data: dict) -> None:
     pending = _state_file(session_id, "pending")
     pending.write_text("", encoding="utf-8")
 
+    # #256 default-OFF: a session that has not engaged teatree (no autoload, no
+    # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
+    # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
+    # skill-loading gate never blocks (never-lockout). The owner opts in via
+    # ``/teatree`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
+    if not _teatree_engaged(session_id):
+        return
+
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
     if not (scripts_dir / "lib" / "skill_loader.py").is_file():
         return
@@ -991,25 +1016,8 @@ _LOOP_CADENCE_DEFAULT = 720
 
 
 def _loops_toml_enabled() -> bool:
-    """Whether ``[loops] enabled`` is true in ``~/.teatree.toml`` (default True).
-
-    Fails open (True) on a missing or broken config — only an explicit
-    ``false`` suppresses loop behavior.
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return True
-    return loops.get("enabled") is not False
+    """Whether ``[loops] enabled`` is true (default True, fails OPEN; see :func:`_section_bool_setting`)."""
+    return _section_bool_setting("loops", "enabled", default=True)
 
 
 _AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
@@ -1018,32 +1026,16 @@ _AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 def _loops_auto_load_enabled() -> bool:
     """Whether the operator opted into session-start loop/statusline auto-load (#256).
 
-    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning
-    the repo is never nagged. Resolved env-first (``T3_LOOPS_AUTO_LOAD`` via
-    :func:`_resolve_loop_env`, so the ``~/.teatree`` bash env file the
-    unsourced hook misses is still honoured), then ``[loops] auto_load`` in
-    ``~/.teatree.toml``. Unlike :func:`_loops_toml_enabled` (a fail-OPEN
-    kill-switch), this fails CLOSED (OFF) on a missing/broken config: a fresh
-    clone has neither the env var nor the flag, so it stays silent.
+    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning the
+    repo is never nagged. Env-first (``T3_LOOPS_AUTO_LOAD`` via
+    :func:`_resolve_loop_env`, honouring the unsourced ``~/.teatree`` bash env
+    file), then ``[loops] auto_load``. Fails CLOSED (OFF) on a missing/broken
+    config so a fresh clone stays silent.
     """
-    import tomllib  # noqa: PLC0415
-
     env = _resolve_loop_env("T3_LOOPS_AUTO_LOAD").strip().lower()
     if env:
         return env in _AUTO_LOAD_TRUTHY
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return False
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return False
-    return loops.get("auto_load") is True
+    return _section_bool_setting("loops", "auto_load", default=False)
 
 
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
@@ -4104,6 +4096,14 @@ def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) ->
             _append_line(skills_file, name)
 
 
+def _maybe_engage_t3(session_id: str, names: list[str]) -> None:
+    # #256 Option-1: an ORIGINAL ``t3:``-namespaced token engages the SUGGESTER
+    # via ``.t3-engaged`` — NOT ``.teatree-active`` (loops stay reserved for
+    # teatree-requiring skills, preserving downstream-overlay loop isolation).
+    if any(name.strip().startswith("t3:") for name in names):
+        _state_file(session_id, "t3-engaged").touch()
+
+
 def handle_track_skill_usage(data: dict) -> None:
     """Track which skills are active this session, including their closure.
 
@@ -4127,6 +4127,7 @@ def handle_track_skill_usage(data: dict) -> None:
         _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
         if _skill_load_activates_teatree([skill_name]):
             _state_file(session_id, "teatree-active").touch()
+        _maybe_engage_t3(session_id, [skill_name])
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
@@ -4143,6 +4144,7 @@ def handle_track_skill_usage(data: dict) -> None:
     _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
     if _skill_load_activates_teatree(loaded):
         _state_file(session_id, "teatree-active").touch()
+    _maybe_engage_t3(session_id, loaded)
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -5344,6 +5346,27 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
+# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
+_TEATREE_NOT_ACTIVE_ADVISORY = (
+    "teatree is installed but not active in this session — run /teatree to start it "
+    "(or set [teatree] autoload = true to start it automatically)."
+)
+
+
+def _emit_session_start_context(context: str) -> None:
+    # #1452: the harness silently drops the legacy flat top-level
+    # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
+    # (Agent SDK ``SessionStartHookSpecificOutput``) requires the nested envelope.
+    # An empty merge (a not-engaged compact resume with no recovery context)
+    # emits nothing (#256).
+    if not context.strip():
+        return
+    json.dump(
+        {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}},
+        sys.stdout,
+    )
+
+
 def handle_session_start_bootstrap(data: dict) -> None:
     """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
 
@@ -5371,9 +5394,24 @@ def handle_session_start_bootstrap(data: dict) -> None:
     tick-owner record / emits the bootstrap directive when it both opted into
     teatree AND the operator enabled session-start auto-load. Default OFF, so a
     colleague cloning the repo never silently becomes the loop owner.
+
+    Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
+    default flips the session ``teatree-active`` BEFORE the loop gate, so today's
+    bootstrap fires unchanged. When the session is neither autoloaded nor
+    teatree-active, a FRESH start surfaces a one-line how-to-start advisory
+    instead of returning silently; a compact/resume skips the advisory but still
+    merges so snapshot-recovery / hand-off context is never dropped.
     """
     session_id = data.get("session_id", "")
     if not session_id:
+        return
+    source = data.get("source", "")
+    if _autoload_enabled():
+        _ensure_state_dir()
+        _state_file(session_id, "teatree-active").touch()
+    elif not _teatree_active(session_id):
+        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
         return
@@ -5438,7 +5476,6 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # the flock — the DB has its own CAS serialization; holding the registry
     # flock across a Django bootstrap would needlessly stall sibling
     # SessionStart hooks.
-    source = data.get("source", "")
     if became_owner_after_rotation or source == "compact":
         _evict_stale_db_lease_owner(session_id, current_pid=current_pid)
 
@@ -5448,22 +5485,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         _emit_osc_title()
 
     context = _merge_session_start_context(context, session_id, source)
-
-    # #1452: the harness silently drops the legacy flat top-level
-    # ``{"additionalContext": ...}`` form for SessionStart events; the
-    # documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
-    # requires the nested envelope. Confirmed empirically: 24 compactions
-    # in session a1e3d2d8-… emitted the flat form and zero of them
-    # injected the snapshot text into the post-compact model context.
-    json.dump(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            },
-        },
-        sys.stdout,
-    )
+    _emit_session_start_context(context)
 
 
 def handle_session_end_loop_registry(data: dict) -> None:

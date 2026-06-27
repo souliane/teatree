@@ -7,7 +7,7 @@ teatree's own repo, skills, and GitHub project as the target.
 from pathlib import Path
 from typing import override
 
-from teatree.config import discover_overlays, load_config
+from teatree.config import clone_root, discover_overlays
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.core.worktree_env import compose_project
@@ -38,11 +38,11 @@ def _repo_root() -> Path:
 def _discover_workspace_repos() -> list[str]:
     """Aggregate teatree's own repo + every discovered overlay project path.
 
-    Each path is returned relative to ``workspace_dir``. Overlays whose path
-    lives outside ``workspace_dir`` (or cannot be resolved on disk) are
-    skipped — callers can always override via ``config.workspace_repos``.
+    Each path is returned relative to the CLONE root (``config.clone_root()``,
+    ``~/workspace``). Overlays whose path lives outside it (or cannot be resolved
+    on disk) are skipped — callers can always override via ``config.workspace_repos``.
     """
-    workspace_dir = load_config().user.workspace_dir.resolve()
+    workspace_dir = clone_root().resolve()
     candidates: list[Path] = [_repo_root()]
     candidates.extend(entry.project_path for entry in discover_overlays() if entry.project_path is not None)
 
@@ -132,7 +132,7 @@ class TeatreeOverlay(OverlayBase):
             run_checked(["uv", "sync"], cwd=repo)
 
         def install_overlays_editable() -> None:
-            workspace_dir = load_config().user.workspace_dir.resolve()
+            workspace_dir = clone_root().resolve()
             ticket_dir = repo.parent
             repo_resolved = repo.resolve()
             for entry in discover_overlays():

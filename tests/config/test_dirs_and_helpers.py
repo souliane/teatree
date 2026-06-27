@@ -16,21 +16,22 @@ import pytest
 from teatree.config import (
     E2ERepo,
     _extract_settings_module,
+    clone_root,
     default_logging,
     get_data_dir,
     load_e2e_repos,
-    workspace_dir,
+    worktree_root,
     worktrees_dir,
 )
 
 from ._shared import _write_toml
 
 
-class TestWorkspaceDir:
+class TestWorktreeRoot:
     def test_returns_path_from_django_settings(self, tmp_path: Path, settings) -> None:
         custom = tmp_path / "custom-ws"
         settings.T3_WORKSPACE_DIR = str(custom)
-        result = workspace_dir()
+        result = worktree_root()
         assert result == custom
 
     def test_falls_back_to_per_overlay_default(
@@ -50,7 +51,28 @@ class TestWorkspaceDir:
         monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
         monkeypatch.setenv("T3_OVERLAY_NAME", "myoverlay")
 
-        assert workspace_dir() == Path.home() / "workspace" / "t3-workspaces" / "myoverlay"
+        assert worktree_root() == Path.home() / "workspace" / "t3-workspaces" / "myoverlay"
+
+
+class TestCloneRoot:
+    """The CLONE root (``~/workspace``) is DISTINCT from the per-overlay worktree root."""
+
+    def test_returns_path_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_WORKSPACE_DIR", "/from/env/clones")
+        assert clone_root() == Path("/from/env/clones")
+
+    def test_returns_path_from_django_settings(self, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        settings.T3_WORKSPACE_DIR = "/from/django/clones"
+        assert clone_root() == Path("/from/django/clones")
+
+    def test_falls_back_to_home_workspace(self, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No env, no Django override, no DB tier — the clone root is ``~/workspace``,
+        # independent of the per-overlay worktree-root default.
+        monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
+        if hasattr(settings, "T3_WORKSPACE_DIR"):
+            del settings.T3_WORKSPACE_DIR
+        assert clone_root() == Path.home() / "workspace"
 
 
 class TestWorktreesDir:
