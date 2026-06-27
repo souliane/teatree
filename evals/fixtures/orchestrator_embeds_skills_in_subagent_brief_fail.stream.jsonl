@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_embeds_skills_in_subagent_brief-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll dispatch the e2e sub-agent now to run the remote suite for #123."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"subagent_type": "t3:e2e", "description": "Run remote e2e for #123", "prompt": "You are the e2e sub-agent. Run the remote e2e suite for ticket #123 on the acme overlay and post the evidence link when it goes green."}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Agent spawned."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

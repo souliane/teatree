@@ -4172,6 +4172,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 confirmed non-live (#2225).                                  │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
+│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
+│                 brief must carry.                                            │
 │ config          Overlay configuration.                                       │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ speed           Parallel-work throughput dial.                               │
@@ -4300,6 +4302,20 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 │ --skill        TEXT  Explicit skill override. Repeat to load multiple        │
 │                      skills.                                                 │
 │ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree skill-preamble`
+
+```
+Usage: t3 teatree skill-preamble [OPTIONS]
+
+ Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│                               repeated (e.g. --skills t3:rules,t3:e2e).      │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
