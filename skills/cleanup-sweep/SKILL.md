@@ -40,11 +40,14 @@ worktree/branch/stash counterpart of `/t3:backlog-sweep` (issues) and
 `/t3:sweeping-prs` (open PRs).
 
 **Core principle — the outcome invariant.** Every stale item the sweep ACTS on (one
-the user owns and that is NOT live) ends **GONE**: salvaged-to-a-PR-then-deleted, or
-deleted-with-no-PR. Nothing the user owns is left rotting in place. The ONLY thing
-kept in place is a genuinely **uncertain** item — kept **with a warning**, never
-silently deleted. A colleague's item and a live item are **skipped** (deferred), not
-acted on at all.
+the user owns and that is NOT live) ends **GONE**: salvaged-to-a-PR-then-removed, or
+removed-with-no-PR. For a `kind:"worktree"` item, "removed" means the worktree dir is
+gone via `worktree teardown` — `workspace salvage` alone only opens the PR (its
+`git branch -D` can't delete a branch checked out in a worktree), so a salvage is not
+complete until the teardown runs. Nothing the user owns is left rotting in place. The
+ONLY thing kept in place is a genuinely **uncertain** item — kept **with a warning**,
+never silently deleted. A colleague's item and a live item are **skipped** (deferred),
+not acted on at all.
 
 **You never hand-roll git deletion.** `rm -rf`, `git worktree remove`, `git branch
 -D`, `git stash drop` are FORBIDDEN here — the destructive steps go through the CLI's
@@ -138,8 +141,9 @@ delete decision.)
 
 - **`merged_with_post_merge_work == true` → push the post-merge work to a NEW PR, NEVER
   delete.** The branch was forge-merged, but commits were added AFTER the merge. Those
-  post-merge commits are unique work — salvage them to a fresh PR (step 3, salvage). Do
-  NOT treat "the PR is merged" as "the branch is redundant".
+  post-merge commits are unique work — salvage them to a fresh PR, then dispose of the
+  worktree (step 3 — for a `kind:"worktree"` item that is `workspace salvage` **then**
+  `worktree teardown`). Do NOT treat "the PR is merged" as "the branch is redundant".
 
 - **`unique_commit_shas == []` (and not post-merge) → DELETE (redundant).** The tip has
   no content that is not already on target — this is the **shipped-to-master** case
@@ -148,8 +152,9 @@ delete decision.)
   guarded CLI (step 3, delete).
 
 - **`unique_commit_shas != []` → the item has unique unmerged work. Judge relevance:**
-  - **Still-relevant AND fits the current architecture → SALVAGE** to a fresh PR (step 3,
-    salvage), then the source is deleted.
+  - **Still-relevant AND fits the current architecture → SALVAGE** to a fresh PR, then
+    dispose of the source (step 3 — `workspace salvage` **then** `worktree teardown` for a
+    `kind:"worktree"` item).
   - **Superseded by a different approach / no longer relevant → DELETE (redundant)** (step
     3, delete).
   - **Genuinely uncertain whether it is still needed → KEEP with a warning.** The CLI
@@ -166,8 +171,8 @@ it carries banned terms, and never delete it *to avoid* cleaning.
 
 ### 3. Do the destructive step via the CLI
 
-**Salvage** (relevant unmerged work, OR post-merge commits to a new PR). Run from the
-repo/clone the branch lives in:
+**Salvage a worktree-kind item is TWO commands** — capture to a new PR, THEN remove the
+worktree dir. Run from the repo/clone the branch lives in:
 
 ```bash
 # clean banned terms FIRST if banned_terms_status == "contains", commit, then:
@@ -175,18 +180,31 @@ t3 <overlay> workspace salvage <branch>            # branch = the record's `bran
 #   [--salvage-branch <name>]   default: salvage/<branch>
 #   [--target origin/main]      base the salvage PR opens against
 #   [--allow-banned]            ONLY after you cleaned + committed the terms yourself
+t3 <overlay> worktree teardown --path <path>       # THEN remove the worktree dir + branch
 ```
 
-`salvage` is **fail-safe**: it captures the unique content onto a fresh branch, pushes,
-opens a PR, **forge-verifies the landing, and ONLY THEN deletes the source**. A failed
-push / open / verify leaves the source intact. Read the printed line:
+`salvage` captures the unique content onto a fresh `salvage/<branch>`, pushes it, opens a
+PR, and **forge-verifies the landing**. Its built-in source-delete is `git branch -D
+<branch>`, which git **refuses on a branch checked out in a worktree** — so for a
+`kind:"worktree"` item salvage prints `deleted=False errors=git branch -D … failed`. That
+is **EXPECTED, not a failure**: the PR is up and verified, the content is safe on
+`salvage/<branch>`. Finish the disposal with `worktree teardown --path <path>` — it removes
+the worktree checkout AND the branch, and its #706 unpushed-guard passes **without
+`--force`** because the commits are now on `origin/salvage/<branch>` (same SHAs). Only after
+the teardown is a worktree-kind item actually GONE — salvage alone never removes the dir.
 
-- `salvaged=True deleted=True … pr=<url>` → done: salvaged-to-PR-then-deleted (invariant met).
-- `salvaged=True deleted=False … errors=could not verify…` → the PR is up but the forge
-  was not confirmed: the **source is kept on purpose** — do NOT delete it by hand; re-run
-  or confirm later.
-- `salvaged=False … errors=…` (push/open/banned) → nothing was deleted; fix the cause
-  (e.g. clean banned terms) and retry.
+Read salvage's printed line — there are TWO distinct `deleted=False` causes, and NEITHER
+means re-run salvage (a second salvage opens a SECOND PR):
+
+- `salvaged=True deleted=True … pr=<url>` → the source was a bare branch and is gone; done.
+- `salvaged=True deleted=False … errors=git branch -D … failed` → a worktree-kind source:
+  **EXPECTED**. The PR is up + verified. Do NOT re-salvage — run
+  `worktree teardown --path <path>` to finish.
+- `salvaged=True deleted=False … errors=could not verify…` → the forge landing was not
+  confirmed: the source is kept on purpose. Do NOT delete by hand and do NOT re-salvage;
+  confirm the PR on the forge, then `worktree teardown`.
+- `salvaged=False … errors=…` (push/open/banned) → nothing was created; this is the only
+  case that re-runs salvage — fix the cause (e.g. clean banned terms) and retry.
 
 **Delete (redundant)** — shipped/superseded, no unique work to keep:
 
@@ -232,14 +250,17 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 { "kind": "worktree", "branch": "feat-y", "owner": "souliane", "path": "/wk/feat-y",
   "unique_commit_shas": ["e5f6"], "merged_with_post_merge_work": true,
   "banned_terms_status": "clean", "liveness": "" }
-// → t3 <overlay> workspace salvage feat-y   (post-merge commits land on a fresh PR; source deleted only after verify)
+// → t3 <overlay> workspace salvage feat-y               (post-merge commits → fresh salvage/feat-y PR, verified)
+//   then t3 <overlay> worktree teardown --path /wk/feat-y  (removes the worktree dir+branch → GONE)
+//   salvage prints deleted=False (branch checked out) — EXPECTED; do NOT re-salvage (no 2nd PR).
 
 // D. unique unmerged work, still relevant, carries customer terms → CLEAN then salvage.
 { "kind": "worktree", "branch": "feat-z", "owner": "souliane", "path": "/wk/feat-z",
   "unique_commit_shas": ["7a8b","9c0d"], "merged_with_post_merge_work": false,
   "banned_terms_status": "contains", "banned_terms_found": ["credential"], "liveness": "" }
 // → edit /wk/feat-z to replace the banned terms with placeholders, commit;
-//   then t3 <overlay> workspace salvage feat-z   (its banned gate now passes)
+//   t3 <overlay> workspace salvage feat-z                  (banned gate now passes; salvage/feat-z PR verified)
+//   then t3 <overlay> worktree teardown --path /wk/feat-z  (worktree dir+branch GONE)
 
 // E. nothing unique — shipped via a different SHA → DELETE (redundant).
 { "kind": "worktree", "branch": "old-fix", "owner": "souliane", "path": "/wk/old-fix",
@@ -258,7 +279,8 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 | "The worktree looks abandoned, I'll just `git worktree remove` it." | **Never hand-roll git deletion.** Use `worktree teardown` / `clean-all` — they carry the data-loss guard. |
 | "I can't tell if it's still needed, I'll delete it to be safe." | Uncertain ⇒ **keep with a warning**. Silent-delete-on-uncertainty is the one forbidden outcome. |
 | "There's a live session but the work looks done, I'll reap it." | `liveness != ""` ⇒ **SKIP**. A live/dirty worktree is never reaped — only LOST work is swept. |
-| "`salvage` said `deleted=False`, I'll delete the source myself." | No. `deleted=False` means the forge was not verified — the source is kept **on purpose**. Re-run or confirm; never delete by hand. |
+| "`salvage` said `deleted=False`, I'll re-run salvage / delete the source myself." | For a worktree-kind item `deleted=False` + `git branch -D … failed` is **EXPECTED** (the branch is checked out) — the PR is up. Finish with `worktree teardown --path <path>`; never re-salvage (that opens a 2nd PR) and never hand-delete. |
+| "Salvage made the PR but didn't remove the worktree — I'll `rm -rf` the dir." | **No.** A worktree-kind salvage is two steps: `workspace salvage` then `worktree teardown --path <path>`. The teardown removes the dir+branch safely (commits are on `salvage/<branch>`); never hand-`rm` a worktree. |
 
 ## Red Flags — STOP and re-route
 
@@ -268,6 +290,8 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
 - About to delete an item with `merged_with_post_merge_work == true` → STOP, salvage to a new PR.
 - About to abandon/delete an item *because* it has banned terms → STOP, clean it.
 - About to delete "because uncertain / to be safe" → STOP, keep-with-warning.
+- About to **re-run `workspace salvage`** because the first run said `deleted=False` → STOP: that opens a 2nd PR. Finish a worktree-kind salvage with `worktree teardown --path <path>`.
+- Salvaged a worktree but its dir is still on disk → NOT done. Run `worktree teardown --path <path>` — salvage alone never removes the dir.
 
 ## Delegation
 
