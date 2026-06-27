@@ -57,6 +57,10 @@ from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from memory_recall import handle_recall_cold_memory
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
+from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
@@ -3375,16 +3379,9 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 # (#115): 4.x-class agents need to inspect freely, so the gate now flags
 # the narrow set of commands that actually hurt — never every Bash.
 #
-# Main-vs-sub-agent signal (#115 root cause). The PreToolUse payload's
-# ``transcript_path`` ALWAYS points at the PARENT session transcript,
-# even for a sub-agent's tool call (a sub-agent's own turns live in a
-# separate ``…/subagents/agent-<id>.jsonl`` the hook never receives), and
-# the parent transcript's tail entries carry ``isSidechain: false`` — so
-# the previous transcript-``isSidechain`` read MISDETECTED every genuine
-# sub-agent as the main agent and blocked it. The reliable signal is on
-# the payload itself: a sub-agent call carries a non-empty ``agent_id``
-# (and ``agent_type``); a main-agent call omits it. ``_call_is_from_subagent``
-# reads that field directly — no transcript needed.
+# The main-vs-sub-agent signal (#115 root cause: a sub-agent call carries a
+# non-empty ``agent_id``, a main-agent call omits it) is ``_call_is_from_subagent``,
+# imported aliased above from the shared ``orchestration_boundary_signals`` leaf.
 
 # Pure-orchestration tools — always allowed for the main agent.
 _ORCHESTRATION_TOOLS = {
@@ -3397,33 +3394,11 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# ``pytest`` must match only in a VERB POSITION — never inside a quoted
-# arg, a branch name, a ``-m``/``--title`` message, or a hyphenated
-# package name (``pytest-django``). A bare ``\bpytest\b`` mis-denied the
-# loop owner's ``git commit -m 'fix pytest fixture'`` / ``git branch
-# x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
-# So anchor it to a command head: start-of-string OR a shell separator
-# (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
-# assignments, optional (possibly-stacked) command-wrapper prefixes
-# (``command``/``exec``/``time``/``nice``), and an optional Python runner
-# prefix — note ``uvx`` runs a tool DIRECTLY with no ``run`` (``uvx
-# pytest``), while ``uv``/``poetry``/``pdm``/``hatch`` DO need ``run``, and
-# ``python[3] -m`` — then ``pytest`` NOT followed by a word char or hyphen.
-# The separator branch keeps the shell-grammar bypass guard intact (``git
-# status && pytest`` still denies); the trailing ``(?![\w-])`` keeps the
-# match pinned to ``pytest`` so wrapper prefixes never widen to other tools
-# (``uvx ruff`` / ``command ls`` stay ALLOWED).
-_PYTEST_VERB_RE = (
-    r"(?:^|[;&|\n(){}])"
-    r"\s*"
-    r"(?:\w+=\S+\s+)*"
-    r"(?:(?:command|exec|time|nice)\s+)*"
-    r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
-    r"pytest(?![\w-])"
-)
-_PYTEST_VERB_FINDER = re.compile(_PYTEST_VERB_RE)
-
-# A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
+# ``_PYTEST_VERB_RE`` / ``_PYTEST_VERB_FINDER`` (the VERB-position pytest matcher,
+# anchored to a command head so a ``git commit -m '…pytest…'`` mention is not a
+# false-deny — #1178) now live in the shared ``orchestration_boundary_signals``
+# leaf, imported aliased above so this gate and the investigation nudge read one
+# source. A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
 # main agent (#1825): only the whole suite ties the session up. The verb
 # match above tells us a ``pytest`` invocation is present; this decides
 # whether the args make it a single/targeted run. Targeted iff the
@@ -3498,19 +3473,6 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 # mirroring the ``[skip-skill-gate: <reason>]`` token. An empty reason does not
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
-
-
-def _call_is_from_subagent(data: dict) -> bool:
-    """True when the gated tool call originates from a sub-agent.
-
-    The PreToolUse payload carries a non-empty ``agent_id`` (and
-    ``agent_type``) for every sub-agent call and omits it for the main
-    agent — the only reliable main-vs-sub-agent signal, because the
-    payload's ``transcript_path`` always points at the PARENT session
-    transcript (see the #115 root-cause note above). Empty/absent
-    ``agent_id`` ⇒ main agent.
-    """
-    return bool(data.get("agent_id"))
 
 
 def _is_orchestration_action(data: dict) -> bool:
@@ -8292,6 +8254,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_ai_signature,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
+        handle_enforce_orchestrator_investigation_boundary,
         handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,
