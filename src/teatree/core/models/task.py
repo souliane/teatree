@@ -1,6 +1,7 @@
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 from django_fsm import FSMField
@@ -440,9 +441,9 @@ class Task(models.Model):
         error: str = "",
         result: dict[str, object] | None = None,
     ) -> "TaskAttempt":
-        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415
+        task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
 
-        attempt = TaskAttempt.objects.create(
+        attempt = task_attempt_model.objects.create(
             task=self,
             execution_target=self.execution_target,
             ended_at=timezone.now(),
