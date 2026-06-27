@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import PendingChatInjection
+from teatree.agents.headless import _get_resume_session_id
+from teatree.core.models import ConfigSetting, PendingChatInjection, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
@@ -201,6 +202,79 @@ class TestDoubleReply:
         assert question.answer_text == "Yes"
         assert first.loop_replied_at is not None
         assert second.loop_replied_at is None
+
+
+_RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+class TestParkedTaskHeadlessResume:
+    """A bound reply to a headless-lane question re-queues a headless resume.
+
+    The question carries a ``parked_task`` correlation; applying the answer
+    re-queues a HEADLESS followup that resumes the captured session (via the
+    parent_task chain) and prepends the answer to the work prompt — continue
+    from the decision point, not restart from scratch, no human terminal.
+    """
+
+    def _parked_task(self) -> Task:
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
+        parked = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(task=parked, agent_session_id=_RESUME_UUID)
+        return parked
+
+    def test_reply_queues_headless_resume_with_answer_and_resume_session(self) -> None:
+        parked = self._parked_task()
+        question = DeferredQuestion.record(
+            "Which DB host?",
+            session_id=str(parked.session_id),
+            slack_channel=_CHANNEL,
+            slack_ts="100.0",
+            parked_task=parked,
+        )
+        _record_reply("use postgres-1", slack_ts="200.0")
+
+        _scan(FakeMessaging())
+
+        question.refresh_from_db()
+        assert question.answer_text == "use postgres-1"
+        resume = parked.child_tasks.get()
+        assert resume.execution_target == Task.ExecutionTarget.HEADLESS
+        assert resume.parent_task_id == parked.pk
+        assert "use postgres-1" in resume.execution_reason
+        assert _get_resume_session_id(resume) == _RESUME_UUID
+
+    def test_resume_is_not_double_queued_on_re_scan(self) -> None:
+        parked = self._parked_task()
+        DeferredQuestion.record(
+            "Which DB host?",
+            session_id=str(parked.session_id),
+            slack_channel=_CHANNEL,
+            slack_ts="100.0",
+            parked_task=parked,
+        )
+        _record_reply("use postgres-1", slack_ts="200.0")
+
+        _scan(FakeMessaging())
+        _scan(FakeMessaging())
+
+        assert parked.child_tasks.count() == 1
+
+    def test_question_without_parked_task_queues_no_resume(self) -> None:
+        question = _record_question(generation=1, slack_ts="100.0")
+        _record_reply("1", slack_ts="200.0")
+
+        _scan(FakeMessaging())
+
+        question.refresh_from_db()
+        assert question.answer_text == "Yes"
+        assert not Task.objects.exists()
 
 
 class TestReadbackFailureLeavesRow:

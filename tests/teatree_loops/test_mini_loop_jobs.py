@@ -58,7 +58,13 @@ class TestDispatchLoopBuildJobs:
     def test_returns_global_jobs(self) -> None:
         jobs = DISPATCH_LOOP.build_jobs()
         names = {j.scanner.name for j in jobs}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
+        assert names == {
+            "pending_tasks",
+            "incoming_events",
+            "outbound_audit",
+            "undelivered_notify",
+            "deferred_question_poster",
+        }
 
 
 class TestArchReviewLoopBuildJobs:

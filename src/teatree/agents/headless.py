@@ -77,6 +77,12 @@ _PERMISSION_MODE = "bypassPermissions"
 # The SDK spawns no max-turns ceiling of its own; the loop watchdog bounds a
 # runaway. ``0`` leaves the SDK uncapped (the watchdog is the real bound).
 _MAX_TURNS = 0
+# AskUserQuestion only renders to a live human at the harness — there is none
+# in the SDK/headless lane, so leaving it allowed lets the agent silently stall
+# on an unanswerable question. Hard-deny it: the agent must instead return the
+# structured ``needs_user_input`` + ``user_input_reason`` and STOP, which the
+# durable DeferredQuestion → Slack → resume loop then routes to the user.
+_DISALLOWED_TOOLS = ("AskUserQuestion",)
 
 
 @dataclass(frozen=True)
@@ -382,6 +388,7 @@ def _build_options(
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
+        disallowed_tools=list(_DISALLOWED_TOOLS),
         max_turns=_MAX_TURNS,
         resume=resume_session_id or None,
     )

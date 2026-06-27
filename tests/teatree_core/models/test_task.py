@@ -7,8 +7,18 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    InvalidTransitionError,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
 from tests.teatree_core.models._shared import _advance_ticket_to_tested
+
+_FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 class TestTask(TestCase):
@@ -138,6 +148,61 @@ class TestTask(TestCase):
 
         with pytest.raises(InvalidTransitionError, match="Can only reopen failed tasks"):
             task.reopen()
+
+
+class TestNeedsUserInputHeadlessLane(TestCase):
+    """A headless ``needs_user_input`` parks a correlated DeferredQuestion, not an interactive task.
+
+    In the SDK/headless lane there is no human terminal to claim an
+    interactive followup, so the durable record is a mirror-pending
+    ``DeferredQuestion`` correlated to the parked task (its ``parked_task``
+    FK). The tick-level poster scanner posts it to Slack; the reply re-queues
+    a headless resume. The interactive lane keeps its in-session followup.
+    """
+
+    def _parked_headless_task(self, *, reason: str = "Which DB host?") -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id=_FAKE_UUID)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        TaskAttempt.objects.create(
+            task=task,
+            agent_session_id=_FAKE_UUID,
+            result={"needs_user_input": True, "user_input_reason": reason},
+        )
+        return task
+
+    def test_headless_runtime_records_correlated_deferred_question(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        task = self._parked_headless_task()
+
+        task.complete()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not Task.objects.filter(execution_target=Task.ExecutionTarget.INTERACTIVE).exists()
+        question = DeferredQuestion.objects.get()
+        assert question.parked_task_id == task.pk
+        assert "Which DB host?" in question.question
+        assert question.slack_ts == ""
+        assert question.is_pending
+
+    def test_interactive_runtime_keeps_in_session_followup(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
+        task = self._parked_headless_task()
+
+        task.complete()
+
+        assert DeferredQuestion.objects.count() == 0
+        followup = Task.objects.filter(
+            parent_task=task,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        ).get()
+        assert followup.parent_task_id == task.pk
 
 
 class TestChildTaskSpawning(TestCase):

@@ -549,6 +549,26 @@ class TestGetResumeSessionId(TestCase):
         assert _get_resume_session_id(child_task) == ""
 
 
+class TestBuildOptionsFailLoudGate(TestCase):
+    """A headless run must HARD-deny AskUserQuestion (it is attended-only).
+
+    There is no human at the harness in the SDK/headless lane, so the
+    structured ``needs_user_input`` return is the only sanctioned ask-path.
+    AskUserQuestion is disallowed on the SDK options so the agent cannot
+    silently stall on an unrendered question.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def test_askuserquestion_is_disallowed(self) -> None:
+        session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        options = headless_mod._build_options(task, "ctx", phase="coding", skills=[])
+        assert "AskUserQuestion" in (options.disallowed_tools or [])
+
+
 class TestRunHeadlessResumesParentSession(TestCase):
     def test_resume_session_id_passed_to_sdk_options(self) -> None:
         """A child of a session-carrying parent gets ``resume=<id>`` on the SDK options."""

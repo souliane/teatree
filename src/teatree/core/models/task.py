@@ -238,7 +238,9 @@ class Task(models.Model):
         has advanced, later calls find the state mismatch and no-op.
         """
         if self._last_attempt_needs_user_input():
-            self._schedule_interactive_followup()
+            from teatree.core.models.task_handoff import park_for_user_input  # noqa: PLC0415
+
+            park_for_user_input(self)
             return
         self._record_phase_visit()
         self._apply_phase_transition()
@@ -377,24 +379,6 @@ class Task(models.Model):
     def _last_attempt_needs_user_input(self) -> bool:
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
         return bool(last and isinstance(last.result, dict) and last.result.get("needs_user_input"))
-
-    def _schedule_interactive_followup(self) -> "Task":
-        """Create a new interactive task for human handoff, carrying the headless session_id."""
-        last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-        reason = str(last.result.get("user_input_reason", "Agent needs human input")) if last else "Agent needs input"
-        agent_session_id = last.agent_session_id if last else ""
-        session = Session.objects.create(
-            ticket=self.ticket,
-            agent_id=agent_session_id or "interactive-followup",
-        )
-        return Task.objects.create(
-            ticket=self.ticket,
-            session=session,
-            phase=self.phase,
-            execution_target=self.ExecutionTarget.INTERACTIVE,
-            execution_reason=reason,
-            parent_task=self,
-        )
 
     def fail(self) -> None:
         self.status = self.Status.FAILED
