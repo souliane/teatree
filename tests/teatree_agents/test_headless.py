@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from claude_agent_sdk.types import RateLimitType
 from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
@@ -31,6 +32,7 @@ from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticke
 from teatree.llm.anthropic_limits import LimitCause
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
+from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
 from tests.teatree_agents._sdk_fake import result_message as _result_message
 from tests.teatree_agents._sdk_fake import success_stream as _success_stream
 
@@ -374,6 +376,64 @@ class TestRunHeadlessUsageLimit(TestCase):
         task.refresh_from_db()
         assert attempt.exit_code != 0
         assert task.status == Task.Status.FAILED
+
+
+class TestRunHeadlessTypedRateLimitWindow(TestCase):
+    """A rejected ``RateLimitEvent`` classifies the failure from its TYPED window.
+
+    The per-model 7-day windows (``seven_day_opus`` / ``seven_day_sonnet``)
+    matched NO phrase signature, so a weekly cap would land as a generic crash.
+    With the typed field wired through ``_collect`` they classify WEEKLY — and the
+    result text here names NO limit phrase, so the ONLY path to a weekly verdict is
+    the typed window (anti-vacuous: the test fails without the typed wiring).
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+
+    def _run_with_window(self, window: RateLimitType) -> TaskAttempt:
+        event = _rate_limit_event(window)
+        terminal = _result_message(
+            subtype="error_during_execution", is_error=True, result="The run could not complete."
+        )
+        with _fake_sdk([_assistant_text("working"), event, terminal]):
+            session = Session.objects.create(ticket=self.ticket, agent_id="agent-typed")
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        return attempt
+
+    def test_seven_day_opus_window_recorded_as_subscription_weekly(self) -> None:
+        attempt = self._run_with_window("seven_day_opus")
+        assert "subscription_weekly" in attempt.error
+        assert "seven_day_opus" in attempt.error
+        assert "credit" not in attempt.error.casefold()
+
+    def test_seven_day_sonnet_window_recorded_as_subscription_weekly(self) -> None:
+        attempt = self._run_with_window("seven_day_sonnet")
+        assert "subscription_weekly" in attempt.error
+        assert "seven_day_sonnet" in attempt.error
+
+
+def test_limit_match_prefers_the_typed_window_over_the_result_text() -> None:
+    # The result text names no limit phrase; the rejected typed window is the only
+    # signal, so _limit_match classifies WEEKLY from it (the fallback would be None).
+    msg = _result_message(is_error=True, result="The run could not complete.")
+    info = _rate_limit_event("seven_day_sonnet").rate_limit_info
+    match = _limit_match(msg, info)
+    assert match is not None
+    assert match.cause is LimitCause.SUBSCRIPTION_WEEKLY
+    assert match.phrase == "seven_day_sonnet"
+
+
+def test_limit_match_typed_window_ignored_when_result_is_not_an_error() -> None:
+    # The is_error gate still governs: a healthy run is never failed on a stray
+    # rejected window event.
+    msg = _result_message(is_error=False, result="done")
+    info = _rate_limit_event("seven_day_opus").rate_limit_info
+    assert _limit_match(msg, info) is None
 
 
 def test_limit_match_classifies_weekly_distinctly() -> None:
