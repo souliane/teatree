@@ -5,9 +5,10 @@ module-level ``MINI_LOOP: MiniLoop`` constant in its ``loop`` submodule.
 :func:`iter_loops` walks the subpackages, imports each ``loop`` module,
 and returns the constants sorted alphabetically by name.
 
-The helper modules (``base``, ``registry``, ``orchestrator``,
-``cadence_ledger``, ``config``, ``summary``) are excluded by name — they
-carry the orchestrator scaffolding, not the per-domain mini-loops.
+Only true subpackages are considered (``sub.ispkg``), so the top-level helper
+modules (``base``, ``registry``, ``config``, ``master``, ``run``, …) are skipped
+already; the named-exclusion set is a belt-and-suspenders guard for the few that
+share the package namespace.
 """
 
 import importlib
@@ -20,7 +21,7 @@ from teatree.loops.base import MiniLoop
 logger = logging.getLogger(__name__)
 
 _HELPER_MODULES: frozenset[str] = frozenset(
-    {"base", "registry", "orchestrator", "cadence_ledger", "config", "summary"},
+    {"base", "registry", "config"},
 )
 
 

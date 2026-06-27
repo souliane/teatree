@@ -65,7 +65,6 @@ from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_use
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
-from teatree_settings import section_bool_setting as _section_bool_setting
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -1019,11 +1018,6 @@ def handle_record_presence(data: dict) -> None:
 _LOOP_CADENCE_DEFAULT = 720
 
 
-def _loops_toml_enabled() -> bool:
-    """Whether ``[loops] enabled`` is true (default True, fails OPEN; see :func:`_section_bool_setting`)."""
-    return _section_bool_setting("loops", "enabled", default=True)
-
-
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -1090,17 +1084,14 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if either
-    loop kill-switch is engaged: ``[loops] enabled = false`` in
-    ``~/.teatree.toml`` or ``T3_LOOP_DISOWN`` truthy.  Re-arming a paused
-    loop here would resurrect the very machinery the pause surface exists to
-    silence.  Durable per-loop pause/disable lives in the DB ``LoopState``
-    tier (``t3 loop pause``/``disable``) — the in-process ``T3_LOOP_DISOWN``
-    knob is the orthogonal immediate-mitigation lever, not a loops
-    kill-switch.
+    No-ops if a live foreign owner already holds the record, or if the
+    ``T3_LOOP_DISOWN`` immediate-mitigation knob is truthy.  Durable per-loop
+    pause/disable lives in the DB ``LoopState`` tier (``t3 loop pause`` /
+    ``disable``); there is no ``[loops] enabled`` toml kill-switch (the dead cold
+    arm was dropped — loop control is ``/loops`` + the DB only).  The in-process
+    ``T3_LOOP_DISOWN`` knob is the orthogonal immediate-mitigation lever, not a
+    loops kill-switch.
     """
-    if not _loops_toml_enabled():
-        return
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
     current_pid = os.getppid()

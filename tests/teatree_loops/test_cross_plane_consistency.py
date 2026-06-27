@@ -1,19 +1,28 @@
-"""The three loop-gating planes reach the SAME verdict for a loop name (#2584).
+"""The loop-gating planes reach a CONSISTENT verdict for a loop name (#2584).
 
-The #2513 cutover left three planes that could disagree about whether a loop
-runs — (1) **master**: ``teatree.loops.master.build_loop_table_jobs`` (the live
-fat tick's fan-out); (2) **scoped/orchestrator**:
-``teatree.loops.config.LoopsConfig.is_enabled`` (consulted by the orchestrator
-and ``run_scoped_tick``); (3) **review-claim chokepoint**:
-``teatree.loop.review_claim_signals.review_loop_enabled`` (the discovery-time
-review-claim gate).
+After LOOP-PR-A the loop-run sites share ONE combined verdict
+(``teatree.loop.loop_state_db.loop_enabled`` = ``Loop.enabled`` AND not
+``LoopState``-held): (1) **master**:
+``teatree.loops.master.build_loop_table_jobs`` (the live fat tick's fan-out,
+composing ``Loop.enabled`` + ``LoopsConfig.is_enabled``); (2) **registration**:
+``teatree.loops.claude_specs.enabled_loop_specs`` (the #2650 cron mirror).
 
-This is the anti-vacuity guard the prior 'fixed' verdict lacked: under each of
-{``Loop.enabled=False``, ``LoopState`` paused} all three must agree the loop does
-NOT run, and with no hold all three must agree it DOES. A set ``T3_LOOPS_DISABLED``
-env var is INERT across all three planes (loop control is DB-only). Before the
-unification the ``build_loop_table_jobs`` arm disagreed under a ``LoopState`` hold
-(it gated on ``Loop.enabled`` only) — the planes diverged.
+Two narrower tiers are layered into / beside that verdict and are pinned here so
+the planes can never silently drift apart. (a) ``LoopsConfig.is_enabled`` reads
+the durable ``LoopState`` hold ONLY — it does NOT read the ``Loop.enabled``
+column, so it is the tier the combined verdict layers on. (b)
+``review_claim_signals.review_loop_enabled`` is the discovery-time review-claim
+gate: by documented design (#79 / #1913) it resolves through the ``LoopState``
+tier ONLY and fails OPEN to enabled — a claim-suppression gate, not a loop-run
+decision, so it intentionally tracks the ``LoopState`` arm (not ``Loop.enabled``).
+
+This is the anti-vacuity guard the prior 'fixed' verdict lacked: under a
+``LoopState`` pause every plane must agree the loop does NOT run, and with no hold
+every plane must agree it DOES. Under ``Loop.enabled=False`` only the row-aware
+combined verdict (master) stops it, while the two ``LoopState``-only arms
+(LoopsConfig + review-claim) still report "runs" — that divergence is the
+designed tier split, asserted explicitly below. A set ``T3_LOOPS_DISABLED`` env
+var is INERT (loop control is DB-only).
 """
 
 from unittest.mock import patch
@@ -40,10 +49,10 @@ def _prompt() -> Prompt:
 
 
 def _ensure_loop(name: str, *, enabled: bool = True) -> None:
-    """Ensure an enabled+due ``Loop`` row for *name* (migration 0078 may seed it).
+    """Ensure a ``Loop`` row for *name* (a migration may seed it paused).
 
-    ``review`` is seeded by migration 0078 (paused under 0087), so ``create``
-    would collide. ``update_or_create`` makes the row enabled + never-run (due)
+    ``review`` is seeded by an earlier migration, so ``create`` would collide.
+    ``update_or_create`` makes the row match *enabled* + never-run (due)
     regardless of the migration-seeded state.
     """
     Loop.objects.update_or_create(
@@ -83,22 +92,20 @@ class TestCrossPlaneConsistency(django.test.TestCase):
 
     def test_all_planes_agree_env_kill_switch_is_inert(self) -> None:
         # ``T3_LOOPS_DISABLED`` is removed — a set env var is inert across all
-        # three planes; the loop still runs (a DB hold is the control outcome).
+        # planes; the loop still runs (a DB hold is the control outcome).
         _ensure_loop(_REVIEW)
         with patch.dict("os.environ", {"T3_LOOPS_DISABLED": _REVIEW}):
             self._assert_all_planes_agree(_REVIEW, expected=True)
 
-    def test_all_planes_agree_loop_enabled_false_stops_master_and_config(self) -> None:
-        # When the Loop row itself is disabled, the master and the scoped path
-        # (via run_scoped_tick's Loop.enabled filter / the orchestrator) must
-        # both treat it as not-running. LoopsConfig.is_enabled does not read the
-        # Loop row, so this arm pins the two row-aware planes (master here; the
-        # scoped Loop.enabled filter is pinned in test_scoped_tick.py).
+    def test_loop_enabled_false_stops_master_but_not_the_loopstate_only_arms(self) -> None:
+        # When the Loop row itself is disabled, the row-aware combined verdict
+        # (master) must treat it as not-running. The two ``LoopState``-only arms —
+        # LoopsConfig.is_enabled and the fail-open review-claim gate — do NOT read
+        # ``Loop.enabled``, so they still report "runs". That tier split is the
+        # designed behaviour (#79 / #1913): review_loop_enabled is a fail-open
+        # claim-suppression gate, not a loop-run decision.
         now = timezone.now()
         _ensure_loop(_REVIEW, enabled=False)
         assert _master_runs(_REVIEW, now=now) is False
-        # No LoopState hold, no env hold → the control-plane verdict is "runs",
-        # which is exactly why the row-level Loop.enabled gate is the one that
-        # must stop it on the row-aware planes.
         assert LoopsConfig.load().is_enabled(_mini(_REVIEW)) is True
         assert review_loop_enabled() is True

@@ -411,9 +411,14 @@ class TestRisk6MidSessionOwnershipClaim:
         assert owner is not None
         assert owner["session_id"] == "mid-sess"
 
-    def test_toml_loops_disabled_prevents_ownership_claim(
+    def test_toml_loops_disabled_no_longer_prevents_ownership_claim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # The ``[loops] enabled = false`` toml kill-switch is removed — there is
+        # no ``[loops]`` toml disabled-state tier. Writing it is INERT and no
+        # longer prunes the ownership claim; loop pause/disable lives in the DB
+        # ``LoopState`` tier, and the in-process ``T3_LOOP_DISOWN`` knob is the
+        # orthogonal mitigation (test_loop_disown_prevents_ownership_claim).
         _mark_active("mid-sess-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
@@ -424,7 +429,9 @@ class TestRisk6MidSessionOwnershipClaim:
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-disabled"})
 
-        assert _read_loop_registry() == {}
+        owner = _read_loop_registry().get(_OWNER_LOOP)
+        assert owner is not None
+        assert owner["session_id"] == "mid-sess-disabled"
 
     def test_env_loops_disabled_all_no_longer_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``T3_LOOPS_DISABLED`` is removed — it is INERT and no longer prunes the

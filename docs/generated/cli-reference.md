@@ -3141,7 +3141,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session with the loop pre-registered.     │
+│ start          Spawn a Claude Code session; the loop-owner registers each    │
+│                enabled loop's ``/loop``.                                     │
 │ stop           Print the slot id to stop in the Claude Code session.         │
 │ claim          Claim the session-scoped loop-owner slot for this Claude      │
 │                session (#1073).                                              │
@@ -3271,42 +3272,24 @@ Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session with the loop pre-registered.
+ Spawn a Claude Code session; the loop-owner registers each enabled loop's
+ ``/loop``.
 
- Looks for ``claude`` on ``PATH`` and runs it with an initial
- ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
- before the user types anything. When ``claude`` is not available or
- the caller is already inside a Claude Code session, falls back to
- printing the slash command for manual entry.
+ Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
+ model/effort pins). Under #2650 the live set of native Claude ``/loop``s
+ mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
+ ``t3 loops tick --loop <name>`` — and the SessionStart loop-owner hook
+ registers them automatically, so there is no single fat slot to pass on the
+ command line. When ``claude`` is unavailable or the caller is already inside a
+ Claude Code session, prints the per-loop registration guidance instead.
 
- Slot topology is governed by the default-off `` dedicated_loops``
- toggle (#1838). OFF (default): the single fat ``loop-owner`` slot drives
- one ``t3 loop tick`` fanning across ALL mini-loops — byte-identical to
- today. ON: ``--print-slots`` (or the manual-paste fallback) emits N
- dedicated ``/loop <cadence> Run `t3 loop tick --slot <name>``` slots, one
- per dedicated loop, each scoped to its own ``loop:<name>`` owner. The two
- are mutually-exclusive deployment modes.
-
- Durability (by design; #786 WS3): the loop is session-bound and
- tick-driven. The SessionStart hook records ONE Django-free tick-owner
- record (``_OWNER_LOOP``: session_id/agent_id/pid/heartbeat — no
- per-loop briefs) in the machine-wide loop registry. There is no
- roster to re-spawn: the ``t3 loop tick`` cron drives the loop, each
- tick atomically claiming the next pending unit (``t3 loop
- claim-next``) and spawning one fresh bounded sub-agent for it. If
- this session dies, the next open session prunes the dead owner,
- becomes tick-owner, and keeps ticking. With no session open the loop
- is paused until the next session start.
+ Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
+ With no session open the loop is paused until the next session start.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only           Print the /loop slot definition instead of spawning a │
-│                        Claude Code session.                                  │
-│ --print-slots          Print the resolved /loop slot definition(s) and exit, │
-│                        without spawning. One fat slot when `dedicated_loops` │
-│                        is off (default); N dedicated scoped-tick slots when  │
-│                        on. Inspect the slot generator without registering    │
-│                        anything.                                             │
-│ --help                 Show this message and exit.                           │
+│ --print-only          Print the per-loop registration guidance instead of    │
+│                       spawning a Claude Code session.                        │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
