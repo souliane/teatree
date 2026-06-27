@@ -51,8 +51,8 @@ class DedicatedLoop:
     (the single normalization seam from #2318). ``members`` are the
     registered mini-loop names this group drives — the scoped tick runs
     ONLY these. ``cadence_seconds`` is the ``/loop <cadence>`` slot interval.
-    ``always_on`` mirrors the mini-loop flag — reserved for the ``dispatch``
-    group, whose factory feeder has no graceful-degradation path.
+    ``always_on`` marks the group as the core fan-out — reserved for the
+    ``dispatch`` group, whose factory feeder has no graceful-degradation path.
     """
 
     name: str

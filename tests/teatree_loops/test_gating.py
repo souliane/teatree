@@ -16,12 +16,11 @@ from teatree.loops.config import LoopsConfig
 from teatree.loops.gating import SKIP_CADENCE, SKIP_DISABLED, elapsed_and_enabled
 
 
-def _loop(name: str, *, cadence: int = 60, always_on: bool = False) -> MiniLoop:
+def _loop(name: str, *, cadence: int = 60) -> MiniLoop:
     return MiniLoop(
         name=name,
         default_cadence_seconds=cadence,
         build_jobs=lambda **_: [],
-        always_on=always_on,
     )
 
 
@@ -50,26 +49,16 @@ class ElapsedAndEnabledTestCase(TestCase):
         decision = elapsed_and_enabled(LoopsConfig(), _loop("inbox", cadence=60), self.now)
         assert decision.should_fire
 
-    def test_env_kill_switch_skips_named_loop(self) -> None:
-        old = os.environ.get("T3_LOOPS_DISABLED")
-        try:
-            os.environ["T3_LOOPS_DISABLED"] = "inbox"
-            decision = elapsed_and_enabled(LoopsConfig(), _loop("inbox"), self.now)
-            assert not decision.should_fire
-            assert decision.skip_reason == SKIP_DISABLED
-        finally:
-            if old is None:
-                os.environ.pop("T3_LOOPS_DISABLED", None)
-            else:
-                os.environ["T3_LOOPS_DISABLED"] = old
-
-    def test_always_on_bypasses_env_disable(self) -> None:
-        # The env kill-switch ignores an always_on loop; only a DB hold stops it.
+    def test_env_kill_switch_is_inert(self) -> None:
+        # ``T3_LOOPS_DISABLED`` is removed — loop control is DB-only. A set env
+        # value (named or the ``all`` sentinel) has NO effect; the loop still
+        # fires. A DB hold (test_skips_when_db_disabled) is the control outcome.
         old = os.environ.get("T3_LOOPS_DISABLED")
         try:
             os.environ["T3_LOOPS_DISABLED"] = "all"
-            decision = elapsed_and_enabled(LoopsConfig(), _loop("dispatch", always_on=True), self.now)
+            decision = elapsed_and_enabled(LoopsConfig(), _loop("inbox"), self.now)
             assert decision.should_fire
+            assert decision.skip_reason is None
         finally:
             if old is None:
                 os.environ.pop("T3_LOOPS_DISABLED", None)

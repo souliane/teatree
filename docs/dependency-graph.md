@@ -160,7 +160,6 @@ graph TD
     teatree.core.management --> teatree.types
     teatree.core.management --> teatree.utils
     teatree.core.management --> teatree.visual_qa
-    teatree.loop_enabled --> teatree.config
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
@@ -174,7 +173,6 @@ graph TD
     teatree.loop --> teatree.backends.slack
     teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
-    teatree.loop --> teatree.loop_enabled
     teatree.loop --> teatree.teams
     teatree.loop --> teatree.loop.loop_cadences
     teatree.loop --> teatree.loop.session_identity

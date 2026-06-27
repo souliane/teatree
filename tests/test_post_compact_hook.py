@@ -43,7 +43,7 @@ def _isolate_filesystem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # these cover the post-compaction snapshot-recovery mechanism, not the
     # opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
     yield
     router.STATE_DIR = original_state
     router._TMP_DIR = original_tmp

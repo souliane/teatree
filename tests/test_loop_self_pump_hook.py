@@ -48,9 +48,9 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     # Point the bash-env-file fallback at a path that does not exist so a
-    # developer's real ``~/.teatree`` (which may set ``T3_LOOPS_DISABLED``)
-    # never leaks into a test that does not opt in. Cases that exercise the
-    # file override it explicitly.
+    # developer's real ``~/.teatree`` (which may set ``T3_LOOP_DISOWN``) never
+    # leaks into a test that does not opt in. Cases that exercise the file
+    # override it explicitly.
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
 
 
@@ -195,89 +195,21 @@ class TestLoopSelfPump:
         assert _decision(capsys) == {}
         assert result is not True
 
-    def test_all_loops_disabled_makes_owner_stop_hook_a_noop(
+    def test_env_kill_switch_all_is_inert(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # ``T3_LOOPS_DISABLED=all`` fully prunes the loop. The owner session
-        # with stale pending work must NOT pump — re-running ``t3 loop tick``
-        # then only runs the always-on dispatch scanner (no useful work)
-        # while the pending Tasks keep re-arming the pump every interval: a
-        # busy-loop the prune is meant to silence.
+        # ``T3_LOOPS_DISABLED`` is removed — a set env var has NO effect on the
+        # self-pump: the owner with pending work STILL pumps. A durable DB
+        # ``LoopState`` DISABLE of ``dispatch`` is the control outcome (pinned by
+        # test_loop_state_self_pump_hook.py).
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
         monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys) == {}
-        assert result is not True
-
-    def test_all_loops_disabled_does_not_probe_pending_work(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The kill-switch is checked BEFORE any ``pending-spawn`` subprocess —
-        # a fully pruned owner session must not even shell out to ``t3``.
-        _own_loop("owner-1")
-        probed = {"called": False}
-
-        def _spy() -> list[dict]:
-            probed["called"] = True
-            return [{"task_id": 1, "subagent": "x", "phase": "c", "issue_url": "u"}]
-
-        monkeypatch.setattr(router, "_consolidated_pending_work", _spy)
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert probed["called"] is False
-        assert _decision(capsys) == {}
-        assert result is not True
-
-    def test_loops_disabled_all_is_whitespace_and_case_tolerant(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-        monkeypatch.setenv("T3_LOOPS_DISABLED", " tick , ALL ")
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys) == {}
-        assert result is not True
-
-    def test_named_loop_disable_does_not_suppress_self_pump(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Only the ``all`` sentinel fully prunes. A named-loop disable
-        # (e.g. just the review scanner) leaves the owner pumping its
-        # genuine pending work — the prune is per-scanner, not global.
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 9, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "review,self-improve")
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
         assert _decision(capsys).get("decision") == "block"
         assert result is True
-
-    def test_loops_disabled_from_bash_env_file_makes_owner_a_noop(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The harness spawns the Stop hook as a bare ``python3`` that never
-        # sources ``~/.teatree``, so ``T3_LOOPS_DISABLED=all`` set there is
-        # absent from ``os.environ``. The kill-switch must still be honoured
-        # by reading the canonical bash env file when the env var is unset.
-        env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOP_CADENCE=60\nexport T3_LOOPS_DISABLED=all\n", encoding="utf-8")
-        monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys) == {}
-        assert result is not True
 
     def test_disown_from_bash_env_file_makes_owner_a_noop(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -291,62 +223,6 @@ class TestLoopSelfPump:
         monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 2, "subagent": "x", "phase": "c", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys) == {}
-        assert result is not True
-
-    def test_process_env_wins_over_bash_env_file(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The process env is authoritative: a value present in ``os.environ``
-        # is never overridden by a stale value in the bash env file. An
-        # explicit empty ``T3_LOOPS_DISABLED`` in the env means "not disabled"
-        # even when the file says ``all``, so the owner still pumps.
-        env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=all\n", encoding="utf-8")
-        monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "")
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 9, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys).get("decision") == "block"
-        assert result is True
-
-    def test_named_loop_in_bash_env_file_does_not_suppress_self_pump(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Only the ``all`` sentinel prunes — a named-loop disable read from
-        # the bash env file leaves the owner pumping its genuine work.
-        env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=review,self-improve\n", encoding="utf-8")
-        monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 9, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert _decision(capsys).get("decision") == "block"
-        assert result is True
-
-    def test_bash_env_file_parse_is_quote_and_comment_tolerant(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The pure-stdlib parse tolerates surrounding quotes, inline comments,
-        # leading ``export``/whitespace, and unrelated lines.
-        env_file = tmp_path / ".teatree"
-        env_file.write_text(
-            "# a comment\n\n  export   T3_LOOP_CADENCE=60   # cadence\nexport T3_LOOPS_DISABLED='all'  # kill switch\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
         result = handle_loop_self_pump({"session_id": "owner-1"})
 
@@ -411,61 +287,64 @@ class TestLoopSelfPump:
 class TestBashEnvFileResolver:
     """Pure-stdlib parse of the ``export VAR=value`` bash env file (#810).
 
-    The Stop hook process never sources ``~/.teatree``, so the loop
-    kill-switch set there must be recovered by parsing the file directly —
-    crash-proof, with the process env taking precedence.
+    The Stop hook process never sources ``~/.teatree``, so the ``T3_LOOP_DISOWN``
+    knob set there must be recovered by parsing the file directly — crash-proof,
+    with the process env taking precedence. ``T3_LOOP_DISOWN`` is the live
+    consumer of ``_resolve_loop_env`` (loop pause/disable lives in the DB
+    ``LoopState`` tier now — there is no env kill-switch). The values below are
+    arbitrary example strings for the generic resolver.
     """
 
     def test_env_var_present_short_circuits_file_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=all\n", encoding="utf-8")
+        env_file.write_text("export T3_LOOP_DISOWN=1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.setenv("T3_LOOPS_DISABLED", "review")
+        monkeypatch.setenv("T3_LOOP_DISOWN", "0")
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "review"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "0"
 
     def test_falls_back_to_file_when_env_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=all\n", encoding="utf-8")
+        env_file.write_text("export T3_LOOP_DISOWN=1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "all"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "1"
 
     def test_strips_quotes_inline_comment_and_export(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("  export T3_LOOPS_DISABLED = 'all'  # kill switch\n", encoding="utf-8")
+        env_file.write_text("  export T3_LOOP_DISOWN = '1'  # disown\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "all"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "1"
 
     def test_last_assignment_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=review\nexport T3_LOOPS_DISABLED=all\n", encoding="utf-8")
+        env_file.write_text("export T3_LOOP_DISOWN=0\nexport T3_LOOP_DISOWN=1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "all"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "1"
 
     def test_missing_file_returns_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "nope"))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == ""
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == ""
 
     def test_unreadable_file_degrades_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED=all\n", encoding="utf-8")
+        env_file.write_text("export T3_LOOP_DISOWN=1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
         def _boom(*_args: object, **_kwargs: object) -> str:
             msg = "unreadable"
             raise OSError(msg)
 
         monkeypatch.setattr(Path, "read_text", _boom)
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == ""
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == ""
 
     def test_double_quoted_value(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
@@ -477,19 +356,19 @@ class TestBashEnvFileResolver:
 
     def test_assignment_without_export_keyword(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("T3_LOOPS_DISABLED=all\n", encoding="utf-8")
+        env_file.write_text("T3_LOOP_DISOWN=1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "all"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "1"
 
     def test_unterminated_quote_keeps_remainder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         env_file = tmp_path / ".teatree"
-        env_file.write_text("export T3_LOOPS_DISABLED='all\n", encoding="utf-8")
+        env_file.write_text("export T3_LOOP_DISOWN='1\n", encoding="utf-8")
         monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(env_file))
-        monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+        monkeypatch.delenv("T3_LOOP_DISOWN", raising=False)
 
-        assert router._resolve_loop_env("T3_LOOPS_DISABLED") == "all"
+        assert router._resolve_loop_env("T3_LOOP_DISOWN") == "1"
 
 
 class TestSessionEndClearsPumpMarker:

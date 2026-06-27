@@ -772,15 +772,15 @@ def _loop_auto_load_active(session_id: str) -> bool:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
         skill was loaded), AND
-    - the operator explicitly enabled auto-load (:func:`_loops_auto_load_enabled`).
+    - the operator enabled autoload (:func:`_autoload_enabled`).
 
-    The second condition defaults OFF so a colleague who merely clones the
-    repo (and even loads a teatree skill) is never nagged to register a cron
-    or shown the loop statusline. The loop owner opts in once via
-    ``[loops] auto_load = true`` in ``~/.teatree.toml`` (or
-    ``T3_LOOPS_AUTO_LOAD=1``) and keeps the existing behaviour intact.
+    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
+    ``T3_AUTOLOAD`` env): it both ENGAGES the session and ARMS its loops. It
+    defaults OFF so a colleague who merely clones the repo (and even loads a
+    teatree skill) is never nagged to register a cron or shown the loop
+    statusline.
     """
-    return _teatree_active(session_id) and _loops_auto_load_enabled()
+    return _teatree_active(session_id) and _autoload_enabled()
 
 
 def _is_teatree_skill(name: str) -> bool:
@@ -1020,24 +1020,6 @@ def _loops_toml_enabled() -> bool:
     return _section_bool_setting("loops", "enabled", default=True)
 
 
-_AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
-
-
-def _loops_auto_load_enabled() -> bool:
-    """Whether the operator opted into session-start loop/statusline auto-load (#256).
-
-    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning the
-    repo is never nagged. Env-first (``T3_LOOPS_AUTO_LOAD`` via
-    :func:`_resolve_loop_env`, honouring the unsourced ``~/.teatree`` bash env
-    file), then ``[loops] auto_load``. Fails CLOSED (OFF) on a missing/broken
-    config so a fresh clone stays silent.
-    """
-    env = _resolve_loop_env("T3_LOOPS_AUTO_LOAD").strip().lower()
-    if env:
-        return env in _AUTO_LOAD_TRUTHY
-    return _section_bool_setting("loops", "auto_load", default=False)
-
-
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -1104,15 +1086,16 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if any of
-    the loop kill-switches are engaged: ``[loops] enabled = false`` in
-    ``~/.teatree.toml``, ``T3_LOOPS_DISABLED=all``, or ``T3_LOOP_DISOWN``
-    truthy.  Re-arming a paused loop here would resurrect the very
-    machinery the pause surface exists to silence.
+    No-ops if a live foreign owner already holds the record, or if either
+    loop kill-switch is engaged: ``[loops] enabled = false`` in
+    ``~/.teatree.toml`` or ``T3_LOOP_DISOWN`` truthy.  Re-arming a paused
+    loop here would resurrect the very machinery the pause surface exists to
+    silence.  Durable per-loop pause/disable lives in the DB ``LoopState``
+    tier (``t3 loop pause``/``disable``) — the in-process ``T3_LOOP_DISOWN``
+    knob is the orthogonal immediate-mitigation lever, not a loops
+    kill-switch.
     """
     if not _loops_toml_enabled():
-        return
-    if _all_loops_disabled():
         return
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
@@ -4097,10 +4080,15 @@ def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) ->
 
 
 def _maybe_engage_t3(session_id: str, names: list[str]) -> None:
-    # #256 Option-1: an ORIGINAL ``t3:``-namespaced token engages the SUGGESTER
-    # via ``.t3-engaged`` — NOT ``.teatree-active`` (loops stay reserved for
-    # teatree-requiring skills, preserving downstream-overlay loop isolation).
-    if any(name.strip().startswith("t3:") for name in names):
+    # #256 Option-1: a token that canonicalizes to the ``t3:`` namespace engages
+    # the SUGGESTER via ``.t3-engaged`` — NOT ``.teatree-active`` (loops stay
+    # reserved for teatree-requiring skills, preserving downstream-overlay loop
+    # isolation). Canonicalize through the SAME identity seam
+    # (:func:`normalize_skill_name`, normalize UP) that ``_is_teatree_skill``
+    # uses, so a bare ``code`` and a qualified ``t3:code`` are detected
+    # identically while a foreign ``other:review`` keeps its namespace and never
+    # matches (no qualifier-stripping conflation).
+    if any(normalize_skill_name(name).startswith("t3:") for name in names):
         _state_file(session_id, "t3-engaged").touch()
 
 
@@ -5731,31 +5719,6 @@ def _resolve_loop_env(name: str) -> str:
     return _read_bash_env_var(name)
 
 
-def _all_loops_disabled() -> bool:
-    """Does ``T3_LOOPS_DISABLED`` fully prune the loop for this session?
-
-    Mirrors the ``all`` sentinel of ``teatree.loops.config._env_disabled_names``
-    without importing ``teatree`` (a Stop hook runs under whatever
-    interpreter the harness invokes, where ``teatree`` may be absent —
-    #810). The orchestrator gates every ``t3 loop tick`` job through that
-    same env var; the Stop self-pump is the in-session counterpart of a
-    tick, so it must honour the kill-switch identically. ``T3_LOOPS_DISABLED=all``
-    means every non-always-on loop is off — re-pumping then only re-runs the
-    one ``always_on`` ``dispatch`` scanner, doing no useful work while the
-    pending Tasks that drive ``pending-spawn`` keep the pump re-arming every
-    interval. That is the busy-loop the prune is meant to silence, so a fully
-    pruned session never pumps.
-
-    The value is resolved via :func:`_resolve_loop_env` so the kill-switch
-    set in ``~/.teatree`` (never sourced into the bare-``python3`` Stop
-    hook) is still honoured.
-    """
-    raw = _resolve_loop_env("T3_LOOPS_DISABLED").strip()
-    if not raw:
-        return False
-    return any(part.strip().lower() == "all" for part in raw.split(","))
-
-
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
@@ -5796,24 +5759,22 @@ def _self_pump_suppressed(session_id: str) -> bool:
     per-agent consolidation slot stays as a secondary cross-session
     dedup, NOT a substitute for this gate.
 
-    ``T3_LOOPS_DISABLED=all`` fully prunes the loop (the same kill-switch
-    the orchestrator honours per tick job): the owner's Stop hook becomes
-    a clean no-op so a pruned environment cannot busy-loop on stale
-    pending work. Both this and ``T3_LOOP_DISOWN`` resolve through
-    :func:`_resolve_loop_env`, which falls back to the ``~/.teatree`` bash
-    env file when the var is absent from the process env — the bare
-    ``python3`` Stop hook never sources that file, so a kill-switch set
-    only there would otherwise be invisible to the self-pump.
+    A durable DB ``LoopState`` pause/disable of ``dispatch`` (the loop the
+    self-pump drives) makes the owner's Stop hook a clean no-op so a paused
+    control plane cannot busy-loop on stale pending work — the
+    restart-surviving 'pause everything' (#1913,
+    :func:`db_loop_state_suppresses_self_pump`). Loop control is ``/loops`` +
+    the DB only; there is no env kill-switch.
 
     Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy (in the session's
-    env or the bash env file) makes even the owner's Stop hook a clean
-    no-op, so a session can stop driving the loop in-process without
-    touching the registry or ending the session.
+    env or the bash env file, resolved via :func:`_resolve_loop_env`) makes
+    even the owner's Stop hook a clean no-op, so a session can stop driving
+    the loop in-process without touching the registry or ending the session.
 
-    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) or a
-    durable DB ``LoopState`` pause of ``dispatch`` (#1913, :func:`db_loop_state_suppresses_self_pump`) gate it off.
+    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) also
+    gates it off.
     """
-    if _all_loops_disabled() or db_loop_state_suppresses_self_pump():
+    if db_loop_state_suppresses_self_pump():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return True

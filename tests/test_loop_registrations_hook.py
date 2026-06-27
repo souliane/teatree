@@ -89,7 +89,7 @@ def owner_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     state.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(router, "STATE_DIR", state)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+    monkeypatch.setenv("T3_AUTOLOAD", "1")
     session_id = "owner-session"
     (state / f"{session_id}.teatree-active").touch()  # opted into teatree
     monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
@@ -129,7 +129,7 @@ class TestOwnerSessionEmitsPerLoop:
         state.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(router, "STATE_DIR", state)
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
         session_id = "new-owner-after-claim"
         (state / f"{session_id}.teatree-active").touch()
         # tick-meta is FRESH — previous owner was ticking before release.
@@ -152,7 +152,7 @@ class TestOwnerSessionEmitsPerLoop:
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(router, "STATE_DIR", state)
-        monkeypatch.setenv("T3_LOOPS_AUTO_LOAD", "1")
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
         # No ``.teatree-active`` marker => not the loop owner => never registers.
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
         router.handle_enforce_loop_on_prompt({"session_id": "stranger"})

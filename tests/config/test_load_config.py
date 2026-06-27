@@ -336,6 +336,19 @@ class TestAutoloadSetting:
         _write_toml(config_path, "[teatree]\nautoload = true\n")
         assert load_config(config_path).user.autoload is True
 
+    def test_quoted_string_true_does_not_engage(self, tmp_path: Path) -> None:
+        # Strict bool (#256 nit): a QUOTED ``"true"`` is a string, not a bare TOML
+        # boolean, so it must NOT engage autoload — matching the cold-read in
+        # ``teatree_settings.autoload_enabled``. RED on ``bool(...)`` (truthy string).
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nautoload = "true"\n')
+        assert load_config(config_path).user.autoload is False
+
+    def test_quoted_string_false_does_not_engage(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nautoload = "false"\n')
+        assert load_config(config_path).user.autoload is False
+
     def test_env_override_enables_over_empty_toml(
         self,
         config_file: Path,

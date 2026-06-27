@@ -6,12 +6,12 @@ The cutover from the fat code-cadence tick: the master no longer asks
 #2513 cutover opened: a loop runs this tick iff it is NOT ``off_live_tick`` AND
 its ``Loop`` row is ``enabled`` and ``is_due(now)`` (its own ``delay_seconds``
 interval, or its ``daily_at`` wall-clock schedule) AND ``LoopsConfig.is_enabled``
-agrees. ``LoopsConfig.is_enabled`` composes the durable ``LoopState`` control
-tier (``t3 loop pause`` / ``disable``, #1913), the ``T3_LOOPS_DISABLED`` env
-kill-switch (respecting ``always_on`` only via its flag), and the per-loop /
-global ``[loops]`` toml. Routing the master through it makes the live tick, the
-orchestrator / scoped path, and the review-claim chokepoint reach the SAME
-verdict for a given loop name — the levers the cutover dropped now bind here.
+agrees. ``LoopsConfig.is_enabled`` resolves through the durable ``LoopState``
+control tier only (``t3 loop pause`` / ``disable``, #1913) — there is no env
+kill-switch and no ``[loops]`` toml disabled-state tier. Routing the master
+through it makes the live tick, the orchestrator / scoped path, and the
+review-claim chokepoint reach the SAME verdict for a given loop name — the
+levers the cutover dropped now bind here.
 
 **The ``script``/``prompt`` column is LOAD-BEARING (#2513 regression fix).** The
 master no longer selects an admitted row's behaviour by a name-only registry
@@ -79,10 +79,9 @@ def build_loop_table_jobs(
     first, before any DB work — the live tick must never invoke its ``build_jobs``
     or bump its ``last_run_at``. A registry mini-loop with no ``Loop`` row is
     skipped (its config was never seeded). A loop whose row is disabled or
-    not-due is skipped, AND a loop the unified :meth:`LoopsConfig.is_enabled`
-    verdict holds — a ``LoopState`` PAUSED/DISABLED row or the
-    ``T3_LOOPS_DISABLED`` env kill-switch (#1913, #2584) — is skipped too, BEFORE
-    ``mark_run``, so a held loop's cadence anchor is preserved.
+    not-due is skipped, AND a loop the :meth:`LoopsConfig.is_enabled` verdict
+    holds — a ``LoopState`` PAUSED/DISABLED row (#1913, #2584) — is skipped too,
+    BEFORE ``mark_run``, so a held loop's cadence anchor is preserved.
 
     ``only`` (#2650) scopes the build to a SINGLE named loop — the per-loop
     ``/loop`` fires ``t3 loops tick --loop <name>``, so exactly that one row is

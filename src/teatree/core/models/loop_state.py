@@ -6,14 +6,15 @@ reversible hold), or ``disabled`` (a durable kill-switch). The state is the
 canonical control tier, mirroring :class:`teatree.core.models.config_setting.ConfigSetting`
 ("the canonical tier is the DB", #1775 / §17.4): an **absent row resolves to
 ``ENABLED``**, so an empty table leaves every loop running exactly as it does
-today, and the ``T3_LOOPS_DISABLED`` env kill-switch is the only other disable
-tier (the ``[loops]`` toml fallback was removed in #2702).
+today. This is the SINGLE disable authority — loop control is ``/loops``
+(``t3 loop enable/disable/pause/resume``) + the DB only; there is no env
+kill-switch and no ``[loops]`` toml disabled-state fallback.
 
 The motivation is the 2026-06-03 'pause everything' incident: there was no
 single atomic command and no durable paused state that survived a session
 restart. A row written here outlives the process — the tick AND the in-session
 Stop self-pump both consult it, so a paused loop stays paused across a restart,
-even an ``always_on`` loop.
+including the core ``dispatch`` loop.
 
 Transitions are atomic single-row upserts (``update_or_create`` on the unique
 ``name``) so two racing writers cannot produce a duplicate row, and they are
@@ -32,11 +33,11 @@ class LoopStatus(models.TextChoices):
     """The three durable control-plane states of a mini-loop.
 
     ``ENABLED`` is the default (and the resolved status of any loop with no
-    row): the loop runs subject to the ``T3_LOOPS_DISABLED`` env kill-switch
-    and cadence (#2702 removed the ``[loops]`` toml disabled-state fallback).
-    ``PAUSED`` is a reversible hold; ``DISABLED`` a durable kill-switch. Only
-    ``ENABLED`` is runnable — both other states skip the loop in the tick and
-    suppress the self-pump.
+    row): the loop runs subject only to its cadence (loop control is ``/loops``
+    + the DB; there is no env kill-switch and no ``[loops]`` toml
+    disabled-state fallback). ``PAUSED`` is a reversible hold; ``DISABLED`` a
+    durable kill-switch. Only ``ENABLED`` is runnable — both other states skip
+    the loop in the tick and suppress the self-pump.
     """
 
     ENABLED = "enabled", "Enabled"
