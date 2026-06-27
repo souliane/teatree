@@ -32,7 +32,7 @@ from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import reconcile_all, reconcile_ticket
-from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
+from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.runners import (
     WorktreeProvisioner,
     WorktreeProvisionRunner,
@@ -82,28 +82,20 @@ def _resolve_workspace_ticket(path: str) -> Ticket:
     worktree in a ticket, so they should be runnable both from inside a
     worktree subdir and from the ticket workspace root that holds those
     subdirs. First try the normal worktree resolution; if that fails
-    because we're at the workspace root, match child worktree dirs back
-    to their ticket.
+    because we're at the workspace root, attribute the workspace dir to its
+    owning ticket through the single fail-loud resolver
+    (:func:`workspace_owner_ticket`) — the same symlink-tolerant, multi-owner
+    policy the auto-register chain uses, never a second hand-rolled check.
     """
     try:
         anchor = resolve_worktree(path)
         return Ticket.objects.get(pk=anchor.ticket.pk)
     except WorktreeNotFoundError:
         base = Path(path).resolve() if path else Path(_get_user_cwd()).resolve()
-        ticket_pks: set[int] = set()
-        for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True):
-            wt_path = (wt.extra or {}).get("worktree_path", "")
-            if wt_path and Path(wt_path).resolve().parent == base:
-                ticket_pks.add(wt.ticket_id)
-        if len(ticket_pks) == 1:
-            return Ticket.objects.get(pk=ticket_pks.pop())
-        if len(ticket_pks) > 1:
-            msg = (
-                f"{base} holds worktrees from multiple tickets ({sorted(ticket_pks)}).\n"
-                "Run the command from a specific worktree subdir."
-            )
-            raise WorktreeNotFoundError(msg) from None
-        raise
+        owner = workspace_owner_ticket(base)
+        if owner is None:
+            raise
+        return Ticket.objects.get(pk=owner.pk)
 
 
 def _report_worktree_probes(

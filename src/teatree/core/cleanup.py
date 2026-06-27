@@ -561,10 +561,12 @@ def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree
     if ticket is None:
         return
     try:
-        remove_postgres_pass_entry(ticket.ticket_number)
+        # Keyed on the ticket pk (the canonical, unique key), matching
+        # ``Worktree.pass_key`` the env render wrote into the cache.
+        remove_postgres_pass_entry(ticket.pk)
     except Exception as exc:
         logger.exception("pass-entry removal failed for %s", worktree.repo_path)
-        step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
+        step_errors.append(f"pass-entry removal failed for ticket #{ticket.pk}: {exc}")
 
 
 def cleanup_worktree(

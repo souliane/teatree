@@ -250,10 +250,10 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        ticket_number = wt.ticket.ticket_number
         with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
             cleanup_worktree(wt)
-        mock_remove.assert_called_once_with(ticket_number)
+        # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
+        mock_remove.assert_called_once_with(wt.ticket_id)
 
     @_patch_overlay
     @_patch_git
@@ -823,7 +823,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
 
         wt = self._make_worktree(db_name="wt_99")
         wt_id = wt.pk
-        ticket_number = wt.ticket.ticket_number
+        ticket_id = wt.ticket_id
 
         with (
             patch(
@@ -838,8 +838,9 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         assert result.clean is False
         assert any("wt_99" in e for e in result.errors)
         assert any("connection refused" in e for e in result.errors)
-        # Other resources STILL reaped despite the DB-drop failure
-        mock_remove.assert_called_once_with(ticket_number)
+        # Other resources STILL reaped despite the DB-drop failure.
+        # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
+        mock_remove.assert_called_once_with(ticket_id)
         mock_git.worktree_remove.assert_called_once()
         assert not Worktree.objects.filter(pk=wt_id).exists()
 

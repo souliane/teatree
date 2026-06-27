@@ -58,7 +58,7 @@ class TestWorktreeTransitionSignals(TestCase):
         worktree.save()
         worktree.refresh_from_db()
         pre_blank_db = worktree.db_name
-        assert pre_blank_db == "wt_79_acme"
+        assert pre_blank_db == f"wt_{worktree.ticket_id}_acme"
         worktree.extra = {"worktree_path": "/tmp/wt-79", "services": ["backend"]}
         worktree.save()
 
@@ -96,7 +96,7 @@ class TestWorktree(TestCase):
         worktree.refresh_from_db()
 
         assert worktree.state == Worktree.State.READY
-        assert worktree.db_name == "wt_42_acme"
+        assert worktree.db_name == f"wt_{worktree.ticket_id}_acme"
         assert worktree.extra["services"] == ["backend", "frontend"]
         assert worktree.extra["urls"] == {
             "backend": "http://localhost:8001",
@@ -150,3 +150,111 @@ class TestWorktree(TestCase):
 
         with pytest.raises(TransitionNotAllowed):
             worktree.verify()
+
+
+class TestWorktreeDbNameAndPassKeyAreIdentityScoped(TestCase):
+    """db_name and the postgres pass key key on the unique Ticket pk (#WT-PR-D finding 10).
+
+    ``ticket_number`` is a DERIVED, non-unique key (trailing issue digits), so
+    two tickets on different repos/forges can share one. Keying the database
+    name and the secret entry on the immutable Ticket pk instead makes a
+    cross-ticket clobber structurally impossible — and stays ticket-scoped (not
+    worktree-scoped) so a ticket's sibling repos share one database.
+    """
+
+    def test_db_name_keyed_on_ticket_pk_not_ticket_number(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", variant="acme")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="5-x")
+        worktree.provision()
+        worktree.save()
+
+        assert worktree.db_name == f"wt_{ticket.pk}_acme"
+        assert "wt_5_acme" not in worktree.db_name
+
+    def test_sibling_repos_of_one_ticket_share_db_name(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", variant="acme")
+        backend = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="5-x")
+        frontend = Worktree.objects.create(ticket=ticket, repo_path="frontend", branch="5-x")
+        backend.provision()
+        backend.save()
+        frontend.provision()
+        frontend.save()
+
+        assert backend.db_name == frontend.db_name
+
+    def test_two_tickets_sharing_trailing_number_get_distinct_db_names(self) -> None:
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+        wt_a = Worktree.objects.create(ticket=ticket_a, repo_path="backend", branch="5-a")
+        wt_b = Worktree.objects.create(ticket=ticket_b, repo_path="backend", branch="5-b")
+        wt_a.provision()
+        wt_a.save()
+        wt_b.provision()
+        wt_b.save()
+
+        assert wt_a.db_name != wt_b.db_name
+
+    def test_pass_key_keyed_on_ticket_pk(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="5-x")
+
+        assert worktree.pass_key == f"teatree/wt/{ticket.pk}/postgres"
+
+
+class TestAssertDbNameUnclaimed(TestCase):
+    """``db_import`` must refuse a db_name another live, foreign-ticket worktree owns."""
+
+    def test_raises_when_another_live_different_ticket_owns_db_name(self) -> None:
+        from teatree.core.models.worktree import WorktreeDbNameConflictError  # noqa: PLC0415
+
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="backend",
+            branch="1-x",
+            db_name="wt_shared",
+            state=Worktree.State.PROVISIONED,
+        )
+        wt_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="backend",
+            branch="2-x",
+            db_name="wt_shared",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        with pytest.raises(WorktreeDbNameConflictError):
+            wt_b.assert_db_name_unclaimed()
+
+    def test_noop_when_db_name_is_unique(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="1-x",
+            db_name="wt_unique",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        worktree.assert_db_name_unclaimed()  # no raise
+
+    def test_ignores_created_state_row_that_owns_no_db_yet(self) -> None:
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="backend",
+            branch="1-x",
+            db_name="wt_shared",
+            state=Worktree.State.CREATED,
+        )
+        wt_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="backend",
+            branch="2-x",
+            db_name="wt_shared",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        wt_b.assert_db_name_unclaimed()  # CREATED row owns no DB → no conflict

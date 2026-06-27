@@ -161,12 +161,13 @@ class TestLifecycleSetup(TestCase):
                 )
 
             worktree = Worktree.objects.get(pk=worktree_id)
-            assert worktree.db_name == "wt_91_acmebank"
+            # db_name keys on the unique Ticket pk, not the derived ticket_number.
+            assert worktree.db_name == f"wt_{worktree.ticket_id}_acmebank"
 
             cache_file = tmp_path / ".t3-cache" / ".t3-env.cache"
             cache_body = cache_file.read_text(encoding="utf-8")
             assert "WT_VARIANT=acmebank" in cache_body
-            assert "WT_DB_NAME=wt_91_acmebank" in cache_body
+            assert f"WT_DB_NAME=wt_{worktree.ticket_id}_acmebank" in cache_body
 
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
@@ -918,8 +919,8 @@ class TestLifecycleClean(TestCase):
 
             dropdb_cmds = [c for c in commands_run if "dropdb" in c]
             assert len(dropdb_cmds) == 1
-            # provision() generates db_name as wt_{ticket_number}
-            assert f"wt_{ticket.ticket_number}" in " ".join(dropdb_cmds[0])
+            # provision() generates db_name as wt_{ticket.pk}
+            assert f"wt_{wt.ticket_id}" in " ".join(dropdb_cmds[0])
 
 
 class TestLifecycleStatus(TestCase):
@@ -959,7 +960,8 @@ class TestLifecycleDiagnose(TestCase):
 
             assert result["worktree_dir"] is True
             assert result["env_cache"] is True
-            assert result["db_name"] == "wt_120"
+            # provision() recomputes db_name from the unique Ticket pk.
+            assert result["db_name"] == f"wt_{wt.ticket_id}"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
