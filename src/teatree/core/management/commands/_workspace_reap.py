@@ -10,8 +10,7 @@ import logging
 import sys
 from pathlib import Path
 
-from teatree.core.cleanup import cleanup_worktree
-from teatree.core.gates.idle_stack import ticket_is_busy
+from teatree.core.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.utils.run import run_allowed_to_fail
 
@@ -72,18 +71,20 @@ def reap_one_worktree(worktree: Worktree, *, interactive: bool, strict_hygiene: 
     tolerantly and runs the overlay-agnostic teardown so the row is actually
     reaped, with the same data-loss guards in force.
 
-    Liveness guard (#291/#2243): the shared ``ticket_is_busy`` predicate is
-    consulted FIRST — a worktree whose ticket has a live session or an
-    active/claimed task is live work and is KEPT before any destructive step,
-    never handed to :func:`cleanup_worktree`. This covers both clean-all worktree
-    loops (the CREATED-state loop and the squash-merged reaper) since both funnel
-    through here, so a squash-merged follow-up worktree an agent is mid-task in is
-    never torn down out from under it.
+    Liveness guard (#291/#2243): :func:`cleanup_worktree` is the funnel that
+    consults the shared liveness predicate (live session / active-or-claimed task
+    / external-delivery lease / recent E2E / ``reaper_pinned``) before any
+    destructive step and raises :class:`WorktreeBusyError` for live work. Both
+    clean-all worktree loops (the CREATED-state loop and the squash-merged
+    reaper) funnel through here, so a follow-up worktree an agent is mid-task in
+    is KEPT with a warning, never torn down — distinct from the unsynced-work
+    ``RuntimeError`` path (which offers push/abandon), since live work is not
+    unpushed work.
     """
-    if ticket_is_busy(worktree.ticket):
-        return f"SKIPPED '{worktree.branch}': ticket has a live session or active/claimed task — keeping (live work)"
     try:
         return str(cleanup_worktree(worktree, strict_hygiene=strict_hygiene, keep_if_dirty=True))
+    except WorktreeBusyError as exc:
+        return f"SKIPPED '{worktree.branch}': {exc}"
     except RuntimeError as exc:
         return resolve_unsynced_worktree(worktree, exc, interactive=interactive)
 

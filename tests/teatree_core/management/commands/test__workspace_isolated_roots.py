@@ -18,6 +18,7 @@ from django.utils import timezone
 from teatree import paths
 from teatree.core.management.commands import _workspace_isolated_roots as reaper
 from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 from tests._git_repo import make_git_repo
 
 _REAP = "teatree.core.management.commands._workspace_isolated_roots"
@@ -148,6 +149,54 @@ class TestReapOrphanIsolatedWorktreeRoots(TestCase):
         result = reaper.reap_orphan_isolated_worktree_roots()
 
         assert orphan.exists(), "DATA LOSS: a worktree with an active task lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_external_delivery_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row under a live external-delivery lease protects env dirs (#2227).
+
+        The widened predicate: the destructive isolated-root reaper must not
+        protect LESS than the reversible idle-stack reaper, which honors the
+        external-delivery lease.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291e")
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path="org/repo", branch="lease-no-path", extra={})
+        mark_external_delivery(ticket)
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a worktree under external delivery lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_recent_e2e_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row with a recent E2E run protects env dirs (widened predicate, #2227)."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291f")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="org/repo",
+            branch="e2e-no-path",
+            extra={},
+            last_e2e_run=timezone.now(),
+        )
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: a worktree with a recent E2E run lost its env dir"
+        assert any("SKIPPED" in line and "live work" in line for line in result)
+
+    def test_reaper_pinned_pathless_row_keeps_orphan_dirs(self) -> None:
+        """A pathless row explicitly pinned protects env dirs (widened predicate, #2227)."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/291g")
+        Worktree.objects.create(
+            ticket=ticket, overlay="test", repo_path="org/repo", branch="pinned-no-path", extra={"reaper_pinned": True}
+        )
+        orphan = _make_env_dir(self.root, paths.isolated_slug(Path("/gone/elsewhere")))
+
+        result = reaper.reap_orphan_isolated_worktree_roots()
+
+        assert orphan.exists(), "DATA LOSS: an explicitly-pinned worktree lost its env dir"
         assert any("SKIPPED" in line and "live work" in line for line in result)
 
     def test_missing_root_returns_empty(self) -> None:

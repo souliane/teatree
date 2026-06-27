@@ -13,25 +13,30 @@ import shutil
 from pathlib import Path
 
 from teatree import paths
-from teatree.core.gates.idle_stack import ticket_is_busy
+from teatree.core.gates.idle_stack import worktree_protects_against_reap
 from teatree.core.management.commands._workspace_cleanup import is_clean_ignored
 from teatree.core.models import Worktree
 
 
 def _has_unmappable_live_worktree() -> bool:
-    """True iff a busy worktree row lacks a recorded checkout path (#291 data-loss).
+    """True iff a live worktree row lacks a recorded checkout path (#291 data-loss).
 
-    A busy worktree WITH a checkout path already contributes its slug to the
+    A live worktree WITH a checkout path already contributes its slug to the
     keep-set (:func:`_referenced_isolated_slugs`), so its env dir is kept. But a
-    busy worktree whose canonical row LOST its ``worktree_path`` (the stale-row
+    live worktree whose canonical row LOST its ``worktree_path`` (the stale-row
     class the resolver tolerates) cannot be hashed to a slug, so its in-use
     isolated DB looks like an orphan. When any such row exists, no unreferenced
     dir can be proven dead — fail safe and keep them all rather than reap a live
     isolated DB out from under a mid-task agent.
+
+    "Live" is the shared :func:`worktree_protects_against_reap` predicate — a live
+    session, an active/claimed task, an external-delivery lease, a recent E2E run,
+    or an explicit pin — so this reaper never protects LESS than the reversible
+    idle-stack reaper.
     """
     for worktree in Worktree.objects.select_related("ticket"):
         extra = worktree.extra if isinstance(worktree.extra, dict) else {}
-        if not str(extra.get("worktree_path", "")) and ticket_is_busy(worktree.ticket):
+        if not str(extra.get("worktree_path", "")) and worktree_protects_against_reap(worktree) is not None:
             return True
     return False
 

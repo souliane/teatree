@@ -103,12 +103,10 @@ def _is_currently_active(worktree: Worktree, active_path: Path | None) -> bool:
 def ticket_is_busy(ticket: Ticket) -> bool:
     """True iff *ticket* has a live session or an active/claimed task.
 
-    The shared liveness predicate every destructive reaper/teardown path
-    consults before deleting filesystem or DB state: a busy ticket's worktree is
-    live work and must be KEPT, never reaped (#291/#2243 data-loss discipline).
-    The idle-stack reaper, the clean-all worktree reaper
-    (:func:`teatree.core.management.commands._workspace_reap.reap_one_worktree`),
-    and the orphan-isolated-root reaper all route through it.
+    The ticket-level half of the liveness signal. Reapers do not call this
+    directly — they call :func:`worktree_protects_against_reap`, which combines
+    it with the worktree-level active-delivery guards so an irreversible reaper
+    never protects LESS than the reversible idle-stack reaper.
     """
     if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
         return True
@@ -150,6 +148,29 @@ def _active_delivery_keep_reason(worktree: Worktree, *, e2e_cutoff: datetime) ->
     if _is_reaper_pinned(worktree):
         return "explicitly pinned (extra['reaper_pinned'])"
     return None
+
+
+def worktree_protects_against_reap(worktree: Worktree, *, now: datetime | None = None) -> str | None:
+    """The reason a destructive reaper must KEEP *worktree*, or ``None`` when it may reap.
+
+    The shared liveness predicate every OPPORTUNISTIC destructive reaper/teardown
+    path consults before deleting filesystem or DB state — the clean-all worktree
+    reaper (:func:`...._workspace_reap.reap_one_worktree`), the clean-merged sweep,
+    the merge-sync cleanup, and the orphan-isolated-root reaper all route through
+    it (via :func:`teatree.core.cleanup.cleanup_worktree`). It combines the
+    ticket-level :func:`ticket_is_busy` (live session / active-or-claimed task)
+    with the worktree-level #2227 active-delivery guards
+    (:func:`_active_delivery_keep_reason` — external-delivery lease, recent E2E,
+    ``reaper_pinned``) so the IRREVERSIBLE teardown reapers never protect LESS
+    than the REVERSIBLE idle-stack reaper. Explicit/FSM-driven teardown bypasses
+    this (it has decided to tear the worktree down); opportunistic reaps respect
+    it (#291/#2243 data-loss discipline).
+    """
+    if ticket_is_busy(worktree.ticket):
+        return "ticket has a live session or active/claimed task"
+    e2e_minutes = get_effective_settings().idle_stack_e2e_recent_minutes
+    e2e_cutoff = (now or timezone.now()) - timedelta(minutes=e2e_minutes)
+    return _active_delivery_keep_reason(worktree, e2e_cutoff=e2e_cutoff)
 
 
 def preserve_reason(
@@ -223,4 +244,10 @@ def reapable_worktrees(
             yield worktree
 
 
-__all__ = ["classify_running_worktrees", "preserve_reason", "reapable_worktrees", "ticket_is_busy"]
+__all__ = [
+    "classify_running_worktrees",
+    "preserve_reason",
+    "reapable_worktrees",
+    "ticket_is_busy",
+    "worktree_protects_against_reap",
+]

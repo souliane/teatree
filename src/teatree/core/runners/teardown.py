@@ -52,7 +52,14 @@ class WorktreeTeardown(RunnerBase):
         step_errors: list[str] = []
         for worktree in worktrees:
             try:
-                cleanup_result = cleanup_worktree(worktree, force=self.force, strict_hygiene=False)
+                # FSM-driven teardown of a MERGED ticket: the FSM decided to tear
+                # this worktree down, so it bypasses the opportunistic liveness
+                # guard (respect_liveness=False) — a still-open session row on a
+                # merged ticket must not block teardown. The #706 unpushed-commit
+                # guard (force defaults False here) still protects real work.
+                cleanup_result = cleanup_worktree(
+                    worktree, force=self.force, strict_hygiene=False, respect_liveness=False
+                )
             except RuntimeError as exc:
                 logger.exception("teardown refused for %s", worktree.repo_path)
                 refusals.append(f"{worktree.repo_path} ({worktree.branch}): {exc}")

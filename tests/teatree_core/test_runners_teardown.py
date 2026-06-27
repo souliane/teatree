@@ -52,8 +52,12 @@ class TestWorktreeTeardown(TestCase):
 
         cleaned: list[str] = []
 
-        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
-            del force, strict_hygiene
+        def fake_cleanup(
+            worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, respect_liveness: bool = True
+        ) -> CleanupResult:
+            # FSM teardown bypasses the opportunistic liveness guard (#2243).
+            assert respect_liveness is False, "FSM teardown must opt out of the liveness guard"
+            del force, strict_hygiene, respect_liveness
             label = f"Cleaned: {worktree.repo_path}"
             cleaned.append(worktree.repo_path)
             worktree.delete()
@@ -72,8 +76,12 @@ class TestWorktreeTeardown(TestCase):
     def test_continues_on_individual_failure_and_reports_errors(self) -> None:
         ticket = self._ticket_with_worktrees(count=2)
 
-        def fake_cleanup(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
-            del force, strict_hygiene
+        def fake_cleanup(
+            worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, respect_liveness: bool = True
+        ) -> CleanupResult:
+            # FSM teardown bypasses the opportunistic liveness guard (#2243).
+            assert respect_liveness is False, "FSM teardown must opt out of the liveness guard"
+            del force, strict_hygiene, respect_liveness
             if worktree.repo_path == "repo-0":
                 msg = "branch ahead of main"
                 raise RuntimeError(msg)

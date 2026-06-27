@@ -2038,6 +2038,31 @@ class TestWorkspaceCleanMerged(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_keeps_busy_merged_worktree(self) -> None:
+        """A MERGED ticket whose worktree has live work is KEPT, not torn down (#2243).
+
+        ``clean-merged`` is the daily opportunistic sweep — it must not reap a
+        merged-but-still-worked-in worktree out from under a mid-task agent. The
+        funnel liveness guard in ``cleanup_worktree`` fires first, so the sweep
+        records a SKIPPED-kept line and the row survives, distinct from the FAILED
+        line a genuine teardown error produces.
+        """
+        merged = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2243m",
+            state=Ticket.State.MERGED,
+        )
+        wt = Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-2243m")
+        Session.objects.create(ticket=merged, overlay="test")  # live: ended_at is null
+
+        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+
+        assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged worktree reaped; got: {cleaned!r}"
+        assert any("SKIPPED" in c and "live work" in c for c in cleaned), f"expected a live-work skip, got: {cleaned!r}"
+        assert not any("FAILED" in c for c in cleaned), f"a kept-live worktree must not be a FAILURE; got: {cleaned!r}"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_surfaces_cleanup_failures(self) -> None:
         merged = Ticket.objects.create(
             overlay="test",
@@ -3777,8 +3802,15 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
             assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
 
-    def test_keeps_busy_created_worktree_reaps_idle(self) -> None:
-        """The CREATED-state loop keeps a busy worktree while still reaping an idle one."""
+    def test_keeps_busy_created_worktree(self) -> None:
+        """The CREATED-state loop keeps a worktree whose ticket has live work (#2243).
+
+        The funnel liveness guard in ``cleanup_worktree`` fires first (before any
+        path/git resolution), so a busy CREATED row survives clean-all with a KEEP
+        line — never handed to teardown. The safe-reap of an IDLE worktree is
+        covered by ``test_reaps_merged_worktree_fully`` and the cleanup-level
+        ``TestCleanupWorktreeLivenessGuard.test_idle_worktree_is_torn_down``.
+        """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             workspace = tmp / "workspace"
@@ -3796,32 +3828,13 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             session = Session.objects.create(ticket=busy_ticket, overlay="test")
             session.ended_at = timezone.now()
             session.save(update_fields=["ended_at"])
-            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.PENDING)
+            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
 
-            idle_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243b")
-            idle = Worktree.objects.create(
-                overlay="test",
-                ticket=idle_ticket,
-                repo_path="backend",
-                branch="idle",
-                state=Worktree.State.CREATED,
-                extra={"worktree_path": str(workspace / "idle" / "backend")},
-            )
+            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
-            reaped_pks: list[int] = []
-
-            def _record(worktree: Worktree, **_kw: object) -> str:
-                reaped_pks.append(worktree.pk)
-                return f"Cleaned: {worktree.repo_path} ({worktree.branch})"
-
-            with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(ws_reap_mod, "cleanup_worktree", side_effect=_record),
-            ):
-                call_command("workspace", "clean-all")
-
-            assert busy.pk not in reaped_pks, "DATA LOSS: busy CREATED worktree handed to teardown"
-            assert idle.pk in reaped_pks, "idle CREATED worktree should still be reaped (safe-reap preserved)"
+            assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
+            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
 
     def test_foreign_overlay_merged_row_is_reaped_overlay_free_not_skipped(self) -> None:
         """A merged row whose overlay is unregistered is REAPED overlay-free, not skipped.
