@@ -29,11 +29,13 @@ normal pending-task pipeline; the scanner only writes the row.
 Design notes
 ------------
 
-* No new model fields. The "last review" timestamp is the existing
-    ``Session.started_at`` (``auto_now_add``) of the most recent
-    ``architectural_review`` task — Tasks have no ``created_at`` of their
-    own, but a Task always carries a Session and Sessions are created at
-    the moment we queue, so the Session's ``started_at`` is the queue time.
+* No new model field for the cadence clock. The "last review" timestamp
+    is the existing ``Session.started_at`` (``auto_now_add``) of the most
+    recent ``architectural_review`` task. ``Task`` now has its own
+    ``created_at`` (migration 0004), but this scanner intentionally keys on
+    ``Session.started_at`` as the queue time — a Task always carries a
+    Session created at the moment we queue, so the Session's ``started_at``
+    is the canonical queue timestamp.
 * Dupe suppression. A pending or claimed task for the same overlay/phase
     acts as the lock — the scanner sees the in-flight row and returns no
     signal. Completion (or failure) of that task unlocks the next cadence
