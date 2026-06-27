@@ -316,6 +316,54 @@ def test_billing_cycle_defaults(tmp_path: Path) -> None:
     assert user.sdk_monthly_credit_usd == pytest.approx(200.0)
 
 
+class TestAutoloadSetting:
+    """``autoload`` is TOML-home (#256): default OFF, ``[teatree] autoload`` enables, env wins.
+
+    Mirrors ``check_updates`` — a cold-hook-readable TOML-home bool resolved from
+    the ``[teatree]`` table + ``T3_AUTOLOAD`` env, never the DB store.
+    """
+
+    def test_default_is_off_with_empty_teatree_table(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.autoload is False
+
+    def test_default_is_off_with_no_config_file(self, tmp_path: Path) -> None:
+        assert load_config(tmp_path / "nonexistent.toml").user.autoload is False
+
+    def test_toml_true_enables(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nautoload = true\n")
+        assert load_config(config_path).user.autoload is True
+
+    def test_env_override_enables_over_empty_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``T3_AUTOLOAD`` is the operational fast-toggle (env wins over the file tier)."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\n")
+        monkeypatch.setenv("T3_AUTOLOAD", "true")
+        assert get_effective_settings().autoload is True
+
+    def test_env_false_disables_over_toml_true(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\nautoload = true\n")
+        monkeypatch.setenv("T3_AUTOLOAD", "false")
+        assert get_effective_settings().autoload is False
+
+
 class TestIssueImplementerSettings:
     """Config surface for the opt-in, default-OFF issue-implementer loop (#1548).
 
