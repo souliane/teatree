@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from teatree.core.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -133,3 +134,68 @@ class TestFsmTerminalBypass(_LivenessFixture):
         verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
         assert verdict.active is True
         assert "index.lock" in verdict.reason
+
+
+class TestActiveDeliveryGuards(_LivenessFixture):
+    """The #2227/#2773 active-delivery guards mark a worktree LIVE (#2763 reconciliation).
+
+    Ported from #2773's shared liveness predicate into the FSM-done reaper's
+    ``worktree_liveness`` so the ad-hoc ``clean-all`` sweep never reaps a worktree
+    that is delivering externally / freshly e2e-tested / pinned. Unlike busy-ticket
+    and recent-commit these are NOT FSM-ceremony false positives (the merge mints
+    none of them), so they MUST still fire on the ``fsm_terminal`` post-merge path —
+    the reconciled reaper protects MORE than #2773's ``respect_liveness=False``,
+    never less.
+    """
+
+    def test_external_delivery_lease_marks_active(self) -> None:
+        worktree = self._worktree()
+        mark_external_delivery(worktree.ticket)
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path)
+        assert verdict.active is True
+        assert "external-delivery lease" in verdict.reason
+
+    def test_external_delivery_lease_still_fires_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        mark_external_delivery(worktree.ticket)
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
+        assert verdict.active is True, "an external-delivery lease must survive the post-merge teardown"
+        assert "external-delivery lease" in verdict.reason
+
+    def test_recent_e2e_run_marks_active(self) -> None:
+        worktree = self._worktree()
+        worktree.last_e2e_run = timezone.now()
+        worktree.save(update_fields=["last_e2e_run"])
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path)
+        assert verdict.active is True
+        assert "E2E" in verdict.reason
+
+    def test_recent_e2e_run_still_fires_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        worktree.last_e2e_run = timezone.now()
+        worktree.save(update_fields=["last_e2e_run"])
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
+        assert verdict.active is True, "a recent E2E run must survive the post-merge teardown"
+        assert "E2E" in verdict.reason
+
+    def test_old_e2e_run_does_not_mark_active(self) -> None:
+        worktree = self._worktree()
+        worktree.last_e2e_run = self.commit_instant  # 2020 — far outside the recency window
+        worktree.save(update_fields=["last_e2e_run"])
+        assert worktree_liveness(worktree, wt_path=self.wt_path).active is False
+
+    def test_reaper_pinned_marks_active(self) -> None:
+        worktree = self._worktree()
+        worktree.extra = {**worktree.extra, "reaper_pinned": True}
+        worktree.save(update_fields=["extra"])
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path)
+        assert verdict.active is True
+        assert "pinned" in verdict.reason
+
+    def test_reaper_pinned_still_fires_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        worktree.extra = {**worktree.extra, "reaper_pinned": True}
+        worktree.save(update_fields=["extra"])
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
+        assert verdict.active is True, "an explicit reaper_pinned must survive the post-merge teardown"
+        assert "pinned" in verdict.reason

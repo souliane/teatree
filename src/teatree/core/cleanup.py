@@ -31,6 +31,7 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     probe_host_cli,
 )
+from teatree.core.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
@@ -45,6 +46,7 @@ __all__ = [
     "BranchClassification",
     "BranchCommit",
     "CleanupResult",
+    "WorktreeBusyError",
     "_branch_pr_is_merged",
     "_branch_tree_matches_squash",
     "_pr_merge_commit_sha",
@@ -502,27 +504,32 @@ def _remove_overlay_pass_entry(overlay: "OverlayBase | None", worktree: Worktree
     if ticket is None:
         return
     try:
-        remove_postgres_pass_entry(ticket.ticket_number)
+        # Keyed on the ticket pk (the canonical, unique key), matching
+        # ``Worktree.pass_key`` the env render wrote into the cache.
+        remove_postgres_pass_entry(ticket.pk)
     except Exception as exc:
         logger.exception("pass-entry removal failed for %s", worktree.repo_path)
-        step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
+        step_errors.append(f"pass-entry removal failed for ticket #{ticket.pk}: {exc}")
 
 
 def cleanup_worktree(
-    worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, keep_if_dirty: bool = False
+    worktree: Worktree,
+    *,
+    force: bool = False,
+    strict_hygiene: bool = True,
+    keep_if_dirty: bool = False,
+    respect_liveness: bool = True,
 ) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
     Deletes the Worktree record from the database and returns a
-    :class:`CleanupResult`. Individual teardown-step failures (overlay
-    hook, git worktree/branch removal, DB drop, pass-entry removal,
-    recovery capture) are captured into ``result.errors`` and the
-    remaining steps still run — collect-and-surface, never crash
-    mid-teardown leaving other resources orphaned (#877). The caller is
-    responsible for routing ``result.errors`` to its visible channel
-    (``SyncResult.errors`` for sync backends, runner detail for runners).
+    :class:`CleanupResult`. Individual teardown-step failures are captured into
+    ``result.errors`` and the remaining steps still run — collect-and-surface,
+    never crash mid-teardown leaving other resources orphaned (#877). The caller
+    routes ``result.errors`` to its visible channel (``SyncResult.errors`` for
+    sync backends, runner detail for runners).
 
-    Two guards protect against losing work, both bypassed only by an explicit
+    Several guards protect against losing work; all are bypassed by an explicit
     ``force=True``.
 
     Data-loss guard (#706, always on): raises ``RuntimeError`` when the branch
@@ -530,14 +537,14 @@ def cleanup_worktree(
     irrecoverably.
 
     Hygiene gate (``strict_hygiene``, default on): additionally raises when the
-    branch is genuinely ahead of ``origin/main`` and not squash-merged. Sync
-    backends and interactive ``clean-all`` keep this on; the automated FSM
-    teardown path passes ``strict_hygiene=False`` (the ticket is MERGED and the
-    branch is already on its remote).
+    branch is genuinely ahead of ``origin/main`` and not squash-merged — see
+    :func:`_raise_if_genuinely_ahead`. Sync backends and interactive
+    ``clean-all`` keep it on; the FSM teardown path passes ``strict_hygiene=False``.
 
     Dirty-worktree guard (``keep_if_dirty``, default off): when set, a worktree
     with uncommitted changes is KEPT — ``RuntimeError`` is raised before any
-    destructive step rather than reaping it. ``clean-all`` passes this so a live
+    destructive step rather than reaping it — see
+    :func:`_guard_or_warn_dirty_worktree`. ``clean-all`` passes this so a live
     worktree an agent is mid-task in is never deleted on a merged signal (#2243).
     ``force=True`` overrides it.
 
@@ -547,7 +554,17 @@ def cleanup_worktree(
     abandon path after a human chose to discard. Potentially-needed work is KEPT by
     those callers, never force-destroyed. Pass ``force=True`` only from such
     trusted callers (the proven reaper, an explicit operator override, tests).
+
+    Liveness guard (``respect_liveness``, default on, #291/#2243): OPPORTUNISTIC
+    reapers KEEP a worktree under live work (raising :class:`WorktreeBusyError`),
+    so the irreversible teardown never protects LESS than the reversible
+    idle-stack reaper — see :func:`guard_live_worktree`. FSM teardown passes
+    ``respect_liveness=False``; ``force=True`` bypasses it.
     """
+    # Liveness FIRST: a busy worktree short-circuits before resolving paths,
+    # overlay, or touching docker — the cheapest possible KEEP for live work.
+    guard_live_worktree(worktree, respect_liveness=respect_liveness, force=force)
+
     workspace = load_config().user.workspace_dir
     wt_path = _resolve_worktree_path(workspace, worktree)
     overlay = _resolve_overlay_or_none(worktree)

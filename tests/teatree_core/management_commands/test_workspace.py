@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
@@ -36,7 +37,7 @@ from teatree.config import load_config
 from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
 from teatree.core.worktree_done import reap_done_worktrees
@@ -3136,6 +3137,108 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert Worktree.objects.filter(pk=wt.pk).exists(), "unclassifiable row must be kept, not crashed on"
             assert any("feature" in c and "KEPT" in c for c in cleaned), (
                 f"expected a keep line for the unclassifiable row, got: {cleaned!r}"
+            )
+
+
+@_no_prune
+@_no_stash
+@_no_orphan_dbs
+@_no_orphan_isolated_roots
+@_no_orphan_docker
+@_no_dslr_prune
+@_patch_overlays(FULL_OVERLAY)
+@override_settings(**SETTINGS)
+@_no_orphan_raw
+class TestCleanAllKeepsBusyWorktree(TestCase):
+    """clean-all KEEPS a worktree under live work, never reaping it mid-task (#2243/#2773).
+
+    The reconciliation home for #2773's end-to-end busy-keep guards: ported off the
+    ``@_no_liveness``-neutralised reap-fully class so the REAL
+    :func:`teatree.core.cleanup_liveness.worktree_liveness` predicate runs. The
+    ad-hoc ``clean-all`` sweep funnels through :func:`reap_done_worktree` with
+    ``fsm_terminal`` OFF, so a busy ticket (live session / claimed task) flips a
+    squash-merged or CREATED row from would-reap to an ``ACTIVE … skipping`` KEEP —
+    the data-loss discipline #2773 widened and #2763 enforces at the reaper's
+    liveness pre-gate. ``test_reaps_merged_worktree_fully`` proves the same
+    squash-merged row IS reaped when idle, so each KEEP here is a non-vacuous,
+    red-first guard.
+    """
+
+    def _run_clean_all(self, workspace: Path) -> tuple[list[str], MagicMock, list[str]]:
+        """Run clean-all against real git, stubbing only docker-down and the DB drop.
+
+        Mirrors ``TestCleanAllReapsAndSurvivesForeignOverlay._run_clean_all`` but
+        WITHOUT the liveness neutralisation — the live-work KEEP is exactly what is
+        under test here. The git layer is never mocked.
+        """
+        dropped: list[str] = []
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
+            patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
+        ):
+            mock_config.return_value.user.workspace_dir = workspace
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+        return cleaned, mock_docker_down, dropped
+
+    def test_keeps_busy_squash_merged_worktree(self) -> None:
+        """A squash-merged worktree whose ticket has live work is KEPT, not reaped (#2243).
+
+        ``test_reaps_merged_worktree_fully`` proves the same row IS reaped when
+        idle, so a live :class:`Session` flipping it to KEEP is a non-vacuous
+        red-first guard: clean-all must never tear down a squash-merged
+        follow-up worktree an agent is mid-task in.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp)
+            wt_path = Path(wt.extra["worktree_path"])
+            Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
+            assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
+            assert any("ACTIVE" in c and "skipping" in c for c in cleaned), (
+                f"expected a live-work skip line, got: {cleaned!r}"
+            )
+
+    def test_keeps_busy_created_worktree(self) -> None:
+        """The CREATED-state row keeps a worktree whose ticket has live work (#2243).
+
+        The liveness pre-gate in :func:`reap_done_worktree` fires before
+        done-detection, so a busy CREATED row survives clean-all with an
+        ``ACTIVE … skipping`` line — never handed to teardown. The safe-reap of an
+        IDLE worktree is covered by ``test_reaps_merged_worktree_fully`` and the
+        cleanup-level ``TestCleanupWorktreeLivenessGuard.test_idle_worktree_is_torn_down``.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+
+            busy_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243a")
+            busy = Worktree.objects.create(
+                overlay="test",
+                ticket=busy_ticket,
+                repo_path="backend",
+                branch="busy",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": str(workspace / "busy" / "backend")},
+            )
+            session = Session.objects.create(ticket=busy_ticket, overlay="test")
+            session.ended_at = timezone.now()
+            session.save(update_fields=["ended_at"])
+            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
+
+            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
+            assert any("ACTIVE" in c and "skipping" in c for c in cleaned), (
+                f"expected a live-work skip line, got: {cleaned!r}"
             )
 
 

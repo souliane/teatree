@@ -53,7 +53,10 @@ class TestWorktreeTeardown(TestCase):
         cleaned: list[str] = []
 
         def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
-            del workspace, dry_run, fsm_terminal
+            # FSM teardown bypasses the FSM-ceremony liveness false positives via
+            # fsm_terminal=True (#2243; #2773's respect_liveness=False equivalent).
+            assert fsm_terminal is True, "FSM teardown must pass fsm_terminal=True"
+            del workspace, dry_run
             cleaned.append(worktree.repo_path)
             worktree.delete()
             return ReapOutcome("wiped", f"Wiped '{worktree.branch}': Cleaned: {worktree.repo_path}")
@@ -73,7 +76,10 @@ class TestWorktreeTeardown(TestCase):
         ticket = self._ticket_with_worktrees(count=2)
 
         def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
-            del workspace, dry_run, fsm_terminal
+            # FSM teardown bypasses the FSM-ceremony liveness false positives via
+            # fsm_terminal=True (#2243; #2773's respect_liveness=False equivalent).
+            assert fsm_terminal is True, "FSM teardown must pass fsm_terminal=True"
+            del workspace, dry_run
             if worktree.repo_path == "repo-0":
                 return ReapOutcome("kept", f"KEPT '{worktree.branch}': branch ahead of main — do not wipe")
             worktree.delete()
