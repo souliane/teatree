@@ -168,59 +168,6 @@ class TestFailsOpen:
         assert "no-commit detection skipped" in capsys.readouterr().err
 
 
-class TestCapturesSnapshotBeforeTeardown:
-    """#1764 — a dirty/unpushed sub-agent worktree is captured before teardown."""
-
-    @pytest.fixture
-    def temp_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        root = tmp_path / "systmp"
-        root.mkdir()
-        monkeypatch.setattr("teatree.core.worktree_snapshot.tempfile.gettempdir", lambda: str(root))
-        return root
-
-    @staticmethod
-    def _recovery_dirs(root: Path) -> list[Path]:
-        return sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("t3-recover-"))
-
-    def test_dirty_worktree_is_captured(self, tmp_path: Path, temp_root: Path) -> None:
-        clone = _worktree_on_branch(tmp_path, "1764-feat-thing")
-        (clone / "scratch.py").write_text("uncommitted work\n", encoding="utf-8")
-
-        handle_subagent_stop_no_commit({"session_id": "sess-cap-1", "cwd": str(clone)})
-
-        dirs = self._recovery_dirs(temp_root)
-        assert len(dirs) == 1
-        assert (dirs[0] / "branch.bundle").is_file()
-        assert "uncommitted work" in (dirs[0] / "working-tree.diff").read_text(encoding="utf-8")
-
-    def test_flagged_zero_commit_worktree_with_unpushed_base_is_captured(self, tmp_path: Path, temp_root: Path) -> None:
-        # A committed-but-unpushed branch: clean tree, but the commit lives only
-        # on the local branch — must be bundled before teardown.
-        clone = _worktree_on_branch(tmp_path, "1764-feat-thing", commit=True)
-
-        handle_subagent_stop_no_commit({"session_id": "sess-cap-2", "cwd": str(clone)})
-
-        dirs = self._recovery_dirs(temp_root)
-        assert len(dirs) == 1
-        assert (dirs[0] / "branch.bundle").is_file()
-
-    def test_clean_pushed_worktree_is_noop(self, tmp_path: Path, temp_root: Path) -> None:
-        clone = _worktree_on_branch(tmp_path, "1764-feat-thing", commit=True)
-        _git(clone, "push", "-q", "origin", "1764-feat-thing")
-
-        handle_subagent_stop_no_commit({"session_id": "sess-cap-3", "cwd": str(clone)})
-
-        assert self._recovery_dirs(temp_root) == []
-
-    def test_bad_cwd_is_crash_proof_noop(self, tmp_path: Path, temp_root: Path) -> None:
-        not_a_repo = tmp_path / "plain"
-        not_a_repo.mkdir()
-
-        handle_subagent_stop_no_commit({"session_id": "sess-cap-4", "cwd": str(not_a_repo)})
-
-        assert self._recovery_dirs(temp_root) == []
-
-
 class TestRouterWiring:
     def test_subagent_stop_event_is_registered(self) -> None:
         assert router._HANDLERS["SubagentStop"] == [handle_subagent_stop_no_commit]

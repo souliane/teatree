@@ -45,15 +45,9 @@ class _DriftedWorktreeFixture(TestCase):
     real_branch = "techdebt-ruff-RET504"
 
     @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
-        self.temp_root = tmp_path / "systmp"
-        self.temp_root.mkdir()
-        monkeypatch.setattr(
-            "teatree.core.worktree_snapshot.tempfile.gettempdir",
-            lambda: str(self.temp_root),
-        )
 
         self.remote = tmp_path / "remote.git"
         subprocess.run(
@@ -113,9 +107,6 @@ class _DriftedWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout.split()
 
-    def _recovery_dirs(self) -> list[Path]:
-        return sorted(p for p in self.temp_root.iterdir() if p.is_dir() and p.name.startswith("t3-recover-"))
-
 
 class TestDriftedBranchUnpushedRefuses(_DriftedWorktreeFixture):
     """DRIFT + UNPUSHED — the reported bug. Teardown refuses ACCURATELY."""
@@ -159,9 +150,14 @@ class TestDriftedBranchFullyPushedProceeds(_DriftedWorktreeFixture):
 
 
 class TestDriftedBranchForceDeletesRealBranch(_DriftedWorktreeFixture):
-    """DRIFT + force=True — recovery captured, worktree removed, REAL branch deleted."""
+    """DRIFT + force=True — worktree removed, the REAL (not slug) branch deleted.
 
-    def test_force_captures_recovery_and_deletes_the_real_branch(self) -> None:
+    There is no recovery snapshot (the #1770 capture was removed): force=True is a
+    deliberate hard-delete. The drift fix still holds — the EFFECTIVE branch is the
+    one deleted, never the phantom DB slug.
+    """
+
+    def test_force_hard_deletes_the_real_branch(self) -> None:
         (self.wt_path / "feature.txt").write_text("real unpushed work\n", encoding="utf-8")
         _run_git("add", "-A", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "feat: real unpushed work", cwd=self.wt_path)
@@ -173,20 +169,6 @@ class TestDriftedBranchForceDeletesRealBranch(_DriftedWorktreeFixture):
         # The REAL (checked-out) branch must be the one deleted under force —
         # the pre-fix bug deleted the slug instead, leaving this dangling.
         assert self.real_branch not in self._branches()
-        # A recovery bundle was captured before the destructive remove.
-        dirs = self._recovery_dirs()
-        assert len(dirs) == 1, f"exactly one recovery dir expected, got {dirs}"
-        bundle = dirs[0] / "branch.bundle"
-        assert bundle.is_file(), "branch bundle missing"
-        log = subprocess.run(
-            [_GIT, "-C", str(self.repo_main), "bundle", "list-heads", str(bundle)],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout
-        # The bundle is of the REAL branch, not the slug.
-        assert self.real_branch in log
 
 
 class TestDetachedHeadUnpushedRefuses(_DriftedWorktreeFixture):
@@ -231,88 +213,25 @@ class TestDetachedHeadUnpushedRefuses(_DriftedWorktreeFixture):
         assert not self.wt_path.exists()
 
 
-class TestDetachedHeadForceCapturesTheRealCommits(_DriftedWorktreeFixture):
-    """DETACHED HEAD + force=True — the recovery bundle must hold the detached commits.
+class TestDetachedHeadForceHardDeletes(_DriftedWorktreeFixture):
+    """DETACHED HEAD + force=True — a deliberate hard-delete (no recovery snapshot).
 
-    Force skips the data-loss guard, so the recovery capture (#835/#1506) is the
-    ONLY protection. The detached commit is reachable from no named branch, so a
-    bundle of any slug/branch ref would miss it entirely (the pre-fix path
-    collapsed ``HEAD`` to the DB slug and bundled that → zero recovery + the
-    detached commit lost after gc/ref-prune). The capture must bundle ``HEAD``
-    from the worktree dir, where it resolves to the detached commit.
+    Force is the explicit-abandon escape: the worktree is removed even on a detached
+    HEAD with unpushed commits. There is no recovery bundle — the #1770 capture was
+    removed; potentially-needed work is KEPT by the analyze-before-wipe reaper that
+    fronts every automatic teardown, never reaching force.
     """
 
-    def _corrupt_head_commit_object(self) -> None:
-        """Make ``git -C <wt_path>`` unable to read HEAD's commit — both bundle and probe error."""
-        sha = subprocess.run(
-            [_GIT, "-C", str(self.wt_path), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout.strip()
-        obj = self.repo_main / ".git" / "objects" / sha[:2] / sha[2:]
-        obj.chmod(0o644)
-        obj.write_bytes(b"corrupt")
-
-    def test_force_detached_head_bundle_contains_the_detached_commit(self) -> None:
-        # A commit reachable ONLY from the detached HEAD, then a clean tree so the
-        # ONLY thing to lose is the unpushed commit (not a dirty diff).
+    def test_force_detached_head_removes_the_worktree(self) -> None:
         (self.wt_path / "feature.txt").write_text("orphan-only work\n", encoding="utf-8")
         _run_git("add", "-A", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "feat: reachable only from detached HEAD", cwd=self.wt_path)
-        detached_sha = subprocess.run(
-            [_GIT, "-C", str(self.wt_path), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout.strip()
         _run_git("checkout", "-q", "--detach", "HEAD", cwd=self.wt_path)
 
         result = self._cleanup(self._make_worktree(), force=True)
 
         assert result.clean is True
         assert not self.wt_path.exists()
-        # The recovery bundle exists and actually contains the detached commit.
-        dirs = self._recovery_dirs()
-        assert len(dirs) == 1, f"exactly one recovery dir expected, got {dirs}"
-        bundle = dirs[0] / "branch.bundle"
-        assert bundle.is_file(), "branch bundle missing — the detached commit was not captured"
-        # The bundle's tip is the detached commit (restorable via `git fetch <bundle> HEAD`).
-        list_heads = subprocess.run(
-            [_GIT, "-C", str(self.repo_main), "bundle", "list-heads", str(bundle)],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout
-        assert detached_sha in list_heads, f"bundle does not contain the detached commit {detached_sha}: {list_heads}"
-
-    def test_force_detached_head_inconclusive_probe_keeps_worktree(self) -> None:
-        """#1506 fail-closed survives the new HEAD probe path.
-
-        Under force the recovery capture is the only safety net. When HEAD's
-        commit object is unreadable, the ``git -C <wt_path> bundle HEAD`` capture
-        fails AND the post-failure re-check (``git -C <wt_path> log HEAD --not
-        --remotes``) errors → fails open to "might lose work" → teardown REFUSES
-        and the worktree is kept on disk, never hard-deleted.
-        """
-        (self.wt_path / "feature.txt").write_text("at-risk detached work\n", encoding="utf-8")
-        _run_git("add", "-A", cwd=self.wt_path)
-        _run_git("commit", "-q", "-m", "feat: at-risk detached work", cwd=self.wt_path)
-        _run_git("checkout", "-q", "--detach", "HEAD", cwd=self.wt_path)
-        self._corrupt_head_commit_object()
-
-        with pytest.raises(RuntimeError) as excinfo:
-            self._cleanup(self._make_worktree(), force=True)
-
-        message = str(excinfo.value)
-        assert "recovery capture failed" in message
-        assert "unrecoverable work" in message
-        # The worktree is kept on disk — fail-closed, not hard-deleted.
-        assert self.wt_path.exists(), "inconclusive capture under force must keep the worktree, not destroy it"
-        assert self._recovery_dirs() == []
 
 
 class TestPhantomSlugBranchNotAGitRef(TestCase):
@@ -331,15 +250,9 @@ class TestPhantomSlugBranchNotAGitRef(TestCase):
     real_branch = "techdebt-ruff-RET504"
 
     @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
-        self.temp_root = tmp_path / "systmp"
-        self.temp_root.mkdir()
-        monkeypatch.setattr(
-            "teatree.core.worktree_snapshot.tempfile.gettempdir",
-            lambda: str(self.temp_root),
-        )
 
         self.remote = tmp_path / "remote.git"
         subprocess.run(
@@ -434,15 +347,9 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
     slug = "a-myrepo-8521-feat"
 
     @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
-        self.temp_root = tmp_path / "systmp"
-        self.temp_root.mkdir()
-        monkeypatch.setattr(
-            "teatree.core.worktree_snapshot.tempfile.gettempdir",
-            lambda: str(self.temp_root),
-        )
 
         self.remote = tmp_path / "remote.git"
         subprocess.run(
@@ -547,15 +454,9 @@ class TestLocalOnlyMatchingTreeNotPruned(TestCase):
     slug = "a-myrepo-9001-localonly"
 
     @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
-        self.temp_root = tmp_path / "systmp"
-        self.temp_root.mkdir()
-        monkeypatch.setattr(
-            "teatree.core.worktree_snapshot.tempfile.gettempdir",
-            lambda: str(self.temp_root),
-        )
 
         self.remote = tmp_path / "remote.git"
         subprocess.run(

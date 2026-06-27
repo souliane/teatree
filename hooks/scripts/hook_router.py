@@ -8166,43 +8166,17 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
             _append_line(no_commit_file, line)
 
 
-def _capture_subagent_snapshot(worktree: str, branch: str, label: str) -> None:
-    """Capture a bundle+diff of a dirty/unpushed sub-agent worktree (#1764).
-
-    Runs under bare ``python3`` from the SubagentStop hook, so it imports only
-    the Django-free :mod:`teatree.core.worktree_snapshot`. The snapshot lands
-    BEFORE any teardown can auto-clean the worktree, preserving uncommitted
-    edits and unpushed commits an outage-killed sub-agent left behind. ``git
-    bundle`` runs against the worktree's own object store (the worktree shares
-    the main clone's gitdir), so the worktree path doubles as the repo handle.
-    Best-effort: a no-op for a clean+pushed tree, fully crash-proof at the
-    caller's boundary.
-    """
-    from teatree.core.worktree_snapshot import capture_worktree_snapshot  # noqa: PLC0415
-
-    recovery_dir = capture_worktree_snapshot(Path(worktree), worktree, branch=branch, label=label)
-    if recovery_dir is not None:
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] sub-agent worktree {worktree!r} (branch {branch!r}) had dirty/unpushed work — "
-            f"captured recovery artifact to {recovery_dir} before teardown.",
-            file=sys.stderr,
-        )
-
-
 def handle_subagent_stop_no_commit(data: dict) -> None:
     """SubagentStop: record a work-branch worktree that produced 0 commits (#1205).
 
-    Also captures a recovery snapshot (#1764) of the sub-agent's worktree
-    (resolved to a work branch) BEFORE teardown can auto-clean it — the
-    Django-free snapshot no-ops on a clean+pushed tree and writes a bundle+diff
-    when there are uncommitted edits or unpushed commits, so an outage-killed
-    sub-agent's work survives.
-
     Resolves the sub-agent's worktree from the harness ``cwd``, runs the
     conservative :func:`teatree.hooks.no_commit_detector.detect`, and records a
-    ``terminated_without_commit`` signal only on the confirmed-flag verdict.
-    No-op for a read-only/detached worktree, a committed branch, an
-    undeterminable git state, or a missing ``cwd``.
+    ``terminated_without_commit`` signal only on the confirmed-flag verdict, so the
+    orchestrator SEES the empty termination instead of assuming work landed. It is
+    a pure DETECTION/surfacing hook — there is no recovery snapshot (the #1770
+    capture mechanism was removed): unproven sub-agent work is surfaced for
+    salvage, never auto-captured. No-op for a read-only/detached worktree, a
+    committed branch, an undeterminable git state, or a missing ``cwd``.
 
     Crash-proof (#810 Stop contract): a broad boundary guard contains any
     unexpected error (an unimportable ``teatree``, git introspection failure)
@@ -8217,15 +8191,10 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
         from teatree.hooks import no_commit_detector  # noqa: PLC0415
-        from teatree.utils import git  # noqa: PLC0415
 
         finding = no_commit_detector.detect(worktree)
         if finding.is_flagged:
             _record_no_commit_signal(data.get("session_id", ""), finding)
-
-        branch = git.current_branch(repo=worktree)
-        if branch and branch not in no_commit_detector.NON_WORK_BRANCHES:
-            _capture_subagent_snapshot(worktree, branch, branch)
     except Exception as exc:  # noqa: BLE001 — SubagentStop hook must be crash-proof
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] no-commit detection skipped (unexpected error: {exc})",

@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 from teatree import paths
-from teatree.core.management.commands._workspace_cleanup import is_clean_ignored
+from teatree.core.clean_ignore import is_clean_ignored
 from teatree.core.models import Worktree
 
 

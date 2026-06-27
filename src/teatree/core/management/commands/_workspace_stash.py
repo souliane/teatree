@@ -1,15 +1,14 @@
 """Orphaned-stash reaping for the ``t3 <overlay> workspace clean-all`` subcommand.
 
 Split out of :mod:`teatree.core.management.commands._workspace_cleanup` so that
-module stays under the module-health LOC cap. The squash-merge signal it relies
-on (:func:`_branch_captured_upstream`) stays in ``_workspace_cleanup`` — the
-branch/worktree reapers share it — so this module imports it (one direction; no
-cycle).
+module stays under the module-health LOC cap. The forge-CLI-free squash-merge
+signal it relies on (:func:`_branch_captured_upstream`) lives in
+:mod:`teatree.core.branch_classification` — the branch/worktree reapers share it.
 """
 
 import re
 
-from teatree.core.management.commands._workspace_cleanup import _branch_captured_upstream
+from teatree.core.branch_classification import _branch_captured_upstream
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

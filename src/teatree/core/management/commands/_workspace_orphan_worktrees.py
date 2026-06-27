@@ -7,35 +7,28 @@ module is the gap-closing pass: discover every git worktree under the
 workspace's main clones, subtract the DB-tracked set, and dispose of the
 remainder under a safety-first policy.
 
-Disposition per orphan (the #706/#835 data-loss contract is never bypassed).
-A *merged / gone / no-unique-work* orphan — whose commits are already on
+Disposition per orphan (the #706 data-loss contract is never bypassed). A
+*merged / gone / no-unique-work* orphan — whose commits are already on
 ``origin/<default>``, or a detached worktree with nothing reachable only from it
 — is recoverable from the default branch, so it is removed and pruned. A
-*unique-unpushed-work* orphan carries commits absent from every remote: under
-``reap_unsynced='keep'`` (the default) it is KEPT with a warning; under
-``reap_unsynced='snapshot'`` a recovery artifact (the shared
-:func:`~teatree.core.worktree_snapshot.capture_worktree_snapshot` bundle+diff)
-is captured FIRST, verified to have materialised, and only THEN is the worktree
-removed — so the commits are always recoverable, and a snapshot that fails to
-materialise keeps the worktree (the #706 guard). An *uncommitted-changes* orphan
-(a live worktree an agent may be mid-task in) is always KEPT regardless of
-policy — a clean removal would lose the dirty diff.
+*unique-unpushed-work* orphan carries commits absent from every remote: it is
+KEPT with a warning (salvage it by pushing the branch — the snapshot-then-reap
+path is gone; potentially-needed work is never destroyed). An
+*uncommitted-changes* orphan (a live worktree an agent may be mid-task in) is
+always KEPT — a clean removal would lose the dirty diff.
 """
 
 import logging
 from pathlib import Path
-from typing import Literal
 
+from teatree.core.branch_classification import is_squash_merged
+from teatree.core.clean_ignore import is_clean_ignored
 from teatree.core.clone_paths import resolve_clone_path
-from teatree.core.management.commands._workspace_cleanup import is_clean_ignored, is_squash_merged
 from teatree.core.models import Worktree
-from teatree.core.worktree_snapshot import capture_worktree_snapshot
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
-
-ReapUnsyncedPolicy = Literal["keep", "snapshot"]
 
 
 def _raw_worktree_paths(repo: str) -> dict[str, str]:
@@ -44,8 +37,7 @@ def _raw_worktree_paths(repo: str) -> dict[str, str]:
     Parses ``git worktree list --porcelain``. The main checkout (the record whose
     path is ``repo`` itself) is excluded — only the linked worktrees are
     candidates. A detached worktree carries no ``branch`` line; it is recorded
-    with the literal ``HEAD`` (:data:`git.DETACHED_HEAD`) so the snapshot path can
-    bundle the detached commits from the worktree dir.
+    with the literal ``HEAD`` (:data:`git.DETACHED_HEAD`).
     """
     raw = git.run(repo=repo, args=["worktree", "list", "--porcelain"])
     main = str(Path(repo).resolve())
@@ -136,66 +128,29 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
     return True
 
 
-def _reap_one_orphan(
-    repo: str,
-    wt_path: str,
-    branch: str,
-    *,
-    reap_unsynced: ReapUnsyncedPolicy,
-) -> str:
-    """Dispose of one orphaned raw worktree per the safety policy. Returns a result line."""
+def _reap_one_orphan(repo: str, wt_path: str, branch: str) -> str:
+    """Dispose of one orphaned raw worktree under the keep-unproven-work policy."""
     label = f"{branch} ({wt_path})"
     if is_clean_ignored(branch):
         return f"SKIPPED orphan '{label}': matches clean_ignore — keeping"
     if _is_dirty(wt_path):
-        return f"KEPT orphan '{label}': uncommitted changes — never reaped without an explicit snapshot"
-    if not _branch_has_unique_work(repo, branch, wt_path):
-        return _remove_recoverable_orphan(repo, wt_path, branch, label)
-    if reap_unsynced == "keep":
-        return f"KEPT orphan '{label}': unpushed work, --reap-unsynced=keep — snapshot+reap not requested"
-    return _snapshot_then_reap_orphan(repo, wt_path, branch, label)
-
-
-def _remove_recoverable_orphan(repo: str, wt_path: str, branch: str, label: str) -> str:
-    """Reap an orphan whose work is already on a remote (no snapshot needed)."""
+        return f"KEPT orphan '{label}': uncommitted changes — never reaped"
+    if _branch_has_unique_work(repo, branch, wt_path):
+        return f"KEPT orphan '{label}': unpushed work not on any remote — push it to salvage, never reaped"
     if _remove_orphan(repo, wt_path, branch):
         return f"Reaped orphan worktree (work already on remote): {label}"
     return f"SKIPPED orphan '{label}': git worktree remove failed"
 
 
-def _snapshot_then_reap_orphan(repo: str, wt_path: str, branch: str, label: str) -> str:
-    """Snapshot an orphan's unique work, then reap — keeping it if the snapshot fails (#706)."""
-    snapshot = _snapshot_orphan(repo, wt_path, branch)
-    if snapshot is None:
-        return f"KEPT orphan '{label}': snapshot did not materialise — refusing to reap (data-loss guard)"
-    if _remove_orphan(repo, wt_path, branch):
-        return f"Reaped orphan worktree (snapshot at {snapshot}): {label}"
-    return f"SKIPPED orphan '{label}': snapshot written to {snapshot} but git worktree remove failed"
-
-
-def _snapshot_orphan(repo: str, wt_path: str, branch: str) -> Path | None:
-    """Capture a recovery artifact for an orphan with unique work, or ``None`` on failure.
-
-    Delegates to the shared Django-free capture primitive (bundle of the branch +
-    diff of the working tree). A capture exception keeps the worktree — the
-    caller treats ``None`` as "nothing recoverable was written", so the #706
-    guard refuses the reap.
-    """
-    try:
-        return capture_worktree_snapshot(Path(repo), wt_path, branch=branch, label="orphan")
-    except CommandFailedError as exc:
-        logger.warning("orphan snapshot failed for %s (%s): %s — keeping the worktree", wt_path, branch, exc)
-        return None
-
-
-def reap_orphan_raw_worktrees(workspace: Path, *, reap_unsynced: ReapUnsyncedPolicy) -> list[str]:
+def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
     """Discover and dispose of raw git worktrees no ``Worktree`` row tracks (#2361).
 
     For every main clone teatree knows about, every linked worktree whose
     absolute path is NOT in the DB-tracked set is an orphan. Each is classified
-    and disposed of by :func:`_reap_one_orphan` under the supplied policy. The
-    pass is resilient: a clone whose worktree registry cannot be read (corrupt /
-    origin-less) is skipped with a warning rather than aborting the run.
+    and disposed of by :func:`_reap_one_orphan`: a merged/gone orphan is reaped; an
+    orphan with unpushed work or uncommitted changes is KEPT (never destroyed).
+    The pass is resilient: a clone whose worktree registry cannot be read (corrupt
+    / origin-less) is skipped with a warning rather than aborting the run.
     """
     tracked = _db_tracked_paths()
     cleaned: list[str] = []
@@ -208,5 +163,5 @@ def reap_orphan_raw_worktrees(workspace: Path, *, reap_unsynced: ReapUnsyncedPol
         for wt_path, branch in sorted(worktrees.items()):
             if str(Path(wt_path).resolve()) in tracked:
                 continue
-            cleaned.append(_reap_one_orphan(repo, wt_path, branch, reap_unsynced=reap_unsynced))
+            cleaned.append(_reap_one_orphan(repo, wt_path, branch))
     return cleaned

@@ -1,0 +1,279 @@
+"""The done-detection + analyze-before-wipe reaper, against real git under tmp_path.
+
+These are the load-bearing regressions for the cleanup redesign:
+
+- a MERGED ticket whose local branch ref was deleted is DONE via the FSM state
+(no git probe), so it is wiped — the rc=128 fix that stranded ~76 worktrees;
+- a STARTED ticket with a unique unpushed commit is NOT done, so it is KEPT, and
+the removed snapshot path means NO ``t3-recover-*`` artifact is created anywhere;
+- a done ticket whose worktree has a real uncommitted change is KEPT and reported
+(the per-change analyze-before-wipe primary safety);
+- a SHIPPED ticket (PR still open) is NOT done; the #706 guard keeps genuinely-ahead
+unpushed work even on a done ticket; and the done-wipe tears the docker volumes down.
+"""
+
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.core.models import Ticket, Worktree
+from teatree.core.runners import worktree_start
+from teatree.core.worktree_done import (
+    analyze_worktree_changes,
+    reap_done_worktree,
+    reap_done_worktrees,
+    worktree_is_done,
+)
+from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
+
+
+class _ReaperFixture(TestCase):
+    """A real ``main`` clone + bare ``origin`` + one worktree on ``feat-x``.
+
+    Subclasses (or individual tests) push/merge/dirty the worktree to model each
+    disposition, then drive :func:`reap_done_worktree`. The forge probes are
+    neutralised (no ``gh``/``glab`` in the loop), so the deterministic patch-id /
+    FSM-state signals decide — never a network call.
+    """
+
+    slug = "feat-x"
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+        self.remote = tmp_path / "remote.git"
+        subprocess.run(
+            [_GIT, "init", "-q", "--bare", "-b", "main", str(self.remote)],
+            check=True,
+            capture_output=True,
+            env=_clean_env(),
+        )
+
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        (self.repo_main / "base.txt").write_text("base\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.wt_path = self.workspace / self.slug / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", self.slug, str(self.wt_path), cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feat.txt").write_text("feature work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: ship the feature", cwd=self.wt_path)
+
+        # No git worktree, DB, or docker is destroyed against a real overlay: route
+        # cleanup through the overlay-free teardown and stub the docker side-effect.
+        monkeypatch.setattr("teatree.core.cleanup.load_config", self._config)
+        monkeypatch.setattr("teatree.core.worktree_done.load_config", self._config)
+        monkeypatch.setattr("teatree.core.cleanup._resolve_overlay_or_none", lambda _wt: None)
+        self.docker_calls: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            "teatree.core.runners.worktree_start.docker_compose_down",
+            lambda project, **kw: self.docker_calls.append((project, bool(kw.get("remove_volumes")))),
+        )
+        # Neutralise the forge so the patch-id / FSM signals are the only deciders.
+        monkeypatch.setattr("teatree.core.branch_classification._run_host_cli", lambda *_a, **_k: None)
+        monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+
+    def _config(self) -> object:
+        class _Cfg:
+            class user:  # noqa: N801 — mirrors load_config().user.workspace_dir
+                workspace_dir = self.workspace
+
+        return _Cfg()
+
+    def _make_worktree(self, state: str) -> Worktree:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2761", state=state)
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch=self.slug,
+            extra={"worktree_path": str(self.wt_path), "clone_path": str(self.repo_main)},
+        )
+
+    def _push_branch(self) -> None:
+        _run_git("push", "-q", "origin", self.slug, cwd=self.wt_path)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+    def _drop_local_branch_ref(self) -> None:
+        _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.repo_main)
+
+    def _reap(self, worktree: Worktree, *, dry_run: bool = False) -> object:
+        return reap_done_worktree(worktree, workspace=self.workspace, dry_run=dry_run)
+
+
+class TestMergedDeletedRefWiped(_ReaperFixture):
+    """A MERGED ticket whose branch ref was deleted is DONE via FSM state — wiped."""
+
+    def test_merged_ticket_with_deleted_branch_ref_is_wiped(self) -> None:
+        self._push_branch()  # HEAD now contained in origin/feat-x
+        self._drop_local_branch_ref()  # dangling HEAD — the rc=128 probe failure
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "wiped", outcome.label
+        assert "ticket-state:merged" in outcome.label
+        assert not self.wt_path.exists(), "merged + deleted-ref worktree must be reaped (the 76-leak fix)"
+        assert not Worktree.objects.filter(pk=worktree.pk).exists()
+
+    def test_done_signal_reads_fsm_state_without_touching_git(self) -> None:
+        self._drop_local_branch_ref()
+        signal = worktree_is_done(self._make_worktree(Ticket.State.MERGED))
+        assert signal.done is True
+        assert signal.source == "ticket-state:merged"
+
+
+class TestNotDoneUnpushedKeptNoSnapshot(_ReaperFixture):
+    """A STARTED ticket with unique unpushed work is NOT done — KEPT, no snapshot."""
+
+    def test_started_with_unique_unpushed_commit_is_kept(self) -> None:
+        worktree = self._make_worktree(Ticket.State.STARTED)  # never pushed
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert "not done" in outcome.label
+        assert self.wt_path.exists(), "genuinely-unsynced work must never be destroyed"
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
+    def test_no_recovery_snapshot_artifact_is_created_anywhere(self) -> None:
+        self._reap(self._make_worktree(Ticket.State.STARTED))
+        assert list(self.tmp_path.rglob("t3-recover-*")) == [], "the snapshot path is gone — no t3-recover-* dir"
+
+
+class TestDoneButUncommittedKept(_ReaperFixture):
+    """A done ticket whose worktree has a real uncommitted change is KEPT + reported."""
+
+    def test_uncommitted_change_not_proven_redundant_keeps_worktree(self) -> None:
+        self._push_branch()  # commits are redundant…
+        (self.wt_path / "wip.txt").write_text("uncommitted work in progress\n", encoding="utf-8")  # …but this is not
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert "uncommitted change" in outcome.label
+        assert self.wt_path.exists()
+
+
+class TestShippedIsNotDone(_ReaperFixture):
+    """SHIPPED (PR still open) is NOT a done state — the worktree is kept."""
+
+    def test_shipped_ticket_is_not_done(self) -> None:
+        self._push_branch()
+        worktree = self._make_worktree(Ticket.State.SHIPPED)
+
+        signal = worktree_is_done(worktree)
+        outcome = self._reap(worktree)
+
+        assert signal.done is False
+        assert signal.source == "not-done:shipped"
+        assert outcome.action == "kept"
+        assert self.wt_path.exists()
+
+
+class Test706GuardKeepsGenuinelyAheadOnDoneTicket(_ReaperFixture):
+    """Even on a MERGED ticket, genuinely-ahead unpushed work is KEPT (#706 / CORRECTION 1)."""
+
+    def test_merged_ticket_with_unpushed_unique_commit_is_kept(self) -> None:
+        worktree = self._make_worktree(Ticket.State.MERGED)  # commit never pushed anywhere
+
+        analysis = analyze_worktree_changes(worktree, workspace=self.workspace)
+        outcome = self._reap(worktree)
+
+        assert analysis.proven_redundant is False
+        assert any("not provably on origin/main" in r for r in analysis.kept_reasons)
+        assert outcome.action == "kept", outcome.label
+        assert self.wt_path.exists()
+
+
+class TestDoneWipeTearsDownDockerVolumes(_ReaperFixture):
+    """The done-wipe runs ``docker compose down --volumes`` for the worktree's stack."""
+
+    def test_wipe_invokes_docker_compose_down_with_volumes(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        self._reap(worktree)
+
+        assert self.docker_calls, "the done-wipe must tear the worktree's docker stack down"
+        assert all(remove_volumes for _project, remove_volumes in self.docker_calls), (
+            "the done-wipe must pass remove_volumes=True so the worktree's docker volumes are reaped"
+        )
+
+
+def test_docker_compose_down_emits_volumes_flag_when_requested() -> None:
+    """``docker compose down`` carries ``--volumes`` only when remove_volumes is set."""
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    with patch.object(worktree_start, "run_allowed_to_fail", lambda cmd, **_kw: calls.append(cmd) or _Result()):
+        worktree_start.docker_compose_down("proj", remove_volumes=True)
+        worktree_start.docker_compose_down("proj")
+
+    assert "--volumes" in calls[0]
+    assert "--volumes" not in calls[1]
+
+
+class TestDryRunAndCleanIgnore(_ReaperFixture):
+    """--dry-run lists what would wipe without removing; clean_ignore is never reaped."""
+
+    def test_dry_run_lists_without_removing(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        outcome = self._reap(worktree, dry_run=True)
+
+        assert outcome.action == "would-wipe", outcome.label
+        assert self.wt_path.exists(), "dry-run must not remove the worktree"
+        assert Worktree.objects.filter(pk=worktree.pk).exists()
+
+    def test_clean_ignored_branch_is_skipped(self) -> None:
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        with patch("teatree.core.worktree_done.is_clean_ignored", return_value=True):
+            outcome = self._reap(worktree)
+        assert outcome.action == "skipped"
+        assert self.wt_path.exists()
+
+    def test_reap_done_worktrees_sweep_returns_one_line_per_row(self) -> None:
+        self._push_branch()
+        self._drop_local_branch_ref()
+        self._make_worktree(Ticket.State.MERGED)
+
+        lines = reap_done_worktrees(self.workspace, dry_run=True)
+
+        assert len(lines) == 1
+        assert lines[0].startswith("WOULD WIPE")
+
+
+class TestSnapshotModulesRemoved:
+    """The #1770 snapshot mechanism is gone — its modules no longer import."""
+
+    def test_worktree_snapshot_module_is_removed(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            __import__("teatree.core.worktree_snapshot")
+
+    def test_worktree_recovery_module_is_removed(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            __import__("teatree.core.worktree_recovery")

@@ -849,7 +849,7 @@
           "name": "landscape"
         },
         {
-          "help": "Tear down every worktree whose ticket is already MERGED",
+          "help": "Tear down every done worktree (analyze-then-wipe) on demand",
           "name": "clean-merged"
         },
         {
@@ -869,7 +869,7 @@
           "name": "reclaim-disk"
         },
         {
-          "help": "Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots",
+          "help": "Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR",
           "name": "clean-all"
         }
       ]

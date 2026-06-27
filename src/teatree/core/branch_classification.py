@@ -20,10 +20,13 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.utils.run import CompletedProcess
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
 _RELEASE_NOTE_SUFFIX_RE = re.compile(r"\s*\[[^\]]*\]\s*\([^)]+\)\s*$")
@@ -268,3 +271,73 @@ def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
     if not merge_sha:
         return False
     return git.check(repo=repo, args=["diff", "--quiet", merge_sha, branch])
+
+
+def _run_host_cli(cmd: list[str], repo: str) -> "CompletedProcess[str] | None":
+    """Run a host CLI that may be missing, returning ``None`` when it cannot run.
+
+    ``gh`` / ``glab`` are optional — absent in CI without auth and blocked in
+    sandboxes (a denied binary raises ``PermissionError``, a missing one
+    ``FileNotFoundError``; both are ``OSError``). Swallowing ``OSError`` lets
+    :func:`is_squash_merged` fall back to the diff check instead of crashing the
+    whole cleanup run — the exact condition under which merged worktrees were
+    left unpruned.
+    """
+    try:
+        return run_allowed_to_fail(cmd, cwd=repo, expected_codes=None)
+    except OSError:
+        return None
+
+
+def is_squash_merged(repo: str, branch: str, default: str) -> bool:
+    """Whether ``branch`` shipped: forge-merged PR/MR, else captured upstream by patch-id.
+
+    The forge-primary, patch-id-fallback squash signal the reaper and the
+    branch-prune pass share. A squash-merge rewrites the source commits into one
+    new SHA on ``default`` and usually deletes the source ref, so an
+    is-ancestor / three-dot-diff test misses it. Fail-safe to *not merged*: a
+    missing forge CLI, a non-empty diff, or any uncertain outcome reads as keep,
+    so an uncertain branch is never wrongly classified as shipped. Survives a
+    deleted local branch ref — the forge queries are keyed on the branch NAME,
+    not a local ref.
+    """
+    result = _run_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
+        repo,
+    )
+    if result is not None and result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
+        return True
+
+    result = _run_host_cli(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--limit", "1"],
+        repo,
+    )
+    if (
+        result is not None
+        and result.returncode == 0
+        and any(line.lstrip().startswith("!") for line in result.stdout.splitlines())
+    ):
+        return True
+
+    return _branch_captured_upstream(repo, branch, default)
+
+
+def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
+    """Whether every unique commit of ``branch`` is already in ``origin/<default>``.
+
+    The forge-CLI-free squash-merge signal. A squash-merge rewrites the source
+    commits into one new SHA on the default branch, so ``branch`` is NOT an
+    ancestor of ``origin/<default>`` and an is-ancestor / three-dot-diff test
+    misses it. ``git cherry`` compares by patch-id instead: it prints ``- <sha>``
+    for each ``branch`` commit whose change is already upstream (the squash
+    captured it) and ``+ <sha>`` for one that is not. The branch is captured when
+    cherry finds no ``+`` line — empty output (nothing unique) or every line a
+    ``-`` (all unique commits are equivalent upstream). A probe failure (unknown
+    ref, missing ``origin/<default>``) reads as not-captured so the data-loss
+    guards downstream keep the worktree.
+    """
+    try:
+        cherry = git.run(repo=repo, args=["cherry", f"origin/{default}", branch])
+    except CommandFailedError:
+        return False
+    return all(line.startswith("-") for line in cherry.splitlines() if line.strip())
