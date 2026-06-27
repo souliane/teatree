@@ -32,6 +32,9 @@ def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        # Base branch "main"; empty required-context gate → live rollup verdict stands.
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
     if "pulls" in joined and "merge" in joined:
         return (0, '{"sha": "landed00deadbeef"}', "")
     return (0, "", "")

@@ -91,14 +91,24 @@ def _clear(ticket: Ticket) -> MergeClear:
     )
 
 
-def _gh_ok(argv: list[str]) -> tuple[int, str, str]:
-    joined = " ".join(argv)
+def _read_probe(joined: str) -> tuple[int, str, str] | None:
+    """The §17.4.3 read-only probes (head / draft / checks / branch-protection)."""
     if "headRefOid" in joined:
         return (0, _SHA, "")
     if "isDraft" in joined:
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        # Base branch "main"; empty required-context gate → live rollup verdict stands.
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
+    return None
+
+
+def _gh_ok(argv: list[str]) -> tuple[int, str, str]:
+    joined = " ".join(argv)
+    if (probe := _read_probe(joined)) is not None:
+        return probe
     if "state,mergeCommit" in joined:
         return (0, '{"state": "OPEN", "mergeCommit": null}', "")
     if "pulls" in joined and "merge" in joined:
