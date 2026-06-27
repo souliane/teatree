@@ -21,11 +21,6 @@ def pg_user() -> str:
     return os.environ.get("POSTGRES_USER", "postgres")
 
 
-def worktree_db_name(ticket_number: str, variant: str) -> str:
-    suffix = f"_{variant}" if variant else ""
-    return f"wt_{ticket_number}{suffix}"
-
-
 _TRUNCATION_PATTERNS = ("could not read", "unexpected EOF", "invalid page", "WARNING:  errors ignored")
 
 
